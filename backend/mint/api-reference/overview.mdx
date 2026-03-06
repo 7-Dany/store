@@ -1,0 +1,60 @@
+---
+title: "Overview"
+description: "Store API reference — base URL, authentication, errors, and endpoint coverage."
+---
+
+## Base URL
+
+```
+http://localhost:8080
+```
+
+All requests must use `Content-Type: application/json`.
+
+---
+
+## Errors
+
+All error responses share the same shape:
+
+```json
+{
+  "code": "error_code",
+  "message": "human readable description"
+}
+```
+
+| Status | Meaning                                      |
+| ------ | -------------------------------------------- |
+| 400    | Bad request                                  |
+| 401    | Unauthenticated                              |
+| 403    | Forbidden                                    |
+| 404    | Not found                                    |
+| 409    | Conflict (e.g. email already taken)          |
+| 413    | Request body too large                       |
+| 415    | Wrong Content-Type                           |
+| 422    | Validation error                             |
+| 429    | Rate limited — check `Retry-After` header    |
+
+---
+
+## Coverage
+
+| Endpoint                                  | Status |
+| ----------------------------------------- | ------ |
+| `GET /health`                             | ✅     |
+| `POST /api/v1/auth/register`              | ✅     |
+| `POST /api/v1/auth/verify-email`          | ✅     |
+| `POST /api/v1/auth/resend-verification`   | ✅     |
+| `POST /api/v1/auth/login`                 | ✅     |
+| `POST /api/v1/auth/refresh`               | ✅     |
+| `POST /api/v1/auth/logout`                | ✅     |
+| `POST /api/v1/auth/request-unlock`        | ✅     |
+| `POST /api/v1/auth/confirm-unlock`        | ✅     |
+| `POST /api/v1/auth/forgot-password`       | ✅     |
+| `POST /api/v1/auth/verify-reset-code`     | ✅     |
+| `POST /api/v1/auth/reset-password`        | ✅     |
+| `POST /api/v1/auth/change-password`       | ✅     |
+| `GET /api/v1/auth/me`                     | 🔲     |
+| `GET /api/v1/auth/sessions`               | 🔲     |
+| `DELETE /api/v1/auth/sessions/{id}`       | 🔲     |

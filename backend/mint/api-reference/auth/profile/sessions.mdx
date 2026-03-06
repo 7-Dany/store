@@ -1,0 +1,112 @@
+---
+title: "List Sessions"
+description: "Returns all active sessions for the authenticated user, newest first."
+api: "GET http://localhost:8080/api/v1/auth/sessions"
+---
+
+## Behaviour
+
+**`is_current`** — Each session in the response includes an `is_current` flag. The flag is `true` for the session whose ID matches the session claim in the caller's access token, making it easy for clients to highlight the current device without a separate lookup.
+
+**Empty list** — When the user has no active sessions, the endpoint returns `200` with an empty `sessions` array rather than an error.
+
+## Rate Limiting
+
+**10 requests per 1 minute per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<ResponseExample>
+```json 200
+{
+  "sessions": [
+    {
+      "id": "018f42c3-dead-beef-9f56-0a1b2c3d4e5f",
+      "ip_address": "203.0.113.42",
+      "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+      "started_at": "2026-03-06T09:00:00Z",
+      "last_active_at": "2026-03-06T10:00:00Z",
+      "is_current": true
+    },
+    {
+      "id": "018f42c3-cafe-babe-9f56-0a1b2c3d4e5f",
+      "ip_address": "198.51.100.7",
+      "user_agent": "Go-http-client/2.0",
+      "started_at": "2026-03-05T14:00:00Z",
+      "last_active_at": "2026-03-05T16:30:00Z",
+      "is_current": false
+    }
+  ]
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "missing user id in context"
+}
+```
+
+```json 429
+{
+  "code": "rate_limited",
+  "message": "too many requests"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    A list of all active sessions for the user. `sessions` is an empty array when no sessions are open.
+
+    ```json
+    {
+      "sessions": [
+        {
+          "id": "018f42c3-dead-beef-9f56-0a1b2c3d4e5f",
+          "ip_address": "203.0.113.42",
+          "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+          "started_at": "2026-03-06T09:00:00Z",
+          "last_active_at": "2026-03-06T10:00:00Z",
+          "is_current": true
+        }
+      ]
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid JWT or the user ID could not be extracted from the token context.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing user id in context"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 10 requests per 1 minute. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "rate_limited",
+      "message": "too many requests"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred while fetching sessions.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

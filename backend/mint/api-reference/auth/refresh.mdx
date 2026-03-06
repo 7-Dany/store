@@ -1,0 +1,146 @@
+---
+title: "Refresh"
+description: "Rotates a refresh token and issues a new access token and refresh token pair."
+api: "POST http://localhost:8080/api/v1/auth/refresh"
+authMethod: "none"
+---
+
+<Callout icon="key" color="#FFC107" iconType="regular">
+  Try It won't work — this endpoint authenticates via HttpOnly cookie, which the playground cannot inject.
+</Callout>
+
+<ParamField header="Cookie" type="string" required>
+  Must contain `refresh_token=<token>`. Browser clients send this automatically;
+  native clients must set it explicitly. The token is a signed JWT issued by
+  `POST /login` or a previous `POST /refresh`.
+
+  <Expandable title="curl example">
+    ```bash
+    curl --request POST \
+      --url http://localhost:8080/api/v1/auth/refresh \
+      --header "Cookie: refresh_token=<your_refresh_token>"
+    ```
+  </Expandable>
+</ParamField>
+
+## Behaviour
+
+**Cookie-only delivery** — The refresh token is read exclusively from the `refresh_token` HttpOnly cookie. There is no request body. Browser clients send the cookie automatically; native clients must set the `Cookie: refresh_token=<token>` header manually.
+
+**Atomic rotation** — Each valid refresh token can be used exactly once. On success, the old token is atomically revoked in the database and a new refresh token is issued and set as an HttpOnly cookie. The new access token is returned in the JSON response body.
+
+**Token reuse detection (RFC 6819)** — If a refresh token is presented after it has already been rotated, the entire token family is immediately revoked. This means the legitimate successor token is also killed. The client must re-authenticate from scratch. The refresh cookie is cleared in the response.
+
+**Cookie cleared on errors** — Any error that indicates the token has been compromised or the session has changed (`token_reuse_detected`, `account_locked`, `account_inactive`) clears the refresh cookie in the response in addition to returning the error.
+
+## Rate Limiting
+
+**5 requests per 15 minutes per IP address**.
+
+The limiter fires before token validation — every request to this endpoint consumes a slot regardless of whether the token is valid. Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After: 180` header indicating how many seconds to wait before retrying.
+
+<ResponseExample>
+```json 200
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_expiry": "2026-04-04T19:15:35Z",
+  "expires_in": 900
+}
+```
+
+```json 401
+{
+  "code": "token_reuse_detected",
+  "message": "refresh token has already been used"
+}
+```
+
+```json 429
+{
+  "code": "rate_limited",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    Rotation succeeded. A new short-lived access token (default 15 minutes) is returned in the JSON body. A new long-lived refresh token is set as an `HttpOnly`, `SameSite=Strict` cookie scoped to `/api/v1/auth`. The old refresh token is now permanently invalid.
+
+    ```json
+    {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refresh_expiry": "2026-04-04T19:15:35Z",
+      "expires_in": 900
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    Returned for several token failure modes. Check the `code` field to distinguish them.
+
+    **Missing cookie** — No `refresh_token` cookie was present in the request.
+
+    ```json
+    {
+      "code": "missing_token",
+      "message": "refresh token cookie is missing"
+    }
+    ```
+
+    **Invalid or expired token** — The JWT signature is invalid, the token is malformed, or it has expired. The cookie is not cleared on this path — the client should redirect to login.
+
+    ```json
+    {
+      "code": "invalid_token",
+      "message": "refresh token is invalid or expired"
+    }
+    ```
+
+    **Token reuse detected** — The token has already been rotated. The entire token family is revoked immediately and the refresh cookie is cleared. The client must re-authenticate.
+
+    ```json
+    {
+      "code": "token_reuse_detected",
+      "message": "refresh token has already been used"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The account has been suspended. The refresh cookie is cleared. The user must contact support to restore their account before logging in again.
+
+    ```json
+    {
+      "code": "account_inactive",
+      "message": "account is suspended"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="423 — Account Locked">
+    The account has been administratively locked. The refresh cookie is cleared. Self-service unlock is available via `POST /request-unlock`.
+
+    ```json
+    {
+      "code": "account_locked",
+      "message": "account locked — contact support"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 5 requests per 15 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "rate_limited",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

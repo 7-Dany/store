@@ -1,0 +1,110 @@
+---
+title: "Confirm Unlock"
+description: "Clears a login lockout by validating the 6-digit code sent to the account's email address."
+api: "POST http://localhost:8080/api/v1/auth/confirm-unlock"
+---
+
+<ParamField body="email" type="string" required>
+  The email address of the locked account. Normalised to lowercase before lookup.
+</ParamField>
+
+<ParamField body="code" type="string" required>
+  The 6-digit numeric unlock code sent to the account's email address.
+
+  <Expandable title="constraints">
+    - Exactly 6 digits
+    - Digits only — no letters or symbols
+  </Expandable>
+</ParamField>
+
+## Behaviour
+
+On success the account is fully unlocked and can log in immediately. The unlock code is consumed and cannot be reused.
+
+Too many wrong submissions will permanently invalidate the code — at that point even the correct code will be rejected. Request a new one via `POST /request-unlock`.
+
+All failure responses look identical regardless of the cause, so the server does not reveal whether an account or code exists.
+
+## Rate Limiting
+
+**3 requests per 10 minutes per IP address.** This limit is shared with `POST /request-unlock` — requests to either endpoint count against the same bucket.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "email": "alice@example.com",
+  "code": "837291"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "message": "account unlocked successfully"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "invalid or expired unlock code"
+}
+```
+
+```json 429
+{
+  "code": "too_many_attempts",
+  "message": "too many incorrect attempts, please request a new code"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — Success">
+    The code was correct and the lockout has been cleared. The account can now log in immediately. The token is consumed and cannot be replayed.
+
+    ```json
+    {
+      "message": "account unlocked successfully"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    Returned for all token-level failures to prevent account enumeration: the code did not match, the token has already been used, no active token exists for this email, or the token has expired. The response is identical for all cases. One or more fields may also have failed structural validation before any lookup was attempted (e.g. missing email, code not exactly 6 digits).
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "invalid or expired unlock code"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="423 — Account Locked">
+    The account was locked by an administrator after the unlock token was issued. This type of lock cannot be cleared through the self-service unlock flow. Contact support or use `PATCH /api/v1/admin/users/{id}/unlock` (planned).
+
+    ```json
+    {
+      "code": "account_locked",
+      "message": "this account has been locked"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Too Many Attempts / Rate Limited">
+    Returned for two distinct reasons. The unlock token has received too many incorrect code submissions and is now permanently locked — request a fresh code via `POST /request-unlock`. Alternatively, the IP address has exhausted the shared `unlk:ip:` rate limit bucket (3 requests per 10 minutes, shared with `POST /request-unlock`). Check the `Retry-After` response header in both cases.
+
+    ```json
+    {
+      "code": "too_many_attempts",
+      "message": "too many incorrect attempts, please request a new code"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

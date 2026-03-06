@@ -1,0 +1,80 @@
+---
+title: "Logout"
+description: "Revokes the caller's refresh token, ends the session, and invalidates the access token."
+api: "POST http://localhost:8080/api/v1/auth/logout"
+authMethod: "none"
+---
+
+<Callout icon="key" color="#FFC107" iconType="regular">
+  Try It won't work — this endpoint authenticates via HttpOnly cookie, which the playground cannot inject.
+</Callout>
+
+<ParamField header="Cookie" type="string" required>
+  Must contain `refresh_token=<token>`. The token is revoked and the cookie is
+  cleared in the response. Browser clients send this automatically; native
+  clients must set it explicitly.
+
+  <Expandable title="curl example">
+    ```bash
+    curl --request POST \
+      --url http://localhost:8080/api/v1/auth/logout \
+      --header "Cookie: refresh_token=<your_refresh_token>" \
+      --header "Authorization: Bearer <your_access_token>"
+    ```
+  </Expandable>
+</ParamField>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <access_token>`. When present and valid, the access token's JTI is
+  added to the blocklist for its remaining TTL, immediately invalidating it
+  across all protected endpoints. Omitting this header is allowed — logout
+  still completes, but the access token remains valid until it expires naturally.
+</ParamField>
+
+## Behaviour
+
+**Always returns 204** — Logout is a best-effort, idempotent operation. Missing cookie, malformed or expired token, and internal errors all return `204 No Content` with an empty body. This design prevents leaking information about whether a session exists and ensures clients can always treat logout as successful.
+
+**Refresh token revocation** — The refresh token JTI from the cookie is revoked in the database and the session is ended. The `refresh_token` cookie is always cleared in the response (`Max-Age=0`), regardless of success or failure.
+
+**Access token blocklisting** — If a valid, non-expired `Authorization: Bearer <token>` header is supplied, the access token's JTI is added to the blocklist in the KV store for its remaining TTL. This immediately invalidates the token for all endpoints protected by the auth middleware. If the header is absent, expired, or the KV store is unavailable, logout still completes — blocklisting is best-effort.
+
+**Per-device scope** — Logout only revokes the token family for the presenting device. Other active sessions for the same user are unaffected.
+
+## Rate Limiting
+
+**5 requests per 1 minute per IP address**.
+
+The limiter fires before token handling — every request to this endpoint consumes a slot regardless of whether a cookie is present. Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After: 12` header indicating how many seconds to wait before retrying.
+
+<ResponseExample>
+```json 204
+// 204 No Content — empty body
+```
+
+```json 429
+{
+  "code": "rate_limited",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    Logout was processed. The `refresh_token` cookie is cleared in the response. This is returned for all non-rate-limited outcomes: successful revocation, missing cookie, malformed token, and internal errors alike.
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 5 requests per 1 minute. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "rate_limited",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,94 @@
+---
+title: "Request Unlock"
+description: "Sends a 6-digit unlock code to the account's email address so the owner can clear a login lockout."
+api: "POST http://localhost:8080/api/v1/auth/request-unlock"
+---
+
+<ParamField body="email" type="string" required>
+  The email address of the locked account. Normalised to lowercase before lookup.
+</ParamField>
+
+## Behaviour
+
+This endpoint always returns `202 Accepted` with the same response body regardless of whether the email is registered, the account is locked, or any other condition — including internal errors. No information about account state is ever revealed.
+
+An unlock code is only issued when **all** of the following are true:
+
+- The email address belongs to a registered account.
+- The account's email has been verified.
+- The account is currently locked due to too many failed login or OTP attempts.
+- No unexpired unlock token is already pending for the account — a second request within the cooldown window is silently suppressed to prevent inbox flooding.
+
+This flow covers lockouts caused by repeated failed login or verification attempts. Accounts locked by an administrator require a separate process — see `PATCH /api/v1/admin/users/{id}/unlock` (planned).
+
+## Rate Limiting
+
+**3 requests per 10 minutes per IP address.** This limit is shared with `POST /confirm-unlock` — requests to either endpoint count against the same bucket.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "email": "alice@example.com"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 202
+{
+  "message": "if that email is registered and locked, an unlock code has been sent"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "email is required"
+}
+```
+
+```json 429
+{
+  "code": "rate_limited",
+  "message": "too many requests"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="202 — Accepted">
+    The request was accepted. If the email is registered and the account is currently time-locked, an unlock code has been dispatched. The response is identical for every other case — unknown email, unlocked account, admin-locked account, active cooldown, and internal errors all return the same `202` and body.
+
+    ```json
+    {
+      "message": "if that email is registered and locked, an unlock code has been sent"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    The request body failed structural validation before any account lookup was attempted. Common causes: missing or empty `email`, invalid email format, or `email` exceeding 254 bytes.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "email is required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exhausted the shared `unlk:ip:` rate limit bucket (3 requests per 10 minutes, shared with `POST /confirm-unlock`). Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "rate_limited",
+      "message": "too many requests"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

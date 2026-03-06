@@ -1,0 +1,140 @@
+---
+title: "Register"
+description: "Creates a new user account and sends a verification code to the provided email."
+api: "POST http://localhost:8080/api/v1/auth/register"
+---
+
+<ParamField body="display_name" type="string" required>
+  The name shown on your profile.
+
+  <Expandable title="constraints">
+    - Cannot be empty or whitespace-only
+    - Length: 1–100 characters
+  </Expandable>
+</ParamField>
+
+<ParamField body="email" type="string" required>
+  Your email address. Stored in lowercase. A verification code is sent here after registration.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  Your account password.
+
+  <Expandable title="requirements">
+    - Length: 8–72 characters
+    - At least one uppercase letter
+    - At least one lowercase letter
+    - At least one number
+    - At least one symbol
+  </Expandable>
+</ParamField>
+
+## Rate Limiting
+
+**5 requests per 10 minutes per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "display_name": "Alice",
+  "email": "alice@example.com",
+  "password": "P@ssw0rd1!"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "message": "registration successful, please check your email"
+}
+```
+
+```json 409
+{
+  "code": "email_taken",
+  "message": "an account with that email already exists"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "password must contain at least one symbol"
+}
+```
+
+```json 429
+{
+  "code": "rate_limited",
+  "message": "too many requests"
+}
+```
+
+```json 503
+{
+  "code": "mail_delivery_failed",
+  "message": "account created but verification email could not be sent — use the resend endpoint to try again"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="201 — Created">
+    Account created successfully. A 6-digit verification code has been dispatched to the provided email. The account cannot be used to log in until the code is submitted to `POST /verify-email`.
+
+    ```json
+    {
+      "message": "registration successful, please check your email"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    An account with a matching email already exists. Email comparison is case-insensitive — `Alice@example.com` and `alice@example.com` are treated as the same address.
+
+    ```json
+    {
+      "code": "email_taken",
+      "message": "an account with that email already exists"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    One or more fields failed validation. The `message` field describes the specific rule that was violated.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "password must contain at least one symbol"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded the rate limit of 5 requests per 10 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "rate_limited",
+      "message": "too many requests"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="503 — Mail Delivery Failed">
+    The account was created but the verification email could not be dispatched. The account exists — the verification code can be re-requested via `POST /resend-verification` without registering again.
+
+    ```json
+    {
+      "code": "mail_delivery_failed",
+      "message": "account created but verification email could not be sent — use the resend endpoint to try again"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

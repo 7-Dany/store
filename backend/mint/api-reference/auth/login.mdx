@@ -1,0 +1,167 @@
+---
+title: "Login"
+description: "Authenticates a user by email or username and returns a short-lived access token and a long-lived refresh token."
+api: "POST http://localhost:8080/api/v1/auth/login"
+---
+
+<ParamField body="identifier" type="string" required>
+  The email address or username to log in with. Surrounding whitespace is stripped before lookup. Email addresses (values that contain `@`) are lowercased — login is case-insensitive for email. Usernames do not contain `@` and are matched as-is.
+
+  <Expandable title="constraints">
+    - Cannot be empty or whitespace-only
+    - Maximum 254 characters
+  </Expandable>
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The account password. Password strength rules are not re-checked on login — only that the field is present and non-empty.
+</ParamField>
+
+## Behaviour
+
+**Anti-enumeration** — Wrong password and unknown identifier both return `401 invalid_credentials` with an identical response body and equivalent timing. A dummy bcrypt comparison is always run on the unknown-identifier path to prevent timing-based account enumeration.
+
+**Refresh token delivery** — On success, the refresh token is delivered both in the JSON response body and as an `HttpOnly`, `SameSite=Strict` cookie scoped to `/api/v1/auth`. Browser clients should rely on the cookie; native and server-side clients can read the token from the body.
+
+**Time-based lockout** — Ten consecutive wrong-password attempts set a 15-minute lockout on the account. The lockout check runs after the password check passes, so a locked account returns `429 login_locked` (not `401 invalid_credentials`) when the correct password is supplied. This distinction is intentional — the lockout window itself limits exploitation, and it allows legitimate users to know their password is still correct while they wait.
+
+## Rate Limiting
+
+**12 requests per 15 minutes per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After: 75` header indicating how many seconds to wait before retrying.
+
+<RequestExample>
+```json Example
+{
+  "identifier": "alice@example.com",
+  "password": "P@ssw0rd1!"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_expiry": "2026-04-04T19:15:35Z",
+  "expires_in": 900
+}
+```
+
+```json 401
+{
+  "code": "invalid_credentials",
+  "message": "invalid email or password"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "identifier is required"
+}
+```
+
+```json 429
+{
+  "code": "rate_limited",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    Authentication successful. The access token is a short-lived JWT (default 15 minutes) for use in the `Authorization: Bearer` header on subsequent requests. The refresh token has a 30-day TTL and is set as an `HttpOnly` cookie in addition to being returned in the body.
+
+    ```json
+    {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refresh_expiry": "2026-04-04T19:15:35Z",
+      "expires_in": 900
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The credentials are incorrect. Returned for both wrong password and unknown identifier — the response body is identical in both cases to prevent account enumeration.
+
+    ```json
+    {
+      "code": "invalid_credentials",
+      "message": "invalid email or password"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    Returned for two distinct account states:
+
+    **Email not verified** — The account exists and the password is correct, but the email address has not been confirmed via `POST /verify-email`.
+
+    ```json
+    {
+      "code": "email_not_verified",
+      "message": "email address not verified — please check your inbox"
+    }
+    ```
+
+    **Account inactive** — The account has been suspended and cannot log in.
+
+    ```json
+    {
+      "code": "account_inactive",
+      "message": "account is suspended"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    One or more fields failed validation. The `message` field describes the specific rule that was violated.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "identifier is required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="423 — Account Locked">
+    The account has been locked. This is a permanent administrative lock, distinct from the time-based lockout below. Self-service unlock is available via `POST /request-unlock`.
+
+    ```json
+    {
+      "code": "account_locked",
+      "message": "account locked — contact support"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Too Many Attempts">
+    Returned for two distinct scenarios. Check the `Retry-After` response header in both cases.
+
+    **Time-based lockout** — Ten consecutive wrong passwords have temporarily locked the account for 15 minutes. The `Retry-After` header contains the exact number of seconds remaining until the lock expires.
+
+    ```json
+    {
+      "code": "login_locked",
+      "message": "too many failed login attempts — please wait before trying again"
+    }
+    ```
+
+    **IP rate limit** — The IP address has exceeded 12 requests per 15 minutes. The `Retry-After: 75` header indicates how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "rate_limited",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

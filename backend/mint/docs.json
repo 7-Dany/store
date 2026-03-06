@@ -1,0 +1,89 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "maple",
+  "name": "Store API",
+  "colors": {
+    "primary": "#FF7819",
+    "light": "#FF9038",
+    "dark": "#E07820"
+  },
+  "api": {
+    "playground": {
+      "display": "interactive",
+      "proxy": false
+    },
+    "mdx": {
+      "server": "http://localhost:8080"
+    },
+    "examples": {
+      "prefill": true,
+      "languages": ["curl", "c++", "go", "javascript", "python", "php"]
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Overview",
+            "icon": "book-open",
+            "pages": ["guides/overview"]
+          },
+          {
+            "group": "Authentication",
+            "icon": "lock",
+            "pages": [
+              "guides/auth/registration-flow",
+              "guides/auth/session-lifecycle",
+              "guides/auth/account-unlock-flow",
+              "guides/auth/password-reset-flow"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "icon": "house",
+            "pages": ["api-reference/overview"]
+          },
+          {
+            "group": "Health",
+            "icon": "heart-pulse",
+            "pages": ["api-reference/health"]
+          },
+          {
+            "group": "Auth",
+            "icon": "lock",
+            "pages": [
+              "api-reference/auth/register",
+              "api-reference/auth/verify-email",
+              "api-reference/auth/resend-verification",
+              "api-reference/auth/login",
+              "api-reference/auth/refresh",
+              "api-reference/auth/logout",
+              "api-reference/auth/unlock/request-unlock",
+              "api-reference/auth/unlock/confirm-unlock",
+              "api-reference/auth/password/forgot-password",
+              "api-reference/auth/password/verify-reset-code",
+              "api-reference/auth/password/reset-password",
+              "api-reference/auth/password/change-password"
+            ]
+          },
+          {
+            "group": "Profile",
+            "icon": "user",
+            "pages": [
+              "api-reference/auth/profile/me",
+              "api-reference/auth/profile/sessions",
+              "api-reference/auth/profile/revoke-session"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

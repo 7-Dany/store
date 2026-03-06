@@ -1,0 +1,122 @@
+---
+title: "Registration Flow"
+description: "How to register a new account, verify the email address, and handle the resend path."
+---
+
+Creating an account takes two API calls across two UI screens. This guide covers the full sequence, including what to do when the verification email doesn't arrive.
+
+---
+
+## Overview
+
+```
+POST /register         →  account created, OTP sent to email
+POST /verify-email     →  email + code  →  200 (account active)
+POST /login            →  sign in
+```
+
+The account cannot be used to log in until the email address is verified. A 6-digit OTP with a configurable TTL (default 10 minutes) is sent to the address at registration.
+
+---
+
+## Full sequence
+
+<Steps>
+  <Step title="POST /register — Create the account">
+     Send display name, email, and password. The server creates the account, generates a verification OTP, and dispatches it to the provided address.
+
+    ```json Request
+    {
+      "display_name": "Alice",
+      "email": "alice@example.com",
+      "password": "P@ssw0rd1!"
+    }
+    ```
+
+    ```json Response — 201
+    {
+      "message": "registration successful, please check your email"
+    }
+    ```
+
+    Show the message and advance to screen 2. The account exists but `email_verified = false` — the user cannot log in yet.
+
+    <Warning>
+      If the response is `503 mail_delivery_failed`, the account was created but the email could not be sent. Do not show an error — direct the user to screen 2 and tell them to use the resend option if no code arrives.
+    </Warning>
+  </Step>
+
+  <Step title="POST /verify-email — Submit the OTP">
+    The user enters the 6-digit code from their inbox. Submit it together with the email address.
+
+    ```json Request
+    {
+      "email": "alice@example.com",
+      "code": "482910"
+    }
+    ```
+
+    ```json Response — 200
+    {
+      "message": "email verified successfully"
+    }
+    ```
+
+    The account is now fully active. Redirect the user to login or sign them in automatically.
+
+    <Note>
+      This endpoint is idempotent — calling it again after a successful verification returns the same `200`. It is safe to retry without side effects.
+    </Note>
+  </Step>
+
+  <Step title="POST /login — Sign in">
+    The verified account can now authenticate normally.
+
+    ```json Request
+    {
+      "identifier": "alice@example.com",
+      "password": "P@ssw0rd1!"
+    }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Resend path
+
+If the verification email doesn't arrive, or the OTP expires, the user can request a fresh code via [`POST /resend-verification`](/api-reference/auth/resend-verification). This invalidates any outstanding unused tokens and sends a new one.
+
+```json Request
+{
+  "email": "alice@example.com"
+}
+```
+
+```json Response — 202
+{
+  "message": "if that email is registered and unverified, a new code has been sent"
+}
+```
+
+The response is always `202` — display the message as-is. A **60-second cooldown** between resend requests is enforced server-side; a second request within the window is silently suppressed (the existing token stays valid) but the response is still `202`.
+
+---
+
+## Error handling
+
+| Screen | Response | Cause | Action |
+|---|---|---|---|
+| 1 | `409 email_taken` | Email already registered | Show "account already exists", offer login link |
+| 1 | `422 validation_error` | Invalid field | Show inline field error |
+| 1 | `503 mail_delivery_failed` | Account created, email not sent | Advance to screen 2, offer resend |
+| 2 | `422 validation_error` | Wrong code, expired, already used, or no token | Show "incorrect code", offer resend |
+| 2 | `429 too_many_attempts` | OTP attempt ceiling reached — code locked | Show resend button to issue a fresh code |
+| 2 | `429 rate_limited` | IP limit exceeded | Show `Retry-After` countdown |
+| 2 | `423 account_locked` | Admin lock set after token was issued | Direct to support |
+
+---
+
+## Email normalisation
+
+Email addresses are lowercased and IDNA-normalised before storage. Registering with `Alice@EXAMPLE.COM` and `alice@example.com` refers to the same address — the second registration will return `409 email_taken`.

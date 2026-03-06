@@ -1,0 +1,89 @@
+---
+title: "Resend Verification"
+description: "Issues a new email verification OTP, invalidating any previously unused tokens for the account."
+api: "POST http://localhost:8080/api/v1/auth/resend-verification"
+---
+
+<ParamField body="email" type="string" required>
+  The email address associated with the unverified account. Normalised to lowercase before lookup.
+</ParamField>
+
+## Behaviour
+
+This endpoint always returns `202 Accepted` regardless of whether the email is registered, already verified, locked, or within a cooldown window. This is intentional — the uniform response prevents account enumeration.
+
+If a token was issued recently a cooldown window suppresses the new issuance silently. The existing token remains valid for its original TTL.
+
+All prior unused tokens for the account are invalidated before the new one is created.
+
+## Rate Limiting
+
+**3 requests per 10 minutes per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "email": "alice@example.com"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 202
+{
+  "message": "if that email is registered and unverified, a new code has been sent"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "email is required"
+}
+```
+
+```json 429
+{
+  "code": "rate_limited",
+  "message": "too many requests"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="202 — Accepted">
+    The request was accepted. If the email belongs to an unverified account that is not locked and not within the resend cooldown window, a new code has been sent. In all other cases (unknown email, already verified, locked, within cooldown) the response is identical — no hint is given about the account's state.
+
+    ```json
+    {
+      "message": "if that email is registered and unverified, a new code has been sent"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    The request body failed structural validation before any account lookup was attempted. This is the only response that confirms something went wrong on the client side.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "email is required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded the rate limit of 3 requests per 10 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "rate_limited",
+      "message": "too many requests"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,137 @@
+---
+title: "Session Lifecycle"
+description: "How to sign in, keep a session alive with token rotation, and sign out — including how token reuse detection works."
+---
+
+Every authenticated session begins with a login, is kept alive by rotating refresh tokens, and ends with an explicit logout or natural expiry. This guide covers the complete lifecycle, the token pair model, and how to handle the security events that can terminate a session unexpectedly.
+
+---
+
+## Token model
+
+A successful login returns two tokens:
+
+| Token | Delivered via | TTL | Purpose |
+|---|---|---|---|
+| `access_token` | JSON body | 15 minutes | Sent as `Authorization: Bearer <token>` on protected endpoints |
+| `refresh_token` | HttpOnly cookie + JSON body | 30 days | Sent to [`POST /refresh`](/api-reference/auth/refresh) to obtain a new token pair |
+
+Browser clients should rely on the cookie for the refresh token — the browser sends it automatically and it is inaccessible to JavaScript. Native and server-side clients must read the token from the body and set the `Cookie: refresh_token=<token>` header on each refresh call manually.
+
+---
+
+## Full sequence
+
+<Steps>
+  <Step title="POST /login — Authenticate">
+    <a href="/api-reference/auth/login"><Icon icon="arrow-up-right-from-square" /></a> Submit the user's email (or username) and password. On success you receive a short-lived access token in the body and a long-lived refresh token both in the body and as an `HttpOnly` cookie.
+
+    ```json Request
+    {
+      "identifier": "alice@example.com",
+      "password": "P@ssw0rd1!"
+    }
+    ```
+
+    ```json Response — 200
+    {
+      "access_token": "eyJhbGci...",
+      "refresh_token": "eyJhbGci...",
+      "refresh_expiry": "2026-04-04T19:15:35Z",
+      "expires_in": 900
+    }
+    ```
+
+    Store the access token for use in `Authorization` headers. The refresh token cookie is set automatically in browsers.
+
+    <Note>
+      `expires_in` is the access token TTL in seconds (900 = 15 minutes). Use it to schedule a proactive refresh before the token expires rather than waiting for a `401`.
+    </Note>
+  </Step>
+
+  <Step title="POST /refresh — Rotate the token pair">
+    When the access token is about to expire (or has already returned `401`), call this endpoint. No request body is needed — the refresh token is read from the `refresh_token` cookie.
+
+    The old refresh token is **atomically revoked** and a new token pair is issued. Treat the new tokens exactly like the originals from step 1.
+
+    ```json Response — 200
+    {
+      "access_token": "eyJhbGci...",
+      "refresh_token": "eyJhbGci...",
+      "refresh_expiry": "2026-04-04T19:15:35Z",
+      "expires_in": 900
+    }
+    ```
+
+    <Warning>
+      Each refresh token is **single-use**. Presenting an already-rotated token triggers reuse detection and immediately revokes the entire token family — see below.
+    </Warning>
+  </Step>
+
+  <Step title="POST /logout — End the session">
+     Send the refresh token cookie and the current `Authorization: Bearer` header. The refresh token is revoked, the session is ended, and the access token is added to the blocklist for its remaining TTL.
+
+    ```bash curl example
+    curl --request POST \
+      --url http://localhost:8080/api/v1/auth/logout \
+      --header "Cookie: refresh_token=<token>" \
+      --header "Authorization: Bearer <access_token>"
+    ```
+
+    ```json Response — 204
+    // 204 No Content — empty body
+    ```
+
+    The `refresh_token` cookie is cleared in the response. Logout is **always `204`** — a missing or expired cookie, malformed token, or internal error all return the same `204`. It is safe to fire-and-forget.
+
+    <Note>
+      The `Authorization` header is optional but strongly recommended. Without it the access token remains valid until its natural 15-minute expiry, even after the session is revoked.
+    </Note>
+  </Step>
+</Steps>
+
+---
+
+## Token reuse detection
+
+If a refresh token that has already been rotated is presented again, the server treats this as a potential theft event:
+
+1. The entire **token family** is immediately revoked — including the legitimately-rotated successor token.
+2. The response is `401 token_reuse_detected` and the refresh cookie is cleared.
+3. The user must re-authenticate from scratch.
+
+```json Response — 401
+{
+  "code": "token_reuse_detected",
+  "message": "refresh token has already been used"
+}
+```
+
+This means if an attacker steals a refresh token and rotates it before the legitimate client does, the legitimate client's next refresh will also be rejected. The user will see a `401` and be prompted to log in again — which is the correct outcome, because their token family is compromised.
+
+**What causes false positives?** Firing two concurrent [`POST /refresh`](/api-reference/auth/refresh) requests with the same token (e.g. a race condition in a tab-switching scenario) will trigger this. Implement a mutex or in-flight deduplication so only one refresh runs at a time.
+
+---
+
+## Error handling
+
+| Call | Response | Cause | Action |
+|---|---|---|---|
+| [POST /login](/api-reference/auth/login) | `401 invalid_credentials` | Wrong password or unknown email | Show generic "incorrect email or password" |
+| [POST /login](/api-reference/auth/login) | `403 email_not_verified` | Account not verified | Direct to verification screen |
+| [POST /login](/api-reference/auth/login) | `403 account_inactive` | Account suspended | Direct to support |
+| [POST /login](/api-reference/auth/login) | `423 account_locked` | Admin lock | Direct to unlock flow or support |
+| [POST /login](/api-reference/auth/login) | `429 login_locked` | 10 consecutive failed logins | Show `Retry-After`, offer unlock flow |
+| [POST /login](/api-reference/auth/login) | `429 rate_limited` | IP limit exceeded | Show `Retry-After` |
+| [POST /refresh](/api-reference/auth/refresh) | `401 missing_token` | No cookie present | Redirect to login |
+| [POST /refresh](/api-reference/auth/refresh) | `401 invalid_token` | JWT invalid, malformed, or expired | Redirect to login |
+| [POST /refresh](/api-reference/auth/refresh) | `401 token_reuse_detected` | Token already rotated — family revoked | Clear local tokens, redirect to login |
+| [POST /refresh](/api-reference/auth/refresh) | `403 account_inactive` | Account suspended after login | Clear tokens, redirect to login |
+| [POST /refresh](/api-reference/auth/refresh) | `423 account_locked` | Account locked after login | Clear tokens, redirect unlock flow |
+| [POST /logout](/api-reference/auth/logout) | any non-`429` | — | Always treat as success, clear local tokens |
+
+---
+
+## Per-device scope
+
+Each login creates an independent session. Logging out on one device does not affect sessions on other devices. This is intentional — use `DELETE /api/v1/auth/sessions/{id}` to revoke a specific session remotely, or use [`POST /change-password`](/api-reference/auth/password/change-password) to revoke all sessions at once.

@@ -1,0 +1,117 @@
+---
+title: "Verify Email"
+description: "Confirms ownership of the registered email address using the 6-digit OTP sent at registration."
+api: "POST http://localhost:8080/api/v1/auth/verify-email"
+---
+
+<ParamField body="email" type="string" required>
+  The email address to verify. Normalised to lowercase before lookup.
+</ParamField>
+
+<ParamField body="code" type="string" required>
+  The 6-digit numeric OTP sent to your email address after registration.
+
+  <Expandable title="constraints">
+    - Exactly 6 digits
+    - Digits only — no letters or symbols
+  </Expandable>
+</ParamField>
+
+## Behaviour
+
+Submitting the correct OTP marks the account as verified and consumes the token so it cannot be replayed. If the account is already verified the endpoint returns `200` with a distinct message — it is safe to call more than once.
+
+Wrong codes are tracked per-token. Once the attempt ceiling is reached the token is permanently locked and any further submission — including a correct code — returns `429`. A new OTP must be requested via `POST /resend-verification`.
+
+An exponential backoff gate operates independently per IP. If the IP has accumulated enough failures it will be blocked before the request reaches the database.
+
+## Rate Limiting
+
+**5 requests per 10 minutes per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "email": "alice@example.com",
+  "code": "482910"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "message": "email verified successfully"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "invalid or expired verification code"
+}
+```
+
+```json 423
+{
+  "code": "account_locked",
+  "message": "this account has been locked"
+}
+```
+
+```json 429
+{
+  "code": "too_many_attempts",
+  "message": "too many incorrect attempts, please request a new code"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — Success">
+    The OTP was correct. The account is now verified and can be used to log in. The token is consumed and cannot be replayed. If the account was already verified the response is identical — the endpoint is safe to call more than once.
+
+    ```json
+    {
+      "message": "email verified successfully"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    The OTP did not match, the token has expired, or the token has already been used. The response is intentionally identical for all three cases — the server does not reveal which condition applied. One or more fields may also have failed structural validation before any token lookup was attempted (e.g. missing email, code not exactly 6 digits).
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "invalid or expired verification code"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="423 — Account Locked">
+    The account has been administratively locked and cannot be verified. Contact support or use `POST /request-unlock` if the unlock flow is available to you.
+
+    ```json
+    {
+      "code": "account_locked",
+      "message": "this account has been locked"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Too Many Attempts / Rate Limited">
+    Returned for two distinct reasons. The OTP has received too many incorrect submissions and the token is now permanently locked — request a fresh code via `POST /resend-verification`. Alternatively, the IP address has exceeded the endpoint rate limit or triggered the exponential backoff gate. Check the `Retry-After` response header in all cases.
+
+    ```json
+    {
+      "code": "too_many_attempts",
+      "message": "too many incorrect attempts, please request a new code"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

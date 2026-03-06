@@ -1,0 +1,37 @@
+---
+title: "Guides"
+description: "End-to-end implementation guides for common Store API flows."
+---
+
+The API reference documents individual endpoints. Guides document the **flows** — the sequences of calls, the state you need to carry between them, and the error cases that send a user back to an earlier screen.
+
+<CardGroup cols={2}>
+  <Card
+    title="Registration Flow"
+    icon="user-plus"
+    href="/guides/auth/registration-flow"
+  >
+    Register an account, verify the email address, and handle the resend and cooldown paths.
+  </Card>
+  <Card
+    title="Session Lifecycle"
+    icon="arrows-rotate"
+    href="/guides/auth/session-lifecycle"
+  >
+    Sign in, keep a session alive with token rotation, and sign out — including token reuse detection.
+  </Card>
+  <Card
+    title="Account Unlock Flow"
+    icon="lock-open"
+    href="/guides/auth/account-unlock-flow"
+  >
+    Clear a login lockout with the two-step OTP unlock flow and shared rate limit behaviour.
+  </Card>
+  <Card
+    title="Password Reset Flow"
+    icon="key"
+    href="/guides/auth/password-reset-flow"
+  >
+    Walk a user through forgot password, OTP verification, grant token, and new password in three screens.
+  </Card>
+</CardGroup>

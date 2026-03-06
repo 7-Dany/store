@@ -1,6 +1,6 @@
 # Store Backend
 
-Go REST API for an e-commerce store. Handles authentication, session management, and account lifecycle (register, verify email, reset password, unlock account).
+[Go REST API for an e-commerce store](https://store-e032ba24.mintlify.app/guides/overview). Handles authentication, session management, and account lifecycle (register, verify email, reset password, unlock account) .
 
 ## Stack
 

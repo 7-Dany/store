@@ -1,0 +1,823 @@
+{
+  "info": {
+    "_postman_id": "auth-revoke-session-e2e",
+    "name": "Auth – DELETE /sessions/{id}",
+    "description": "E2E tests for DELETE /api/v1/auth/sessions/{id}.\n\nFolders:\n  1. setup          — register → verify-email → login (device A)\n  2. happy-path\n       revoke-other — device A revokes device B; confirms session gone + /refresh dead\n       revoke-self  — device C revokes its own session; confirms /refresh dead\n  3. rate-limiting  — exhaust rsess:ip: (5 slots) → 6th → 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.'+((n>>16)&0xff)+'.'+((n>>8)&0xff)+'.'+(n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Register, verify email (via Gmail API), and log in to obtain an access token for Revoke tests.",
+      "item": [
+        {
+          "name": "POST /register → 201",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "pm.collectionVariables.set('rev_email', email);",
+                  "pm.collectionVariables.set('rev_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "// Gmail OTP fetch",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set'); return; }",
+                  "console.log('[INFO] Waiting 8 s for verification email...');",
+                  "const start = Date.now(); while (Date.now() - start < 8000) {}",
+                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "pm.sendRequest({url:'https://gmail.googleapis.com/gmail/v1/users/me/messages?q='+query+'&maxResults=3',method:'GET',header:{Authorization:'Bearer '+token}},(err,res)=>{",
+                  "    if(err||res.code===401){console.error('[ERROR] Gmail list failed');return;}",
+                  "    const msgs=res.json().messages;",
+                  "    if(!msgs||!msgs.length){console.warn('[WARN] No email found');return;}",
+                  "    pm.sendRequest({url:'https://gmail.googleapis.com/gmail/v1/users/me/messages/'+msgs[0].id+'?format=full',method:'GET',header:{Authorization:'Bearer '+token}},(e2,r2)=>{",
+                  "        if(e2){console.error('[ERROR] Gmail fetch failed');return;}",
+                  "        const msg=r2.json(); let body='';",
+                  "        const parts=msg.payload&&msg.payload.parts;",
+                  "        if(parts&&parts.length){const p=parts.find(x=>x.mimeType==='text/plain')||parts.find(x=>x.mimeType==='text/html');if(p&&p.body&&p.body.data)body=atob(p.body.data.replace(/-/g,'+').replace(/_/g,'/'))}",
+                  "        else if(msg.payload&&msg.payload.body&&msg.payload.body.data)body=atob(msg.payload.body.data.replace(/-/g,'+').replace(/_/g,'/'));",
+                  "        if(!body){console.warn('[WARN] Could not decode body');return;}",
+                  "        const match=body.match(/\\b(\\d{6})\\b/);",
+                  "        if(!match){console.warn('[WARN] No OTP found');return;}",
+                  "        pm.collectionVariables.set('rev_code', match[1]);",
+                  "        console.log('[INFO] OTP stored:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\":\"RevokeUser\",\"email\":\"{{rev_email}}\",\"password\":\"{{rev_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('rev_code');",
+                  "if (!code) { console.error('[ERROR] OTP not set — Gmail fetch did not complete. Check gmail_access_token and --delay-request >= 8000.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"{{rev_email}}\",\"code\":\"{{rev_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (store access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('rev_access_token', body.access_token);",
+                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                  "const m = sc.match(/refresh_token=([^;]+)/);",
+                  "if (m) { pm.collectionVariables.set('rev_refresh_token', m[1]); }",
+                  "else { console.error('[ERROR] Could not extract refresh_token from Set-Cookie.'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\":\"{{rev_email}}\",\"password\":\"{{rev_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path",
+      "description": "Two scenarios that require cross-endpoint orchestration — impossible to cover with a single\nhandler or store test:\n\n  revoke-other:    device A revokes device B's session → 204;\n                   GET /sessions confirms B is gone;\n                   POST /refresh with B's token → 401 token_reuse_detected.\n\n  revoke-self:     device C revokes its own current session → 204;\n                   POST /refresh with C's token → 401 token_reuse_detected.\n\nNot covered here (internal tests):\n  • ended_at, token revocation, audit row  — store_test.go TestRevokeSessionTx_Integration\n  • Non-existent session → 404             — handler_test.go TestHandler_RevokeSession\n  • Invalid UUID → 422 / empty id → 422    — handler_test.go TestHandler_RevokeSession\n  • Missing/expired/tampered token → 401   — handler_test.go TestHandler_RevokeSession\n  • IDOR (other user → 404)                — store_test.go .../wrong_owner_returns_ErrSessionNotFound\n                                             + handler_test.go/session_not_found_returns_404\n                                             (full E2E IDOR needs two verified accounts)",
+      "item": [
+        {
+          "name": "revoke-other",
+          "description": "Login device B, call GET /sessions from device A to grab B's session ID, DELETE it, confirm it's gone and B's refresh token is dead.",
+          "item": [
+            {
+              "name": "POST /login device B → 200",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                      "pm.collectionVariables.set('rev_access_token_b', pm.response.json().access_token);",
+                      "const m = (pm.response.headers.get('Set-Cookie')||'').match(/refresh_token=([^;]+)/);",
+                      "if (m) pm.collectionVariables.set('rev_refresh_token_b', m[1]);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-Forwarded-For",
+                    "value": "{{_xff}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"identifier\":\"{{rev_email}}\",\"password\":\"{{rev_password}}\"}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/login",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "auth", "login"]
+                }
+              }
+            },
+            {
+              "name": "GET /sessions → 200 (extract device B session ID)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                      "const others = pm.response.json().sessions.filter(s => !s.is_current);",
+                      "pm.test('non-current session found (device B)', () => pm.expect(others).to.have.lengthOf.at.least(1));",
+                      "if (others.length) {",
+                      "    pm.collectionVariables.set('rev_session_id_b', others[0].id);",
+                      "    console.log('[INFO] Device B session ID:', others[0].id);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{rev_access_token}}"
+                  },
+                  {
+                    "key": "X-Forwarded-For",
+                    "value": "{{_xff}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/sessions",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "auth", "sessions"]
+                }
+              }
+            },
+            {
+              "name": "DELETE /sessions/{{rev_session_id_b}} → 204",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (!pm.collectionVariables.get('rev_session_id_b')) {",
+                      "    console.error('[ERROR] rev_session_id_b not set'); }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                      "pm.test('body is empty',   () => pm.expect(pm.response.text()).to.be.empty);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{rev_access_token}}"
+                  },
+                  {
+                    "key": "X-Forwarded-For",
+                    "value": "{{_xff}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/sessions/{{rev_session_id_b}}",
+                  "host": ["{{base_url}}"],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "sessions",
+                    "{{rev_session_id_b}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "GET /sessions → 200 (device B session absent)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                      "const ids = pm.response.json().sessions.map(s => s.id);",
+                      "const revokedID = pm.collectionVariables.get('rev_session_id_b');",
+                      "pm.test('revoked session absent from list', () => pm.expect(ids).to.not.include(revokedID));",
+                      "pm.test('only device A session remains (is_current=true)', () => {",
+                      "    pm.expect(pm.response.json().sessions).to.have.lengthOf(1);",
+                      "    pm.expect(pm.response.json().sessions[0].is_current).to.be.true;",
+                      "});"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{rev_access_token}}"
+                  },
+                  {
+                    "key": "X-Forwarded-For",
+                    "value": "{{_xff}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/sessions",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "auth", "sessions"]
+                }
+              }
+            },
+            {
+              "name": "POST /refresh device B → 401 (token dead after session revocation)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// RevokeSessionTx marks all refresh tokens for the session as revoked.",
+                      "// POST /refresh sees revoked_at IS NOT NULL → token_reuse_detected.",
+                      "// This cross-endpoint check confirms the wiring between DELETE /sessions and /refresh.",
+                      "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                      "pm.test('code is token_reuse_detected', () => pm.expect(pm.response.json().code).to.eql('token_reuse_detected'));"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-Forwarded-For",
+                    "value": "{{_xff}}"
+                  },
+                  {
+                    "key": "Cookie",
+                    "value": "refresh_token={{rev_refresh_token_b}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/refresh",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "auth", "refresh"]
+                }
+              }
+            }
+          ]
+        },
+        {
+          "name": "revoke-self",
+          "description": "Login device C, find its own is_current session via GET /sessions, delete it, then confirm /refresh → 401.",
+          "item": [
+            {
+              "name": "POST /login device C → 200",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                      "pm.collectionVariables.set('rev_access_token_c', pm.response.json().access_token);",
+                      "const m = (pm.response.headers.get('Set-Cookie')||'').match(/refresh_token=([^;]+)/);",
+                      "if (m) pm.collectionVariables.set('rev_refresh_token_c', m[1]);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "X-Forwarded-For",
+                    "value": "{{_xff}}"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"identifier\":\"{{rev_email}}\",\"password\":\"{{rev_password}}\"}",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  }
+                },
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/login",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "auth", "login"]
+                }
+              }
+            },
+            {
+              "name": "GET /sessions (device C JWT) → 200 (extract own session ID)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                      "const current = pm.response.json().sessions.find(s => s.is_current);",
+                      "pm.test('is_current session found', () => pm.expect(current).to.not.be.undefined);",
+                      "if (current) {",
+                      "    pm.collectionVariables.set('rev_session_id_c', current.id);",
+                      "    console.log('[INFO] Device C session ID:', current.id);",
+                      "}"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "GET",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{rev_access_token_c}}"
+                  },
+                  {
+                    "key": "X-Forwarded-For",
+                    "value": "{{_xff}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/sessions",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "auth", "sessions"]
+                }
+              }
+            },
+            {
+              "name": "DELETE /sessions/{{rev_session_id_c}} (device C revokes itself) → 204",
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "if (!pm.collectionVariables.get('rev_session_id_c')) {",
+                      "    console.error('[ERROR] rev_session_id_c not set'); }"
+                    ]
+                  }
+                },
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                      "pm.test('body is empty',   () => pm.expect(pm.response.text()).to.be.empty);"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "DELETE",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{rev_access_token_c}}"
+                  },
+                  {
+                    "key": "X-Forwarded-For",
+                    "value": "{{_xff}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/sessions/{{rev_session_id_c}}",
+                  "host": ["{{base_url}}"],
+                  "path": [
+                    "api",
+                    "v1",
+                    "auth",
+                    "sessions",
+                    "{{rev_session_id_c}}"
+                  ]
+                }
+              }
+            },
+            {
+              "name": "POST /refresh device C → 401 (token dead after self-revoke)",
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                      "pm.test('code is token_reuse_detected', () => pm.expect(pm.response.json().code).to.eql('token_reuse_detected'));"
+                    ]
+                  }
+                }
+              ],
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-Forwarded-For",
+                    "value": "{{_xff}}"
+                  },
+                  {
+                    "key": "Cookie",
+                    "value": "refresh_token={{rev_refresh_token_c}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/v1/auth/refresh",
+                  "host": ["{{base_url}}"],
+                  "path": ["api", "v1", "auth", "refresh"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting",
+      "description": "rsess:ip: limiter — burst=3, rate=3/15min (≈0.0033 t/s).\nWarmup requests use a non-existent UUID (00000000-…-0001): JWT auth passes,\nlimiter fires (slot consumed), handler returns 404. 4th → 429, Retry-After=300.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": ["pm.collectionVariables.set('_xff', '127.0.0.1');"]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "warmup 1/3 — consume rsess:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (rsess:ip: slot 1/3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{rev_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/sessions/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions",
+                "00000000-0000-0000-0000-000000000001"
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/3 — consume rsess:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (rsess:ip: slot 2/3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{rev_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/sessions/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions",
+                "00000000-0000-0000-0000-000000000001"
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/3 — consume rsess:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (rsess:ip: slot 3/3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{rev_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/sessions/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions",
+                "00000000-0000-0000-0000-000000000001"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /api/v1/auth/sessions/00000000-0000-0000-0000-000000000001: 4th request → 429 (rsess:ip: exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('Retry-After is 300 (ceil(1/(3/900))=300 s)', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('300');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{rev_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/sessions/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "sessions",
+                "00000000-0000-0000-0000-000000000001"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter for unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current XFF. Set per-request by collection prerequest; overridden to 127.0.0.1 by rate-limiting folder."
+    },
+    {
+      "key": "rev_email",
+      "value": ""
+    },
+    {
+      "key": "rev_password",
+      "value": ""
+    },
+    {
+      "key": "rev_code",
+      "value": ""
+    },
+    {
+      "key": "rev_access_token",
+      "value": "",
+      "description": "Device A token — used as primary token and for rate-limiting warmup."
+    },
+    {
+      "key": "rev_refresh_token",
+      "value": ""
+    },
+    {
+      "key": "rev_access_token_b",
+      "value": ""
+    },
+    {
+      "key": "rev_refresh_token_b",
+      "value": ""
+    },
+    {
+      "key": "rev_session_id_b",
+      "value": "",
+      "description": "Extracted from GET /sessions (revoke-other step)."
+    },
+    {
+      "key": "rev_access_token_c",
+      "value": ""
+    },
+    {
+      "key": "rev_refresh_token_c",
+      "value": ""
+    },
+    {
+      "key": "rev_session_id_c",
+      "value": "",
+      "description": "Extracted from GET /sessions (revoke-self step)."
+    }
+  ]
+}

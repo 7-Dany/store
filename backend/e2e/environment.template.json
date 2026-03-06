@@ -1,0 +1,28 @@
+{
+  "id": "store-e2e-environment",
+  "name": "Store Backend – E2E",
+  "_postman_variable_scope": "environment",
+  "values": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "default",
+      "enabled": true,
+      "description": "Base URL of the running API server. Change to https://... for staging."
+    },
+    {
+      "key": "gmail_test_email",
+      "value": "",
+      "type": "default",
+      "enabled": true,
+      "description": "The Gmail address that receives SMTP verification emails from the test server. Must match SMTP_USERNAME in .env. Used by the verify-email setup folder to register the test account so the OTP actually lands in the inbox."
+    },
+    {
+      "key": "gmail_access_token",
+      "value": "",
+      "type": "secret",
+      "enabled": true,
+      "description": "OAuth 2.0 access token for the Gmail API. Used by the verify-email setup folder to fetch the OTP from the inbox. Generate at https://developers.google.com/oauthplayground — scope: https://www.googleapis.com/auth/gmail.readonly. Expires after 1 hour; re-generate before each run. Never commit a real token."
+    }
+  ]
+}

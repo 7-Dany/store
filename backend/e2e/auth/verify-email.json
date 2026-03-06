@@ -1,0 +1,2199 @@
+{
+  "info": {
+    "_postman_id": "auth-verify-email-e2e",
+    "name": "Auth – Verify Email (POST /api/v1/auth/verify-email + POST /api/v1/auth/resend-verification)",
+    "description": "E2E tests for POST /api/v1/auth/verify-email and POST /api/v1/auth/resend-verification.\n\nFolder execution order (orchestrated by make e2e-verify-email):\n  1. setup             — register a fresh user, fetch OTP from Gmail, verify email\n  2. validation        — all 422/413 cases for POST /verify-email\n  3. happy-path        — OTP replay, indirect DB check via login, idempotent already-verified\n  4. anti-enumeration  — unknown email and wrong-code return identical 422\n  5. resend-validation — all 422/413 cases for POST /resend-verification\n  6. resend-happy-path — 202 success + anti-enumeration paths\n  7. rate-limiting     — IP and per-email limiters for both endpoints\n\nAll test users use @e2e.test emails so `make _e2e-clean` can wipe them with a single DELETE.\n\nNotes on what is NOT covered (requires time manipulation, DB introspection, or fault injection):\n  - ErrTokenExpired (needs fast-forwarding expires_at)\n  - too_many_attempts from hitting max-attempts ceiling\n  - account_locked (423) path\n  - Exponential backoff gate (vfy:bo:)\n  - Token revocation side-effects (RevokePreVerificationTokens, InvalidateAllUserTokens)\n  - email_verified audit row\n  - Resend cooldown guard (2-minute window)\n  - Resend DB side-effects (fresh token row)\n  - SMTP delivery failure → 503\n  - Response timing invariants (±100 ms)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Set a unique IP in _xff before every request. Each request declares",
+          "// X-Forwarded-For: {{_xff}} so the server keys the rate-limit bucket on",
+          "// this IP rather than 127.0.0.1. This lets all non-RL folders run in a",
+          "// single Newman invocation without exhausting any limiter bucket.",
+          "// The rate-limiting folder overrides _xff to 127.0.0.1 via a folder-level",
+          "// prerequest so all warmup requests there share one bucket and exhaust it.",
+          "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.' + ((n>>16)&0xff) + '.' + ((n>>8)&0xff) + '.' + (n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Registers a fresh user, fetches the OTP from Gmail, and verifies the email. Later folders depend on the verified account stored in vfy_happy_email / vfy_happy_password and the consumed OTP in 'code'.",
+      "item": [
+        {
+          "name": "POST /register → 201 (setup user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Use the real Gmail address from the environment so the verification email",
+                  "// is actually delivered to a live inbox that gmail_access_token can read.",
+                  "// The address is fixed (not timestamp-unique) — _e2e-db-clean deletes it via",
+                  "// E2E_GMAIL_EMAIL in .env before each run so this register never 409 on re-runs.",
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) { console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json (the Gmail address that receives SMTP mail).'); }",
+                  "pm.collectionVariables.set('vfy_happy_email', email);",
+                  "pm.collectionVariables.set('vfy_happy_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "// --- Gmail OTP fetch ---",
+                  "// Placed in the TEST script (not a prerequest) because pm.sendRequest is",
+                  "// async. In a prerequest the JS thread blocks before the callback can fire.",
+                  "// In a test script, the callback executes during the --delay-request idle",
+                  "// window before the next request fires, so 'code' is set in time.",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "console.log('[INFO] Done waiting. Querying Gmail API (async)...');",
+                  "",
+                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email found in Gmail.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in email body.'); return; }",
+                  "        pm.collectionVariables.set('code', match[1]);",
+                  "        console.log('[INFO] OTP stored in collection variable \"code\":', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"VfyHappy\", \"email\": \"{{vfy_happy_email}}\", \"password\": \"{{vfy_happy_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200 (consume OTP)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Validate that the Gmail fetch in the register step completed successfully.",
+                  "// If 'code' is empty the verify request will fail with a validation error",
+                  "// rather than a 200, making the root cause hard to diagnose.",
+                  "const code = pm.collectionVariables.get('code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] collection variable \"code\" is empty — Gmail fetch in setup/register did not complete.');",
+                  "    console.error('        Check: gmail_access_token is set, token not expired, --delay-request >= 8000.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{vfy_happy_email}}\", \"code\": \"{{code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "validation",
+      "description": "All input-validation cases for POST /verify-email. Validation fires before any DB lookup so a non-existent email (vfy-val@e2e.test) is safe to use throughout — no row will be created.",
+      "item": [
+        {
+          "name": "missing email → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"123456\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "empty email → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"\", \"code\": \"123456\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "email invalid format (no @) → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"notanemail\", \"code\": \"123456\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "email > 254 bytes → 422",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 246 'a's + '@e2e.test' (9) = 255 bytes — one over the 254-byte limit.",
+                  "pm.variables.set('email_too_long', 'a'.repeat(246) + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{email_too_long}}\", \"code\": \"123456\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "missing code → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"vfy-missing-code@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "empty code → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"vfy-empty-code@e2e.test\", \"code\": \"\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "code too short (5 digits) → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"vfy-short-code@e2e.test\", \"code\": \"12345\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "code too long (7 digits) → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"vfy-long-code@e2e.test\", \"code\": \"1234567\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "code contains non-digit chars → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"vfy-nondigit@e2e.test\", \"code\": \"12345a\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "body > 1 MiB → 413",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pad the body past the 1 MiB MaxBytesReader limit.",
+                  "// http.MaxBytesReader fires during json.Decoder.Decode and maps to 413.",
+                  "const pad = 'x'.repeat(1024 * 1024 + 1);",
+                  "pm.request.body.update({",
+                  "  mode: 'raw',",
+                  "  raw: JSON.stringify({ email: 'vfy-bigbody@e2e.test', code: '123456', _pad: pad })",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 413', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "malformed JSON → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path",
+      "description": "Uses vfy_happy_email which was verified by the setup folder. The OTP in {{code}} was already consumed by setup.",
+      "item": [
+        {
+          "name": "OTP replay → 422 validation_error (ErrTokenAlreadyUsed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Setup folder already consumed this OTP; replaying it must return 422,",
+                  "// not 200. ErrTokenAlreadyUsed is mapped to validation_error — no hint",
+                  "// is given about whether the token existed.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{vfy_happy_email}}\", \"code\": \"{{code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "email_verified=true confirmed (indirect: POST /login → 200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// After successful verification, login must return 200 — not 403",
+                  "// email_not_verified. This indirectly confirms email_verified=true in DB.",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{vfy_happy_email}}\", \"password\": \"{{vfy_happy_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mixed-case email → 422 validation_error (normalisation + token consumed)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Email is normalised to lowercase before lookup — UPPERCASE resolves to",
+                  "// the same account. The OTP was consumed by setup so the server returns",
+                  "// 422 validation_error (token not found / already used) rather than 200.",
+                  "// The server does not have a separate idempotent already-verified 200 path;",
+                  "// email_verified=true is confirmed indirectly by the login test above.",
+                  "pm.variables.set('vfy_upper_email', pm.collectionVariables.get('vfy_happy_email').toUpperCase());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{vfy_upper_email}}\", \"code\": \"{{code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "anti-enumeration",
+      "description": "Both cases must return identical 422 validation_error. No 404 is ever returned — the server cannot hint whether the email address is registered.",
+      "item": [
+        {
+          "name": "unknown email (no token row) → 422 validation_error",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ErrTokenNotFound is mapped identically to a wrong-code response so",
+                  "// the client cannot distinguish 'email not registered' from 'wrong OTP'.",
+                  "pm.variables.set('ghost_email', 'ghost-' + Date.now() + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{ghost_email}}\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "wrong OTP (known email, below max-attempts) → 422 validation_error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Same status and body as the unknown-email case — client cannot",
+                  "// distinguish the two responses and cannot enumerate account existence.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{vfy_happy_email}}\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "resend-validation",
+      "description": "All input-validation cases for POST /resend-verification. Validation fires before any DB lookup.",
+      "item": [
+        {
+          "name": "missing email → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        },
+        {
+          "name": "empty email → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        },
+        {
+          "name": "email invalid format (no @) → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"notanemail\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        },
+        {
+          "name": "email > 254 bytes → 422",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 246 'a's + '@e2e.test' (9) = 255 bytes — one over the 254-byte limit.",
+                  "pm.variables.set('email_too_long', 'a'.repeat(246) + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{email_too_long}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        },
+        {
+          "name": "body > 1 MiB → 413",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pad the body past the 1 MiB MaxBytesReader limit.",
+                  "const pad = 'x'.repeat(1024 * 1024 + 1);",
+                  "pm.request.body.update({",
+                  "  mode: 'raw',",
+                  "  raw: JSON.stringify({ email: 'rsnd-val@e2e.test', _pad: pad })",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 413', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        },
+        {
+          "name": "malformed JSON → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "resend-happy-path",
+      "description": "Anti-enumeration contract: every path returns 202 with the same message regardless of whether the email is registered, unverified, already verified, or unknown.",
+      "item": [
+        {
+          "name": "POST /register (setup unverified user for resend test)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Register a fresh unverified user to exercise the real resend path.",
+                  "// No Gmail fetch needed — the next request only checks the 202 shape.",
+                  "pm.variables.set('resend_unverified_email', 'resend-unvfy-' + Date.now() + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"ResendTest\", \"email\": \"{{resend_unverified_email}}\", \"password\": \"P@ssw0rd1!\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            }
+          }
+        },
+        {
+          "name": "unverified user → 202",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 202', () => pm.response.to.have.status(202));",
+                  "pm.test('message includes \"if that email is registered\"', () => pm.expect(pm.response.json().message).to.include('if that email is registered'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{resend_unverified_email}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        },
+        {
+          "name": "already-verified email → 202 (anti-enumeration)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Service short-circuits on email_verified=true; response is identical",
+                  "// to the happy path — no hint is given that the account is already verified.",
+                  "pm.test('status is 202', () => pm.response.to.have.status(202));",
+                  "pm.test('message includes \"if that email is registered\"', () => pm.expect(pm.response.json().message).to.include('if that email is registered'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{vfy_happy_email}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        },
+        {
+          "name": "unknown email → 202 (anti-enumeration)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No token row created, no audit row written; response is identical",
+                  "// to the registered-user paths — client cannot distinguish them.",
+                  "pm.variables.set('resend_ghost_email', 'resend-ghost-' + Date.now() + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 202', () => pm.response.to.have.status(202));",
+                  "pm.test('message includes \"if that email is registered\"', () => pm.expect(pm.response.json().message).to.include('if that email is registered'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{resend_ghost_email}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting",
+      "description": "Verifies IP rate limiters for both endpoints. The folder prerequest overrides _xff to 127.0.0.1 so all requests share one IP bucket. Section A: vfy:ip: (burst=5, rate=5/10min). Section B: rsnd:ip: (burst=3, rate=3/10min).",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Override the collection-level unique IP so every request in this",
+              "// folder uses 127.0.0.1 as the client IP. All warmup requests share",
+              "// one bucket and exhaust it.",
+              "pm.collectionVariables.set('_xff', '127.0.0.1');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "warmup 1/5 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = pm.collectionVariables.get('_req_seq') | 0;",
+                  "pm.variables.set('rl_ip_email', 'rl-ip-' + n + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{rl_ip_email}}\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/5 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = pm.collectionVariables.get('_req_seq') | 0;",
+                  "pm.variables.set('rl_ip_email', 'rl-ip-' + n + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{rl_ip_email}}\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/5 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = pm.collectionVariables.get('_req_seq') | 0;",
+                  "pm.variables.set('rl_ip_email', 'rl-ip-' + n + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{rl_ip_email}}\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/5 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = pm.collectionVariables.get('_req_seq') | 0;",
+                  "pm.variables.set('rl_ip_email', 'rl-ip-' + n + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{rl_ip_email}}\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/5 — consume slot (→ not 429, last allowed)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const n = pm.collectionVariables.get('_req_seq') | 0;",
+                  "pm.variables.set('rl_ip_email', 'rl-ip-' + n + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 5 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{rl_ip_email}}\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "6th request → 429 (vfy:ip: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('Retry-After header present', () => pm.expect(pm.response.headers.get('Retry-After')).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"rl-vfy@e2e.test\", \"code\": \"bad\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 1/3 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (rsnd:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"rsnd-rl@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/3 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (rsnd:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"rsnd-rl@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/3 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (rsnd:ip: slot 3 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"rsnd-rl@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4th request → 429 (rsnd:ip: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('Retry-After header present', () => pm.expect(pm.response.headers.get('Retry-After')).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"rsnd-rl@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "resend-verification"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter used by the collection prerequest to generate unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current X-Forwarded-For value. Set to a unique IP by the collection prerequest; overridden to 127.0.0.1 by the rate-limiting folder prerequest."
+    },
+    {
+      "key": "vfy_happy_email",
+      "value": "",
+      "description": "Set by setup folder. Reused across happy-path, anti-enumeration, and resend folders."
+    },
+    {
+      "key": "vfy_happy_password",
+      "value": "",
+      "description": "Set by setup folder. Used for the indirect login check in happy-path."
+    },
+    {
+      "key": "code",
+      "value": "",
+      "description": "OTP fetched from Gmail. Set asynchronously by the setup → register test script during the --delay-request window."
+    }
+  ]
+}

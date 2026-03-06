@@ -1,0 +1,295 @@
+{
+  "info": {
+    "_postman_id": "auth-me-e2e",
+    "name": "Auth \u2013 GET /me",
+    "description": "E2E tests for GET /api/v1/auth/me.\n\nFolders:\n  1. setup          \u2014 register \u2192 verify-email \u2192 login (stores me_access_token)\n  2. happy-path     \u2014 assert all /me response fields\n  3. rate-limiting  \u2014 exhaust pme:ip: (20 slots) \u2192 21st \u2192 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.'+((n>>16)&0xff)+'.'+((n>>8)&0xff)+'.'+(n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Register, verify email (via Gmail API), and log in to obtain an access token for Me tests.",
+      "item": [
+        {
+          "name": "POST /register \u2192 201",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "pm.collectionVariables.set('me_email', email);",
+                  "pm.collectionVariables.set('me_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "// Gmail OTP fetch",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set'); return; }",
+                  "console.log('[INFO] Waiting 8 s for verification email...');",
+                  "const start = Date.now(); while (Date.now() - start < 8000) {}",
+                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "pm.sendRequest({url:'https://gmail.googleapis.com/gmail/v1/users/me/messages?q='+query+'&maxResults=3',method:'GET',header:{Authorization:'Bearer '+token}},(err,res)=>{",
+                  "    if(err||res.code===401){console.error('[ERROR] Gmail list failed');return;}",
+                  "    const msgs=res.json().messages;",
+                  "    if(!msgs||!msgs.length){console.warn('[WARN] No email found');return;}",
+                  "    pm.sendRequest({url:'https://gmail.googleapis.com/gmail/v1/users/me/messages/'+msgs[0].id+'?format=full',method:'GET',header:{Authorization:'Bearer '+token}},(e2,r2)=>{",
+                  "        if(e2){console.error('[ERROR] Gmail fetch failed');return;}",
+                  "        const msg=r2.json(); let body='';",
+                  "        const parts=msg.payload&&msg.payload.parts;",
+                  "        if(parts&&parts.length){const p=parts.find(x=>x.mimeType==='text/plain')||parts.find(x=>x.mimeType==='text/html');if(p&&p.body&&p.body.data)body=atob(p.body.data.replace(/-/g,'+').replace(/_/g,'/'))}",
+                  "        else if(msg.payload&&msg.payload.body&&msg.payload.body.data)body=atob(msg.payload.body.data.replace(/-/g,'+').replace(/_/g,'/'));",
+                  "        if(!body){console.warn('[WARN] Could not decode body');return;}",
+                  "        const match=body.match(/\\b(\\d{6})\\b/);",
+                  "        if(!match){console.warn('[WARN] No OTP found');return;}",
+                  "        pm.collectionVariables.set('me_code', match[1]);",
+                  "        console.log('[INFO] OTP stored:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\":\"MeUser\",\"email\":\"{{me_email}}\",\"password\":\"{{me_password}}\"}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email \u2192 200",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('me_code');",
+                  "if (!code) { console.error('[ERROR] OTP not set \u2014 Gmail fetch did not complete. Check gmail_access_token and --delay-request >= 8000.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 200', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"{{me_email}}\",\"code\":\"{{me_code}}\"}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "POST /login \u2192 200 (store access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('me_access_token', body.access_token);",
+                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                  "const m = sc.match(/refresh_token=([^;]+)/);",
+                  "if (m) { pm.collectionVariables.set('me_refresh_token', m[1]); }",
+                  "else { console.error('[ERROR] Could not extract refresh_token from Set-Cookie.'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\":\"{{me_email}}\",\"password\":\"{{me_password}}\"}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path",
+      "description": "Exercises GET /me against a real registered+verified user and asserts every documented field.\n\nWhy E2E:\n  \u2022 last_login_at non-null \u2014 requires a real login row in the DB; cannot be injected via fake service.\n  \u2022 avatar_url absent (omitempty) \u2014 confirms the omitempty tag survives real HTTP JSON serialisation.\n  \u2022 id UUID format \u2014 asserted here as a cheap addition to the in-flight request.\n\nNot covered here (internal tests):\n  \u2022 avatar_url omitempty unit test         \u2014 handler_test.go TestHandler_Me_AvatarURLOmittedWhenEmpty\n  \u2022 last_login_at omitempty when nil        \u2014 handler_test.go TestHandler_Me/success_nil_LastLoginAt_is_omitted_from_response\n  \u2022 Missing/expired/tampered token \u2192 401   \u2014 handler_test.go TestHandler_Me\n  \u2022 Blocklisted token \u2192 401                \u2014 session.json 'GET /me with old access_token_a \u2192 401'",
+      "item": [
+        {
+          "name": "GET /me \u2192 200 (all fields, last_login_at non-null, avatar_url absent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Content-Type is application/json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json'));",
+                  "const body = pm.response.json();",
+                  "pm.test('id is UUID format', () => pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i));",
+                  "pm.test('email matches registered address', () => pm.expect(body.email).to.eql(pm.collectionVariables.get('me_email').toLowerCase().trim()));",
+                  "pm.test('display_name present and non-empty', () => pm.expect(body.display_name).to.be.a('string').and.not.empty);",
+                  "pm.test('email_verified is true', () => pm.expect(body.email_verified).to.be.true);",
+                  "pm.test('is_active is a boolean', () => pm.expect(body.is_active).to.be.a('boolean'));",
+                  "pm.test('is_locked is false', () => pm.expect(body.is_locked).to.be.false);",
+                  "pm.test('created_at present', () => pm.expect(body.created_at).to.be.a('string').and.not.empty);",
+                  "// last_login_at must be present \u2014 setup already ran a real /login",
+                  "pm.test('last_login_at present and non-null after prior login', () => {",
+                  "    pm.expect(body).to.have.property('last_login_at');",
+                  "    pm.expect(body.last_login_at).to.be.a('string').and.not.empty;",
+                  "});",
+                  "// avatar_url must be absent for a freshly-registered user (omitempty on empty string)",
+                  "pm.test('avatar_url absent (never set, omitempty)', () => pm.expect(body).to.not.have.property('avatar_url'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{me_access_token}}"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "me"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting",
+      "description": "pme:ip: limiter \u2014 burst=20, rate=20/1min (0.3333 t/s).\nAll 20 warmup requests use the valid access_token from setup (JWT auth fires before the limiter\ninside the JWT middleware group). 21st request \u2192 429 rate_limited, Retry-After=3.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": ["pm.collectionVariables.set('_xff', '127.0.0.1');"]
+          }
+        }
+      ],
+      "item": [
+        {"name": "warmup 1/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 1/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 2/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 2/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 3/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 3/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 4/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 4/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 5/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 5/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 6/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 6/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 7/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 7/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 8/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 8/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 9/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 9/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 10/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 10/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 11/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 11/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 12/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 12/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 13/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 13/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 14/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 14/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 15/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 15/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 16/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 16/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 17/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 17/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 18/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 18/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 19/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 19/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 20/20 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 20/20)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {
+          "name": "GET /api/v1/auth/me: 21st request \u2192 429 (pme:ip: exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('Retry-After is 3 (ceil(1/(20/60))=3 s)', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('3');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{me_access_token}}"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "me"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {"key": "_req_seq", "value": "0", "description": "Auto-incremented counter for unique X-Forwarded-For IPs."},
+    {"key": "_xff", "value": "", "description": "Current XFF. Set per-request by collection prerequest; overridden to 127.0.0.1 by rate-limiting folder."},
+    {"key": "me_email", "value": "", "description": "Set by setup from gmail_test_email."},
+    {"key": "me_password", "value": "", "description": "Set by setup."},
+    {"key": "me_code", "value": "", "description": "6-digit OTP from Gmail."},
+    {"key": "me_access_token", "value": "", "description": "Access token from setup /login. Also used by rate-limiting warmup."},
+    {"key": "me_refresh_token", "value": "", "description": "Refresh token from setup /login."}
+  ]
+}

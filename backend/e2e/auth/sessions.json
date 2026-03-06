@@ -1,0 +1,451 @@
+{
+  "info": {
+    "_postman_id": "auth-sessions-e2e",
+    "name": "Auth – GET /sessions",
+    "description": "E2E tests for GET /api/v1/auth/sessions.\n\nFolders:\n  1. setup          — register → verify-email → login (device A)\n  2. happy-path     — login device B; assert sessions array + is_current flag\n  3. rate-limiting  — exhaust psess:ip: (10 slots) → 11th → 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.'+((n>>16)&0xff)+'.'+((n>>8)&0xff)+'.'+(n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Register, verify email (via Gmail API), and log in to obtain an access token for Sessions tests.",
+      "item": [
+        {
+          "name": "POST /register → 201",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "pm.collectionVariables.set('sess_email', email);",
+                  "pm.collectionVariables.set('sess_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "// Gmail OTP fetch",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set'); return; }",
+                  "console.log('[INFO] Waiting 8 s for verification email...');",
+                  "const start = Date.now(); while (Date.now() - start < 8000) {}",
+                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "pm.sendRequest({url:'https://gmail.googleapis.com/gmail/v1/users/me/messages?q='+query+'&maxResults=3',method:'GET',header:{Authorization:'Bearer '+token}},(err,res)=>{",
+                  "    if(err||res.code===401){console.error('[ERROR] Gmail list failed');return;}",
+                  "    const msgs=res.json().messages;",
+                  "    if(!msgs||!msgs.length){console.warn('[WARN] No email found');return;}",
+                  "    pm.sendRequest({url:'https://gmail.googleapis.com/gmail/v1/users/me/messages/'+msgs[0].id+'?format=full',method:'GET',header:{Authorization:'Bearer '+token}},(e2,r2)=>{",
+                  "        if(e2){console.error('[ERROR] Gmail fetch failed');return;}",
+                  "        const msg=r2.json(); let body='';",
+                  "        const parts=msg.payload&&msg.payload.parts;",
+                  "        if(parts&&parts.length){const p=parts.find(x=>x.mimeType==='text/plain')||parts.find(x=>x.mimeType==='text/html');if(p&&p.body&&p.body.data)body=atob(p.body.data.replace(/-/g,'+').replace(/_/g,'/'))}",
+                  "        else if(msg.payload&&msg.payload.body&&msg.payload.body.data)body=atob(msg.payload.body.data.replace(/-/g,'+').replace(/_/g,'/'));",
+                  "        if(!body){console.warn('[WARN] Could not decode body');return;}",
+                  "        const match=body.match(/\\b(\\d{6})\\b/);",
+                  "        if(!match){console.warn('[WARN] No OTP found');return;}",
+                  "        pm.collectionVariables.set('sess_code', match[1]);",
+                  "        console.log('[INFO] OTP stored:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\":\"SessionsUser\",\"email\":\"{{sess_email}}\",\"password\":\"{{sess_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('sess_code');",
+                  "if (!code) { console.error('[ERROR] OTP not set — Gmail fetch did not complete. Check gmail_access_token and --delay-request >= 8000.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"{{sess_email}}\",\"code\":\"{{sess_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (store access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('sess_access_token', body.access_token);",
+                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                  "const m = sc.match(/refresh_token=([^;]+)/);",
+                  "if (m) { pm.collectionVariables.set('sess_refresh_token', m[1]); }",
+                  "else { console.error('[ERROR] Could not extract refresh_token from Set-Cookie.'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\":\"{{sess_email}}\",\"password\":\"{{sess_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path",
+      "description": "Logs in on a second device (B) so there are two active sessions, then calls GET /sessions\nto verify the array shape, field presence, and the is_current flag.\n\nWhy E2E:\n  • is_current=true for the JWT used in the request — requires a real signed JWT with the\n    session-ID claim; cannot be fully replicated by the unit test's context injection.\n  • Two sessions visible — requires two real login rows in the DB.\n\nNot covered here (internal tests):\n  • Sessions ordered newest-first          — store_test.go TestGetActiveSessions_Integration\n  • Empty sessions → [] not null           — handler_test.go TestHandler_Sessions/empty_sessions_*\n  • Other users' sessions excluded         — store_test.go TestGetActiveSessions_Integration\n  • is_current flag unit logic             — handler_test.go TestHandler_Sessions/is_current_*\n  • Missing/expired/tampered token → 401   — handler_test.go TestHandler_Sessions",
+      "item": [
+        {
+          "name": "POST /login device B → 200 (second session)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('sess_access_token_b', pm.response.json().access_token);",
+                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                  "const m = sc.match(/refresh_token=([^;]+)/);",
+                  "if (m) { pm.collectionVariables.set('sess_refresh_token_b', m[1]); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\":\"{{sess_email}}\",\"password\":\"{{sess_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "GET /sessions → 200 (2 entries, is_current flag, required fields)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('sessions key present', () => pm.expect(body).to.have.property('sessions'));",
+                  "pm.test('sessions is an array', () => pm.expect(body.sessions).to.be.an('array'));",
+                  "pm.test('two active sessions (device A + B)', () => pm.expect(body.sessions).to.have.lengthOf(2));",
+                  "",
+                  "// is_current=true must match the session ID embedded in the JWT used for this request.",
+                  "// Unit test covers injected-context path; here we exercise the real signed JWT path.",
+                  "const current = body.sessions.filter(s => s.is_current === true);",
+                  "const others  = body.sessions.filter(s => s.is_current === false);",
+                  "pm.test('exactly one is_current=true (device A JWT)', () => pm.expect(current).to.have.lengthOf(1));",
+                  "pm.test('exactly one is_current=false (device B)', ()  => pm.expect(others).to.have.lengthOf(1));",
+                  "",
+                  "// Required fields on every entry.",
+                  "body.sessions.forEach((s, i) => {",
+                  "    pm.test(`session[${i}] id is UUID`, () => pm.expect(s.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i));",
+                  "    pm.test(`session[${i}] started_at present`,    () => pm.expect(s.started_at).to.be.a('string').and.not.empty);",
+                  "    pm.test(`session[${i}] last_active_at present`,() => pm.expect(s.last_active_at).to.be.a('string').and.not.empty);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sess_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/sessions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "sessions"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting",
+      "description": "psess:ip: limiter — burst=10, rate=10/1min (0.1667 t/s).\nAll 10 warmup requests use the valid access_token from setup. 11th → 429, Retry-After=6.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": ["pm.collectionVariables.set('_xff', '127.0.0.1');"]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "warmup 1/10 — consume psess:ip: slot (→ not 429)",
+          "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 1/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+        },
+        {
+          "name": "warmup 2/10 — consume psess:ip: slot (→ not 429)",
+          "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 2/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+        },
+        {
+          "name": "warmup 3/10 — consume psess:ip: slot (→ not 429)",
+          "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 3/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+        },
+        {
+          "name": "warmup 4/10 — consume psess:ip: slot (→ not 429)",
+          "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 4/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+        },
+        {
+          "name": "warmup 5/10 — consume psess:ip: slot (→ not 429)",
+          "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 5/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+        },
+        {
+          "name": "warmup 6/10 — consume psess:ip: slot (→ not 429)",
+          "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 6/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+        },
+        {
+          "name": "warmup 7/10 — consume psess:ip: slot (→ not 429)",
+          "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 7/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+        },
+        {
+          "name": "warmup 8/10 — consume psess:ip: slot (→ not 429)",
+          "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 8/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+        },
+        {
+          "name": "warmup 9/10 — consume psess:ip: slot (→ not 429)",
+          "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 9/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+        },
+        {
+          "name": "warmup 10/10 — consume psess:ip: slot (→ not 429)",
+          "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 10/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+        },
+        {
+          "name": "GET /api/v1/auth/sessions: 11th request → 429 (psess:ip: exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('Retry-After is 6 (ceil(1/(10/60))=6 s)', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('6');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sess_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/sessions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "sessions"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter for unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current XFF. Set per-request by collection prerequest; overridden to 127.0.0.1 by rate-limiting folder."
+    },
+    {
+      "key": "sess_email",
+      "value": ""
+    },
+    {
+      "key": "sess_password",
+      "value": ""
+    },
+    {
+      "key": "sess_code",
+      "value": ""
+    },
+    {
+      "key": "sess_access_token",
+      "value": "",
+      "description": "Device A access token."
+    },
+    {
+      "key": "sess_refresh_token",
+      "value": "",
+      "description": "Device A refresh token."
+    },
+    {
+      "key": "sess_access_token_b",
+      "value": "",
+      "description": "Device B access token."
+    },
+    {
+      "key": "sess_refresh_token_b",
+      "value": "",
+      "description": "Device B refresh token."
+    }
+  ]
+}

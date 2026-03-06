@@ -1,0 +1,40 @@
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: dockerfile
+    container_name: ${COMPOSE_PROJECT_NAME:-app}_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-ecommerce_dev}
+    ports:
+      - "${DB_PORT_DOCKER:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8.6-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-app}_redis
+    # requirepass enforces authentication; the password is read from .env so
+    # it is never hardcoded here. The redis-cli healthcheck passes the same
+    # password via -a so Docker can verify liveness without a separate tool.
+    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme} --save 60 1 --loglevel warning
+    ports:
+      - "${REDIS_PORT_DOCKER:-6380}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redis_data:

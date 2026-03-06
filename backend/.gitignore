@@ -1,0 +1,61 @@
+# Binaries and build output
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/bin/
+/dist/
+/build/
+
+# Project-specific compiled binary (run: git rm --cached main.exe)
+main.exe
+
+# Test artifacts
+*.test
+*.out
+coverage.out
+coverage.html
+coverage.txt
+uncovered.txt
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# Environment and secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# E2E test environment files — contain secrets (Gmail token, email addresses)
+# Copy from *.environment.template.json and fill in locally
+e2e/environment.json
+
+# Air live-reload
+tmp/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# CPU / memory profiles
+*.prof
+*.pprof
+cpu.out
+mem.out
+
+# dlv debugger
+__debug_bin*
+
+# docs for development
+docs
+rules

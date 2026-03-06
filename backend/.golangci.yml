@@ -1,0 +1,151 @@
+# golangci-lint v2 configuration for store/backend
+# Docs: https://golangci-lint.run/usage/configuration/
+# Run: make lint
+#
+# Config schema version 2 — requires golangci-lint v2+.
+
+version: "2"
+
+linters:
+  # Enable the standard preset (errcheck, govet, ineffassign, staticcheck, unused, ...)
+  # then opt in to additional linters below.
+  default: standard
+
+  enable:
+    # --- Bugs & correctness ---
+    - bodyclose       # HTTP response body must be closed
+    - contextcheck    # context must not be replaced with context.Background() mid-chain
+    - errorlint       # wrong error comparison (== instead of errors.Is) and fmt.Errorf without %w
+    - exhaustive      # missing cases in switch on enum types
+    - makezero        # make() with non-zero length used in append (off-by-one source)
+    - nilerr          # returns nil instead of the received error
+    - nilnil          # (nil, nil) return — ambiguous to callers
+    - noctx           # http.NewRequest without a context
+    - rowserrcheck    # sql.Rows.Err() not checked after iteration
+    - sqlclosecheck   # sql.Rows / sql.Stmt not closed
+    - unparam         # function parameters that always receive the same value
+
+    # --- Security ---
+    - gosec           # hardcoded creds, weak crypto, SQL injection paths, file permissions
+
+    # --- Performance ---
+    - prealloc        # slice pre-allocation opportunities in range / for loops
+
+    # --- Style & dead code ---
+    # NOTE: `unused` is already in the standard preset — covers dead functions,
+    # types, constants, and variables. No separate `deadcode` linter is needed.
+    - revive          # drop-in golint replacement: doc comments, naming, error conventions
+    - gocritic        # broad correctness + style checks
+    - godot           # exported doc comments must end with a period
+    - godox           # TODO/FIXME/HACK flags — suppressed locally, fail in CI (see lint-ci)
+
+    # govet is in the standard preset; `copylocks` analysis (mutex copy races)
+    # is enabled via settings.govet.enable-all below — no separate linter needed.
+
+  disable:
+    - depguard        # no import allowlist defined yet
+    - exhaustruct     # too noisy for large / generated structs
+    - gochecknoglobals # intentional package-level vars: sentinel errors, sync.Once
+    - gocognit        # cyclomatic complexity — revisit when codebase stabilises
+    - cyclop          # same
+    - funlen          # function length — revisit later
+    - wsl             # whitespace style — too opinionated
+
+  settings:
+    errcheck:
+      check-type-assertions: true  # treat failed type assertions as unchecked errors
+      check-blank: true            # treat `_ = f()` as unchecked
+
+    errorlint:
+      errorf: true       # flag fmt.Errorf calls missing %w
+      asserts: true      # flag type assertions on errors (use errors.As)
+      comparison: true   # flag == comparisons on errors (use errors.Is)
+
+    exhaustive:
+      default-signifies-exhaustive: false  # explicit default: case does not satisfy exhaustive
+
+    gosec:
+      excludes:
+        - G104  # errors in defer — already caught by errcheck with check-blank
+      config:
+        G306: "0600"  # file creation permissions must be 0600 or stricter
+
+    govet:
+      enable-all: true  # includes copylocks (catches sync.Mutex copy bugs)
+      disable:
+        - fieldalignment  # we do not manually optimise struct layout
+
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - "checkPrivateReceivers"  # also check unexported receiver doc comments
+        - name: error-return           # error must be the last return value
+        - name: error-naming           # error types must end in "Error"
+        - name: error-strings          # error strings must not be capitalised
+        - name: increment-decrement    # use i++ not i += 1
+        - name: var-naming             # standard Go naming conventions
+        - name: receiver-naming        # receiver names must be consistent within a type
+        - name: unused-parameter       # parameters that are never read
+        - name: context-as-argument    # context.Context must be the first parameter
+        - name: context-keys-type      # context keys must be unexported types, not strings
+
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+        - style
+      disabled-checks:
+        - commentedOutCode  # commented-out code is allowed during active development
+
+    prealloc:
+      simple: true        # flag simple pre-allocation opportunities
+      range-loops: true   # flag opportunities inside range loops
+      for-loops: false    # too many false positives on dynamic-length loops
+
+    godot:
+      scope: declarations  # only exported declaration comments require a trailing period
+      capital: true        # comments must start with a capital letter
+
+    godox:
+      keywords:
+        - FIXME  # must be resolved before merge
+        - HACK   # must be resolved before merge
+        # NOTE and TODO are informational — not flagged
+
+  exclusions:
+    # Warn if an exclusion rule never matches anything (catches stale rules).
+    warn-unused: true
+
+    rules:
+      # Test files: lighter rules — weak crypto, informal naming, and fixed params are fine.
+      - path: "_test\\.go$"
+        linters:
+          - gosec       # weak crypto / hardcoded values in test helpers is intentional
+          - godot       # test function names do not need doc comment periods
+          - revive      # relaxed naming in test helpers
+          - unparam     # test helpers often have fixed-value params by design
+
+      # sqlc-generated files: never lint.
+      - path: "internal/db/"
+        linters:
+          - revive
+          - gocritic
+          - godot
+          - gosec
+          - errcheck
+          - unused
+
+      # export_test.go shims: minimal rules.
+      - path: "export_test\\.go$"
+        linters:
+          - revive
+          - godot
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly

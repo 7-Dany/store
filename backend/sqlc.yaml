@@ -1,0 +1,206 @@
+# SQLC Configuration File
+# Version 2 - Latest stable version
+# Documentation: https://docs.sqlc.dev/en/stable/reference/config.html
+
+version: "2"
+
+sql:
+  # PostgreSQL Configuration
+  - engine: "postgresql"
+
+    # Directory containing SQL query files (*.sql)
+    queries: "sql/queries/**"
+
+    # Directory containing schema migration files
+    schema: "sql/schema"
+
+    # Code Generation Settings
+    gen:
+      go:
+        # Package name for generated code
+        package: "db"
+
+        # Output directory for generated Go files
+        out: "internal/db"
+
+        # SQL driver package to use
+        # Options: "pgx/v5", "pgx/v4", "database/sql"
+        sql_package: "pgx/v5"
+
+        # Emit JSON tags for structs (useful for API responses)
+        emit_json_tags: true
+
+        # Emit db tags for structs (useful for scanning)
+        emit_db_tags: true
+
+        # Generate prepared query support (better performance)
+        emit_prepared_queries: false
+
+        # Generate Querier interface for easier testing/mocking
+        emit_interface: true
+
+        # Use exact table names for generated types
+        # false: users table -> User struct
+        # true: users table -> Users struct
+        emit_exact_table_names: false
+
+        # Return empty slices instead of nil for list queries
+        emit_empty_slices: true
+
+        # Make generated query methods exported (public)
+        emit_exported_queries: true
+
+        # Use pointers for result structs
+        emit_result_struct_pointers: false
+
+        # Use pointers for params structs
+        emit_params_struct_pointers: false
+
+        # Add *sqlc.DB argument to query methods
+        emit_methods_with_db_argument: false
+
+        # Use pointers for nullable database columns
+        # false: use sql.NullString, sql.NullInt64, etc.
+        # true: use *string, *int64, etc.
+        emit_pointers_for_null_types: false
+
+        # Generate Valid() method for enums
+        emit_enum_valid_method: true
+
+        # Generate slice of all enum values
+        emit_all_enum_values: true
+
+        # JSON tag naming convention
+        # Options: "camel", "pascal", "snake", "none"
+        json_tags_case_style: "snake"
+
+        # Type Overrides
+        # Override default type mappings for specific columns
+        overrides:
+          # UUID columns
+          - column: "*.id"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+
+          # Timestamp columns
+          - column: "*.created_at"
+            go_type: "time.Time"
+
+          - column: "*.updated_at"
+            go_type: "time.Time"
+
+          - column: "*.deleted_at"
+            go_type:
+              type: "time.Time"
+              pointer: true
+
+          # Money/Decimal columns
+          # - column: "*.price"
+          #   go_type:
+          #     import: "github.com/shopspring/decimal"
+          #     type: "Decimal"
+
+          # JSONB columns
+          # - column: "*.metadata"
+          #   go_type: "json.RawMessage"
+
+          # Custom types
+          # - column: "users.role"
+          #   go_type:
+          #     import: "github.com/yourorg/yourapp/internal/types"
+          #     type: "UserRole"
+
+        # Field Renaming
+        # Rename struct fields to follow Go conventions
+        rename:
+          id: "ID"
+          url: "URL"
+          api: "API"
+          uri: "URI"
+          uuid: "UUID"
+          uid: "UID"
+          json: "JSON"
+          sql: "SQL"
+          avatar_url: "AvatarURL"
+          # Add more as needed
+
+  # Test-only queries — same db package, no Querier interface, gets build-tagged
+  # with //go:build integration_test by the sqlc-generate script after generation.
+  - engine: "postgresql"
+    queries: "sql/queries_test/**"
+    schema: "sql/schema"
+    gen:
+      go:
+        package: "db"
+        out: "internal/db"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_db_tags: true
+        emit_prepared_queries: false
+        emit_interface: false
+        emit_exact_table_names: false
+        emit_empty_slices: true
+        emit_exported_queries: true
+        emit_result_struct_pointers: false
+        emit_params_struct_pointers: false
+        emit_methods_with_db_argument: false
+        emit_pointers_for_null_types: false
+        emit_enum_valid_method: true
+        emit_all_enum_values: true
+        json_tags_case_style: "snake"
+        overrides:
+          - column: "*.id"
+            go_type:
+              import: "github.com/google/uuid"
+              type: "UUID"
+          - column: "*.created_at"
+            go_type: "time.Time"
+          - column: "*.updated_at"
+            go_type: "time.Time"
+          - column: "*.deleted_at"
+            go_type:
+              type: "time.Time"
+              pointer: true
+        rename:
+          id: "ID"
+          url: "URL"
+          api: "API"
+          uri: "URI"
+          uuid: "UUID"
+          uid: "UID"
+          json: "JSON"
+          sql: "SQL"
+          avatar_url: "AvatarURL"
+
+# Rules for sqlc vet (linting)
+# Uncomment to enable linting rules
+# rules:
+#   - sqlc/db-prepare
+#   - no-pg
+#   - no-exec
+
+# Additional SQL engines (examples)
+# Uncomment and configure as needed
+
+# MySQL Configuration
+# - engine: "mysql"
+#   queries: "sql/queries/mysql"
+#   schema: "sql/schema/mysql"
+#   gen:
+#     go:
+#       package: "mysqldb"
+#       out: "internal/database/mysql"
+#       emit_json_tags: true
+#       emit_interface: true
+
+# SQLite Configuration
+# - engine: "sqlite"
+#   queries: "sql/queries/sqlite"
+#   schema: "sql/schema/sqlite"
+#   gen:
+#     go:
+#       package: "sqlitedb"
+#       out: "internal/database/sqlite"
+#       emit_json_tags: true
+#       emit_interface: true

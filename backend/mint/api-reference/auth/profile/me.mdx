@@ -12,7 +12,7 @@ api: "GET http://localhost:8080/api/v1/auth/me"
 
 ## Rate Limiting
 
-**20 requests per 1 minute per IP address**.
+**10 requests per 1 minute per IP address**.
 
 Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
 
@@ -90,7 +90,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="429 — Rate Limited">
-    The IP address has exceeded 20 requests per 1 minute. Check the `Retry-After` response header for how many seconds to wait before retrying.
+    The IP address has exceeded 10 requests per 1 minute. Check the `Retry-After` response header for how many seconds to wait before retrying.
 
     ```json
     {

@@ -1071,6 +1071,30 @@ func (q *Queries) GetUserForResend(ctx context.Context, email pgtype.Text) (GetU
 	return i, err
 }
 
+const GetUserForSetPassword = `-- name: GetUserForSetPassword :one
+
+SELECT
+    id,
+    (password_hash IS NULL) AS has_no_password
+FROM users
+WHERE id = $1::uuid
+`
+
+type GetUserForSetPasswordRow struct {
+	ID            uuid.UUID   `db:"id" json:"id"`
+	HasNoPassword interface{} `db:"has_no_password" json:"has_no_password"`
+}
+
+// ── Set password (OAuth-only accounts) ────────────────────────────────────
+// Returns whether the user currently has no password (signed up via OAuth only).
+// Used by POST /set-password to gate the operation before attempting the write.
+func (q *Queries) GetUserForSetPassword(ctx context.Context, userID pgtype.UUID) (GetUserForSetPasswordRow, error) {
+	row := q.db.QueryRow(ctx, GetUserForSetPassword, userID)
+	var i GetUserForSetPasswordRow
+	err := row.Scan(&i.ID, &i.HasNoPassword)
+	return i, err
+}
+
 const GetUserForUnlock = `-- name: GetUserForUnlock :one
 SELECT id, email_verified, is_locked, admin_locked, login_locked_until
 FROM users
@@ -1577,6 +1601,30 @@ WHERE session_id  = $1::uuid
 func (q *Queries) RevokeSessionRefreshTokens(ctx context.Context, sessionID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, RevokeSessionRefreshTokens, sessionID)
 	return err
+}
+
+const SetPasswordHash = `-- name: SetPasswordHash :execrows
+UPDATE users
+SET    password_hash = $1
+WHERE  id            = $2::uuid
+  AND  password_hash IS NULL
+`
+
+type SetPasswordHashParams struct {
+	PasswordHash pgtype.Text `db:"password_hash" json:"password_hash"`
+	UserID       pgtype.UUID `db:"user_id" json:"user_id"`
+}
+
+// Sets password_hash for an OAuth-only account.
+// The WHERE password_hash IS NULL guard is the DB-level concurrency check:
+// a concurrent set-password call that races past the service guard returns
+// 0 rows affected, which the store maps to ErrPasswordAlreadySet.
+func (q *Queries) SetPasswordHash(ctx context.Context, arg SetPasswordHashParams) (int64, error) {
+	result, err := q.db.Exec(ctx, SetPasswordHash, arg.PasswordHash, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const UnlockAccount = `-- name: UnlockAccount :exec

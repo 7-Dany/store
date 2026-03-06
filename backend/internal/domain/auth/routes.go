@@ -35,6 +35,7 @@ func Routes(ctx context.Context, deps *app.Deps) *chi.Mux {
 	unlock.Routes(ctx, r, deps)
 	password.Routes(ctx, r, deps)
 	profile.Routes(ctx, r, deps)
+	profile.Routes(ctx, r, deps)
 
 	return r
 }

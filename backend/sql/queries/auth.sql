@@ -917,3 +917,25 @@ SET
     display_name = COALESCE(@display_name, display_name),
     avatar_url   = COALESCE(@avatar_url,   avatar_url)
 WHERE id = @user_id::uuid;
+
+
+/* ── Set password (OAuth-only accounts) ──────────────────────────────────── */
+
+-- name: GetUserForSetPassword :one
+-- Returns whether the user currently has no password (signed up via OAuth only).
+-- Used by POST /set-password to gate the operation before attempting the write.
+SELECT
+    id,
+    (password_hash IS NULL) AS has_no_password
+FROM users
+WHERE id = @user_id::uuid;
+
+-- name: SetPasswordHash :execrows
+-- Sets password_hash for an OAuth-only account.
+-- The WHERE password_hash IS NULL guard is the DB-level concurrency check:
+-- a concurrent set-password call that races past the service guard returns
+-- 0 rows affected, which the store maps to ErrPasswordAlreadySet.
+UPDATE users
+SET    password_hash = @password_hash
+WHERE  id            = @user_id::uuid
+  AND  password_hash IS NULL;

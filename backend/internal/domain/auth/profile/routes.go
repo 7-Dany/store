@@ -16,14 +16,17 @@ import (
 //	profile.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - GET    /me:             20 req / 1 min  per IP
+//   - GET    /me:             10 req / 1 min  per IP
 //   - GET    /sessions:       10 req / 1 min  per IP
 //   - DELETE /sessions/{id}:   3 req / 15 min per IP
 //   - PATCH  /me/profile:     10 req / 1 min  per IP
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
-	// 20 req / 1 min per IP — prevents bulk profile enumeration.
-	// rate = 20 / (1 * 60) ≈ 0.333 tokens/sec.
-	meLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "pme:ip:", 20.0/(1*60), 20, 1*time.Minute)
+	// 10 req / 1 min per IP — prevents bulk profile enumeration.
+	// A well-behaved client has no reason to fetch /me more than once or twice
+	// per session; 10/min is generous for any real use case while still cutting
+	// unnecessary DB reads from polling loops or misbehaving clients.
+	// rate = 10 / (1 * 60) ≈ 0.167 tokens/sec.
+	meLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "pme:ip:", 10.0/(1*60), 10, 1*time.Minute)
 	go meLimiter.StartCleanup(ctx)
 
 	// 10 req / 1 min per IP — rate-limits session list polling.

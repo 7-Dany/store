@@ -14,6 +14,7 @@ import (
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
 	"github.com/7-Dany/store/backend/internal/domain/auth/verification"
+	setpassword "github.com/7-Dany/store/backend/internal/domain/profile/set-password"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -440,6 +441,38 @@ func (f *VerificationFakeStorer) ResendVerificationTx(ctx context.Context, in ve
 func (f *VerificationFakeStorer) VerifyEmailTx(ctx context.Context, email, ipAddress, userAgent string, checkFn func(authshared.VerificationToken) error) error {
 	if f.VerifyEmailTxFn != nil {
 		return f.VerifyEmailTxFn(ctx, email, ipAddress, userAgent, checkFn)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SetPasswordFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SetPasswordFakeStorer is a hand-written implementation of setpassword.Storer
+// for service unit tests. Each method delegates to its Fn field if non-nil,
+// otherwise returns the zero value and nil error so tests only need to
+// configure the fields they care about.
+type SetPasswordFakeStorer struct {
+	GetUserForSetPasswordFn func(ctx context.Context, userID [16]byte) (setpassword.SetPasswordUser, error)
+	SetPasswordHashTxFn     func(ctx context.Context, in setpassword.SetPasswordInput, newHash string) error
+}
+
+// compile-time interface check.
+var _ setpassword.Storer = (*SetPasswordFakeStorer)(nil)
+
+// GetUserForSetPassword delegates to GetUserForSetPasswordFn if set.
+func (f *SetPasswordFakeStorer) GetUserForSetPassword(ctx context.Context, userID [16]byte) (setpassword.SetPasswordUser, error) {
+	if f.GetUserForSetPasswordFn != nil {
+		return f.GetUserForSetPasswordFn(ctx, userID)
+	}
+	return setpassword.SetPasswordUser{}, nil
+}
+
+// SetPasswordHashTx delegates to SetPasswordHashTxFn if set.
+func (f *SetPasswordFakeStorer) SetPasswordHashTx(ctx context.Context, in setpassword.SetPasswordInput, newHash string) error {
+	if f.SetPasswordHashTxFn != nil {
+		return f.SetPasswordHashTxFn(ctx, in, newHash)
 	}
 	return nil
 }

@@ -91,6 +91,10 @@ type QuerierProxy struct {
 	FailCreateUnlockToken     bool
 	FailUnlockAccount         bool
 
+	// ── set-password ─────────────────────────────────────────────────────────
+	FailGetUserForSetPassword bool
+	FailSetPasswordHash       bool
+
 	// ── verification ─────────────────────────────────────────────────────────
 	FailGetEmailVerificationToken           bool
 	FailConsumeEmailVerificationToken       bool
@@ -578,4 +582,22 @@ func (b *QuerierProxy) UpdateSessionLastActive(ctx context.Context, id pgtype.UU
 		return ErrProxy
 	}
 	return b.Base.UpdateSessionLastActive(ctx, id)
+}
+
+// ── GetUserForSetPassword ──────────────────────────────────────────────────────
+
+func (b *QuerierProxy) GetUserForSetPassword(ctx context.Context, userID pgtype.UUID) (db.GetUserForSetPasswordRow, error) {
+	if b.FailGetUserForSetPassword {
+		return db.GetUserForSetPasswordRow{}, ErrProxy
+	}
+	return b.Base.GetUserForSetPassword(ctx, userID)
+}
+
+// ── SetPasswordHash ───────────────────────────────────────────────────────────
+
+func (b *QuerierProxy) SetPasswordHash(ctx context.Context, arg db.SetPasswordHashParams) (int64, error) {
+	if b.FailSetPasswordHash {
+		return 0, ErrProxy
+	}
+	return b.Base.SetPasswordHash(ctx, arg)
 }

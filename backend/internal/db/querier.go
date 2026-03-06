@@ -142,6 +142,10 @@ type Querier interface {
 	// and must still receive a resend. Only is_locked=TRUE accounts (brute-force lockout)
 	// and already-verified accounts are suppressed.
 	GetUserForResend(ctx context.Context, email pgtype.Text) (GetUserForResendRow, error)
+	// ── Set password (OAuth-only accounts) ────────────────────────────────────
+	// Returns whether the user currently has no password (signed up via OAuth only).
+	// Used by POST /set-password to gate the operation before attempting the write.
+	GetUserForSetPassword(ctx context.Context, userID pgtype.UUID) (GetUserForSetPasswordRow, error)
 	// Fetches the minimal fields needed to gate a self-service unlock request.
 	// Returns the row regardless of lock state so the service can decide whether to
 	// issue a token without leaking information to unauthenticated callers.
@@ -249,6 +253,11 @@ type Querier interface {
 	// Revokes all non-revoked refresh tokens for a specific session.
 	// Called by RevokeSessionTx when a user explicitly ends a single device session.
 	RevokeSessionRefreshTokens(ctx context.Context, sessionID pgtype.UUID) error
+	// Sets password_hash for an OAuth-only account.
+	// The WHERE password_hash IS NULL guard is the DB-level concurrency check:
+	// a concurrent set-password call that races past the service guard returns
+	// 0 rows affected, which the store maps to ErrPasswordAlreadySet.
+	SetPasswordHash(ctx context.Context, arg SetPasswordHashParams) (int64, error)
 	// Clears is_locked, failed_login_attempts, and login_locked_until atomically.
 	// Called after a successful account-unlock OTP confirmation.
 	UnlockAccount(ctx context.Context, userID pgtype.UUID) error

@@ -149,6 +149,12 @@ func (n *nopQuerier) UpdateSessionLastActive(_ context.Context, _ pgtype.UUID) e
 func (n *nopQuerier) UpdateUserProfile(_ context.Context, _ db.UpdateUserProfileParams) error {
 	return nil
 }
+func (n *nopQuerier) GetUserForSetPassword(_ context.Context, _ pgtype.UUID) (db.GetUserForSetPasswordRow, error) {
+	return db.GetUserForSetPasswordRow{}, nil
+}
+func (n *nopQuerier) SetPasswordHash(_ context.Context, _ db.SetPasswordHashParams) (int64, error) {
+	return 0, nil
+}
 
 // compile-time guard
 var _ db.Querier = (*nopQuerier)(nil)
@@ -1019,5 +1025,35 @@ func TestQuerierProxy_GetPasswordResetTokenCreatedAt_Delegates(t *testing.T) {
 	t.Parallel()
 	// nopQuerier.GetPasswordResetTokenCreatedAt returns time.Time{}, nil.
 	_, err := nopProxy().GetPasswordResetTokenCreatedAt(bg, "x@example.com")
+	require.NoError(t, err)
+}
+
+// ── Set password ─────────────────────────────────────────────────────────────
+
+func TestQuerierProxy_FailGetUserForSetPassword(t *testing.T) {
+	t.Parallel()
+	proxy := nopProxy()
+	proxy.FailGetUserForSetPassword = true
+	_, err := proxy.GetUserForSetPassword(bg, anyUUID)
+	require.ErrorIs(t, err, authsharedtest.ErrProxy)
+}
+
+func TestQuerierProxy_GetUserForSetPassword_Delegates(t *testing.T) {
+	t.Parallel()
+	_, err := nopProxy().GetUserForSetPassword(bg, anyUUID)
+	require.NoError(t, err)
+}
+
+func TestQuerierProxy_FailSetPasswordHash(t *testing.T) {
+	t.Parallel()
+	proxy := nopProxy()
+	proxy.FailSetPasswordHash = true
+	_, err := proxy.SetPasswordHash(bg, db.SetPasswordHashParams{})
+	require.ErrorIs(t, err, authsharedtest.ErrProxy)
+}
+
+func TestQuerierProxy_SetPasswordHash_Delegates(t *testing.T) {
+	t.Parallel()
+	_, err := nopProxy().SetPasswordHash(bg, db.SetPasswordHashParams{})
 	require.NoError(t, err)
 }

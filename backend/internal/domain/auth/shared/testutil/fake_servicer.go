@@ -13,6 +13,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/auth/session"
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
 	"github.com/7-Dany/store/backend/internal/domain/auth/verification"
+	setpassword "github.com/7-Dany/store/backend/internal/domain/profile/set-password"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -239,4 +240,27 @@ func (f *VerificationFakeServicer) ResendVerification(ctx context.Context, in ve
 		return f.ResendVerificationFn(ctx, in)
 	}
 	return authshared.OTPIssuanceResult{}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SetPasswordFakeServicer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// SetPasswordFakeServicer is a hand-written implementation of
+// setpassword.Servicer for handler unit tests. SetPasswordFn is called when
+// non-nil; otherwise SetPassword returns nil so tests only configure the
+// fields they care about.
+type SetPasswordFakeServicer struct {
+	SetPasswordFn func(ctx context.Context, in setpassword.SetPasswordInput) error
+}
+
+// compile-time interface check.
+var _ setpassword.Servicer = (*SetPasswordFakeServicer)(nil)
+
+// SetPassword delegates to SetPasswordFn if set.
+func (f *SetPasswordFakeServicer) SetPassword(ctx context.Context, in setpassword.SetPasswordInput) error {
+	if f.SetPasswordFn != nil {
+		return f.SetPasswordFn(ctx, in)
+	}
+	return nil
 }

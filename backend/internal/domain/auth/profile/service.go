@@ -14,6 +14,7 @@ type Storer interface {
 	GetUserProfile(ctx context.Context, userID [16]byte) (UserProfile, error)
 	GetActiveSessions(ctx context.Context, userID [16]byte) ([]ActiveSession, error)
 	RevokeSessionTx(ctx context.Context, sessionID, ownerUserID [16]byte, ipAddress, userAgent string) error
+	UpdateProfileTx(ctx context.Context, in UpdateProfileInput) error
 }
 
 // Service holds pure business logic for the profile sub-package.
@@ -54,6 +55,16 @@ func (s *Service) GetActiveSessions(ctx context.Context, userID string) ([]Activ
 		return nil, fmt.Errorf("profile.GetActiveSessions: get sessions: %w", err)
 	}
 	return sessions, nil
+}
+
+// UpdateProfile updates the authenticated user's display_name and/or avatar_url.
+// in.DisplayName and in.AvatarURL use nil to mean "do not change this field".
+// All validation has been performed by the caller before this method is invoked.
+func (s *Service) UpdateProfile(ctx context.Context, in UpdateProfileInput) error {
+	if err := s.store.UpdateProfileTx(ctx, in); err != nil {
+		return fmt.Errorf("profile.UpdateProfile: update profile: %w", err)
+	}
+	return nil
 }
 
 // RevokeSession revokes a specific session, verifying it belongs to the caller.

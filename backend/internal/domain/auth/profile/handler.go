@@ -19,6 +19,7 @@ type Servicer interface {
 	GetUserProfile(ctx context.Context, userID string) (UserProfile, error)
 	GetActiveSessions(ctx context.Context, userID string) ([]ActiveSession, error)
 	RevokeSession(ctx context.Context, userID, sessionID, ipAddress, userAgent string) error
+	UpdateProfile(ctx context.Context, in UpdateProfileInput) error
 }
 
 // Handler is the HTTP layer for the profile sub-package. It parses requests,
@@ -128,6 +129,63 @@ func (h *Handler) RevokeSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.NoContent(w)
+}
+
+// UpdateProfile handles PATCH /me/profile.
+// Updates the authenticated user's display_name and/or avatar_url.
+func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.mustUserID(w, r)
+	if !ok {
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, respond.MaxBodyBytes)
+	req, ok := respond.DecodeJSON[updateProfileRequest](w, r)
+	if !ok {
+		return
+	}
+
+	if err := validateAndNormaliseUpdateProfile(&req); err != nil {
+		switch {
+		case errors.Is(err, ErrEmptyPatch):
+			respond.Error(w, http.StatusUnprocessableEntity, "validation_error", "at least one field must be provided")
+		case errors.Is(err, authshared.ErrDisplayNameEmpty):
+			respond.Error(w, http.StatusUnprocessableEntity, "validation_error", "display_name is required")
+		case errors.Is(err, authshared.ErrDisplayNameTooLong):
+			respond.Error(w, http.StatusUnprocessableEntity, "validation_error", "display_name must not exceed 100 characters")
+		case errors.Is(err, authshared.ErrDisplayNameInvalid):
+			respond.Error(w, http.StatusUnprocessableEntity, "validation_error", "display_name contains invalid characters")
+		case errors.Is(err, ErrAvatarURLTooLong):
+			respond.Error(w, http.StatusUnprocessableEntity, "validation_error", "avatar_url must not exceed 2048 characters")
+		case errors.Is(err, ErrAvatarURLInvalid):
+			respond.Error(w, http.StatusUnprocessableEntity, "validation_error", "avatar_url must be a valid http or https URL")
+		default:
+			slog.ErrorContext(r.Context(), "profile.UpdateProfile: unexpected validation error", "error", err)
+			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		}
+		return
+	}
+
+	uid, err := authshared.ParseUserID("profile.UpdateProfile", userID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "profile.UpdateProfile: parse user id", "error", err)
+		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+
+	if err := h.svc.UpdateProfile(r.Context(), UpdateProfileInput{
+		UserID:      uid,
+		DisplayName: req.DisplayName,
+		AvatarURL:   req.AvatarURL,
+		IPAddress:   respond.ClientIP(r),
+		UserAgent:   r.UserAgent(),
+	}); err != nil {
+		slog.ErrorContext(r.Context(), "profile.UpdateProfile: service error", "error", err)
+		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+
+	respond.JSON(w, http.StatusOK, updateProfileResponse{Message: "profile updated successfully"})
 }
 
 // ── private helpers ───────────────────────────────────────────────────────────

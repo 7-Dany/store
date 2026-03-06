@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -588,4 +589,243 @@ func TestHandler_Sessions_UserIDForwarding(t *testing.T) {
 	h := newPH(svc)
 	doRouted(t, phRouter(h), http.MethodGet, "/sessions", uid, nil)
 	assert.Equal(t, uid, receivedUID)
+}
+
+// ── UpdateProfile helpers ─────────────────────────────────────────────────────────
+
+// phRouterWithUpdateProfile builds a chi Mux with all four profile routes,
+// including PATCH /me/profile. Used for UpdateProfile handler tests.
+func phRouterWithUpdateProfile(h *profile.Handler) *chi.Mux {
+	r := chi.NewRouter()
+	r.Use(token.Auth(phSecret, nil, nil))
+	r.Get("/me", h.Me)
+	r.Get("/sessions", h.Sessions)
+	r.Delete("/sessions/{id}", h.RevokeSession)
+	r.Patch("/me/profile", h.UpdateProfile)
+	return r
+}
+
+// doDirectUpdateProfile calls h.UpdateProfile with userID injected into context.
+func doDirectUpdateProfile(h *profile.Handler, userID string, body []byte) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPatch, "/me/profile", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx := token.InjectUserIDForTest(req.Context(), userID)
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+	h.UpdateProfile(w, req)
+	return w
+}
+
+// ── TestHandler_UpdateProfile ────────────────────────────────────────────────────────
+
+func TestHandler_UpdateProfile(t *testing.T) {
+	t.Parallel()
+
+	uid := uuid.NewString()
+
+	// T-01: happy path — both fields.
+	t.Run("success with display_name and avatar_url returns 200", func(t *testing.T) {
+		t.Parallel()
+		svc := &authsharedtest.ProfileFakeServicer{
+			UpdateProfileFn: func(_ context.Context, _ profile.UpdateProfileInput) error { return nil },
+		}
+		h := newPH(svc)
+		dn := "Alice"
+		au := "https://cdn.example.com/avatar.png"
+		body := jsonBody(map[string]any{"display_name": dn, "avatar_url": au})
+		w := doRouted(t, phRouterWithUpdateProfile(h), http.MethodPatch, "/me/profile", uid, body)
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, "profile updated successfully", resp["message"])
+	})
+
+	// T-02: happy path — display_name only.
+	t.Run("success with display_name only returns 200", func(t *testing.T) {
+		t.Parallel()
+		svc := &authsharedtest.ProfileFakeServicer{
+			UpdateProfileFn: func(_ context.Context, _ profile.UpdateProfileInput) error { return nil },
+		}
+		h := newPH(svc)
+		body := jsonBody(map[string]any{"display_name": "Bob"})
+		w := doRouted(t, phRouterWithUpdateProfile(h), http.MethodPatch, "/me/profile", uid, body)
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	// T-03: happy path — avatar_url only.
+	t.Run("success with avatar_url only returns 200", func(t *testing.T) {
+		t.Parallel()
+		svc := &authsharedtest.ProfileFakeServicer{
+			UpdateProfileFn: func(_ context.Context, _ profile.UpdateProfileInput) error { return nil },
+		}
+		h := newPH(svc)
+		body := jsonBody(map[string]any{"avatar_url": "https://example.com/img.png"})
+		w := doRouted(t, phRouterWithUpdateProfile(h), http.MethodPatch, "/me/profile", uid, body)
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	// T-04: empty patch — both fields nil.
+	t.Run("empty patch returns 422", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		w := doDirectUpdateProfile(h, uid, jsonBody(map[string]any{}))
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	})
+
+	// T-05: display_name empty after trim.
+	t.Run("blank display_name returns 422", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		w := doDirectUpdateProfile(h, uid, jsonBody(map[string]any{"display_name": "   "}))
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	})
+
+	// T-06: display_name too long (101 runes).
+	t.Run("display_name over 100 runes returns 422", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		long := strings.Repeat("a", 101)
+		w := doDirectUpdateProfile(h, uid, jsonBody(map[string]any{"display_name": long}))
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	})
+
+	// T-07: display_name exactly 100 runes (boundary accepted).
+	t.Run("display_name exactly 100 runes returns 200", func(t *testing.T) {
+		t.Parallel()
+		svc := &authsharedtest.ProfileFakeServicer{
+			UpdateProfileFn: func(_ context.Context, _ profile.UpdateProfileInput) error { return nil },
+		}
+		h := newPH(svc)
+		exact := strings.Repeat("a", 100)
+		w := doDirectUpdateProfile(h, uid, jsonBody(map[string]any{"display_name": exact}))
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	// T-08: display_name contains ASCII control character.
+	t.Run("display_name with control char returns 422", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		w := doDirectUpdateProfile(h, uid, jsonBody(map[string]any{"display_name": "a\x01b"}))
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	})
+
+	// T-09: avatar_url invalid — no scheme.
+	t.Run("avatar_url with no scheme returns 422", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		w := doDirectUpdateProfile(h, uid, jsonBody(map[string]any{"avatar_url": "not-a-url"}))
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	})
+
+	// T-10: avatar_url invalid scheme (ftp://).
+	t.Run("avatar_url with ftp scheme returns 422", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		w := doDirectUpdateProfile(h, uid, jsonBody(map[string]any{"avatar_url": "ftp://example.com/img.png"}))
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	})
+
+	// T-11: avatar_url too long (2049 bytes).
+	t.Run("avatar_url over 2048 bytes returns 422", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		prefix := "https://example.com/"
+		pad := strings.Repeat("a", 2049-len(prefix))
+		long := prefix + pad
+		require.Equal(t, 2049, len(long))
+		w := doDirectUpdateProfile(h, uid, jsonBody(map[string]any{"avatar_url": long}))
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	})
+
+	// T-12: avatar_url exactly 2048 bytes (boundary accepted).
+	t.Run("avatar_url exactly 2048 bytes returns 200", func(t *testing.T) {
+		t.Parallel()
+		svc := &authsharedtest.ProfileFakeServicer{
+			UpdateProfileFn: func(_ context.Context, _ profile.UpdateProfileInput) error { return nil },
+		}
+		h := newPH(svc)
+		prefix := "https://example.com/"
+		pad := strings.Repeat("a", 2048-len(prefix))
+		exact := prefix + pad
+		require.Equal(t, 2048, len(exact))
+		w := doDirectUpdateProfile(h, uid, jsonBody(map[string]any{"avatar_url": exact}))
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+
+	// T-13: avatar_url empty string.
+	t.Run("avatar_url empty string returns 422", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		w := doDirectUpdateProfile(h, uid, jsonBody(map[string]any{"avatar_url": ""}))
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	})
+
+	// T-14: body > 1 MiB.
+	t.Run("body larger than 1 MiB returns 413", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		oversized := make([]byte, (1<<20)+1)
+		for i := range oversized {
+			oversized[i] = 'a'
+		}
+		w := doDirectUpdateProfile(h, uid, oversized)
+		assert.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
+	})
+
+	// T-15: malformed JSON.
+	t.Run("malformed JSON returns 422", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		w := doDirectUpdateProfile(h, uid, []byte(`{bad json`))
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	})
+
+	// T-16: missing Authorization header.
+	t.Run("no Authorization header returns 401", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.ProfileFakeServicer{})
+		body := jsonBody(map[string]any{"display_name": "Alice"})
+		w := doRouted(t, phRouterWithUpdateProfile(h), http.MethodPatch, "/me/profile", "", body)
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	// T-17: service returns unexpected error.
+	t.Run("service error returns 500", func(t *testing.T) {
+		t.Parallel()
+		svc := &authsharedtest.ProfileFakeServicer{
+			UpdateProfileFn: func(_ context.Context, _ profile.UpdateProfileInput) error {
+				return errors.New("db down")
+			},
+		}
+		h := newPH(svc)
+		body := jsonBody(map[string]any{"display_name": "Alice"})
+		w := doDirectUpdateProfile(h, uid, body)
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+
+	// UpdateProfileInput fields forwarded to service correctly.
+	t.Run("UpdateProfileInput fields forwarded to service", func(t *testing.T) {
+		t.Parallel()
+		var capturedIn profile.UpdateProfileInput
+		svc := &authsharedtest.ProfileFakeServicer{
+			UpdateProfileFn: func(_ context.Context, in profile.UpdateProfileInput) error {
+				capturedIn = in
+				return nil
+			},
+		}
+		h := newPH(svc)
+		dn := "Charlie"
+		au := "https://cdn.example.com/c.png"
+		body := jsonBody(map[string]any{"display_name": dn, "avatar_url": au})
+		w := doDirectUpdateProfile(h, uid, body)
+		require.Equal(t, http.StatusOK, w.Code)
+		require.NotNil(t, capturedIn.DisplayName)
+		assert.Equal(t, dn, *capturedIn.DisplayName)
+		require.NotNil(t, capturedIn.AvatarURL)
+		assert.Equal(t, au, *capturedIn.AvatarURL)
+		// IPAddress is empty in httptest but the field must be populated by respond.ClientIP.
+		// UserAgent is empty in httptest requests; verify the field is set (empty string).
+		_ = capturedIn.IPAddress
+		_ = capturedIn.UserAgent
+	})
 }

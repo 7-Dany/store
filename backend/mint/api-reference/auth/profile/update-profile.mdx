@@ -1,0 +1,168 @@
+---
+title: "Update Profile"
+description: "Updates the authenticated user's display name and/or avatar URL."
+api: "PATCH http://localhost:8080/api/v1/auth/me/profile"
+---
+
+<ParamField body="display_name" type="string">
+  The name displayed on the user's profile.
+
+  <Expandable title="requirements">
+    - Must not be empty or whitespace-only
+    - Maximum 100 characters
+    - Must not contain ASCII control characters
+  </Expandable>
+</ParamField>
+
+<ParamField body="avatar_url" type="string">
+  A publicly accessible URL pointing to the user's avatar image.
+
+  <Expandable title="requirements">
+    - Must be a valid absolute URL
+    - Must use an allowed scheme (e.g. `https`)
+    - Maximum 2048 bytes
+    - Cannot be an empty string
+  </Expandable>
+</ParamField>
+
+## Behaviour
+
+**Partial updates** — Both fields are optional. Omitting a field (or sending `null`) leaves it unchanged. At least one field must be provided with a non-null value.
+
+**No no-op detection** — Submitting the same values already stored is accepted and returns `200 OK`.
+
+## Rate Limiting
+
+**10 requests per 1 minute per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "display_name": "Alice Wonderland",
+  "avatar_url": "https://cdn.example.com/avatars/alice-v2.png"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "message": "profile updated successfully"
+}
+```
+
+```json 400
+{
+  "code": "validation_error",
+  "message": "at least one field must be provided"
+}
+```
+
+```json 413
+{
+  "message": "request body too large"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "display_name must not be empty"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests"
+}
+```
+
+```json 500
+{
+  "code": "internal_error",
+  "message": "internal server error"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The profile was updated successfully. Omitted fields are left unchanged.
+
+    ```json
+    {
+      "message": "profile updated successfully"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    Both `display_name` and `avatar_url` were absent or null. At least one must be provided.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "at least one field must be provided"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid JWT or the token could not be verified.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing user id in context"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="413 — Payload Too Large">
+    The request body exceeds the allowed limit.
+
+    ```json
+    {
+      "message": "request body too large"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    A provided field failed validation. See the `<ParamField>` requirements above for the full list of constraints.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "display_name must not be empty"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded the rate limit. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred while updating the profile.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

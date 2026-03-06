@@ -69,6 +69,7 @@ type QuerierProxy struct {
 	FailGetSessionByID             bool
 	FailEndUserSession             bool
 	FailRevokeSessionRefreshTokens bool
+	FailUpdateUserProfile          bool
 
 	// ── register ─────────────────────────────────────────────────────────────
 	FailCreateUser                   bool
@@ -514,6 +515,15 @@ func (b *QuerierProxy) RevokeSessionRefreshTokens(ctx context.Context, sessionID
 		return ErrProxy
 	}
 	return b.Base.RevokeSessionRefreshTokens(ctx, sessionID)
+}
+
+// ── UpdateUserProfile ─────────────────────────────────────────────────────────
+
+func (b *QuerierProxy) UpdateUserProfile(ctx context.Context, arg db.UpdateUserProfileParams) error {
+	if b.FailUpdateUserProfile {
+		return ErrProxy
+	}
+	return b.Base.UpdateUserProfile(ctx, arg)
 }
 
 // ── UnlockAccount ────────────────────────────────────────────────────────────

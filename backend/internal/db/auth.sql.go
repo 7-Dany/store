@@ -1645,3 +1645,26 @@ func (q *Queries) UpdateSessionLastActive(ctx context.Context, id pgtype.UUID) e
 	_, err := q.db.Exec(ctx, UpdateSessionLastActive, id)
 	return err
 }
+
+const UpdateUserProfile = `-- name: UpdateUserProfile :exec
+UPDATE users
+SET
+    display_name = COALESCE($1, display_name),
+    avatar_url   = COALESCE($2,   avatar_url)
+WHERE id = $3::uuid
+`
+
+type UpdateUserProfileParams struct {
+	DisplayName pgtype.Text `db:"display_name" json:"display_name"`
+	AvatarURL   pgtype.Text `db:"avatar_url" json:"avatar_url"`
+	UserID      pgtype.UUID `db:"user_id" json:"user_id"`
+}
+
+// Updates display_name and/or avatar_url using COALESCE so that a NULL
+// parameter leaves the current column value unchanged (partial-update pattern).
+// Called by UpdateProfileTx after input validation in the handler confirms
+// at least one field is non-nil.
+func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error {
+	_, err := q.db.Exec(ctx, UpdateUserProfile, arg.DisplayName, arg.AvatarURL, arg.UserID)
+	return err
+}

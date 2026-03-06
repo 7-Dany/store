@@ -78,6 +78,7 @@
             "icon": "user",
             "pages": [
               "api-reference/auth/profile/me",
+              "api-reference/auth/profile/update-profile",
               "api-reference/auth/profile/sessions",
               "api-reference/auth/profile/revoke-session"
             ]

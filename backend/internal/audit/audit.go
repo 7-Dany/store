@@ -111,6 +111,10 @@ const (
 	// EventAllSessionsRevoked is emitted when every active session for a user is
 	// terminated in a single operation (sign-out-everywhere).
 	EventAllSessionsRevoked EventType = "all_sessions_revoked"
+
+	// EventProfileUpdated is emitted when a user successfully updates their
+	// display_name and/or avatar_url via PATCH /me/profile.
+	EventProfileUpdated EventType = "profile_updated"
 )
 
 // AllEvents returns a slice of every audit event constant defined in this package.
@@ -141,5 +145,6 @@ func AllEvents() []EventType {
 		EventPasswordChangeFailed,
 		EventSessionRevoked,
 		EventAllSessionsRevoked,
+		EventProfileUpdated,
 	}
 }

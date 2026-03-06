@@ -268,6 +268,11 @@ type Querier interface {
 	// device session shows real activity, not just creation time.
 	// AND ended_at IS NULL makes the update a no-op for already-closed sessions.
 	UpdateSessionLastActive(ctx context.Context, id pgtype.UUID) error
+	// Updates display_name and/or avatar_url using COALESCE so that a NULL
+	// parameter leaves the current column value unchanged (partial-update pattern).
+	// Called by UpdateProfileTx after input validation in the handler confirms
+	// at least one field is non-nil.
+	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -18,6 +18,16 @@ type UserProfile struct {
 	CreatedAt     time.Time
 }
 
+// UpdateProfileInput is the service-layer input for PATCH /me/profile.
+// Pointer fields use nil to mean "do not update this field".
+type UpdateProfileInput struct {
+	UserID      [16]byte
+	DisplayName *string // nil → leave unchanged
+	AvatarURL   *string // nil → leave unchanged
+	IPAddress   string
+	UserAgent   string
+}
+
 // ActiveSession is the store-layer representation of an open user session.
 type ActiveSession struct {
 	ID           [16]byte

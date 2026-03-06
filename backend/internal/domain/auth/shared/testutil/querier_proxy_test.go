@@ -146,6 +146,9 @@ func (n *nopQuerier) IncrementChangePasswordFailures(_ context.Context, _ pgtype
 }
 func (n *nopQuerier) ResetChangePasswordFailures(_ context.Context, _ pgtype.UUID) error { return nil }
 func (n *nopQuerier) UpdateSessionLastActive(_ context.Context, _ pgtype.UUID) error { return nil }
+func (n *nopQuerier) UpdateUserProfile(_ context.Context, _ db.UpdateUserProfileParams) error {
+	return nil
+}
 
 // compile-time guard
 var _ db.Querier = (*nopQuerier)(nil)

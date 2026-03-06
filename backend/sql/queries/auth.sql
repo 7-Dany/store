@@ -906,3 +906,14 @@ SELECT
 FROM users
 WHERE id = @user_id::uuid
 LIMIT 1;
+
+-- name: UpdateUserProfile :exec
+-- Updates display_name and/or avatar_url using COALESCE so that a NULL
+-- parameter leaves the current column value unchanged (partial-update pattern).
+-- Called by UpdateProfileTx after input validation in the handler confirms
+-- at least one field is non-nil.
+UPDATE users
+SET
+    display_name = COALESCE(@display_name, display_name),
+    avatar_url   = COALESCE(@avatar_url,   avatar_url)
+WHERE id = @user_id::uuid;

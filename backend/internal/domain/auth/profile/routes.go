@@ -19,6 +19,7 @@ import (
 //   - GET    /me:             20 req / 1 min  per IP
 //   - GET    /sessions:       10 req / 1 min  per IP
 //   - DELETE /sessions/{id}:   3 req / 15 min per IP
+//   - PATCH  /me/profile:     10 req / 1 min  per IP
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// 20 req / 1 min per IP — prevents bulk profile enumeration.
 	// rate = 20 / (1 * 60) ≈ 0.333 tokens/sec.
@@ -35,6 +36,11 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	revokeSessionLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "rsess:ip:", 3.0/(15*60), 3, 15*time.Minute)
 	go revokeSessionLimiter.StartCleanup(ctx)
 
+	// 10 req / 1 min per IP — rate-limits profile update requests.
+	// rate = 10 / (1 * 60) ≈ 0.167 tokens/sec.
+	updateProfileLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "prof:ip:", 10.0/(1*60), 10, 1*time.Minute)
+	go updateProfileLimiter.StartCleanup(ctx)
+
 	store := NewStore(deps.Pool)
 	svc := NewService(store)
 	h := NewHandler(svc)
@@ -44,5 +50,6 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 		r.With(meLimiter.Limit).Get("/me", h.Me)
 		r.With(sessionsLimiter.Limit).Get("/sessions", h.Sessions)
 		r.With(revokeSessionLimiter.Limit).Delete("/sessions/{id}", h.RevokeSession)
+		r.With(updateProfileLimiter.Limit).Patch("/me/profile", h.UpdateProfile)
 	})
 }

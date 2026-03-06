@@ -12,9 +12,10 @@
 #   e2e/auth/me.json                    → GET /me (requires JWT)
 #   e2e/auth/sessions.json              → GET /sessions (requires JWT)
 #   e2e/auth/revoke-session.json        → DELETE /sessions/{id} (requires JWT)
+#   e2e/auth/update-profile.json        → PATCH /me/profile (requires JWT)
 #
 # e2e-password runs both password collections (forgot/reset + change) in order.
-# e2e-profile runs the three profile collections (me + sessions + revoke-session) in order.
+# e2e-profile runs the four profile collections (me + sessions + revoke-session + update-profile) in order.
 # e2e-auth runs all auth collections including e2e-password and e2e-profile.
 #
 # Each collection has a "rate-limiting" folder that is run in a SEPARATE newman
@@ -253,7 +254,26 @@ endif
 # 429 request fires. The 8-second Gmail wait in the register test script is a
 # synchronous busy-loop that Newman executes before advancing to the next request,
 # so delay=1 is safe. (delay=0 is rejected by Newman as not a positive integer.)
-e2e-profile: _e2e-check-env ## Run GET /me + GET /sessions + DELETE /sessions/{id} E2E (requires JWT)
+e2e-update-profile: _e2e-check-env ## Run PATCH /me/profile E2E (requires JWT — all folders in one invocation)
+ifeq ($(DETECTED_OS),Windows)
+	@Write-Host "[e2e] --- PATCH /me/profile ---" -ForegroundColor Cyan
+	@$(MAKE) _e2e-clean
+	@Write-Host "[e2e] Running: setup + happy-path + failures + auth-failures + validation + rate-limiting-prof (single invocation)" -ForegroundColor DarkGray
+	@newman run "$(E2E_AUTH)/update-profile.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "failures" --folder "auth-failures" --folder "validation" --folder "rate-limiting-prof" --delay-request 1 --reporters cli
+	@Write-Host "[e2e] update-profile suite passed" -ForegroundColor Green
+else
+	@echo "[e2e] --- PATCH /me/profile ---"
+	@$(MAKE) _e2e-clean
+	@echo "[e2e] Running: setup + happy-path + failures + auth-failures + validation + rate-limiting-prof (single invocation)"
+	@newman run "$(E2E_AUTH)/update-profile.json" --environment "$(E2E_ENV)" \
+		--folder "setup" --folder "happy-path" \
+		--folder "failures" --folder "auth-failures" --folder "validation" \
+		--folder "rate-limiting-prof" \
+		--delay-request 1 --reporters cli
+	@echo "[e2e] update-profile suite passed"
+endif
+
+e2e-profile: _e2e-check-env ## Run GET /me + GET /sessions + DELETE /sessions/{id} + PATCH /me/profile E2E (requires JWT)
 ifeq ($(DETECTED_OS),Windows)
 	@Write-Host "[e2e] --- GET /me ---" -ForegroundColor Cyan
 	@$(MAKE) _e2e-clean
@@ -267,6 +287,7 @@ ifeq ($(DETECTED_OS),Windows)
 	@$(MAKE) _e2e-clean
 	@Write-Host "[e2e] Running: setup + happy-path + rate-limiting (single invocation)" -ForegroundColor DarkGray
 	@newman run "$(E2E_AUTH)/revoke-session.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "rate-limiting" --delay-request 1 --reporters cli
+	@$(MAKE) e2e-update-profile
 	@Write-Host "[e2e] profile suite passed" -ForegroundColor Green
 else
 	@echo "[e2e] --- GET /me ---"
@@ -287,6 +308,7 @@ else
 	@newman run "$(E2E_AUTH)/revoke-session.json" --environment "$(E2E_ENV)" \
 		--folder "setup" --folder "happy-path" --folder "rate-limiting" \
 		--delay-request 1 --reporters cli
+	@$(MAKE) e2e-update-profile
 	@echo "[e2e] profile suite passed"
 endif
 

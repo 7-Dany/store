@@ -160,6 +160,111 @@ func TestService_GetActiveSessions_UUIDBytesForwardedToStore(t *testing.T) {
 		"the [16]byte forwarded to the store must equal the parsed UUID")
 }
 
+// TestService_UpdateProfile covers service.UpdateProfile.
+func TestService_UpdateProfile(t *testing.T) {
+	t.Parallel()
+
+	displayName := "Alice"
+	avatarURL := "https://example.com/avatar.png"
+
+	t.Run("T-01 happy path both fields", func(t *testing.T) {
+		t.Parallel()
+		store := &authsharedtest.ProfileFakeStorer{
+			UpdateProfileTxFn: func(_ context.Context, _ profile.UpdateProfileInput) error {
+				return nil
+			},
+		}
+		svc := profile.NewService(store)
+		err := svc.UpdateProfile(context.Background(), profile.UpdateProfileInput{
+			UserID:      authsharedtest.RandomUUID(),
+			DisplayName: &displayName,
+			AvatarURL:   &avatarURL,
+			IPAddress:   "1.2.3.4",
+			UserAgent:   "test-agent",
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("T-02 happy path display_name only", func(t *testing.T) {
+		t.Parallel()
+		store := &authsharedtest.ProfileFakeStorer{
+			UpdateProfileTxFn: func(_ context.Context, _ profile.UpdateProfileInput) error {
+				return nil
+			},
+		}
+		svc := profile.NewService(store)
+		err := svc.UpdateProfile(context.Background(), profile.UpdateProfileInput{
+			UserID:      authsharedtest.RandomUUID(),
+			DisplayName: &displayName,
+			AvatarURL:   nil,
+			IPAddress:   "1.2.3.4",
+			UserAgent:   "test-agent",
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("T-03 happy path avatar_url only", func(t *testing.T) {
+		t.Parallel()
+		store := &authsharedtest.ProfileFakeStorer{
+			UpdateProfileTxFn: func(_ context.Context, _ profile.UpdateProfileInput) error {
+				return nil
+			},
+		}
+		svc := profile.NewService(store)
+		err := svc.UpdateProfile(context.Background(), profile.UpdateProfileInput{
+			UserID:    authsharedtest.RandomUUID(),
+			AvatarURL: &avatarURL,
+			IPAddress: "1.2.3.4",
+			UserAgent: "test-agent",
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("T-18 store error wraps with correct prefix", func(t *testing.T) {
+		t.Parallel()
+		storeErr := errors.New("db down")
+		store := &authsharedtest.ProfileFakeStorer{
+			UpdateProfileTxFn: func(_ context.Context, _ profile.UpdateProfileInput) error {
+				return storeErr
+			},
+		}
+		svc := profile.NewService(store)
+		err := svc.UpdateProfile(context.Background(), profile.UpdateProfileInput{
+			UserID:      authsharedtest.RandomUUID(),
+			DisplayName: &displayName,
+			IPAddress:   "1.2.3.4",
+			UserAgent:   "test-agent",
+		})
+		require.Error(t, err)
+		require.ErrorIs(t, err, storeErr)
+		require.Contains(t, err.Error(), "profile.UpdateProfile:")
+	})
+
+	t.Run("store receives correct UpdateProfileInput", func(t *testing.T) {
+		t.Parallel()
+		uid := authsharedtest.RandomUUID()
+		var gotIn profile.UpdateProfileInput
+		store := &authsharedtest.ProfileFakeStorer{
+			UpdateProfileTxFn: func(_ context.Context, in profile.UpdateProfileInput) error {
+				gotIn = in
+				return nil
+			},
+		}
+		svc := profile.NewService(store)
+		in := profile.UpdateProfileInput{
+			UserID:      uid,
+			DisplayName: &displayName,
+			AvatarURL:   &avatarURL,
+			IPAddress:   "10.0.0.1",
+			UserAgent:   "go-test/1.0",
+		}
+		_ = svc.UpdateProfile(context.Background(), in)
+		require.Equal(t, uid, gotIn.UserID)
+		require.Equal(t, &displayName, gotIn.DisplayName)
+		require.Equal(t, &avatarURL, gotIn.AvatarURL)
+	})
+}
+
 // TestProfile_RevokeSession covers service.RevokeSession.
 func TestProfile_RevokeSession(t *testing.T) {
 	t.Parallel()

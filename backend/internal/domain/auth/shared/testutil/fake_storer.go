@@ -192,6 +192,7 @@ type ProfileFakeStorer struct {
 	GetUserProfileFn    func(ctx context.Context, userID [16]byte) (profile.UserProfile, error)
 	GetActiveSessionsFn func(ctx context.Context, userID [16]byte) ([]profile.ActiveSession, error)
 	RevokeSessionTxFn   func(ctx context.Context, sessionID, ownerUserID [16]byte, ipAddress, userAgent string) error
+	UpdateProfileTxFn   func(ctx context.Context, in profile.UpdateProfileInput) error
 }
 
 // compile-time interface check.
@@ -214,6 +215,14 @@ func (f *ProfileFakeStorer) GetActiveSessions(ctx context.Context, userID [16]by
 func (f *ProfileFakeStorer) RevokeSessionTx(ctx context.Context, sessionID, ownerUserID [16]byte, ipAddress, userAgent string) error {
 	if f.RevokeSessionTxFn != nil {
 		return f.RevokeSessionTxFn(ctx, sessionID, ownerUserID, ipAddress, userAgent)
+	}
+	return nil
+}
+
+// UpdateProfileTx delegates to UpdateProfileTxFn if set.
+func (f *ProfileFakeStorer) UpdateProfileTx(ctx context.Context, in profile.UpdateProfileInput) error {
+	if f.UpdateProfileTxFn != nil {
+		return f.UpdateProfileTxFn(ctx, in)
 	}
 	return nil
 }

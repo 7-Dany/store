@@ -407,3 +407,150 @@ func TestRevokeSessionTx_Integration(t *testing.T) {
 // GetUserPasswordHash, UpdatePasswordHashTx, and WritePasswordChangeFailedAuditTx
 // were moved to the password package. Their integration tests now live in
 // internal/domain/auth/password/store_test.go.
+
+// ── TestUpdateProfileTx_Integration ──────────────────────────────────────────
+
+// TestUpdateProfileTx_Integration covers store.UpdateProfileTx.
+func TestUpdateProfileTx_Integration(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	// T-01 / T-19: both fields updated; read-back confirms both columns changed.
+	t.Run("T-01/T-19 both fields updated in DB", func(t *testing.T) {
+		t.Parallel()
+		ps, q := txStores(t)
+		uid := createUser(t, q, authsharedtest.NewEmail(t))
+		userID := [16]byte(uid)
+
+		newDN := "Alice Updated"
+		newURL := "https://cdn.example.com/alice.png"
+		err := ps.UpdateProfileTx(ctx, profile.UpdateProfileInput{
+			UserID:      userID,
+			DisplayName: &newDN,
+			AvatarURL:   &newURL,
+			IPAddress:   "127.0.0.1",
+			UserAgent:   "go-test/1.0",
+		})
+		require.NoError(t, err)
+
+		p, err := ps.GetUserProfile(ctx, userID)
+		require.NoError(t, err)
+		assert.Equal(t, newDN, p.DisplayName, "display_name must be updated")
+		assert.Equal(t, newURL, p.AvatarURL, "avatar_url must be updated")
+	})
+
+	// T-02 / T-20: display_name only — avatar_url must remain unchanged.
+	t.Run("T-02/T-20 display_name only, avatar_url unchanged", func(t *testing.T) {
+		t.Parallel()
+		ps, q := txStores(t)
+		uid := createUser(t, q, authsharedtest.NewEmail(t))
+		userID := [16]byte(uid)
+
+		// Seed a known avatar_url.
+		const originalURL = "https://original.example.com/img.png"
+		require.NoError(t, q.SetAvatarURLForTest(ctx, db.SetAvatarURLForTestParams{
+			AvatarURL: originalURL,
+			UserID:    authsharedtest.ToPgtypeUUID(userID),
+		}))
+
+		newDN := "Bob"
+		err := ps.UpdateProfileTx(ctx, profile.UpdateProfileInput{
+			UserID:      userID,
+			DisplayName: &newDN,
+			AvatarURL:   nil, // must leave avatar_url unchanged
+			IPAddress:   "127.0.0.1",
+			UserAgent:   "go-test/1.0",
+		})
+		require.NoError(t, err)
+
+		p, err := ps.GetUserProfile(ctx, userID)
+		require.NoError(t, err)
+		assert.Equal(t, newDN, p.DisplayName, "display_name must be updated")
+		assert.Equal(t, originalURL, p.AvatarURL, "avatar_url must remain unchanged")
+	})
+
+	// T-03 / T-21: avatar_url only — display_name must remain unchanged.
+	t.Run("T-03/T-21 avatar_url only, display_name unchanged", func(t *testing.T) {
+		t.Parallel()
+		ps, q := txStores(t)
+		uid := createUser(t, q, authsharedtest.NewEmail(t))
+		userID := [16]byte(uid)
+
+		// CreateUser seeds display_name = "Test User".
+		newURL := "https://new.example.com/avatar.png"
+		err := ps.UpdateProfileTx(ctx, profile.UpdateProfileInput{
+			UserID:      userID,
+			DisplayName: nil, // must leave display_name unchanged
+			AvatarURL:   &newURL,
+			IPAddress:   "127.0.0.1",
+			UserAgent:   "go-test/1.0",
+		})
+		require.NoError(t, err)
+
+		p, err := ps.GetUserProfile(ctx, userID)
+		require.NoError(t, err)
+		assert.Equal(t, "Test User", p.DisplayName, "display_name must remain unchanged")
+		assert.Equal(t, newURL, p.AvatarURL, "avatar_url must be updated")
+	})
+
+	// T-22: FailUpdateUserProfile — UpdateUserProfile query failure returns error.
+	t.Run("T-22 FailUpdateUserProfile returns wrapped error", func(t *testing.T) {
+		t.Parallel()
+		_, q := txStores(t)
+		proxy := authsharedtest.NewQuerierProxy(q)
+		proxy.FailUpdateUserProfile = true
+
+		newDN := "Charlie"
+		err := profile.NewStore(testPool).WithQuerier(proxy).UpdateProfileTx(ctx, profile.UpdateProfileInput{
+			UserID:      [16]byte(authsharedtest.RandomUUID()),
+			DisplayName: &newDN,
+			IPAddress:   "127.0.0.1",
+			UserAgent:   "go-test/1.0",
+		})
+		require.ErrorIs(t, err, authsharedtest.ErrProxy)
+	})
+
+	// T-23: FailInsertAuditLog — InsertAuditLog query failure returns error.
+	t.Run("T-23 FailInsertAuditLog returns wrapped error", func(t *testing.T) {
+		t.Parallel()
+		_, q := txStores(t)
+		proxy := authsharedtest.NewQuerierProxy(q)
+		proxy.FailInsertAuditLog = true
+
+		newDN := "Dave"
+		err := profile.NewStore(testPool).WithQuerier(proxy).UpdateProfileTx(ctx, profile.UpdateProfileInput{
+			UserID:      [16]byte(authsharedtest.RandomUUID()),
+			DisplayName: &newDN,
+			IPAddress:   "127.0.0.1",
+			UserAgent:   "go-test/1.0",
+		})
+		require.ErrorIs(t, err, authsharedtest.ErrProxy)
+	})
+
+	// T-24: audit row written with event_type = "profile_updated" after successful update.
+	t.Run("T-24 audit row written with profile_updated event", func(t *testing.T) {
+		t.Parallel()
+		ps, q := txStores(t)
+		uid := createUser(t, q, authsharedtest.NewEmail(t))
+		userID := [16]byte(uid)
+
+		newDN := "Eve"
+		newURL := "https://cdn.example.com/eve.png"
+		err := ps.UpdateProfileTx(ctx, profile.UpdateProfileInput{
+			UserID:      userID,
+			DisplayName: &newDN,
+			AvatarURL:   &newURL,
+			IPAddress:   "127.0.0.1",
+			UserAgent:   "go-test/1.0",
+		})
+		require.NoError(t, err)
+
+		count, err := q.CountAuditEventsByUser(ctx, db.CountAuditEventsByUserParams{
+			UserID:    authsharedtest.ToPgtypeUUID(userID),
+			EventType: string(audit.EventProfileUpdated),
+		})
+		require.NoError(t, err)
+		assert.EqualValues(t, 1, count,
+			"exactly one profile_updated audit row must be written per UpdateProfileTx call")
+	})
+}

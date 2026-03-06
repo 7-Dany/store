@@ -94,6 +94,7 @@ type ProfileFakeServicer struct {
 	GetUserProfileFn    func(ctx context.Context, userID string) (profile.UserProfile, error)
 	GetActiveSessionsFn func(ctx context.Context, userID string) ([]profile.ActiveSession, error)
 	RevokeSessionFn     func(ctx context.Context, userID, sessionID, ipAddress, userAgent string) error
+	UpdateProfileFn     func(ctx context.Context, in profile.UpdateProfileInput) error
 }
 
 // compile-time interface check.
@@ -116,6 +117,14 @@ func (f *ProfileFakeServicer) GetActiveSessions(ctx context.Context, userID stri
 func (f *ProfileFakeServicer) RevokeSession(ctx context.Context, userID, sessionID, ipAddress, userAgent string) error {
 	if f.RevokeSessionFn != nil {
 		return f.RevokeSessionFn(ctx, userID, sessionID, ipAddress, userAgent)
+	}
+	return nil
+}
+
+// UpdateProfile delegates to UpdateProfileFn if set.
+func (f *ProfileFakeServicer) UpdateProfile(ctx context.Context, in profile.UpdateProfileInput) error {
+	if f.UpdateProfileFn != nil {
+		return f.UpdateProfileFn(ctx, in)
 	}
 	return nil
 }

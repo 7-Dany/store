@@ -2,6 +2,19 @@ package profile
 
 import "time"
 
+// updateProfileRequest is the JSON body for PATCH /me/profile.
+// Both fields are optional pointers; a nil pointer means "do not change".
+// An explicit null in JSON decodes to nil (same as omitting the field).
+type updateProfileRequest struct {
+	DisplayName *string `json:"display_name"`
+	AvatarURL   *string `json:"avatar_url"`
+}
+
+// updateProfileResponse is the JSON response body for a successful PATCH /me/profile.
+type updateProfileResponse struct {
+	Message string `json:"message"`
+}
+
 // meResponse is the JSON response body for GET /me.
 type meResponse struct {
 	ID            string     `json:"id"`

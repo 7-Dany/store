@@ -119,6 +119,7 @@ func TestEventConstants_ExactValues(t *testing.T) {
 		{audit.EventUnlockAttemptFailed, "unlock_attempt_failed"},
 		{audit.EventPasswordResetAttemptFailed, "password_reset_attempt_failed"},
 		{audit.EventPasswordResetCodeVerified, "password_reset_code_verified"},
+		{audit.EventProfileUpdated, "profile_updated"},
 	}
 
 	// Enforce exhaustiveness: AllEvents() must contain exactly as many entries

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -126,6 +127,13 @@ func DecodeJSON[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 	var v T
 	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
 		if IsBodyTooLarge(err) {
+			Error(w, http.StatusRequestEntityTooLarge, "validation_error", "request body exceeds maximum allowed size")
+			return v, false
+		}
+		// The JSON decoder may bail out before reading the full body (e.g. a
+		// syntax error at byte 1 of a 2 MiB payload). Drain the remaining bytes
+		// so that MaxBytesReader can still fire its size-limit error.
+		if _, drainErr := io.Copy(io.Discard, r.Body); IsBodyTooLarge(drainErr) {
 			Error(w, http.StatusRequestEntityTooLarge, "validation_error", "request body exceeds maximum allowed size")
 			return v, false
 		}

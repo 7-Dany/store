@@ -186,14 +186,16 @@ func TestHandler_VerifyEmail_BodyTooLarge(t *testing.T) {
 	t.Parallel()
 	h := newVerificationHandler(t, &authsharedtest.VerificationFakeServicer{}, nil)
 	w := httptest.NewRecorder()
-	large := make([]byte, 1<<20+1)
+	large := make([]byte, 1<<20+1) // raw non-JSON bytes exceed 1 MiB
 	for i := range large {
 		large[i] = 'a'
 	}
 	r := httptest.NewRequest(http.MethodPost, "/verify-email", bytes.NewReader(large))
 	r.Header.Set("Content-Type", "application/json")
 	h.VerifyEmail(w, r)
-	require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	// respond.DecodeJSON drains the body on syntax error so MaxBytesReader
+	// fires → 413 Request Entity Too Large (Sync S-3, RULES.md §3.14).
+	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 }
 
 func TestHandler_VerifyEmail_ErrTokenExpired_Returns422(t *testing.T) {
@@ -348,18 +350,20 @@ func TestHandler_VerifyEmail_ErrAlreadyVerified_ResetsBackoff(t *testing.T) {
 	require.True(t, fake.ResetCalled)
 }
 
-func TestHandler_ResendVerification_BodyTooLarge_Returns422(t *testing.T) {
+func TestHandler_ResendVerification_BodyTooLarge_Returns413(t *testing.T) {
 	t.Parallel()
 	h := newVerificationHandler(t, &authsharedtest.VerificationFakeServicer{}, nil)
 	w := httptest.NewRecorder()
-	large := make([]byte, 1<<20+1)
+	large := make([]byte, 1<<20+1) // raw non-JSON bytes exceed 1 MiB
 	for i := range large {
 		large[i] = 'a'
 	}
 	r := httptest.NewRequest(http.MethodPost, "/resend-verification", bytes.NewReader(large))
 	r.Header.Set("Content-Type", "application/json")
 	h.ResendVerification(w, r)
-	require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	// respond.DecodeJSON drains the body on syntax error so MaxBytesReader
+	// fires → 413 Request Entity Too Large (Sync S-3, RULES.md §3.14).
+	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 }
 
 // ── ResendVerification tests ──────────────────────────────────────────────────

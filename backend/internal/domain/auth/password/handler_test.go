@@ -115,15 +115,14 @@ func TestHandler_ForgotPassword_AlwaysReturns202(t *testing.T) {
 		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
 	})
 
-	t.Run("body too large returns 422", func(t *testing.T) {
+	t.Run("body too large returns 413", func(t *testing.T) {
 		t.Parallel()
 		svc := &authsharedtest.PasswordFakeServicer{}
-		bigBody := strings.Repeat("x", 2<<20) // 2 MiB > maxBodyBytes
-		// The body is not valid JSON, so the decoder returns a SyntaxError before
-		// MaxBytesReader fires. Both paths map to 422 (deliberate design: all
-		// body-decode failures share one status code — see respond.DecodeJSON).
+		bigBody := strings.Repeat("x", 2<<20) // 2 MiB > maxBodyBytes, raw non-JSON bytes
+		// respond.DecodeJSON drains the body on syntax error so MaxBytesReader
+		// fires → 413 Request Entity Too Large (Sync S-3, RULES.md §3.14).
 		w := postJSON(newTestHandler(svc).ForgotPassword, bigBody)
-		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+		require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 	})
 
 	t.Run("invalid email format returns 422", func(t *testing.T) {
@@ -430,13 +429,14 @@ func TestHandler_ResetPassword(t *testing.T) {
 		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
 	})
 
-	t.Run("body too large returns 422", func(t *testing.T) {
+	t.Run("body too large returns 413", func(t *testing.T) {
 		t.Parallel()
 		svc := &authsharedtest.PasswordFakeServicer{}
-		bigBody := strings.Repeat("x", 2<<20)
-		// Invalid JSON → SyntaxError → 422 (same as other MaxBytesReader cases).
+		bigBody := strings.Repeat("x", 2<<20) // raw non-JSON bytes exceed 1 MiB
+		// respond.DecodeJSON drains the body on syntax error so MaxBytesReader
+		// fires → 413 Request Entity Too Large (Sync S-3, RULES.md §3.14).
 		w := postJSON(newTestHandler(svc).ResetPassword, bigBody)
-		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+		require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 	})
 
 	// ── New cases required by the 3-step flow ────────────────────────────────

@@ -13,7 +13,8 @@ description: >
 # Backend Route Implementation Skill
 
 This skill guides implementation of new routes in `internal/domain/` using the
-project's 9-stage process.
+project's 9-stage process. It is optimised for **minimum token consumption** and
+**maximum accuracy** — read only what you need, skip what you can infer.
 
 **Filesystem access is available.** Always use the Filesystem tools to read
 files directly — never guess at file contents, conventions, or guard ordering.
@@ -22,225 +23,305 @@ files directly — never guess at file contents, conventions, or guard ordering.
 
 ## Project root
 
-The project root differs by environment. **Before doing anything else**, resolve
-it using this priority order:
+```
+D:\Projects\store\backend
+```
 
-1. **`STORE_ROOT` environment variable** — if set, use it as-is.
-2. **Filesystem tool auto-detect** — call `Filesystem:list_allowed_directories`.
-   Look for an entry that contains `store/backend` (Linux/macOS) or
-   `store\backend` (Windows). Use that as the project root.
-3. **Known local fallback** — `D:\Projects\store\backend` (Windows dev machine).
-4. **GitHub Actions fallback** — `/home/runner/work/store/backend` (CI).
-
-Store the resolved value as `{ROOT}` and use it for every subsequent path in
-this skill. Use forward slashes (`/`) when on Linux/macOS; backslashes (`\`) on
-Windows. When in doubt, prefer forward slashes — Go tooling accepts them on all
-platforms.
+All paths in this skill are relative to that root. When using Filesystem tools,
+prefix every path with `D:\Projects\store\backend\`.
 
 The skill's own reference files live at:
 ```
-{ROOT}/docs/skills/backend-route-impl/references/
+D:\Projects\store\backend\docs\skills\backend-route-impl\references\
 ```
+
+---
+
+## Efficiency Rules (read before starting)
+
+These rules exist to reduce token consumption without sacrificing accuracy.
+
+**E-1 — Lean read first.** Read the minimum set of files to confirm the target
+and understand its context. Only open additional files when a specific unknown
+arises (e.g. "I need to know what Storer methods already exist").
+
+**E-2 — Skip non-existent files silently.** If a `Read first` file doesn't exist
+(e.g. `docs/rules/profile.md` for a new domain), skip it and note "not found —
+new domain, no domain rules yet." Do not retry with different paths.
+
+**E-3 — Read large files by section, not whole.** For files > 200 lines (e.g.
+`auth.sql`, `RULES.md`, `PROMPT-TEMPLATE.md`), read only the relevant section
+using `head`/`tail` or a targeted range. The sections to read per stage are
+listed in the stage steps below.
+
+**E-4 — Never re-read a file you already have in context.** If you read
+`RULES.md` in Step 3, do not re-read it in Step 6.
+
+**E-5 — Infer from analogues.** For a new feature in an existing domain, read
+one analogous existing feature (the most similar one by complexity) instead of
+all features. The pattern is consistent within a domain.
+
+**E-6 — Context snapshot.** After producing Stage 0, write a compact
+`docs/prompts/{feature}/context.md` file (template in §Appendix A). Every
+subsequent stage session loads `context.md` instead of re-reading Stage 0 +
+RULES.md from scratch.
 
 ---
 
 ## Step 1 — Orient
 
-Before anything else, use the Filesystem tool to read:
+Read these **four files** to establish baseline context:
 
-| Full path | Why |
+| Full path | What to extract |
 |---|---|
-| `{ROOT}/docs/map/INCOMING.md` | What routes exist, section numbers, current `[ ]`/`[~]`/`[x]` status |
-| `{ROOT}/docs/map/CHECKLIST.md` | What is already production-ready — do not re-implement these |
+| `D:\Projects\store\backend\docs\skills\backend-route-impl\references\e2e-status.md` | What's done (✓/⏳), KV prefix collision check — **replaces reading CHECKLIST.md** |
+| `D:\Projects\store\backend\docs\skills\backend-route-impl\references\project-map.md` | Package locations, exported APIs, all platform interfaces — **replaces guessing** |
+| `D:\Projects\store\backend\docs\skills\backend-route-impl\references\route-map.md` | Resolved Go package paths for all planned routes |
+| `D:\Projects\store\backend\docs\prompts\{feature}\context.md` | Previously resolved context (if exists) |
 
-If the user has not named a specific route, show them the next unstarted items
-from INCOMING.md (status `[ ]`) grouped by implementation group (A, B, C…) and
-ask which one to start. Do not proceed until the target route is confirmed.
+**Do NOT read `CHECKLIST.md` or `INCOMING.md` in full.** They are 600+ and 300+ lines respectively.
+- To check what's done → `e2e-status.md`
+- To find requirement text → read only the `§{section}` block from `INCOMING.md` that the user named
+
+If the user has not named a specific route, show the ⏳ items from `e2e-status.md` grouped by group and ask which to start.
+
+If `context.md` exists for the feature, skip Steps 2–3 and proceed directly
+to Step 4 using the resolved paths in `context.md`.
 
 ---
 
 ## Step 2 — Identify the stage
 
-Ask which stage the user wants to produce, or infer it from context:
+Ask which stage the user wants, or infer from context:
 
 | Stage | User might say |
 |---|---|
-| 0 — Design | "design", "spec", "stage 0", "what decisions do I need" |
+| 0 — Design | "design", "spec", "stage 0", "what decisions" |
 | 1 — Foundations | "SQL", "types", "models", "stage 1" |
 | 2 — Data layer | "store", "storer", "stage 2" |
 | 3 — Logic layer | "service", "stage 3" |
 | 4 — HTTP layer | "handler", "routes", "stage 4" |
 | 5 — Audit | "audit check", "verify", "stage 5" |
-| 6 — Unit tests | "run tests" — manual step, no AI session needed |
-| 7 — E2E | "e2e", "e2e tests", "stage 7" — AI writes the collection; human runs it |
+| 6 — Unit tests | "run tests" — manual step, no AI needed |
+| 7 — E2E | "e2e" — manual step, no AI needed |
 | 8 — Docs | "docs", "mdx", "stage 8" |
 
 If the user says "start from scratch" or "new route", begin at Stage 0.
 
 ---
 
-## Step 3 — Read the stage template and rules
+## Step 3 — Targeted file reads (stage-specific)
 
-Use the Filesystem tool to read all of these before producing any output:
+**Do not read PROMPT-TEMPLATE.md in full.** It is 400+ lines. Read only the
+section for the requested stage using the line ranges below, or read the
+specific stage template by searching for `## Stage N`.
 
-| Full path | When to read |
+Read these files **for every stage**:
+
+| File | What to read | Why |
+|---|---|---|
+| `docs/RULES.md` | §3.13 checklist + the specific §3.x rule relevant to this stage | Global conventions |
+| `docs/rules/{domain}.md` | Full file if < 300 lines; §2 (features) + §5 (ADRs) if longer | Domain-specific patterns |
+| `docs/skills/backend-route-impl/references/route-map.md` | Already read in Step 1 — skip | — |
+
+Then read the **stage-specific** files listed below. Only read files marked **Required**.
+Files marked **If needed** should only be opened if something in the Required files
+is unclear or missing.
+
+### Stage 0 — Design
+
+| File | Required / If needed | Note |
+|---|---|---|
+| `docs/map/INCOMING.md §{section}` | Required | **Target section only** — use filesystem head/tail or search |
+| Closest analogous package (`handler.go` + `service.go`) | Required | Use `project-map.md §1` to locate it; files are small |
+| `internal/audit/audit.go` | Required | `const` block only (first 80 lines) — event names |
+| `sql/queries/auth.sql` | Required | **Tail 60 lines** — existing query style at append point |
+| `project-map.md §5` | Already loaded in Step 1 | kvstore/ratelimit/respond/token interfaces — **skip re-reading platform files** |
+| `project-map.md §2` | Already loaded in Step 1 | authshared errors + OTP functions — **skip re-reading shared files** |
+
+### Stage 1 — Foundations
+
+| File | Required / If needed |
 |---|---|
-| `{ROOT}/docs/prompts/PROMPT-TEMPLATE.md` | Every stage — contains the exact prompt structure to fill in |
-| `{ROOT}/docs/RULES.md` | Every stage — global naming, error wrapping, comment style |
-| `{ROOT}/docs/rules/auth.md` | Auth domain routes — guard ordering, OTP patterns, ADRs |
-| `{ROOT}/docs/skills/backend-route-impl/references/route-map.md` | Every stage — resolved Go package paths for all routes |
+| `sql/queries/auth.sql` | Required — **tail 60 lines** (append position, confirm section style) |
+| `internal/audit/audit.go` | Required — full `const` + `AllEvents()` (needed to write the sync triad) |
+| Analogous `models.go` + `requests.go` + `validators.go` + `errors.go` | Required — one analogous feature only; use `project-map.md §1` to locate it |
+| `project-map.md §2` (authshared errors) | Already loaded — check here first before defining new sentinels |
+| `RULES.md §3.9` (SQL) + `§3.11` (naming) | Required |
 
-If a `docs/rules/{domain}.md` exists for the target domain, read it. Check with
-the Filesystem tool — do not assume it does or does not exist.
+### Stage 2 — Data Layer
+
+| File | Required / If needed |
+|---|---|
+| `internal/db/auth.sql.go` | Required — confirm generated method signatures (new queries from Stage 1) |
+| `{feature}/service.go` | Required — Storer interface definition |
+| `auth/shared/testutil/fake_storer.go` | Required — existing FakeStorer struct layout (add new entry) |
+| `auth/shared/testutil/querier_proxy.go` | Required — existing QuerierProxy layout (add Fail* fields) |
+| `project-map.md §3` (authsharedtest) | Already loaded — confirms exact FakeStorer/Proxy patterns |
+| `RULES.md §3.3` (store shapes) + `§3.4` (error wrapping) | Required |
+| Analogous `store.go` | Required — one file; use `project-map.md §1` to pick the closest analogue |
+
+### Stage 3 — Logic Layer
+
+| File | Required / If needed |
+|---|---|
+| `{feature}/service.go` | Required — constructor + Storer interface |
+| `{feature}/handler.go` | Required — Servicer interface location |
+| `{feature}/models.go` | Required |
+| `shared/testutil/fake_servicer.go` | Required — existing layout |
+| `0-design.md §5` (guard ordering) + `§7` (S-layer test cases) | Required |
+| `shared/otp.go` | If OTP used |
+| `RULES.md §3.4, §3.6, §3.7` | Required |
+
+### Stage 4 — HTTP Layer
+
+| File | Required / If needed |
+|---|---|
+| `{feature}/handler.go` | Required |
+| `{feature}/routes.go` | Required |
+| `{feature}/requests.go` + `validators.go` | Required |
+| `{feature}/handler_test.go` (if exists) | Required |
+| `shared/testutil/fake_servicer.go` | Required |
+| `0-design.md §2` (HTTP contract) + `§7` (H+I test cases) | Required |
+| `RULES.md §3.10` (HTTP) + `§3.13` (checklist) | Required |
+
+### Stage 5 — Audit
+
+| File | Required / If needed |
+|---|---|
+| All Stage 1–4 production files + test files for this feature | Required (full read) |
+| `0-design.md` | Required (source of truth) |
+| `RULES.md §3.13` | Required |
+
+### Stage 8 — Docs
+
+| File | Required / If needed |
+|---|---|
+| Closest existing `.mdx` file in `mint/api-reference/{domain}/` | Required |
+| `mint/docs.json` | Required — navigation tree |
+| `0-design.md §2` (HTTP contract) + `§6` (rate limits) | Required |
 
 ---
 
-## Step 4 — Read the existing code for the target package
+## Step 4 — Read the target package
 
-Before designing or implementing anything, use the Filesystem tool to read the
-existing files in the target package folder (if it already exists). Key files:
+Before designing or implementing, check if the target package folder exists:
 
 ```
-{ROOT}/internal/domain/{domain}/{route}/service.go
-{ROOT}/internal/domain/{domain}/{route}/handler.go
-{ROOT}/internal/domain/{domain}/{route}/routes.go
-{ROOT}/internal/domain/{domain}/shared/errors.go
-{ROOT}/internal/domain/{domain}/shared/models.go
-{ROOT}/internal/audit/audit.go
-{ROOT}/sql/queries/{domain}.sql
+D:\Projects\store\backend\internal\domain\{domain}\{route}\
 ```
 
-If the package folder does not yet exist, that is expected for new routes — note
-it and proceed.
+If it exists, read: `service.go`, `handler.go`, `routes.go`, `models.go`.
+If it doesn't exist — that is expected for new routes. Note it and proceed.
+
+**Do not read all files in the folder blindly.** Read only the files relevant
+to the current stage (see Step 3 lists above).
 
 ---
 
 ## Step 5 — Produce the stage prompt or output
 
-For stages 0–5 and 8, produce the completed stage prompt document (filled-in
-template, ready to hand to a fresh AI session). The stage prompt is the
-deliverable — do not implement code in this session.
+For stages 0–5 and 8, produce the completed stage prompt document. The stage
+prompt is the deliverable — do not implement code in this session.
 
-For Stage 0 specifically: produce the full design doc including HTTP contract,
-decisions table, guard ordering, and the complete test case inventory (§7).
-Do not skip the test inventory — it is the most important output of Stage 0.
+For Stage 0 specifically, produce the full design doc including:
+- HTTP contract (§2): every endpoint, every error code, exact status + code string
+- Decisions table (§3): every open question answered with rationale
+- Guard ordering (§5): numbered list, one entry per check/mutation
+- **Complete test case inventory (§7)** — this is the most important output
+
+**Test case inventory algorithm** (Stage 0 §7):
+
+Derive from guard ordering mechanically:
+
+1. **S-layer:** For every guard that returns an error sentinel: one test case.
+   For every `context.WithoutCancel` call: one test case asserting `ctx.Done() == nil`.
+   For every timing-invariant dummy call: one test case counting invocations.
+   Add happy path (all guards pass → success result).
+
+2. **H-layer:** For every sentinel the service can return: one handler test case
+   mapping sentinel → HTTP status + code string. For every request field: one
+   validation failure case (empty, wrong format, too long). Add missing auth → 401.
+   Add malformed JSON → 422. Add body > 1 MiB → 413.
+
+3. **I-layer:** For every store method that writes to DB: one integration test
+   asserting the DB state after the call. For every store error path:
+   one integration test using QuerierProxy Fail flag.
+
+If a guard has no error sentinel (e.g. "extract user ID from JWT"), it produces
+only an H-layer case (missing auth → 401), not an S-layer case.
 
 Save the completed stage prompt to:
 ```
-{ROOT}/docs/prompts/{feature}/{N}-{stage-name}.md
+D:\Projects\store\backend\docs\prompts\{feature}\{N}-{stage-name}.md
 ```
-
-Use the Filesystem write tool to save it so the user has it immediately.
 
 ---
 
-## Step 5.5 — Update INCOMING.md status
+## Step 6 — Write context.md (after Stage 0 only)
 
-After completing any stage (saving a stage prompt or confirming code/tests
-passed), update the route's status line in `INCOMING.md`:
+Immediately after saving `0-design.md`, write
+`D:\Projects\store\backend\docs\prompts\{feature}\context.md`
+using the template in §Appendix A.
 
-| Situation | Status to set |
-|---|---|
-| First stage started (Stage 0 prompt saved) | `[ ]` → `[~]` |
-| All stages complete through Stage 8 reviewed | `[~]` → `[x]` |
-
-Use the Filesystem write/edit tool to make the change. The status marker sits
-at the start of each bullet under the relevant `§` heading, e.g.:
-```
-- [~] Requires valid JWT
-```
-Change **every** `[ ]` bullet under that section to `[~]`, or `[x]` when fully done.
-
-Also append a progress note to the initial `docs/prompts/{feature}/0-design.md`
-under an `## Stage Progress` section (create it if absent) listing which
-stages are complete:
-
-```markdown
-## Stage Progress
-
-| Stage | Status |
-|---|---|
-| 0 — Design | ✅ Complete |
-| 1 — Foundations | ✅ Complete |
-| 2 — Data Layer | ✅ Complete |
-| 3 — Logic Layer | ✅ Complete |
-| 4 — HTTP Layer | ✅ Complete |
-| 5 — Audit | ✅ Complete |
-| 6 — Unit Tests | ✅ Complete (manual) |
-| 7 — E2E | ⏳ Manual — run when ready |
-| 8 — Docs | ⏳ Prompt saved |
-```
-
-Update this table each time a stage completes.
+This file is loaded by all subsequent stage sessions (Step 1) as a cheap
+substitute for re-reading Stage 0 + RULES.md. It must stay under 80 lines.
 
 ---
 
-## Step 6 — Automatically produce the next stage prompt
+## Step 7 — Auto-produce the next stage prompt
 
-Immediately after **either** saving a stage prompt **or** finishing a stage
-implementation (code changes applied and verified), generate and save the
-prompt for the **next** stage. Do not wait to be asked in either case.
+Immediately after saving a stage prompt, produce and save the next stage's
+prompt. Do not wait to be asked.
 
 **Stage chaining map:**
 
-| Just completed | Next prompt to produce | Skip reason |
-|---|---|---|
-| Stage 0 — Design | Stage 1 — Foundations | — |
-| Stage 1 — Foundations | Stage 2 — Data Layer | — |
-| Stage 2 — Data Layer | Stage 3 — Logic Layer | — |
-| Stage 3 — Logic Layer | Stage 4 — HTTP Layer | — |
-| Stage 4 — HTTP Layer | Stage 5 — Audit | — |
-| Stage 5 — Audit | Stage 7 — E2E | Stage 6 is manual (run tests); AI creates the E2E collection |
-| Stage 7 — E2E (collection written) | Stage 8 — Docs | Human runs + approves E2E first; then docs |
-| Stage 8 — Docs | *(none — implementation complete)* | — |
+| Just completed | Who acts next | What happens | AI produces |
+|---|---|---|---|
+| Stage 0 — Design | AI | — | Stage 1 prompt |
+| Stage 1 — Foundations | AI | — | Stage 2 prompt |
+| Stage 2 — Data Layer | AI | — | Stage 3 prompt |
+| Stage 3 — Logic Layer | AI | — | Stage 4 prompt |
+| Stage 4 — HTTP Layer | AI | — | Stage 5 prompt |
+| Stage 5 — Audit | **User** | Reads audit output, fixes issues, runs unit tests manually | *(nothing yet)* |
+| User: "tests pass" | AI | — | Stage 6 — E2E tests file |
+| Stage 6 — E2E tests | **User** | Runs the e2e test file to confirm | *(nothing yet)* |
+| User: "e2e pass" | AI | — | Stage 7 — Docs |
+| Stage 7 — Docs | *(complete)* | — | — |
 
-**How to produce the next prompt:**
+**Key rule:** The AI never auto-produces Stage 6 or Stage 7 without explicit user confirmation from the previous gate. Stage 5 → wait for "tests pass". Stage 6 → wait for "e2e pass".
 
-1. Re-read the PROMPT-TEMPLATE.md section for the next stage.
-2. Fill in every `{placeholder}` using the same feature/domain/route values
-   already resolved in the current session. When chaining from an implementation
-   session (user supplied an existing stage prompt file), extract the feature
-   name and resolved paths from that file — read it with the Filesystem tool
-   if needed.
-3. For stages that reference Stage 0 test cases (Stages 3, 4, 5), read the
-   Stage 0 design doc from disk and copy the relevant rows directly.
-4. Save the next prompt to:
-   ```
-   {ROOT}/docs/prompts/{feature}/{N}-{stage-name}.md
-   ```
-5. Tell the user: "Next stage prompt saved to `{path}`. Open it in a fresh
-   session when you're ready to continue."
+**How to fill in the next prompt efficiently:**
+- Copy all resolved `{placeholder}` values from the current session's context
+- For Stage 3/4/5: copy the relevant test-case rows directly from `0-design.md §7`
+  (already read in Step 1 via `context.md`). Do not re-derive them.
+- For the "Read first" table: use the stage-specific file list from Step 3 above
+  (not the PROMPT-TEMPLATE.md verbose version)
+- Leave no `{placeholder}` in the saved file
 
-**What to fill in for each next-stage prompt:**
-- All file paths resolved (no `{placeholder}` left behind)
-- Pre-flight items specific to what this stage depends on
-- Done-when build commands with the real package path
-- For Stage 3/4: test case table populated from Stage 0 §7
-- For Stage 5: audit checklist table pre-populated with test IDs from Stage 0 §7
-
-**Do not** implement code for the next stage — only produce its prompt document.
+Tell the user: "Next stage prompt saved to `{path}`. Open it in a fresh session."
 
 ---
 
 ## Project file map (resolved paths)
 
-Use these in stage prompts to replace `{placeholder}` values.
-Substitute `{ROOT}` with the project root resolved in the **Project root** section above.
-
 ```
-Project root:        {ROOT}
-Domain root:         {ROOT}/internal/domain/
-Auth routes:         {ROOT}/internal/domain/auth/{route}/
-Admin routes:        {ROOT}/internal/domain/admin/{route}/
-Shared auth:         {ROOT}/internal/domain/auth/shared/
-Shared testutil:     {ROOT}/internal/domain/auth/shared/testutil/
-SQL queries:         {ROOT}/sql/queries/auth.sql  (or admin.sql)
-SQL test queries:    {ROOT}/sql/queries_test/auth_test.sql
-Generated DB:        {ROOT}/internal/db/  (read-only, regenerated by make sqlc)
-Audit events:        {ROOT}/internal/audit/audit.go
-KV store:            {ROOT}/internal/platform/kvstore/store.go
-Token platform:      {ROOT}/internal/platform/token/
-Mint docs:           {ROOT}/mint/api-reference/{domain}/{route}/
+Project root:        D:\Projects\store\backend
+Domain root:         internal/domain/
+Auth routes:         internal/domain/auth/{route}/
+Profile routes:      internal/domain/profile/{route}/
+Admin routes:        internal/domain/admin/{route}/
+Shared auth:         internal/domain/auth/shared/
+Shared profile:      internal/domain/profile/shared/
+Shared testutil:     internal/domain/auth/shared/testutil/
+SQL queries:         sql/queries/auth.sql  (all user-row queries, auth + profile domain)
+SQL test queries:    sql/queries_test/auth_test.sql
+Generated DB:        internal/db/  (read-only, regenerated by make sqlc)
+Audit events:        internal/audit/audit.go
+KV store:            internal/platform/kvstore/store.go
+Token platform:      internal/platform/token/
+Mint docs:           mint/api-reference/{domain}/{route}/
+Stage prompts:       docs/prompts/{feature}/
 ```
 
 See `references/route-map.md` for every route's resolved Go package path.
@@ -249,16 +330,10 @@ See `references/route-map.md` for every route's resolved Go package path.
 
 ## Package layout rule (enforce in every stage)
 
-**One route → one folder.** A package folder never serves more than one HTTP
-endpoint. The only exceptions:
-
-- OAuth providers: initiate + callback + link + unlink share one folder (same
-  `user_identities` resource).
-- Availability check + mutation for the same resource share one folder
-  (e.g. `GET /username/available` + `PATCH /me/username` → `auth/username/`).
-
-If a stage prompt or design doc would put two unrelated routes in one folder,
-flag it and split before proceeding.
+**One route → one folder.** The only exceptions:
+- OAuth providers: initiate + callback + link + unlink share one folder (same resource)
+- Availability check + mutation for the same resource share one folder (e.g. `username/`)
+- Multi-step flows for the same resource share one folder (e.g. `email/` for all three email-change steps)
 
 ---
 
@@ -275,4 +350,49 @@ Full details in `references/route-map.md`. Summary:
 | E | At least one OAuth provider live | Linked accounts |
 | F | Owner bootstrap done | All admin routes |
 
-Never start a group before its prerequisite is met.
+---
+
+## Appendix A — context.md template
+
+Write this file immediately after Stage 0. Keep it under 80 lines.
+
+```markdown
+# {Feature} — Resolved Context
+
+**Section:** INCOMING.md §{section}
+**Package:** `internal/domain/{domain}/{route}/`
+**Status:** Stage 0 approved / Stage N complete
+
+## Resolved paths
+- SQL file: `sql/queries/auth.sql` (new section: `/* ── {Feature} ── */`)
+- Models: `internal/domain/{domain}/{route}/models.go`
+- Store: `internal/domain/{domain}/{route}/store.go`
+- Service: `internal/domain/{domain}/{route}/service.go`
+- Handler: `internal/domain/{domain}/{route}/handler.go`
+- Routes: `internal/domain/{domain}/{route}/routes.go`
+- FakeStorer: `internal/domain/{domain}/shared/testutil/fake_storer.go`
+- FakeServicer: `internal/domain/{domain}/shared/testutil/fake_servicer.go`
+- QuerierProxy: `internal/domain/{domain}/shared/testutil/querier_proxy.go`
+
+## Key decisions (from Stage 0 §3)
+- D-01: {summary}
+- D-02: {summary}
+... (one line per decision)
+
+## New SQL queries
+{query names, one per line}
+
+## New audit events
+{EventName = "value_string", one per line}
+
+## New sentinel errors
+{ErrName — package location}
+
+## Rate-limit prefixes
+{prefix: endpoint mapping}
+
+## Test case IDs (from Stage 0 §7)
+- S-layer: T-01 to T-{N}
+- H-layer: T-{N+1} to T-{M}
+- I-layer: T-{M+1} to T-{K}
+```

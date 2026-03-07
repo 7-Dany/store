@@ -3,36 +3,17 @@
 Current state of `docs/map/INCOMING.md` with resolved Go package paths.
 Update this file when a route is marked `[x]` (implemented).
 
----
 
-## Group A — Extends existing packages (no schema changes)
-
-| § | Route | Method | Path | Go package |
-|---|---|---|---|---|
-| A-1 | Profile Update | PATCH | `/api/v1/auth/me/profile` | `internal/domain/auth/profile/` |
-| A-2 | Set Password | POST | `/api/v1/auth/set-password` | `internal/domain/auth/set-password/` |
-
----
-
-## Group B — New packages (requires schema migration §B-0)
+## Group A — Profile Management
 
 | § | Route | Method | Path | Go package |
 |---|---|---|---|---|
-| B-0 | Schema Migration | — | — | `sql/migrations/` |
-| B-1a | Username Availability | GET | `/api/v1/auth/username/available` | `internal/domain/auth/username/` |
-| B-1b | Update Username | PATCH | `/api/v1/auth/me/username` | `internal/domain/auth/username/` |
-| B-2a | Email Change — Request | POST | `/api/v1/auth/me/email/request-change` | `internal/domain/auth/email/request/` |
-| B-2b | Email Change — Verify Current | POST | `/api/v1/auth/me/email/verify-current` | `internal/domain/auth/email/verify/` |
-| B-2c | Email Change — Confirm New | POST | `/api/v1/auth/me/email/confirm-change` | `internal/domain/auth/email/confirm/` |
-| B-3 | Delete Account | DELETE | `/api/v1/auth/me` | `internal/domain/auth/delete/` |
-
----
-
-## Group C — No external dependencies
-
-| § | Route | Method | Path | Go package |
-|---|---|---|---|---|
-| C-1 | Owner Bootstrap | POST | `/api/v1/auth/owner/bootstrap` | `internal/domain/auth/bootstrap/` |
+| B-1a | Username Availability | GET | `/api/v1/profile/username/available` | `internal/domain/profile/username/` |
+| B-1b | Update Username | PATCH | `/api/v1/profile/me/username` | `internal/domain/profile/username/` |
+| B-2a | Email Change — Request | POST | `/api/v1/profile/me/email/request-change` | `internal/domain/profile/email/` |
+| B-2b | Email Change — Verify Current | POST | `/api/v1/profile/me/email/verify-current` | `internal/domain/profile/email/` |
+| B-2c | Email Change — Confirm New | POST | `/api/v1/profile/me/email/confirm-change` | `internal/domain/profile/email/` |
+| B-3 | Delete Account | DELETE | `/api/v1/profile/me` | `internal/domain/profile/me/` |
 
 ---
 
@@ -49,7 +30,7 @@ Update this file when a route is marked `[x]` (implemented).
 
 | § | Route | Method | Path | Go package |
 |---|---|---|---|---|
-| E-1 | Linked Accounts | GET | `/api/v1/auth/me/identities` | `internal/domain/auth/identities/` |
+| E-1 | Linked Accounts | GET | `/api/v1/profile/me/identities` | `internal/domain/profile/me/` |
 
 ---
 
@@ -57,6 +38,7 @@ Update this file when a route is marked `[x]` (implemented).
 
 | § | Route | Method | Path | Go package |
 |---|---|---|---|---|
+| C-1 | Owner Bootstrap | POST | `/api/v1/admin/bootstrap` | `internal/domain/admin/bootstrap/` |
 | F-1a | User List | GET | `/api/v1/admin/users` | `internal/domain/admin/users/` |
 | F-1b | User Detail | GET | `/api/v1/admin/users/{id}` | `internal/domain/admin/users/` |
 | F-2a | User Audit Log | GET | `/api/v1/admin/users/{id}/audit` | `internal/domain/admin/audit/` |
@@ -75,7 +57,11 @@ Update this file when a route is marked `[x]` (implemented).
 
 ## Notes
 
-- B-1a and B-1b share `auth/username/` — same resource, availability is a stateless helper.
+- B-1a and B-1b share `profile/username/` — same resource, availability is a stateless helper.
+- B-2a/b/c share `profile/email/` — single package for the full three-step email change flow.
+- B-3 extends `profile/me/` — DELETE on the same resource as the existing me package.
+- E-1 extends `profile/me/` — GET on a sub-resource of the authenticated user.
+- C-1 lives in `admin/bootstrap/` — owner setup is an admin-domain concern, not an auth route.
 - F-1a and F-1b share `admin/users/` — same resource, list + detail.
 - F-2a and F-2b share `admin/audit/` — same resource, scoped vs global.
 - F-3a/b/c share `admin/sessions/` — same resource, all operate on sessions.

@@ -53,33 +53,7 @@ internal/domain/
 
 ---
 
-## Group B — New packages requiring schema migration
-
-The schema changes in §B-0 must be applied and `make sqlc` run before
-implementing §B-1 through §B-3. Do not start any §B route until the
-migration is merged.
-
----
-
-### §B-0 — Schema Migration (prerequisite)
-
-The following additions are required before implementing any Group B routes:
-
-- [X] `one_time_tokens`: add `metadata JSONB` column — stores `new_email`
-      alongside the OTP for the change-confirm flow
-- [X] `one_time_token_type` enum: add `email_change_verify` (step 1 OTP, sent to
-      current address) and `email_change_confirm` (step 2 OTP, sent to new address)
-      via `ALTER TYPE one_time_token_type ADD VALUE` — no table rewrite needed
-- [X] TTL CHECK constraints for both new types (e.g. 15-minute cap each, matching
-      the `chk_ott_ev_ttl_max` pattern for `email_verification`)
-- [X] Unique index on `(user_id, token_type)` for active tokens — prevents two
-      simultaneous change requests for the same user (match the
-      `idx_password_reset_tokens_user_active` pattern)
-- [X] `users`: decide on and add `deleted_at TIMESTAMPTZ` — see §B-3 for trade-offs
-- [X] `roles` seed: ensure the owner role (`is_owner_role = TRUE`) is present before
-      §C-1 bootstrap route can work
-
----
+## Group A — Profile Mangement
 
 ### §B-2 — Email Change Flow
 
@@ -147,27 +121,6 @@ ownership of the **new** address before the change is applied.
 - [ ] Clears the refresh cookie
 - [ ] Audit row: `account_deleted` (written before the row is removed)
 - [ ] Rate-limit: 3 req / 1 hour per user (key `del:usr:`)
-
----
-
-## Group C — New packages, no external dependencies
-
----
-
-### §C-1 — Owner Bootstrap
-
-New package: `internal/domain/admin/bootstrap/`
-
-`POST /api/v1/owner/bootstrap`
-- [ ] **Environment-gated**: only callable when `OWNER_BOOTSTRAP_SECRET` is set;
-      returns 404 when absent
-- [ ] Body: `{ "secret": "...", "email": "...", "password": "...", "display_name": "..." }`
-- [ ] Guard: fails with 409 if any user with `is_owner_role = TRUE` already exists
-- [ ] Creates user row + verifies email immediately (`email_verified = TRUE`, `is_active = TRUE`)
-- [ ] Looks up the role where `is_owner_role = TRUE` in `roles`; inserts into `user_roles`
-      with `granted_by` = the newly created owner's own UUID (self-granting — document this)
-- [ ] Audit row: `owner_bootstrapped`
-- [ ] No rate-limit (env-var gate is sufficient)
 
 ---
 
@@ -248,7 +201,7 @@ least one OAuth provider (§D-1) is implemented and `user_identities` is populat
 
 ### §E-1 — Linked Accounts
 
-`GET /api/v1/auth/me/identities` — extends `internal/domain/auth/profile/`
+`GET /api/v1/profile/me/identities` — extends `internal/domain/profile/me`
 
 - [ ] Requires valid JWT
 - [ ] Returns all rows in `user_identities` for the authenticated user
@@ -266,6 +219,21 @@ The owner middleware lives in `admin/shared/` and is imported only by
 
 Until the RBAC system is live, protect all admin routes with middleware that
 checks `user_roles.role_id` resolves to a role where `is_owner_role = TRUE`.
+
+___
+
+New package: `internal/domain/admin/bootstrap/`
+
+`POST /api/v1/admin/bootstrap`
+- [ ] **Environment-gated**: only callable when `OWNER_BOOTSTRAP_SECRET` is set;
+      returns 404 when absent
+- [ ] Body: `{ "secret": "...", "email": "...", "password": "...", "display_name": "..." }`
+- [ ] Guard: fails with 409 if any user with `is_owner_role = TRUE` already exists
+- [ ] Creates user row + verifies email immediately (`email_verified = TRUE`, `is_active = TRUE`)
+- [ ] Looks up the role where `is_owner_role = TRUE` in `roles`; inserts into `user_roles`
+      with `granted_by` = the newly created owner's own UUID (self-granting — document this)
+- [ ] Audit row: `owner_bootstrapped`
+- [ ] No rate-limit (env-var gate is sufficient)
 
 ---
 

@@ -408,10 +408,12 @@ func AllNotificationTypeEnumValues() []NotificationTypeEnum {
 type OneTimeTokenType string
 
 const (
-	OneTimeTokenTypeEmailVerification OneTimeTokenType = "email_verification"
-	OneTimeTokenTypePasswordReset     OneTimeTokenType = "password_reset"
-	OneTimeTokenTypeMagicLink         OneTimeTokenType = "magic_link"
-	OneTimeTokenTypeAccountUnlock     OneTimeTokenType = "account_unlock"
+	OneTimeTokenTypeEmailVerification  OneTimeTokenType = "email_verification"
+	OneTimeTokenTypePasswordReset      OneTimeTokenType = "password_reset"
+	OneTimeTokenTypeMagicLink          OneTimeTokenType = "magic_link"
+	OneTimeTokenTypeAccountUnlock      OneTimeTokenType = "account_unlock"
+	OneTimeTokenTypeEmailChangeVerify  OneTimeTokenType = "email_change_verify"
+	OneTimeTokenTypeEmailChangeConfirm OneTimeTokenType = "email_change_confirm"
 )
 
 func (e *OneTimeTokenType) Scan(src interface{}) error {
@@ -454,7 +456,9 @@ func (e OneTimeTokenType) Valid() bool {
 	case OneTimeTokenTypeEmailVerification,
 		OneTimeTokenTypePasswordReset,
 		OneTimeTokenTypeMagicLink,
-		OneTimeTokenTypeAccountUnlock:
+		OneTimeTokenTypeAccountUnlock,
+		OneTimeTokenTypeEmailChangeVerify,
+		OneTimeTokenTypeEmailChangeConfirm:
 		return true
 	}
 	return false
@@ -466,6 +470,8 @@ func AllOneTimeTokenTypeValues() []OneTimeTokenType {
 		OneTimeTokenTypePasswordReset,
 		OneTimeTokenTypeMagicLink,
 		OneTimeTokenTypeAccountUnlock,
+		OneTimeTokenTypeEmailChangeVerify,
+		OneTimeTokenTypeEmailChangeConfirm,
 	}
 }
 
@@ -555,7 +561,7 @@ type AuthAuditLog struct {
 	CreatedAt time.Time        `db:"created_at" json:"created_at"`
 }
 
-// Single-table token store for email_verification, password_reset, magic_link, and account_unlock flows.
+// Single-table token store for email_verification, password_reset, magic_link, account_unlock, email_change_verify, and email_change_confirm flows.
 type OneTimeToken struct {
 	ID        uuid.UUID        `db:"id" json:"id"`
 	TokenType OneTimeTokenType `db:"token_type" json:"token_type"`
@@ -563,7 +569,9 @@ type OneTimeToken struct {
 	Email     string           `db:"email" json:"email"`
 	TokenHash pgtype.Text      `db:"token_hash" json:"token_hash"`
 	CodeHash  pgtype.Text      `db:"code_hash" json:"code_hash"`
-	Attempts  int16            `db:"attempts" json:"attempts"`
+	// Auxiliary payload keyed by token_type. email_change_verify stores {"new_email": "..."} so the confirm step can retrieve the destination address without a separate KV lookup.
+	Metadata []byte `db:"metadata" json:"metadata"`
+	Attempts int16  `db:"attempts" json:"attempts"`
 	// 0 = no attempt limit (non-OTP types). OTP types use 3.
 	MaxAttempts int16 `db:"max_attempts" json:"max_attempts"`
 	// Timestamp of the most recent failed OTP attempt.
@@ -831,6 +839,7 @@ type User struct {
 	CreatedAt                    time.Time          `db:"created_at" json:"created_at"`
 	UpdatedAt                    time.Time          `db:"updated_at" json:"updated_at"`
 	LastLoginAt                  pgtype.Timestamptz `db:"last_login_at" json:"last_login_at"`
+	DeletedAt                    *time.Time         `db:"deleted_at" json:"deleted_at"`
 }
 
 // OAuth / external auth identities. One row per (provider, external account).

@@ -24,7 +24,9 @@ CREATE TYPE one_time_token_type AS ENUM (
     'email_verification',
     'password_reset',
     'magic_link',
-    'account_unlock'
+    'account_unlock',
+    'email_change_verify',   -- step 1: OTP sent to current address to prove ownership
+    'email_change_confirm'  -- step 2: OTP sent to new address to prove destination
 );
 
 COMMENT ON TYPE one_time_token_type IS
@@ -64,6 +66,13 @@ CREATE TABLE users (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_login_at TIMESTAMPTZ,
 
+    -- Soft-delete timestamp. NULL = active account.
+    -- App layer MUST filter WHERE deleted_at IS NULL on all user reads/writes.
+    -- Cleared by account recovery; hard-purged by background job after grace period.
+    -- Partial unique indexes (idx_users_email_active / idx_users_username_active) preserve
+    -- email+username uniqueness for active accounts while allowing re-registration after deletion.
+    deleted_at    TIMESTAMPTZ,
+
     -- DB-layer email guard catches writes that bypass the application (admin scripts, imports).
     CONSTRAINT chk_users_email_format
         CHECK (email IS NULL OR email ~* '^[^@\s]+@[^@\s]+\.[^@\s]+$'),
@@ -101,8 +110,19 @@ CREATE TABLE users (
     -- admin may lock an active account intentionally via admin_locked.
 );
 
+-- Full-table unique indexes retained for admin/ops queries that include deleted rows.
 CREATE UNIQUE INDEX idx_users_email    ON users(email)    WHERE email    IS NOT NULL;
 CREATE UNIQUE INDEX idx_users_username ON users(username) WHERE username IS NOT NULL;
+
+-- Application-visible uniqueness: active accounts only.
+-- 23505 violations on these indexes are surfaced as ErrEmailTaken / ErrUsernameTaken.
+CREATE UNIQUE INDEX idx_users_email_active
+    ON users (email)
+    WHERE email IS NOT NULL AND deleted_at IS NULL;
+
+CREATE UNIQUE INDEX idx_users_username_active
+    ON users (username)
+    WHERE username IS NOT NULL AND deleted_at IS NULL;
 
 -- Covering index for the password-login lookup; password_hash excluded from INCLUDE
 -- because bcrypt verification always fetches the full row anyway.
@@ -185,6 +205,11 @@ CREATE TABLE one_time_tokens (
     token_hash   TEXT        UNIQUE,
     code_hash    TEXT        UNIQUE,
 
+    -- Auxiliary payload keyed by token_type.
+    -- email_change_verify: {"new_email": "..."} — lets the confirm step retrieve the
+    -- destination address without a separate KV lookup.
+    metadata     JSONB,
+
     -- max_attempts = 0 means no attempt limit (non-OTP token types).
     -- OTP token types (email_verification, password_reset, account_unlock) use 3.
     attempts         SMALLINT    NOT NULL DEFAULT 0,
@@ -199,8 +224,12 @@ CREATE TABLE one_time_tokens (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- magic_link is the only type that requires token_hash.
+    -- OTP-only types (including the email_change_* pair) are exempted because they use code_hash.
     CONSTRAINT chk_ott_magic_link_requires_token_hash
-        CHECK (token_type IN ('email_verification', 'account_unlock', 'password_reset') OR token_hash IS NOT NULL),
+        CHECK (token_type IN (
+            'email_verification', 'account_unlock', 'password_reset',
+            'email_change_verify', 'email_change_confirm'
+        ) OR token_hash IS NOT NULL),
 
     -- email_verification can be delivered via OTP (code_hash) or magic link (token_hash);
     -- at least one must be set so the token can actually be consumed.
@@ -209,7 +238,10 @@ CREATE TABLE one_time_tokens (
 
     -- code_hash is only valid for OTP token types.
     CONSTRAINT chk_ott_otp_fields_scoped
-        CHECK (code_hash IS NULL OR token_type IN ('email_verification', 'account_unlock', 'password_reset')),
+        CHECK (code_hash IS NULL OR token_type IN (
+            'email_verification', 'account_unlock', 'password_reset',
+            'email_change_verify', 'email_change_confirm'
+        )),
 
     -- max_attempts is meaningless without a code_hash to count against.
     CONSTRAINT chk_ott_max_attempts_scoped
@@ -235,6 +267,15 @@ CREATE TABLE one_time_tokens (
 
     CONSTRAINT chk_ott_au_ttl_max
         CHECK (token_type != 'account_unlock'
+               OR expires_at <= created_at + INTERVAL '15 minutes'),
+
+    -- Hard TTL caps for email-change OTP tokens (15 min each, matching email_verification).
+    CONSTRAINT chk_ott_ecv_ttl_max
+        CHECK (token_type != 'email_change_verify'
+               OR expires_at <= created_at + INTERVAL '15 minutes'),
+
+    CONSTRAINT chk_ott_ecc_ttl_max
+        CHECK (token_type != 'email_change_confirm'
                OR expires_at <= created_at + INTERVAL '15 minutes'),
 
     CONSTRAINT chk_ott_attempts_non_negative
@@ -283,12 +324,25 @@ CREATE UNIQUE INDEX idx_password_reset_tokens_user_active
     ON one_time_tokens (user_id)
     WHERE token_type = 'password_reset' AND used_at IS NULL;
 
+-- Prevents concurrent email-change requests for the same user.
+-- App layer catches 23505 and returns ErrEmailChangeCooldown.
+CREATE UNIQUE INDEX idx_email_change_verify_tokens_user_active
+    ON one_time_tokens (user_id)
+    WHERE token_type = 'email_change_verify' AND used_at IS NULL;
+
+-- Prevents issuing a second confirm token before the first is consumed.
+CREATE UNIQUE INDEX idx_email_change_confirm_tokens_user_active
+    ON one_time_tokens (user_id)
+    WHERE token_type = 'email_change_confirm' AND used_at IS NULL;
+
 COMMENT ON TABLE  one_time_tokens IS
-    'Single-table token store for email_verification, password_reset, magic_link, and account_unlock flows.';
+    'Single-table token store for email_verification, password_reset, magic_link, account_unlock, email_change_verify, and email_change_confirm flows.';
 COMMENT ON COLUMN one_time_tokens.max_attempts IS
     '0 = no attempt limit (non-OTP types). OTP types use 3.';
 COMMENT ON COLUMN one_time_tokens.last_attempt_at IS
     'Timestamp of the most recent failed OTP attempt.';
+COMMENT ON COLUMN one_time_tokens.metadata IS
+    'Auxiliary payload keyed by token_type. email_change_verify stores {"new_email": "..."} so the confirm step can retrieve the destination address without a separate KV lookup.';
 
 
 -- ------------------------------------------------------------
@@ -408,9 +462,13 @@ COMMENT ON TABLE auth_audit_log IS
 DROP TABLE IF EXISTS auth_audit_log    CASCADE;
 DROP TABLE IF EXISTS refresh_tokens    CASCADE;
 DROP TABLE IF EXISTS user_sessions     CASCADE;
+DROP INDEX IF EXISTS idx_email_change_confirm_tokens_user_active;
+DROP INDEX IF EXISTS idx_email_change_verify_tokens_user_active;
 DROP INDEX IF EXISTS idx_password_reset_tokens_user_active;
 DROP TABLE IF EXISTS one_time_tokens   CASCADE;
 DROP TABLE IF EXISTS user_identities   CASCADE;
+DROP INDEX IF EXISTS idx_users_username_active;
+DROP INDEX IF EXISTS idx_users_email_active;
 DROP TABLE IF EXISTS users             CASCADE;
 
 DROP TYPE IF EXISTS one_time_token_type CASCADE;

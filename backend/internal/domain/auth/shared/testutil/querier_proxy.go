@@ -100,6 +100,21 @@ type QuerierProxy struct {
 	FailGetUserForUsernameUpdate bool
 	FailSetUsername              bool
 
+	// ── email change ─────────────────────────────────────────────────────────
+	FailCheckEmailAvailableForChange             bool
+	FailGetLatestEmailChangeVerifyTokenCreatedAt bool
+	FailInvalidateUserEmailChangeVerifyTokens    bool
+	FailCreateEmailChangeVerifyToken             bool
+	FailGetEmailChangeVerifyToken                bool
+	FailConsumeEmailChangeToken                  bool
+	ConsumeEmailChangeTokenZero                  bool // returns 0, nil before fail check
+	FailInvalidateUserEmailChangeConfirmTokens   bool
+	FailCreateEmailChangeConfirmToken            bool
+	FailGetEmailChangeConfirmToken               bool
+	FailGetUserForEmailChangeTx                  bool
+	FailSetUserEmail                             bool
+	SetUserEmailZero                             bool // returns 0, nil before fail check
+
 	// ── verification ─────────────────────────────────────────────────────────
 	FailGetEmailVerificationToken           bool
 	FailConsumeEmailVerificationToken       bool
@@ -632,4 +647,89 @@ func (b *QuerierProxy) SetUsername(ctx context.Context, arg db.SetUsernameParams
 		return 0, ErrProxy
 	}
 	return b.Base.SetUsername(ctx, arg)
+}
+
+// ── Email change ─────────────────────────────────────────────────────────────
+
+func (b *QuerierProxy) CheckEmailAvailableForChange(ctx context.Context, arg db.CheckEmailAvailableForChangeParams) (bool, error) {
+	if b.FailCheckEmailAvailableForChange {
+		return false, ErrProxy
+	}
+	return b.Base.CheckEmailAvailableForChange(ctx, arg)
+}
+
+func (b *QuerierProxy) GetLatestEmailChangeVerifyTokenCreatedAt(ctx context.Context, userID pgtype.UUID) (time.Time, error) {
+	if b.FailGetLatestEmailChangeVerifyTokenCreatedAt {
+		return time.Time{}, ErrProxy
+	}
+	return b.Base.GetLatestEmailChangeVerifyTokenCreatedAt(ctx, userID)
+}
+
+func (b *QuerierProxy) InvalidateUserEmailChangeVerifyTokens(ctx context.Context, userID pgtype.UUID) error {
+	if b.FailInvalidateUserEmailChangeVerifyTokens {
+		return ErrProxy
+	}
+	return b.Base.InvalidateUserEmailChangeVerifyTokens(ctx, userID)
+}
+
+func (b *QuerierProxy) CreateEmailChangeVerifyToken(ctx context.Context, arg db.CreateEmailChangeVerifyTokenParams) (db.CreateEmailChangeVerifyTokenRow, error) {
+	if b.FailCreateEmailChangeVerifyToken {
+		return db.CreateEmailChangeVerifyTokenRow{}, ErrProxy
+	}
+	return b.Base.CreateEmailChangeVerifyToken(ctx, arg)
+}
+
+func (b *QuerierProxy) GetEmailChangeVerifyToken(ctx context.Context, userID pgtype.UUID) (db.GetEmailChangeVerifyTokenRow, error) {
+	if b.FailGetEmailChangeVerifyToken {
+		return db.GetEmailChangeVerifyTokenRow{}, ErrProxy
+	}
+	return b.Base.GetEmailChangeVerifyToken(ctx, userID)
+}
+
+func (b *QuerierProxy) ConsumeEmailChangeToken(ctx context.Context, id pgtype.UUID) (int64, error) {
+	if b.ConsumeEmailChangeTokenZero {
+		return 0, nil
+	}
+	if b.FailConsumeEmailChangeToken {
+		return 0, ErrProxy
+	}
+	return b.Base.ConsumeEmailChangeToken(ctx, id)
+}
+
+func (b *QuerierProxy) InvalidateUserEmailChangeConfirmTokens(ctx context.Context, userID pgtype.UUID) error {
+	if b.FailInvalidateUserEmailChangeConfirmTokens {
+		return ErrProxy
+	}
+	return b.Base.InvalidateUserEmailChangeConfirmTokens(ctx, userID)
+}
+
+func (b *QuerierProxy) CreateEmailChangeConfirmToken(ctx context.Context, arg db.CreateEmailChangeConfirmTokenParams) (db.CreateEmailChangeConfirmTokenRow, error) {
+	if b.FailCreateEmailChangeConfirmToken {
+		return db.CreateEmailChangeConfirmTokenRow{}, ErrProxy
+	}
+	return b.Base.CreateEmailChangeConfirmToken(ctx, arg)
+}
+
+func (b *QuerierProxy) GetEmailChangeConfirmToken(ctx context.Context, userID pgtype.UUID) (db.GetEmailChangeConfirmTokenRow, error) {
+	if b.FailGetEmailChangeConfirmToken {
+		return db.GetEmailChangeConfirmTokenRow{}, ErrProxy
+	}
+	return b.Base.GetEmailChangeConfirmToken(ctx, userID)
+}
+
+func (b *QuerierProxy) GetUserForEmailChangeTx(ctx context.Context, userID pgtype.UUID) (db.GetUserForEmailChangeTxRow, error) {
+	if b.FailGetUserForEmailChangeTx {
+		return db.GetUserForEmailChangeTxRow{}, ErrProxy
+	}
+	return b.Base.GetUserForEmailChangeTx(ctx, userID)
+}
+
+func (b *QuerierProxy) SetUserEmail(ctx context.Context, arg db.SetUserEmailParams) (int64, error) {
+	if b.SetUserEmailZero {
+		return 0, nil
+	}
+	if b.FailSetUserEmail {
+		return 0, ErrProxy
+	}
+	return b.Base.SetUserEmail(ctx, arg)
 }

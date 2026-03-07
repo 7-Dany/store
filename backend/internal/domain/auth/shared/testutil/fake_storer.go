@@ -14,6 +14,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
 	"github.com/7-Dany/store/backend/internal/domain/auth/verification"
 	me "github.com/7-Dany/store/backend/internal/domain/profile/me"
+	email "github.com/7-Dany/store/backend/internal/domain/profile/email"
 	profilesession "github.com/7-Dany/store/backend/internal/domain/profile/session"
 	setpassword "github.com/7-Dany/store/backend/internal/domain/profile/set-password"
 	username "github.com/7-Dany/store/backend/internal/domain/profile/username"
@@ -524,6 +525,86 @@ func (f *UsernameFakeStorer) CheckUsernameAvailable(ctx context.Context, uname s
 func (f *UsernameFakeStorer) UpdateUsernameTx(ctx context.Context, in username.UpdateUsernameInput) error {
 	if f.UpdateUsernameTxFn != nil {
 		return f.UpdateUsernameTxFn(ctx, in)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EmailChangeFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// EmailChangeFakeStorer is a hand-written implementation of email.Storer for
+// service unit tests. Each method delegates to its Fn field if non-nil,
+// otherwise returns the zero value and nil error so tests only configure the
+// fields they need.
+type EmailChangeFakeStorer struct {
+	GetCurrentUserEmailFn                      func(ctx context.Context, userID [16]byte) (string, error)
+	CheckEmailAvailableForChangeFn             func(ctx context.Context, newEmail string, userID [16]byte) (bool, error)
+	GetLatestEmailChangeVerifyTokenCreatedAtFn func(ctx context.Context, userID [16]byte) (time.Time, error)
+	RequestEmailChangeTxFn                     func(ctx context.Context, in email.RequestEmailChangeTxInput) error
+	VerifyCurrentEmailTxFn                     func(ctx context.Context, in email.VerifyCurrentEmailTxInput, checkFn func(authshared.VerificationToken) error) (email.VerifyCurrentEmailStoreResult, error)
+	IncrementAttemptsTxFn                      func(ctx context.Context, in authshared.IncrementInput) error
+	ConfirmEmailChangeTxFn                     func(ctx context.Context, in email.ConfirmEmailChangeTxInput, checkFn func(authshared.VerificationToken) error) error
+}
+
+// compile-time interface check.
+var _ email.Storer = (*EmailChangeFakeStorer)(nil)
+
+// GetCurrentUserEmail delegates to GetCurrentUserEmailFn if set.
+// Default: returns ("", authshared.ErrTokenNotFound) to signal no user found.
+func (f *EmailChangeFakeStorer) GetCurrentUserEmail(ctx context.Context, userID [16]byte) (string, error) {
+	if f.GetCurrentUserEmailFn != nil {
+		return f.GetCurrentUserEmailFn(ctx, userID)
+	}
+	return "", authshared.ErrTokenNotFound
+}
+
+// CheckEmailAvailableForChange delegates to CheckEmailAvailableForChangeFn if set.
+// Default: returns (true, nil) — email is available.
+func (f *EmailChangeFakeStorer) CheckEmailAvailableForChange(ctx context.Context, newEmail string, userID [16]byte) (bool, error) {
+	if f.CheckEmailAvailableForChangeFn != nil {
+		return f.CheckEmailAvailableForChangeFn(ctx, newEmail, userID)
+	}
+	return true, nil
+}
+
+// GetLatestEmailChangeVerifyTokenCreatedAt delegates to the Fn field if set.
+// Default: returns (time.Time{}, authshared.ErrTokenNotFound) — no active token exists.
+func (f *EmailChangeFakeStorer) GetLatestEmailChangeVerifyTokenCreatedAt(ctx context.Context, userID [16]byte) (time.Time, error) {
+	if f.GetLatestEmailChangeVerifyTokenCreatedAtFn != nil {
+		return f.GetLatestEmailChangeVerifyTokenCreatedAtFn(ctx, userID)
+	}
+	return time.Time{}, authshared.ErrTokenNotFound
+}
+
+// RequestEmailChangeTx delegates to RequestEmailChangeTxFn if set.
+func (f *EmailChangeFakeStorer) RequestEmailChangeTx(ctx context.Context, in email.RequestEmailChangeTxInput) error {
+	if f.RequestEmailChangeTxFn != nil {
+		return f.RequestEmailChangeTxFn(ctx, in)
+	}
+	return nil
+}
+
+// VerifyCurrentEmailTx delegates to VerifyCurrentEmailTxFn if set.
+func (f *EmailChangeFakeStorer) VerifyCurrentEmailTx(ctx context.Context, in email.VerifyCurrentEmailTxInput, checkFn func(authshared.VerificationToken) error) (email.VerifyCurrentEmailStoreResult, error) {
+	if f.VerifyCurrentEmailTxFn != nil {
+		return f.VerifyCurrentEmailTxFn(ctx, in, checkFn)
+	}
+	return email.VerifyCurrentEmailStoreResult{}, nil
+}
+
+// IncrementAttemptsTx delegates to IncrementAttemptsTxFn if set.
+func (f *EmailChangeFakeStorer) IncrementAttemptsTx(ctx context.Context, in authshared.IncrementInput) error {
+	if f.IncrementAttemptsTxFn != nil {
+		return f.IncrementAttemptsTxFn(ctx, in)
+	}
+	return nil
+}
+
+// ConfirmEmailChangeTx delegates to ConfirmEmailChangeTxFn if set.
+func (f *EmailChangeFakeStorer) ConfirmEmailChangeTx(ctx context.Context, in email.ConfirmEmailChangeTxInput, checkFn func(authshared.VerificationToken) error) error {
+	if f.ConfirmEmailChangeTxFn != nil {
+		return f.ConfirmEmailChangeTxFn(ctx, in, checkFn)
 	}
 	return nil
 }

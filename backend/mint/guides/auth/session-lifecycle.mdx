@@ -24,7 +24,7 @@ Browser clients should rely on the cookie for the refresh token — the browser 
 
 <Steps>
   <Step title="POST /login — Authenticate">
-    <a href="/api-reference/auth/login"><Icon icon="arrow-up-right-from-square" /></a> Submit the user's email (or username) and password. On success you receive a short-lived access token in the body and a long-lived refresh token both in the body and as an `HttpOnly` cookie.
+    Submit the user's email (or username) and password. On success you receive a short-lived access token in the body and a long-lived refresh token both in the body and as an `HttpOnly` cookie.
 
     ```json Request
     {
@@ -109,7 +109,7 @@ If a refresh token that has already been rotated is presented again, the server 
 
 This means if an attacker steals a refresh token and rotates it before the legitimate client does, the legitimate client's next refresh will also be rejected. The user will see a `401` and be prompted to log in again — which is the correct outcome, because their token family is compromised.
 
-**What causes false positives?** Firing two concurrent [`POST /refresh`](/api-reference/auth/refresh) requests with the same token (e.g. a race condition in a tab-switching scenario) will trigger this. Implement a mutex or in-flight deduplication so only one refresh runs at a time.
+**What causes false positives?** Firing two concurrent [`POST /refresh`](/api-reference/auth/session/refresh) requests with the same token (e.g. a race condition in a tab-switching scenario) will trigger this. Implement a mutex or in-flight deduplication so only one refresh runs at a time.
 
 ---
 
@@ -117,21 +117,21 @@ This means if an attacker steals a refresh token and rotates it before the legit
 
 | Call | Response | Cause | Action |
 |---|---|---|---|
-| [POST /login](/api-reference/auth/login) | `401 invalid_credentials` | Wrong password or unknown email | Show generic "incorrect email or password" |
-| [POST /login](/api-reference/auth/login) | `403 email_not_verified` | Account not verified | Direct to verification screen |
-| [POST /login](/api-reference/auth/login) | `403 account_inactive` | Account suspended | Direct to support |
-| [POST /login](/api-reference/auth/login) | `423 account_locked` | Admin lock | Direct to unlock flow or support |
-| [POST /login](/api-reference/auth/login) | `429 login_locked` | 10 consecutive failed logins | Show `Retry-After`, offer unlock flow |
-| [POST /login](/api-reference/auth/login) | `429 rate_limited` | IP limit exceeded | Show `Retry-After` |
-| [POST /refresh](/api-reference/auth/refresh) | `401 missing_token` | No cookie present | Redirect to login |
-| [POST /refresh](/api-reference/auth/refresh) | `401 invalid_token` | JWT invalid, malformed, or expired | Redirect to login |
-| [POST /refresh](/api-reference/auth/refresh) | `401 token_reuse_detected` | Token already rotated — family revoked | Clear local tokens, redirect to login |
-| [POST /refresh](/api-reference/auth/refresh) | `403 account_inactive` | Account suspended after login | Clear tokens, redirect to login |
-| [POST /refresh](/api-reference/auth/refresh) | `423 account_locked` | Account locked after login | Clear tokens, redirect unlock flow |
-| [POST /logout](/api-reference/auth/logout) | any non-`429` | — | Always treat as success, clear local tokens |
+| [POST /login](/api-reference/auth/login/login) | `401 invalid_credentials` | Wrong password or unknown email | Show generic "incorrect email or password" |
+| [POST /login](/api-reference/auth/login/login) | `403 email_not_verified` | Account not verified | Direct to verification screen |
+| [POST /login](/api-reference/auth/login/login) | `403 account_inactive` | Account suspended | Direct to support |
+| [POST /login](/api-reference/auth/login/login) | `423 account_locked` | Admin lock | Direct to unlock flow or support |
+| [POST /login](/api-reference/auth/login/login) | `429 login_locked` | 10 consecutive failed logins | Show `Retry-After`, offer unlock flow |
+| [POST /login](/api-reference/auth/login/login) | `429 rate_limited` | IP limit exceeded | Show `Retry-After` |
+| [POST /refresh](/api-reference/auth/session/refresh) | `401 missing_token` | No cookie present | Redirect to login |
+| [POST /refresh](/api-reference/auth/session/refresh) | `401 invalid_token` | JWT invalid, malformed, or expired | Redirect to login |
+| [POST /refresh](/api-reference/auth/session/refresh) | `401 token_reuse_detected` | Token already rotated — family revoked | Clear local tokens, redirect to login |
+| [POST /refresh](/api-reference/auth/session/refresh) | `403 account_inactive` | Account suspended after login | Clear tokens, redirect to login |
+| [POST /refresh](/api-reference/auth/session/refresh) | `423 account_locked` | Account locked after login | Clear tokens, redirect unlock flow |
+| [POST /logout](/api-reference/auth/session/logout) | any non-`429` | — | Always treat as success, clear local tokens |
 
 ---
 
 ## Per-device scope
 
-Each login creates an independent session. Logging out on one device does not affect sessions on other devices. This is intentional — use `DELETE /api/v1/auth/sessions/{id}` to revoke a specific session remotely, or use [`POST /change-password`](/api-reference/auth/password/change-password) to revoke all sessions at once.
+Each login creates an independent session. Logging out on one device does not affect sessions on other devices. This is intentional — use [`DELETE /api/v1/profile/sessions/{id}`](/api-reference/profile/session/revoke-session) to revoke a specific session remotely, or use [`POST /change-password`](/api-reference/auth/password/change-password) to revoke all sessions at once.

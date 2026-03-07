@@ -38,6 +38,24 @@ Use `<ParamField>` for every field in the request body.
 
 ---
 
+## Cross-referencing Other Routes
+
+When a doc references another endpoint, link it using its Mintlify URL:
+
+```mdx
+[`POST /me/email/request-change`](/api-reference/profile/email/request-change)
+```
+
+URL pattern: `/api-reference/{domain}/{route-folder}/{slug}`
+
+Examples:
+- [`PATCH /me/username`](/api-reference/profile/username/update-username)
+- [`POST /me/email/request-change`](/api-reference/profile/email/request-change)
+- [`POST /me/email/verify-current`](/api-reference/profile/email/verify-current)
+- [`POST /me/email/confirm-change`](/api-reference/profile/email/confirm-change)
+
+---
+
 ## Behaviour (optional)
 
 Add a `## Behaviour` section when the endpoint has non-obvious logic worth explaining — e.g. idempotency, silent failures, anti-enumeration design, token invalidation rules.

@@ -1,5 +1,6 @@
 ---
 title: "Resend Verification"
+authMethod: "none"
 description: "Issues a new email verification OTP, invalidating any previously unused tokens for the account."
 api: "POST http://localhost:8080/api/v1/auth/resend-verification"
 ---
@@ -12,9 +13,28 @@ api: "POST http://localhost:8080/api/v1/auth/resend-verification"
 
 This endpoint always returns `202 Accepted` regardless of whether the email is registered, already verified, locked, or within a cooldown window. This is intentional — the uniform response prevents account enumeration.
 
-If a token was issued recently a cooldown window suppresses the new issuance silently. The existing token remains valid for its original TTL.
+**OTP lifetime** — Each code is valid for **15 minutes** from the moment it was issued. After 15 minutes the code expires and the user must request a new one.
 
-All prior unused tokens for the account are invalidated before the new one is created.
+**Resend cooldown** — A new code can be requested at most once every **2 minutes**, measured from when the last token was issued. Clicking verify — whether right or wrong — has no effect on the cooldown; only issuing a token resets it. The server always responds `202` regardless of whether the resend was accepted or silently suppressed.
+
+All prior unused tokens for the account are invalidated before a new one is created.
+
+<AccordionGroup>
+  <Accordion title="Frontend implementation">
+    Disable the resend button the moment a code is issued (registration or resend) and re-enable it after **2 minutes**. The button can then be used every 2 minutes for the full 15-minute token lifetime:
+
+    ```
+    T+0:00  Code issued — resend disabled
+    T+2:00  Resend re-enables — first resend available
+    T+4:00  Second resend available
+    T+6:00  Third resend available
+    ...     Every 2 minutes until T+15:00
+    T+15:00 Token expired — resend issues a fresh 15-minute token
+    ```
+
+    Because the server gives no signal distinguishing a suppressed resend from a successful one, the client must drive the 2-minute timer entirely from the timestamp of the last issued code.
+  </Accordion>
+</AccordionGroup>
 
 ## Rate Limiting
 

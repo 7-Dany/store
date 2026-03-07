@@ -1,0 +1,183 @@
+---
+title: "Confirm Email Change"
+description: "Finalise an email-change by submitting the grant token and the OTP sent to the new address."
+api: "POST http://localhost:8080/me/email/confirm-change"
+---
+
+<ParamField body="grant_token" type="string" required>
+  The UUID grant token returned by
+  [`POST /me/email/verify-current`](/api-reference/profile/email/verify-current).
+  Valid for 10 minutes from issuance and single-use.
+</ParamField>
+
+<ParamField body="code" type="string" required>
+  The 6-digit one-time code delivered to the **new** email address after step 2
+  succeeded. Must be exactly 6 ASCII digits.
+</ParamField>
+
+## Behaviour
+
+On success the server atomically:
+
+1. Validates and consumes the grant token and the new-address OTP.
+2. Swaps the account's email to the new address.
+3. Revokes **all active refresh tokens and sessions** for the account.
+4. Blocklists the caller's current access token (the JWT used for this request).
+5. Sends a notification email to the **old** address informing the user of the change.
+
+Because all sessions are revoked and the access token is blocklisted, the
+client must log in again after a successful confirmation. Clients should
+redirect to the sign-in screen and discard any cached tokens.
+
+The email swap is guarded by a database-level unique constraint; if another
+account registers the target address between steps 1 and 3, the server returns
+`409 email_taken` and the flow must be restarted from step 1.
+
+## Rate Limiting
+
+**5 requests per 15 minutes per user**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "grant_token": "550e8400-e29b-41d4-a716-446655440000",
+  "code": "371045"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "message": "email address updated successfully"
+}
+```
+
+```json 422
+{
+  "code": "invalid_grant_token",
+  "message": "grant token is invalid or expired"
+}
+```
+
+```json 409
+{
+  "code": "email_taken",
+  "message": "email already registered"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The email address was swapped successfully. All existing sessions have been
+    invalidated and the current access token is blocklisted. The client must
+    re-authenticate.
+
+    ```json
+    {
+      "message": "email address updated successfully"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request did not include a valid JWT access token, or the token's user ID
+    or JTI could not be extracted from the context.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing user id in context"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    The target email address was registered by another account between step 1
+    and step 3. Restart the flow from
+    [`POST /me/email/request-change`](/api-reference/profile/email/request-change)
+    with a different address.
+
+    ```json
+    {
+      "code": "email_taken",
+      "message": "email already registered"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="413 — Request Too Large">
+    The request body exceeds 1 MiB.
+
+    ```json
+    {
+      "code": "request_too_large",
+      "message": "request body too large"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    A field failed validation or the OTP/grant-token check failed. Covers:
+    malformed JSON, missing fields, `code` not exactly 6 digits, wrong OTP
+    code, expired OTP token, already-used OTP token, missing `grant_token`,
+    or an invalid/expired grant token.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "code must be exactly 6 digits"
+    }
+    ```
+
+    Invalid or expired grant token variant:
+
+    ```json
+    {
+      "code": "invalid_grant_token",
+      "message": "grant token is invalid or expired"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    Two separate limits can produce this response.
+
+    **User rate limit** — the caller has exceeded 5 requests per 15 minutes.
+    Check the `Retry-After` header for when to retry.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+
+    **Too many OTP attempts** — the confirm token has been locked after
+    exhausting the maximum number of incorrect code submissions. Restart the
+    flow from [`POST /me/email/request-change`](/api-reference/profile/email/request-change).
+
+    ```json
+    {
+      "code": "too_many_attempts",
+      "message": "too many incorrect attempts — token is locked"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected server-side error occurred. The request can be retried.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

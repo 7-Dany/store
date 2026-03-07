@@ -24,7 +24,11 @@ type Config struct {
 	AppEnv string
 	// Addr is the TCP address the HTTP server listens on. Default: ":8080".
 	Addr string
-	// AppName is the human-readable product name shown in emails. Default: "Store".
+	// AppName is the human-readable product name shown in emails and email subjects.
+	// Sourced from APP_NAME (env). Default: "Store".
+	// Leading/trailing whitespace and surrounding ASCII double-quotes are stripped
+	// on load so APP_NAME="Vend" and APP_NAME=Vend both produce "Vend".
+	// Must be non-empty after trimming; max 64 characters.
 	AppName string
 	// DocsEnabled gates GET /docs and GET /docs/openapi.yaml.
 	// Never enable in production — the routes carry no authentication.
@@ -134,7 +138,7 @@ func Load() (*Config, error) {
 		// Server defaults
 		AppEnv:              getEnv("APP_ENV", "development"),
 		Addr:                getEnv("ADDR", ":8080"),
-		AppName:             getEnv("APP_NAME", "Store"),
+		AppName:             trimAppName(getEnv("APP_NAME", "Store")),
 		DocsEnabled:         parseBoolEnv("DOCS_ENABLED"),
 		HTTPSEnabled:        parseBoolEnv("HTTPS_ENABLED"),
 		HTTPSDisabled:       parseBoolEnv("HTTPS_DISABLED"),
@@ -263,6 +267,18 @@ func (c *Config) validate() error {
 			"config: ALLOWED_ORIGINS must not contain '*' — " +
 				"wildcard origins are forbidden because AllowCredentials is enabled; " +
 				"list explicit origins instead (e.g. http://localhost:3000)",
+		)
+	}
+
+	// AppName must be non-empty and within a sane display length.
+	const appNameMaxLen = 64
+	if c.AppName == "" {
+		return fmt.Errorf("config: APP_NAME must not be empty — set it in the environment (e.g. APP_NAME=Acme)")
+	}
+	if len(c.AppName) > appNameMaxLen {
+		return fmt.Errorf(
+			"config: APP_NAME must not exceed %d characters; got %d",
+			appNameMaxLen, len(c.AppName),
 		)
 	}
 
@@ -529,4 +545,15 @@ func isLowEntropySecret(s string) bool {
 func logBase2(x float64) float64 {
 	const ln2 = 0.6931471805599453
 	return math.Log(x) / ln2
+}
+
+// trimAppName strips surrounding whitespace and a single layer of ASCII
+// double-quotes from s. This lets operators write APP_NAME="Acme" or
+// APP_NAME=Acme in their .env file and get the same result: "Acme".
+func trimAppName(s string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	return strings.TrimSpace(s)
 }

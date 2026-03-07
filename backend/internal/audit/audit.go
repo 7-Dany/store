@@ -122,6 +122,28 @@ const (
 
 	// EventUsernameChanged is emitted when a user successfully updates their username.
 	EventUsernameChanged EventType = "username_changed"
+
+	// EventEmailChangeRequested is emitted when a user initiates an email change
+	// and an OTP is sent to their current email address.
+	EventEmailChangeRequested EventType = "email_change_requested"
+
+	// EventEmailChangeVerifyAttemptFailed is emitted when a user submits an
+	// incorrect OTP code during step 2 of the email-change flow (verify current
+	// email). Records the failed attempt for security audit trails.
+	EventEmailChangeVerifyAttemptFailed EventType = "email_change_verify_attempt_failed"
+
+	// EventEmailChangeConfirmAttemptFailed is emitted when a user submits an
+	// incorrect OTP code during step 3 of the email-change flow (confirm new
+	// email). Records the failed attempt for security audit trails.
+	EventEmailChangeConfirmAttemptFailed EventType = "email_change_confirm_attempt_failed"
+
+	// EventEmailChangeCurrentVerified is emitted when a user successfully verifies
+	// their current email OTP and receives a grant token for step 3.
+	EventEmailChangeCurrentVerified EventType = "email_change_current_verified"
+
+	// EventEmailChanged is emitted when a user's email address is successfully updated.
+	// The metadata field contains old_email and new_email.
+	EventEmailChanged EventType = "email_changed"
 )
 
 // AllEvents returns a slice of every audit event constant defined in this package.
@@ -155,5 +177,10 @@ func AllEvents() []EventType {
 		EventProfileUpdated,
 		EventPasswordSet,
 		EventUsernameChanged,
+		EventEmailChangeRequested,
+		EventEmailChangeCurrentVerified,
+		EventEmailChanged,
+		EventEmailChangeVerifyAttemptFailed,
+		EventEmailChangeConfirmAttemptFailed,
 	}
 }

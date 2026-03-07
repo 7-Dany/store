@@ -13,7 +13,10 @@
       "proxy": false
     },
     "mdx": {
-      "server": "http://localhost:8080"
+      "server": "http://localhost:8080",
+      "auth": {
+        "method": "bearer"
+      }
     },
     "examples": {
       "prefill": true,
@@ -39,6 +42,11 @@
               "guides/auth/account-unlock-flow",
               "guides/auth/password-reset-flow"
             ]
+          },
+          {
+            "group": "Profile",
+            "icon": "user",
+            "pages": ["guides/profile/email-change-flow"]
           }
         ]
       },
@@ -83,7 +91,10 @@
               "api-reference/profile/session/revoke-session",
               "api-reference/profile/set-password/set-password",
               "api-reference/profile/username/update-username",
-              "api-reference/profile/username/username-available"
+              "api-reference/profile/username/username-available",
+              "api-reference/profile/email/request-change",
+              "api-reference/profile/email/verify-current",
+              "api-reference/profile/email/confirm-change"
             ]
           }
         ]

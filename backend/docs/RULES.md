@@ -53,6 +53,7 @@ decision that future contributors will find surprising.
    - 3.12 [Configuration](#312-configuration)
    - 3.13 [Sub-Package Split Checklist](#313-sub-package-split-checklist)
    - 3.14 [Mandatory Three-File Sync Rules](#314-mandatory-three-file-sync-rules)
+   - 3.15 [Mailer Template Convention](#315-mailer-template-convention)
 
 4. [Go Comment Conventions](#4-go-comment-conventions)
    - 4.1 [The Core Principle](#41-the-core-principle)
@@ -343,6 +344,7 @@ When adding code, this table tells you which file it belongs in:
 | A new production SQL query | `sql/queries/{domain}.sql` (append to the relevant section) |
 | A new test-only SQL query | `sql/queries_test/{domain}_test.sql` (append at the end) |
 | A new env variable | `internal/config/config.go` only |
+| A new transactional email type | `internal/platform/mailer/templates/{name}.go` + `registry.go` |
 
 **Files that are banned by name:** `helpers.go`, `utils.go`, `common.go`.
 If a file needs one of these names, the code belongs somewhere more specific.
@@ -1419,6 +1421,66 @@ oversized payload — the handler returns 422 instead of 413.
 `DecodeJSON`. Handler tests that assert `413 Request Entity Too Large` **must**
 send a raw byte slice (not valid JSON) as the oversized body so this path is
 actually exercised.
+
+---
+
+### 3.15 Mailer Template Convention
+
+All transactional email types are registered through the template registry. No
+handler or service ever calls a bespoke `Send{Type}Email` method — the extension
+point is the registry, not `SMTPMailer`.
+
+#### Adding a new email type: three-file change
+
+| File | What to add |
+|---|---|
+| `internal/platform/mailer/templates/{name}.go` | `{Name}Key` const, exported `*string` var, unexported template string var |
+| `internal/platform/mailer/templates/registry.go` | One `Entry{Key, SubjectFmt, HTML}` in the `Registry()` map |
+| Handler that sends the email | `deps.Mailer.Send(mailertemplates.{Name}Key)(ctx, toAddr, code)` call |
+
+Nothing in `mailer.go` or `SMTPMailer` ever changes for a new email type.
+
+#### Template file shape
+
+Follow the pattern established in `verification.go` and `unlock.go`:
+
+```go
+// {Name}Key is the canonical identifier for the {description} template.
+const {Name}Key = "{snake_case_key}"
+
+// {Name}Template is the HTML template for ...
+var {Name}Template = &{name}TemplateStr
+
+var {name}TemplateStr = `<!DOCTYPE html>...`
+```
+
+The exported var is a `*string` pointer to the unexported var so tests can swap
+the template string to force parse/execute error paths without touching the
+mailer infrastructure.
+
+#### Sending from a handler
+
+Handlers import the templates package under the alias `mailertemplates` and
+enqueue mail as a best-effort fire-and-forget:
+
+```go
+import mailertemplates "github.com/7-Dany/store/backend/internal/platform/mailer/templates"
+
+deps.MailQueue.Enqueue(r.Context(), func(ctx context.Context) error {
+	return deps.Mailer.Send(mailertemplates.{Name}Key)(ctx, toAddr, code)
+})
+```
+
+For notification templates that do not render a code, pass `""` as the third
+argument. The template must not reference `{{.Code}}`, or must guard it — the
+behaviour is documented on the `{Name}Key` constant.
+
+#### Never add methods to SMTPMailer
+
+`SMTPMailer` already exposes `Send(key string) func(context.Context, string,
+string) error`. Adding per-type methods (`SendEmailChangeOTP`, etc.) is a
+convention violation regardless of how convenient it looks at the call site.
+The registry pattern is the extension point — use it.
 
 ---
 

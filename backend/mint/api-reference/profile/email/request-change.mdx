@@ -1,0 +1,167 @@
+---
+title: "Request Email Change"
+description: "Start an email-change by sending a one-time code to the user's current email address."
+api: "POST http://localhost:8080/me/email/request-change"
+---
+
+<ParamField body="new_email" type="string" required>
+  The email address the user wants to switch to. Must be a valid RFC 5322
+  address, normalised to lowercase, and no longer than 254 bytes. Must differ
+  from the account's current email address.
+</ParamField>
+
+## Behaviour
+
+On success the server sends a 6-digit OTP to the account's **current** email address.
+The OTP is valid for the configured token TTL (default 15 minutes) and the
+account may only attempt verification a limited number of times before the token
+is locked.
+
+A **2-minute cooldown** is enforced between requests. If a verify token was
+issued less than 2 minutes ago the server returns `429 cooldown_active` rather
+than issuing a new one.
+
+The new email address is checked for availability at request time as an
+early-exit optimisation. Uniqueness is re-enforced atomically in step 3.
+
+## Rate Limiting
+
+**3 requests per 10 minutes per user**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "new_email": "jane.doe@example.com"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "message": "verification code sent to your current email address"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "email address is invalid"
+}
+```
+
+```json 429
+{
+  "code": "cooldown_active",
+  "message": "please wait before requesting another code"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The OTP was generated and queued for delivery to the current email address.
+    Proceed to [`POST /me/email/verify-current`](/api-reference/profile/email/verify-current) once the code arrives.
+
+    ```json
+    {
+      "message": "verification code sent to your current email address"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request did not include a valid JWT access token, or the token's user ID
+    could not be extracted from the context.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing user id in context"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    The requested new email address is already registered to another active account.
+
+    ```json
+    {
+      "code": "email_taken",
+      "message": "email already registered"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="413 — Request Too Large">
+    The request body exceeds 1 MiB.
+
+    ```json
+    {
+      "code": "request_too_large",
+      "message": "request body too large"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    The `new_email` field failed validation. Possible reasons: malformed JSON
+    body, missing field, invalid email format, email exceeds 254 bytes, or the
+    new email is the same as the current one.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "email address is invalid"
+    }
+    ```
+
+    Same-email variant:
+
+    ```json
+    {
+      "code": "same_email",
+      "message": "new email is the same as your current email"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    Two separate limits can produce this response.
+
+    **User rate limit** — the caller has exceeded 3 requests per 10 minutes.
+    Check the `Retry-After` header for when to retry.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+
+    **Cooldown active** — a verify token was already issued within the last
+    2 minutes. Wait before requesting a new one.
+
+    ```json
+    {
+      "code": "cooldown_active",
+      "message": "please wait before requesting another code"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected server-side error occurred. The request can be retried.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

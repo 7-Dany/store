@@ -977,3 +977,240 @@ FOR UPDATE;
 UPDATE users
 SET username = @username
 WHERE id = @user_id::uuid;
+
+
+/* ── Email change ─────────────────────────────────────────────────────────── */
+
+/*
+  Email-change flow — three steps, each with its own OTP.
+
+  Step 1 (POST /email/request-change):
+    1. Validate new_email; check it differs from current and is not taken.
+    2. Enforce 2-minute cooldown via GetLatestEmailChangeVerifyTokenCreatedAt.
+    3. Invalidate any existing email_change_verify tokens for this user.
+    4. Create a new email_change_verify token; store new_email in metadata column.
+    5. Email the OTP to the user's CURRENT email address.
+
+  Step 2 (POST /email/verify-current):
+    1. Fetch and lock the email_change_verify token (FOR UPDATE).
+    2. Validate expiry, attempts, and OTP hash in the application layer.
+    3. Consume the verify token; invalidate any existing email_change_confirm tokens.
+    4. Create a new email_change_confirm token (email column = new_email).
+    5. Email the OTP to the new address.
+    6. Issue a short-lived KV grant token (echg:gt:, 10 min); return it to the caller.
+
+  Step 3 (POST /email/confirm-change):
+    1. Validate the KV grant token (proves step 2 was completed).
+    2. Fetch and lock the email_change_confirm token (FOR UPDATE).
+    3. Validate expiry, attempts, and OTP hash in the application layer.
+    4. Run ConfirmEmailChangeTx: ConsumeEmailChangeToken + SetUserEmail +
+       RevokeAllUserRefreshTokens + EndAllUserSessions + blocklist access token.
+
+  Index notes:
+    - idx_ott_active (user_id, token_type) covers the verify/confirm token lookups.
+    - idx_email_change_verify_tokens_user_active (partial unique on user_id) prevents
+      duplicate active verify tokens; 23505 → ErrCooldownActive in the store.
+    - idx_email_change_confirm_tokens_user_active (partial unique on user_id) prevents
+      duplicate active confirm tokens.
+    - D-01 resolved: new_email is carried step 1 → 2 via the metadata JSONB column on
+      the email_change_verify token row (001_core.sql comment). No KV needed for this leg.
+*/
+
+-- name: CheckEmailAvailableForChange :one
+-- Returns true when no active (non-deleted) user holds @new_email.
+-- Excludes the calling user (id != @user_id) so a same-address re-request
+-- is not rejected here — the same-email guard in the service handles that.
+-- No FOR UPDATE — point-in-time check; SetUserEmail catches 23505 via
+-- idx_users_email_active as the definitive uniqueness guard.
+SELECT EXISTS(
+    SELECT 1
+    FROM users
+    WHERE email      = @new_email
+      AND id        != @user_id::uuid
+      AND deleted_at IS NULL
+) AS exists;
+
+
+-- name: GetLatestEmailChangeVerifyTokenCreatedAt :one
+-- Returns created_at of the most recent active (used_at IS NULL) email_change_verify
+-- token for this user. Used by the service to enforce the 2-minute cooldown
+-- before allowing a new request-change call.
+-- Returns pgx.ErrNoRows when no active verify token exists.
+-- Index: idx_ott_active covers (user_id, token_type, used_at IS NULL).
+SELECT created_at
+FROM one_time_tokens
+WHERE user_id    = @user_id::uuid
+  AND token_type = 'email_change_verify'
+  AND used_at    IS NULL
+ORDER BY created_at DESC
+LIMIT 1;
+
+
+-- name: InvalidateUserEmailChangeVerifyTokens :exec
+-- Voids all unused email_change_verify tokens for this user before issuing a new one.
+-- Prevents token accumulation and ensures the partial unique index
+-- (idx_email_change_verify_tokens_user_active) never blocks a legitimate re-request.
+-- Called inside the same transaction as CreateEmailChangeVerifyToken.
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE user_id    = @user_id::uuid
+  AND token_type = 'email_change_verify'
+  AND used_at    IS NULL;
+
+
+-- name: CreateEmailChangeVerifyToken :one
+-- Issues a new email_change_verify OTP token.
+-- @email is the user's CURRENT address (for audit readability).
+-- @metadata stores {"new_email": "..."} so step 2 can retrieve the destination
+-- without a separate KV lookup (one_time_tokens.metadata JSONB, see 001_core.sql).
+-- TTL via @ttl_seconds::float8 — same clock pattern as CreateEmailVerificationToken.
+-- The DB constraint chk_ott_ecv_ttl_max caps the TTL at 15 minutes.
+-- max_attempts = 5 (Stage 0 D-12).
+INSERT INTO one_time_tokens (
+    token_type,
+    user_id,
+    email,
+    code_hash,
+    metadata,
+    expires_at,
+    ip_address,
+    max_attempts
+)
+VALUES (
+    'email_change_verify',
+    @user_id::uuid,
+    @email,
+    @code_hash,
+    @metadata,
+    NOW() + make_interval(secs => @ttl_seconds::float8),
+    sqlc.narg('ip_address')::inet,
+    5
+)
+RETURNING
+    id,
+    expires_at;
+
+
+-- name: GetEmailChangeVerifyToken :one
+-- Fetches the active email_change_verify token for the given authenticated user.
+-- Lookup is by (user_id, token_type) — no email parameter needed because the user
+-- is already authenticated via JWT.
+-- Returns metadata so the caller can extract new_email.
+-- FOR UPDATE prevents concurrent double-consumption.
+-- ORDER BY created_at DESC, id DESC picks the most recent token in the unlikely
+-- event that two rows exist (race between invalidation and insert).
+SELECT
+    id,
+    user_id,
+    email,
+    code_hash,
+    metadata,
+    attempts,
+    max_attempts,
+    expires_at,
+    used_at
+FROM one_time_tokens
+WHERE user_id    = @user_id::uuid
+  AND token_type = 'email_change_verify'
+  AND code_hash  IS NOT NULL
+  AND used_at    IS NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+FOR UPDATE;
+
+
+-- name: ConsumeEmailChangeToken :execrows
+-- Marks an email_change_verify or email_change_confirm token as used.
+-- AND used_at IS NULL ensures idempotency: a concurrent correct submission
+-- cannot consume the same token twice.
+-- Shared by step 2 (consume verify token) and step 3 (consume confirm token).
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE id      = @id::uuid
+  AND used_at IS NULL;
+
+
+-- name: InvalidateUserEmailChangeConfirmTokens :exec
+-- Voids all unused email_change_confirm tokens for this user before issuing a new one.
+-- Called inside the same transaction as CreateEmailChangeConfirmToken (step 2).
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE user_id    = @user_id::uuid
+  AND token_type = 'email_change_confirm'
+  AND used_at    IS NULL;
+
+
+-- name: CreateEmailChangeConfirmToken :one
+-- Issues a new email_change_confirm OTP token for step 2.
+-- @new_email is stored in the email column (D-09: for audit readability; also
+-- lets step 3 retrieve new_email directly from the token row without a separate query).
+-- max_attempts = 5 (Stage 0 D-12).
+-- The DB constraint chk_ott_ecc_ttl_max caps the TTL at 15 minutes.
+INSERT INTO one_time_tokens (
+    token_type,
+    user_id,
+    email,
+    code_hash,
+    expires_at,
+    ip_address,
+    max_attempts
+)
+VALUES (
+    'email_change_confirm',
+    @user_id::uuid,
+    @new_email,
+    @code_hash,
+    NOW() + make_interval(secs => @ttl_seconds::float8),
+    sqlc.narg('ip_address')::inet,
+    5
+)
+RETURNING
+    id,
+    expires_at;
+
+
+-- name: GetEmailChangeConfirmToken :one
+-- Fetches the active email_change_confirm token for the given authenticated user.
+-- Lookup by (user_id, token_type) — the user is authenticated via grant token.
+-- The email column holds the new_email address for use in step 3.
+-- FOR UPDATE prevents concurrent double-consumption.
+SELECT
+    id,
+    user_id,
+    email,
+    code_hash,
+    attempts,
+    max_attempts,
+    expires_at,
+    used_at
+FROM one_time_tokens
+WHERE user_id    = @user_id::uuid
+  AND token_type = 'email_change_confirm'
+  AND code_hash  IS NOT NULL
+  AND used_at    IS NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+FOR UPDATE;
+
+
+-- name: GetUserForEmailChangeTx :one
+-- Returns id and current email for the authenticated user inside a transaction.
+-- FOR UPDATE locks the row to prevent a concurrent email-change from racing past
+-- the uniqueness re-check (D-05) or producing stale old_email in audit metadata.
+SELECT id, email
+FROM users
+WHERE id         = @user_id::uuid
+  AND deleted_at IS NULL
+LIMIT 1
+FOR UPDATE;
+
+
+-- name: SetUserEmail :execrows
+-- Updates users.email for the given active user.
+-- Returns rows affected so the store can distinguish:
+--   23505 on idx_users_email_active → ErrEmailTaken (concurrent race past service guard)
+--   rows == 0                       → ErrUserNotFound (account deleted between steps)
+UPDATE users
+SET email = @new_email
+WHERE id         = @user_id::uuid
+  AND deleted_at IS NULL;

@@ -34,5 +34,20 @@ func Registry() map[string]Entry {
 			SubjectFmt: "Reset your %s password",
 			HTML:       PasswordResetEmailTemplate,
 		},
+		EmailChangeOTPKey: {
+			Key:        EmailChangeOTPKey,
+			SubjectFmt: "Your %s email change request",
+			HTML:       EmailChangeOTPTemplate,
+		},
+		EmailChangeConfirmOTPKey: {
+			Key:        EmailChangeConfirmOTPKey,
+			SubjectFmt: "Confirm your new %s email",
+			HTML:       EmailChangeConfirmOTPTemplate,
+		},
+		EmailChangedNotificationKey: {
+			Key:        EmailChangedNotificationKey,
+			SubjectFmt: "Your %s email address has been changed",
+			HTML:       EmailChangedNotificationTemplate,
+		},
 	}
 }

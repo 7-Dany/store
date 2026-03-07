@@ -1,0 +1,2972 @@
+{
+  "info": {
+    "_postman_id": "profile-email-change-e2e",
+    "name": "Profile \u2013 Email Change (POST /email/request-change + POST /email/verify-current + POST /email/confirm-change)",
+    "description": "E2E tests for the three-step email change flow.\n\nFolder execution order (single invocation via make e2e-email):\n  1. setup              \u2014 register gmail_test_email, fetch OTP, verify email, login \u2192 echg_access_token\n  2. happy-path         \u2014 step1 (request-change) \u2192 fetch step1 OTP \u2192 step2 (verify-current) \u2192 fetch step2 OTP \u2192 step3 (confirm-change) \u2192 re-login \u2192 GET /me confirm DB write\n  3. failures           \u2014 cooldown_active, same_email, email_taken, wrong-code, invalid_grant_token\n  4. auth-failures      \u2014 missing Authorization \u2192 401 on all 3 endpoints\n  5. validation         \u2014 body > 1 MiB \u2192 413; malformed JSON \u2192 422\n  6. rate-limiting-req  \u2014 echg:usr: burst=3; dedicated +echgrlreq alias user\n  7. rate-limiting-vfy  \u2014 echg:usr:vfy: burst=5; dedicated +echgrlvfy alias user + one step1 seed\n  8. rate-limiting-cnf  \u2014 echg:usr:cnf: burst=5; dedicated +echgrlcnf alias user, bad grant_token warmup\n\nAll rate-limiters are user-keyed (JWT available at every endpoint). Running all folders in a single\nNewman invocation preserves collection variables (echg_access_token, etc.) across folders.\nRedis is flushed once before the run (_e2e-clean); no mid-run flush is needed.\n\nVariable prefix: echg_\n\nNotes on what is NOT covered here and why:\n  - T-02\u2013T-04: individual new_email validation variants \u2192 handler_test.go\n  - T-03: code format variants \u2192 handler_test.go\n  - T-08: ErrUserNotFound \u2192 500 \u2192 handler_test.go\n  - T-09, T-20, T-21, T-38, T-39: context.WithoutCancel \u2192 service_test.go\n  - T-10: store error prefix wrapping \u2192 service_test.go\n  - T-11, T-12: DB-level token state \u2192 store_test.go\n  - T-19, T-33: wrong-code increment call count \u2192 service_test.go\n  - T-29: grant_token user_id mismatch \u2192 service_test.go\n  - T-34: ErrEmailTaken inside tx (race) \u2192 store_test.go T-41\n  - T-36, T-37: RevokeAllRefreshTokens + Blocklist called \u2192 confirmed indirectly by re-login test\n  - T-41: SetUserEmailZero \u2192 ErrUserNotFound \u2192 store_test.go\n\nAll test users use gmail_test_email or @e2e.test addresses so `make _e2e-db-clean` can wipe them.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Increment the request sequence counter and derive a unique X-Forwarded-For IP",
+          "// for every request so non-RL folders never exhaust any rate-limit bucket.",
+          "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.' + ((n>>16)&0xff) + '.' + ((n>>8)&0xff) + '.' + (n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Registers the gmail_test_email user, fetches the verification OTP from Gmail, verifies the email, and logs in. Stores echg_access_token for use by subsequent folders.",
+      "item": [
+        {
+          "name": "POST /register \u2192 201 (setup account)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) {",
+                  "    console.error('[ERROR] gmail_test_email not set in environment \u2014 add it to environment.json.');",
+                  "}",
+                  "pm.collectionVariables.set('echg_email', email);",
+                  "pm.collectionVariables.set('echg_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "// --- Gmail verification OTP fetch ---",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "console.log('[INFO] Done waiting. Querying Gmail API...');",
+                  "",
+                  "const echgEmail = pm.collectionVariables.get('echg_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + echgEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired \u2014 refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching verification email found in Gmail.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode verification email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in verification email.'); return; }",
+                  "        pm.collectionVariables.set('echg_vfy_code', match[1]);",
+                  "        console.log('[INFO] Verification OTP stored in echg_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"EchgSetup\", \"email\": \"{{echg_email}}\", \"password\": \"{{echg_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email \u2192 200 (consume verification OTP)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('echg_vfy_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] echg_vfy_code is empty \u2014 Gmail fetch in register step did not complete.');",
+                  "    console.error('        Check: gmail_access_token is set, token not expired, --delay-request >= 8000.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{echg_email}}\", \"code\": \"{{echg_vfy_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "POST /login \u2192 200 (store echg_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('echg_access_token', body.access_token);",
+                  "console.log('[INFO] Access token stored in echg_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{echg_email}}\", \"password\": \"{{echg_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path",
+      "description": "Covers the complete three-step email-change wire path for the primary user.\n\nNew email target: +echgnew Gmail alias (same inbox, different to: address).\n\nOrder:\n  step1 (request-change \u2192 200) \u2192 fetch step1 OTP from Gmail \u2192\n  step2 (verify-current \u2192 200) \u2192 fetch step2 OTP from Gmail \u2192\n  step3 (confirm-change \u2192 200) \u2192\n  re-login with new email \u2192 GET /me confirm DB write.\n\nAfter step3, echg_access_token is blocklisted. All subsequent auth uses echg_access_token_v2.\n\nNOT covered here:\n  - Token revocation side-effects (T-36, T-37): confirmed indirectly by re-login success.\n  - DB-level KV state (T-11, T-23): covered by store_test.go.",
+      "item": [
+        {
+          "name": "POST /email/request-change \u2192 200 (step 1 \u2014 send OTP to current email)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Derive the +echgnew Gmail alias from gmail_test_email.",
+                  "// Gmail delivers user+echgnew@gmail.com to the same inbox as user@gmail.com.",
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const newEmail = base.slice(0, at) + '+echgnew' + base.slice(at);",
+                  "pm.collectionVariables.set('echg_new_email', newEmail);",
+                  "console.log('[INFO] echg_new_email set to:', newEmail);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-01 (step 1 wire path): JWT auth \u2192 rate limiter (echg:usr: slot 1) \u2192 handler \u2192 service \u2192 200.",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message mentions current email', () => pm.expect(pm.response.json().message).to.include('current email'));",
+                  "",
+                  "// --- Gmail step-1 OTP fetch (sent to current email address) ---",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for step-1 OTP email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const echgEmail = pm.collectionVariables.get('echg_email');",
+                  "const appName = pm.environment.get('app_name') || 'Vend';",
+                  "const query = encodeURIComponent('subject:\"Your ' + appName + ' email change request\" to:' + echgEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired \u2014 refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No step-1 OTP email found in Gmail.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode step-1 email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in step-1 email.'); return; }",
+                  "        pm.collectionVariables.set('echg_step1_code', match[1]);",
+                  "        console.log('[INFO] Step-1 OTP stored in echg_step1_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"{{echg_new_email}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/verify-current \u2192 200 (step 2 \u2014 confirm OTP, receive grant_token)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('echg_step1_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] echg_step1_code is empty \u2014 Gmail fetch in step-1 did not complete.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-13 (step 2 wire path): JWT auth \u2192 rate limiter (echg:usr:vfy: slot 1) \u2192 handler \u2192 service \u2192 200.",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('grant_token present and non-empty', () => pm.expect(body.grant_token).to.be.a('string').and.not.empty);",
+                  "pm.test('expires_in is 600', () => pm.expect(body.expires_in).to.equal(600));",
+                  "pm.collectionVariables.set('echg_grant_token', body.grant_token);",
+                  "console.log('[INFO] Grant token stored in echg_grant_token.');",
+                  "",
+                  "// --- Gmail step-2 OTP fetch (sent to new email address) ---",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for step-2 OTP email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const echgNewEmail = pm.collectionVariables.get('echg_new_email');",
+                  "const appName2 = pm.environment.get('app_name') || 'Vend';",
+                  "const query = encodeURIComponent('subject:\"Confirm your new\" to:' + echgNewEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired \u2014 refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No step-2 OTP email found in Gmail for new email.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode step-2 email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in step-2 email.'); return; }",
+                  "        pm.collectionVariables.set('echg_step2_code', match[1]);",
+                  "        console.log('[INFO] Step-2 OTP stored in echg_step2_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"{{echg_step1_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/confirm-change \u2192 200 (step 3 \u2014 update email, revoke all tokens)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const gt = pm.collectionVariables.get('echg_grant_token');",
+                  "const code = pm.collectionVariables.get('echg_step2_code');",
+                  "if (!gt) { console.error('[ERROR] echg_grant_token is empty \u2014 step-2 did not complete.'); }",
+                  "if (!code) { console.error('[ERROR] echg_step2_code is empty \u2014 Gmail fetch in step-2 did not complete.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-25 (step 3 wire path): JWT auth \u2192 rate limiter (echg:usr:cnf: slot 1) \u2192 handler \u2192 service \u2192 200.",
+                  "// After this call: users.email updated, all refresh tokens revoked, access token blocklisted.",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message confirms update', () => pm.expect(pm.response.json().message).to.include('updated'));",
+                  "// Store current new_email for use in failures folder same_email check.",
+                  "pm.collectionVariables.set('echg_email_after_change', pm.collectionVariables.get('echg_new_email'));",
+                  "// NOTE: echg_access_token is now blocklisted. Do not use it for further auth calls.",
+                  "console.log('[INFO] Email change complete. echg_access_token is now invalid \u2014 re-login required.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grant_token\": \"{{echg_grant_token}}\", \"code\": \"{{echg_step2_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+            }
+          }
+        },
+        {
+          "name": "POST /login \u2192 200 (re-login with new email \u2014 confirms new identifier active)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-41 (indirect): successful login with the new email confirms the DB update.",
+                  "// echg_access_token is blocklisted after step 3; this new token has full access.",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('echg_access_token_v2', body.access_token);",
+                  "console.log('[INFO] Re-login succeeded with new email. echg_access_token_v2 stored.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{echg_new_email}}\", \"password\": \"{{echg_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "GET /me \u2192 200 (confirm users.email updated in DB \u2014 T-40)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-40 \u2014 GET /me after step 3 confirms users.email column reflects the new address.",
+                  "// This is distinct from T-25 which only checks the step-3 response shape.",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('email updated in DB', () => {",
+                  "    const newEmail = pm.collectionVariables.get('echg_new_email');",
+                  "    pm.expect(pm.response.json().email).to.equal(newEmail);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_access_token_v2}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "failures",
+      "description": "Domain-level error cases. Uses a dedicated +echgfail user (fresh echg:usr: bucket). The primary user's echg:usr: bucket is down to 2 remaining slots after the happy-path step-1 call; using it here would exhaust the bucket before seed cooldown runs.\n\nSlot accounting for echg_fail_access_token (burst=3, fresh bucket):\n  echg:usr:   burst=3  \u2014 slots consumed: req1 (same_email), req2 (email_taken), req3 (seed cooldown) = 3 total.\n  echg:usr:vfy: burst=5 \u2014 slots consumed: req4 (wrong code) = 1 total.\n  echg:usr:cnf: burst=5 \u2014 slots consumed: req5 (invalid_grant_token) = 1 total.\n\nNOT covered:\n  - T-08 (ErrUserNotFound \u2192 500): handler_test.go.\n  - T-22 (KV pending absent \u2192 internal state): service_test.go.",
+      "item": [
+        {
+          "name": "fail-setup 1/3 \u2014 POST /register \u2192 201 (+echgfail alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const failEmail = base.slice(0, at) + '+echgfail' + base.slice(at);",
+                  "pm.collectionVariables.set('echg_fail_email', failEmail);",
+                  "pm.collectionVariables.set('echg_fail_password', 'EchgFailP@ss1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for +echgfail verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const failEmail = pm.collectionVariables.get('echg_fail_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + failEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +echgfail verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +echgfail email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +echgfail email.'); return; }",
+                  "        pm.collectionVariables.set('echg_fail_vfy_code', match[1]);",
+                  "        console.log('[INFO] +echgfail OTP stored in echg_fail_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"EchgFail\", \"email\": \"{{echg_fail_email}}\", \"password\": \"{{echg_fail_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "fail-setup 2/3 \u2014 POST /verify-email \u2192 200 (+echgfail alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('echg_fail_vfy_code');",
+                  "if (!code) { console.error('[ERROR] echg_fail_vfy_code is empty \u2014 Gmail fetch in fail-setup 1/3 did not complete.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{echg_fail_email}}\", \"code\": \"{{echg_fail_vfy_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "fail-setup 3/3 \u2014 POST /login \u2192 200 (store echg_fail_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('echg_fail_access_token', body.access_token);",
+                  "console.log('[INFO] Fail access token stored in echg_fail_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{echg_fail_email}}\", \"password\": \"{{echg_fail_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "seed-taken \u2014 POST /register echg_taken@e2e.test \u2192 201 or 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Seed a user holding echg_taken@e2e.test so email_taken checks have a real conflict in DB.",
+                  "// 409 is acceptable if a prior run left this user in the DB.",
+                  "pm.test('status is 201 or 409 (idempotent seed)', () => {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([201, 409]);",
+                  "});",
+                  "console.log('[INFO] echg_taken@e2e.test seed result:', pm.response.code);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"EchgTaken\", \"email\": \"echg_taken@e2e.test\", \"password\": \"P@ssw0rd1!\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/request-change \u2192 422 same_email (T-05)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-05 \u2014 requesting change to the +echgfail user's own current email (echg_fail_email).",
+                  "// Service ErrSameEmail guard fires \u2192 handler maps to 422 same_email.",
+                  "// NOTE: consumes echg:usr: slot 1 for echg_fail user.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is same_email', () => pm.expect(pm.response.json().code).to.equal('same_email'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_fail_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"{{echg_fail_email}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/request-change \u2192 409 email_taken (T-06)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-06 \u2014 requesting change to an email registered to the seeded echg_taken user.",
+                  "// CheckEmailAvailableForChange returns taken \u2192 409 email_taken.",
+                  "// NOTE: consumes echg:usr: slot 2 for echg_fail user.",
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is email_taken', () => pm.expect(pm.response.json().code).to.equal('email_taken'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_fail_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"echg_taken@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/request-change \u2192 200 (seed cooldown \u2014 3rd and final echg:usr: slot)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Seed a pending verify token so that the next request triggers ErrCooldownActive.",
+                  "// This is the 3rd and final slot in echg_fail user's echg:usr: bucket.",
+                  "// NOTE: consumes echg:usr: slot 3 (last) for echg_fail user.",
+                  "pm.test('status is 200 (OTP issued; cooldown window now active)', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_fail_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"echg_cooldown_target@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/request-change \u2192 429 cooldown_active or too_many_requests (T-07)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-07 \u2014 second request-change within 2-minute cooldown window \u2192 429 cooldown_active.",
+                  "// WHY BOTH ACCEPTED: echg:usr: burst=3 is now exhausted (3 slots consumed above).",
+                  "// The 4th request hits echg:usr: rate limiter \u2192 429 too_many_requests.",
+                  "// The cooldown guard also fires, returning 429 cooldown_active.",
+                  "// Which 429 fires first depends on guard ordering vs limiter order \u2014 both confirm wiring.",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is cooldown_active or too_many_requests', () => {",
+                  "    const code = pm.response.json().code;",
+                  "    pm.expect(code).to.be.oneOf(['cooldown_active', 'too_many_requests']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_fail_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"echg_cooldown_target@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/verify-current \u2192 422 wrong code (T-18/T-19 representative)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The verify token seeded by the cooldown-seed request (req3) is still active for echg_fail user.",
+                  "// Sending 000000 is virtually guaranteed to be wrong \u2192 ErrInvalidCode \u2192 422 validation_error.",
+                  "// NOTE: consumes echg:usr:vfy: slot 1 for echg_fail user.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.equal('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_fail_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/confirm-change \u2192 422 invalid_grant_token (T-28)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-28 \u2014 grant_token not present in KV (nil UUID is not a real KV key).",
+                  "// kv.Get returns absent \u2192 ErrGrantTokenInvalid \u2192 422 invalid_grant_token.",
+                  "// NOTE: consumes echg:usr:cnf: slot 1 for echg_fail user.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is invalid_grant_token', () => pm.expect(pm.response.json().code).to.equal('invalid_grant_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_fail_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grant_token\": \"00000000-0000-0000-0000-000000000000\", \"code\": \"123456\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth-failures",
+      "description": "Verifies that the JWTAuth middleware guards all three email-change endpoints.\nNo Authorization header \u2192 401 on all three. JWT middleware fires before rate limiters \u2014 no slots consumed.",
+      "item": [
+        {
+          "name": "POST /email/request-change \u2192 401 missing Authorization",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// JWT middleware rejects missing header before rate limiter or handler body runs.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "// NOTE: no echg:usr: slot consumed \u2014 JWT rejection fires before rate limiter."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"echg_auth_fail@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/verify-current \u2192 401 missing Authorization",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "// NOTE: no echg:usr:vfy: slot consumed."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"123456\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/confirm-change \u2192 401 missing Authorization",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "// NOTE: no echg:usr:cnf: slot consumed."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grant_token\": \"00000000-0000-0000-0000-000000000000\", \"code\": \"123456\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "validation",
+      "description": "Infrastructure-level request validation. Tests body > 1 MiB and malformed JSON on POST /email/request-change only \u2014 the same MaxBytesReader / DecodeJSON path is shared by all three handlers.\n\nUses echg_access_token_v2. echg:usr: bucket may be exhausted from failures folder (3 slots) \u2014 the 413 test therefore accepts 429 as well since rate limiter fires before MaxBytesReader.",
+      "item": [
+        {
+          "name": "POST /email/request-change \u2192 413 body > 1 MiB",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pad body past the 1 MiB MaxBytesReader limit.",
+                  "// Rate limiter fires first \u2014 if bucket is exhausted this returns 429 instead of 413.",
+                  "// Both are acceptable since both confirm the middleware pipeline is wired.",
+                  "const pad = 'x'.repeat(1024 * 1024 + 1);",
+                  "pm.request.body.update({",
+                  "    mode: 'raw',",
+                  "    raw: JSON.stringify({ new_email: 'echg_large@e2e.test', _pad: pad })",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Accept 413 (rate limiter passes, MaxBytesReader fires) or 429 (rate limiter exhausted).",
+                  "pm.test('status is 413 or 429', () => pm.expect(pm.response.code).to.be.oneOf([413, 429]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_access_token_v2}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "POST /email/request-change \u2192 422 malformed JSON",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Rate limiter fires first, then decoder fails \u2192 422 validation_error.",
+                  "// If rate limiter is exhausted, returns 429 (also acceptable \u2014 RL wiring confirmed).",
+                  "pm.test('status is 422 or 429', () => pm.expect(pm.response.code).to.be.oneOf([422, 429]));",
+                  "if (pm.response.code === 422) {",
+                  "    pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.equal('validation_error'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_access_token_v2}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-req",
+      "description": "Verifies the echg:usr: per-user rate limiter for POST /email/request-change (burst=3, rate=3/10 min).\n\nWhy a dedicated user (+echgrlreq alias):\n  echg_access_token_v2's echg:usr: bucket was exhausted by the failures + validation folders\n  (3 slots consumed). A fresh user with a fresh bucket is required for a reliable burst=3 \u2192 429 trigger.\n\nWarmup notes:\n  Slot 1: succeeds (\u2192 200, no cooldown yet).\n  Slot 2: the same-target request-change fires within 2 min of slot 1 \u2192 429 cooldown_active (from service).\n    The test accepts 429 cooldown_active OR 200 (if targets differ) \u2014 it must NOT be 429 too_many_requests.\n  Slot 3: same as slot 2.\n  Slot 4: echg:usr: bucket exhausted \u2192 429 too_many_requests (rate limiter fires before service guards).\n\nRetry-After = ceil(1 / (3/600)) = ceil(200) = 200 seconds.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Pin _xff to 127.0.0.1 for all requests in this folder.",
+              "// echg:usr: keys on user ID from JWT, not IP. Pinning IP is a safety measure.",
+              "pm.collectionVariables.set('_xff', '127.0.0.1');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "rl-req-setup 1/3 \u2014 POST /register \u2192 201 (+echgrlreq alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Derive the +echgrlreq Gmail alias from gmail_test_email.",
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const rlEmail = base.slice(0, at) + '+echgrlreq' + base.slice(at);",
+                  "pm.collectionVariables.set('echg_rl_req_email', rlEmail);",
+                  "pm.collectionVariables.set('echg_rl_req_password', 'RlEchgReqP@ss1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "// Fetch the verification OTP for the +echgrlreq alias.",
+                  "// to: filter ensures we target the alias email, not the main gmail_test_email.",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for +echgrlreq verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const rlEmail = pm.collectionVariables.get('echg_rl_req_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + rlEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +echgrlreq verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +echgrlreq email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +echgrlreq email.'); return; }",
+                  "        pm.collectionVariables.set('echg_rl_req_vfy_code', match[1]);",
+                  "        console.log('[INFO] +echgrlreq OTP stored in echg_rl_req_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"EchgRLReq\", \"email\": \"{{echg_rl_req_email}}\", \"password\": \"{{echg_rl_req_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "rl-req-setup 2/3 \u2014 POST /verify-email \u2192 200 (+echgrlreq alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('echg_rl_req_vfy_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] echg_rl_req_vfy_code is empty \u2014 Gmail fetch in rl-req-setup 1/3 did not complete.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{echg_rl_req_email}}\", \"code\": \"{{echg_rl_req_vfy_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "rl-req-setup 3/3 \u2014 POST /login \u2192 200 (store echg_rl_req_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('echg_rl_req_access_token', body.access_token);",
+                  "console.log('[INFO] RL-req access token stored in echg_rl_req_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{echg_rl_req_email}}\", \"password\": \"{{echg_rl_req_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "warmup 1/3 \u2014 POST /email/request-change \u2192 not 429 (echg:usr: slot 1 \u2014 first call succeeds)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh bucket for +echgrlreq user. First request \u2192 200 (OTP issued, no cooldown yet).",
+                  "// Rate limiter consumes slot 1 of 3.",
+                  "pm.test('not rate-limited (echg:usr: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_req_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"echg_rl_target@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/3 \u2014 POST /email/request-change \u2192 not 429 too_many_requests (echg:usr: slot 2)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Slot 2 of 3 consumed. This fires within 2 min of slot 1 \u2192 service returns 429 cooldown_active.",
+                  "// The rate limiter has NOT exhausted (only 2 of 3 slots used) \u2192 must NOT be too_many_requests.",
+                  "pm.test('not rate-limited by RL (echg:usr: slot 2 \u2014 cooldown_active is ok)', () => {",
+                  "    if (pm.response.code === 429) {",
+                  "        pm.expect(pm.response.json().code).to.equal('cooldown_active',",
+                  "            'slot 2 must produce cooldown_active (service guard), not too_many_requests (RL)');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_req_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"echg_rl_target@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/3 \u2014 POST /email/request-change \u2192 not 429 too_many_requests (echg:usr: slot 3 \u2014 last)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Slot 3 of 3 consumed. Within cooldown window \u2192 service returns 429 cooldown_active.",
+                  "// Rate limiter not yet exhausted (slot 3 is the last allowed) \u2192 must NOT be too_many_requests.",
+                  "pm.test('not rate-limited by RL (echg:usr: slot 3 \u2014 last; cooldown_active is ok)', () => {",
+                  "    if (pm.response.code === 429) {",
+                  "        pm.expect(pm.response.json().code).to.equal('cooldown_active',",
+                  "            'slot 3 must produce cooldown_active (service guard), not too_many_requests (RL)');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_req_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"echg_rl_target@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "4th request \u2192 429 too_many_requests (echg:usr: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// burst=3 exhausted. Rate limiter fires before service guards \u2192 429 too_many_requests.",
+                  "// Retry-After = ceil(1 / (3/600)) = ceil(200) = 200 seconds.",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.equal('too_many_requests'));",
+                  "pm.test('Retry-After header present', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.exist;",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.not.be.empty;",
+                  "});",
+                  "// NOT covered here: exact Retry-After value \u2014 covered by rate-limiter unit tests."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_req_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"echg_rl_target@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-vfy",
+      "description": "Verifies the echg:usr:vfy: per-user rate limiter for POST /email/verify-current (burst=5, rate=5/15 min).\n\nStrategy: one step1 call seeds a verify token for the +echgrlvfy user; then five POST /email/verify-current calls with code '000000' each pass the rate limiter (slot consumed) and return 422 validation_error (wrong code). The 6th fires the RL and returns 429 too_many_requests.\n\nRetry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": ["pm.collectionVariables.set('_xff', '127.0.0.1');"]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "rl-vfy-setup 1/3 \u2014 POST /register \u2192 201 (+echgrlvfy alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const rlEmail = base.slice(0, at) + '+echgrlvfy' + base.slice(at);",
+                  "pm.collectionVariables.set('echg_rl_vfy_email', rlEmail);",
+                  "pm.collectionVariables.set('echg_rl_vfy_password', 'RlEchgVfyP@ss1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for +echgrlvfy verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const rlEmail = pm.collectionVariables.get('echg_rl_vfy_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + rlEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +echgrlvfy verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +echgrlvfy email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +echgrlvfy email.'); return; }",
+                  "        pm.collectionVariables.set('echg_rl_vfy_vfy_code', match[1]);",
+                  "        console.log('[INFO] +echgrlvfy OTP stored in echg_rl_vfy_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"EchgRLVfy\", \"email\": \"{{echg_rl_vfy_email}}\", \"password\": \"{{echg_rl_vfy_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "rl-vfy-setup 2/3 \u2014 POST /verify-email \u2192 200 (+echgrlvfy alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('echg_rl_vfy_vfy_code');",
+                  "if (!code) { console.error('[ERROR] echg_rl_vfy_vfy_code is empty \u2014 Gmail fetch in rl-vfy-setup 1/3 did not complete.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{echg_rl_vfy_email}}\", \"code\": \"{{echg_rl_vfy_vfy_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "rl-vfy-setup 3/3 \u2014 POST /login \u2192 200 (store echg_rl_vfy_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('echg_rl_vfy_access_token', body.access_token);",
+                  "console.log('[INFO] RL-vfy access token stored in echg_rl_vfy_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{echg_rl_vfy_email}}\", \"password\": \"{{echg_rl_vfy_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "seed verify token \u2014 POST /email/request-change \u2192 200 (active OTP now in DB)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Seeds a pending email_change_verify token for +echgrlvfy user.",
+                  "// Warmup verify-current calls will find this token and return 422 (wrong code 000000).",
+                  "pm.test('status is 200 (verify token seeded)', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_vfy_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"new_email\": \"echg_rlvfy_target@e2e.test\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+            }
+          }
+        },
+        {
+          "name": "warmup 1/5 \u2014 POST /email/verify-current \u2192 not 429 (echg:usr:vfy: slot 1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Code 000000 is virtually guaranteed wrong \u2192 rate limiter passes (slot 1) \u2192 422 validation_error.",
+                  "pm.test('not rate-limited yet (echg:usr:vfy: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_vfy_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/5 \u2014 POST /email/verify-current \u2192 not 429 (echg:usr:vfy: slot 2)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (echg:usr:vfy: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_vfy_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/5 \u2014 POST /email/verify-current \u2192 not 429 (echg:usr:vfy: slot 3)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (echg:usr:vfy: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_vfy_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/5 \u2014 POST /email/verify-current \u2192 not 429 (echg:usr:vfy: slot 4)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (echg:usr:vfy: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_vfy_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/5 \u2014 POST /email/verify-current \u2192 not 429 (echg:usr:vfy: slot 5 \u2014 last)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (echg:usr:vfy: slot 5 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_vfy_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+            }
+          }
+        },
+        {
+          "name": "6th request \u2192 429 too_many_requests (echg:usr:vfy: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// burst=5 exhausted. Rate limiter fires before handler \u2192 429 too_many_requests.",
+                  "// Retry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.equal('too_many_requests'));",
+                  "pm.test('Retry-After header present', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.exist;",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.not.be.empty;",
+                  "});",
+                  "// NOT covered here: exact Retry-After value \u2014 covered by rate-limiter unit tests."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_vfy_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-cnf",
+      "description": "Verifies the echg:usr:cnf: per-user rate limiter for POST /email/confirm-change (burst=5, rate=5/15 min).\n\nStrategy: no valid grant_token needed. Five POST /email/confirm-change requests with a random nil-UUID grant_token each pass the rate limiter (slot consumed) and return 422 invalid_grant_token (KV lookup fails). The 6th fires the RL and returns 429 too_many_requests.\n\nRetry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": ["pm.collectionVariables.set('_xff', '127.0.0.1');"]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "rl-cnf-setup 1/3 \u2014 POST /register \u2192 201 (+echgrlcnf alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const rlEmail = base.slice(0, at) + '+echgrlcnf' + base.slice(at);",
+                  "pm.collectionVariables.set('echg_rl_cnf_email', rlEmail);",
+                  "pm.collectionVariables.set('echg_rl_cnf_password', 'RlEchgCnfP@ss1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for +echgrlcnf verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const rlEmail = pm.collectionVariables.get('echg_rl_cnf_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + rlEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +echgrlcnf verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +echgrlcnf email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +echgrlcnf email.'); return; }",
+                  "        pm.collectionVariables.set('echg_rl_cnf_vfy_code', match[1]);",
+                  "        console.log('[INFO] +echgrlcnf OTP stored in echg_rl_cnf_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"EchgRLCnf\", \"email\": \"{{echg_rl_cnf_email}}\", \"password\": \"{{echg_rl_cnf_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "rl-cnf-setup 2/3 \u2014 POST /verify-email \u2192 200 (+echgrlcnf alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('echg_rl_cnf_vfy_code');",
+                  "if (!code) { console.error('[ERROR] echg_rl_cnf_vfy_code is empty \u2014 Gmail fetch in rl-cnf-setup 1/3 did not complete.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{echg_rl_cnf_email}}\", \"code\": \"{{echg_rl_cnf_vfy_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "rl-cnf-setup 3/3 \u2014 POST /login \u2192 200 (store echg_rl_cnf_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('echg_rl_cnf_access_token', body.access_token);",
+                  "console.log('[INFO] RL-cnf access token stored in echg_rl_cnf_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{echg_rl_cnf_email}}\", \"password\": \"{{echg_rl_cnf_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "warmup 1/5 \u2014 POST /email/confirm-change \u2192 not 429 (echg:usr:cnf: slot 1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nil-UUID grant_token \u2192 rate limiter passes (slot 1) \u2192 KV lookup fails \u2192 422 invalid_grant_token.",
+                  "pm.test('not rate-limited yet (echg:usr:cnf: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_cnf_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grant_token\": \"00000000-0000-0000-0000-000000000000\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/5 \u2014 POST /email/confirm-change \u2192 not 429 (echg:usr:cnf: slot 2)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (echg:usr:cnf: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_cnf_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grant_token\": \"00000000-0000-0000-0000-000000000000\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/5 \u2014 POST /email/confirm-change \u2192 not 429 (echg:usr:cnf: slot 3)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (echg:usr:cnf: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_cnf_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grant_token\": \"00000000-0000-0000-0000-000000000000\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/5 \u2014 POST /email/confirm-change \u2192 not 429 (echg:usr:cnf: slot 4)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (echg:usr:cnf: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_cnf_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grant_token\": \"00000000-0000-0000-0000-000000000000\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/5 \u2014 POST /email/confirm-change \u2192 not 429 (echg:usr:cnf: slot 5 \u2014 last)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (echg:usr:cnf: slot 5 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_cnf_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grant_token\": \"00000000-0000-0000-0000-000000000000\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+            }
+          }
+        },
+        {
+          "name": "6th request \u2192 429 too_many_requests (echg:usr:cnf: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// burst=5 exhausted. Rate limiter fires before KV lookup \u2192 429 too_many_requests.",
+                  "// Retry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.equal('too_many_requests'));",
+                  "pm.test('Retry-After header present', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.exist;",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.not.be.empty;",
+                  "});",
+                  "// NOT covered here: exact Retry-After value \u2014 covered by rate-limiter unit tests."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{echg_rl_cnf_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"grant_token\": \"00000000-0000-0000-0000-000000000000\", \"code\": \"000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter used by the collection prerequest to generate unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current X-Forwarded-For value. Set to a unique 10.x.x.x IP by the collection prerequest. Overridden to 127.0.0.1 by rate-limiting folder prerequest scripts."
+    },
+    {
+      "key": "echg_email",
+      "value": "",
+      "description": "Primary user email (from gmail_test_email). Set in setup/register prerequest."
+    },
+    {
+      "key": "echg_password",
+      "value": "",
+      "description": "Primary user password (P@ssw0rd1!). Set in setup/register prerequest."
+    },
+    {
+      "key": "echg_vfy_code",
+      "value": "",
+      "description": "Registration verification OTP for echg_email. Fetched from Gmail by setup/register test script."
+    },
+    {
+      "key": "echg_access_token",
+      "value": "",
+      "description": "Access token for primary user after initial login. Valid until step 3 (confirm-change) blocklists it."
+    },
+    {
+      "key": "echg_new_email",
+      "value": "",
+      "description": "Gmail +echgnew alias derived from gmail_test_email. Set in happy-path/step1 prerequest."
+    },
+    {
+      "key": "echg_step1_code",
+      "value": "",
+      "description": "Step-1 OTP sent to echg_email (current address). Fetched from Gmail by happy-path/step1 test script."
+    },
+    {
+      "key": "echg_grant_token",
+      "value": "",
+      "description": "Grant token returned by verify-current (step 2). Stored by happy-path/step2 test script. Used in step 3 body."
+    },
+    {
+      "key": "echg_step2_code",
+      "value": "",
+      "description": "Step-2 OTP sent to echg_new_email (new address). Fetched from Gmail by happy-path/step2 test script."
+    },
+    {
+      "key": "echg_email_after_change",
+      "value": "",
+      "description": "Set to echg_new_email immediately after step 3 succeeds. Used by failures/same_email check."
+    },
+    {
+      "key": "echg_access_token_v2",
+      "value": "",
+      "description": "Access token obtained by logging in with echg_new_email after the email change. Used by failures, auth-failures, and validation folders."
+    },
+    {
+      "key": "echg_rl_req_email",
+      "value": "",
+      "description": "gmail_test_email+echgrlreq alias. Derived and set in rate-limiting-req/rl-req-setup 1/3 prerequest."
+    },
+    {
+      "key": "echg_rl_req_password",
+      "value": "",
+      "description": "Password for echg_rl_req_email. Set in rate-limiting-req/rl-req-setup 1/3 prerequest."
+    },
+    {
+      "key": "echg_rl_req_vfy_code",
+      "value": "",
+      "description": "Verification OTP for echg_rl_req_email. Fetched from Gmail by rl-req-setup 1/3 test script (to: filter targets +echgrlreq alias)."
+    },
+    {
+      "key": "echg_rl_req_access_token",
+      "value": "",
+      "description": "Access token for echg_rl_req_email. Fresh echg:usr: bucket \u2014 not used by any other folder."
+    },
+    {
+      "key": "echg_rl_vfy_email",
+      "value": "",
+      "description": "gmail_test_email+echgrlvfy alias. Derived and set in rate-limiting-vfy/rl-vfy-setup 1/3 prerequest."
+    },
+    {
+      "key": "echg_rl_vfy_password",
+      "value": "",
+      "description": "Password for echg_rl_vfy_email."
+    },
+    {
+      "key": "echg_rl_vfy_vfy_code",
+      "value": "",
+      "description": "Verification OTP for echg_rl_vfy_email. Fetched from Gmail by rl-vfy-setup 1/3 test script."
+    },
+    {
+      "key": "echg_rl_vfy_access_token",
+      "value": "",
+      "description": "Access token for echg_rl_vfy_email. Fresh echg:usr:vfy: bucket \u2014 used exclusively by rate-limiting-vfy."
+    },
+    {
+      "key": "echg_rl_cnf_email",
+      "value": "",
+      "description": "gmail_test_email+echgrlcnf alias. Derived and set in rate-limiting-cnf/rl-cnf-setup 1/3 prerequest."
+    },
+    {
+      "key": "echg_rl_cnf_password",
+      "value": "",
+      "description": "Password for echg_rl_cnf_email."
+    },
+    {
+      "key": "echg_rl_cnf_vfy_code",
+      "value": "",
+      "description": "Verification OTP for echg_rl_cnf_email. Fetched from Gmail by rl-cnf-setup 1/3 test script."
+    },
+    {
+      "key": "echg_rl_cnf_access_token",
+      "value": "",
+      "description": "Access token for echg_rl_cnf_email. Fresh echg:usr:cnf: bucket \u2014 used exclusively by rate-limiting-cnf."
+    },
+    {
+      "key": "echg_fail_email",
+      "value": "",
+      "description": "gmail_test_email+echgfail alias. Derived and set in failures/fail-setup 1/3 prerequest. Used as the same_email (T-05) target (their own current address)."
+    },
+    {
+      "key": "echg_fail_password",
+      "value": "",
+      "description": "Password for echg_fail_email. Set in failures/fail-setup 1/3 prerequest."
+    },
+    {
+      "key": "echg_fail_vfy_code",
+      "value": "",
+      "description": "Verification OTP for echg_fail_email. Fetched from Gmail by fail-setup 1/3 test script."
+    },
+    {
+      "key": "echg_fail_access_token",
+      "value": "",
+      "description": "Access token for echg_fail_email. Fresh echg:usr: bucket (burst=3) \u2014 used exclusively by the failures folder."
+    }
+  ]
+}

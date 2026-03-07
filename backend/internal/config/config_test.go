@@ -1183,3 +1183,120 @@ func TestConfigValidate_RejectsAllWhitespaceAllowedOrigins(t *testing.T) {
 		t.Errorf("error should mention ALLOWED_ORIGINS, got: %v", err)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────
+// APP_NAME validation and trimming
+// ─────────────────────────────────────────────────────────────
+
+func TestConfigValidate_RejectsEmptyAppName(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.AppName = ""
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for empty APP_NAME, got nil")
+	}
+	if !strings.Contains(err.Error(), "APP_NAME") {
+		t.Errorf("error should mention APP_NAME, got: %v", err)
+	}
+}
+
+func TestConfigValidate_RejectsAppNameExceedingMaxLength(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.AppName = strings.Repeat("A", 65) // one over the 64-char cap
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for APP_NAME > 64 chars, got nil")
+	}
+	if !strings.Contains(err.Error(), "APP_NAME") {
+		t.Errorf("error should mention APP_NAME, got: %v", err)
+	}
+}
+
+func TestConfigValidate_AcceptsAppNameAtMaxLength(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.AppName = strings.Repeat("A", 64)
+	if err := cfg.validate(); err != nil {
+		t.Errorf("APP_NAME of exactly 64 chars should be valid, got: %v", err)
+	}
+}
+
+func TestConfigValidate_AcceptsTypicalAppName(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.AppName = "Vend"
+	if err := cfg.validate(); err != nil {
+		t.Errorf("APP_NAME=Vend should be valid, got: %v", err)
+	}
+}
+
+// —— trimAppName unit tests ———————————————————————————————————————
+
+func TestTrimAppName_StripsQuotes(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{`"Vend"`, "Vend"},          // double-quoted .env value
+		{`Vend`, "Vend"},             // unquoted
+		{`  Vend  `, "Vend"},         // whitespace only
+		{`  "Vend"  `, "Vend"},       // whitespace + quotes
+		{`"Acme Corp"`, "Acme Corp"}, // quoted with space inside
+		{`""`, ""},                   // empty quoted string → empty (caught by validate)
+		{``, ""},                      // truly empty
+		{`"`, `"`},                   // single quote, not a pair → unchanged
+	}
+	for _, tc := range cases {
+		if got := trimAppName(tc.input); got != tc.want {
+			t.Errorf("trimAppName(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestLoad_AppliesAppNameDefault(t *testing.T) {
+	setLoadEnv(t)
+	t.Setenv("APP_NAME", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.AppName != "Store" {
+		t.Errorf("default APP_NAME should be Store, got %q", cfg.AppName)
+	}
+}
+
+func TestLoad_ParsesAppNameFromEnv(t *testing.T) {
+	setLoadEnv(t)
+	t.Setenv("APP_NAME", "Vend")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.AppName != "Vend" {
+		t.Errorf("APP_NAME should be Vend, got %q", cfg.AppName)
+	}
+}
+
+func TestLoad_StripsQuotesFromAppName(t *testing.T) {
+	setLoadEnv(t)
+	t.Setenv("APP_NAME", `"Vend"`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.AppName != "Vend" {
+		t.Errorf("quoted APP_NAME should be stripped to Vend, got %q", cfg.AppName)
+	}
+}
+
+func TestLoad_RejectsEmptyAppName(t *testing.T) {
+	setLoadEnv(t)
+	// Explicitly set to a quoted-empty value so trimAppName produces ""
+	// and validate() must reject it.
+	t.Setenv("APP_NAME", `""`)
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() with APP_NAME=\"\" should fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "APP_NAME") {
+		t.Errorf("error should mention APP_NAME, got: %v", err)
+	}
+}

@@ -1,0 +1,155 @@
+---
+title: "Verify Current Email"
+description: "Submit the OTP sent to the current email address to prove ownership and receive a grant token."
+api: "POST http://localhost:8080/me/email/verify-current"
+---
+
+<ParamField body="code" type="string" required>
+  The 6-digit one-time code delivered to the account's current email address
+  in step 1. Must be exactly 6 ASCII digits.
+</ParamField>
+
+## Behaviour
+
+On success the server:
+
+1. Consumes the verify token (it cannot be reused).
+2. Sends a **second OTP** to the **new** email address to prove ownership.
+3. Issues a short-lived **grant token** (UUID string, 10-minute TTL) that must
+   be presented in step 3 alongside the new-address OTP.
+
+The grant token ties the verified session to the specific user and target
+address. It is single-use; step 3 deletes it from the KV store immediately
+after a successful confirmation.
+
+OTP attempts are limited. Each wrong code increments a counter against the
+verify token; once the maximum is reached the token is locked and
+`429 too_many_attempts` is returned for all subsequent attempts. Obtain a
+fresh token by repeating step 1 after the cooldown elapses.
+
+## Rate Limiting
+
+**5 requests per 15 minutes per user**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "code": "482910"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "grant_token": "550e8400-e29b-41d4-a716-446655440000",
+  "expires_in": 600
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "code must be exactly 6 digits"
+}
+```
+
+```json 429
+{
+  "code": "too_many_attempts",
+  "message": "too many incorrect attempts — token is locked"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The OTP was accepted. `grant_token` must be passed to
+    [`POST /me/email/confirm-change`](/api-reference/profile/email/confirm-change)
+    together with the code sent to the new address. `expires_in` is the
+    remaining TTL of the grant token in seconds (always 600 at issuance).
+
+    ```json
+    {
+      "grant_token": "550e8400-e29b-41d4-a716-446655440000",
+      "expires_in": 600
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request did not include a valid JWT access token, or the token's user ID
+    could not be extracted from the context.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing user id in context"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="413 — Request Too Large">
+    The request body exceeds 1 MiB.
+
+    ```json
+    {
+      "code": "request_too_large",
+      "message": "request body too large"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    The `code` field failed validation or the OTP check failed. Covers: malformed
+    JSON, missing field, code not exactly 6 digits, wrong code, expired token,
+    or a token that has already been used.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "code must be exactly 6 digits"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    Two separate limits can produce this response.
+
+    **User rate limit** — the caller has exceeded 5 requests per 15 minutes.
+    Check the `Retry-After` header for when to retry.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+
+    **Too many OTP attempts** — the verify token has been locked after
+    exhausting the maximum number of incorrect code submissions. Restart the
+    flow from [`POST /me/email/request-change`](/api-reference/profile/email/request-change).
+
+    ```json
+    {
+      "code": "too_many_attempts",
+      "message": "too many incorrect attempts — token is locked"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected server-side error occurred. The request can be retried.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

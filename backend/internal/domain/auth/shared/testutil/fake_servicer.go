@@ -13,6 +13,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
 	"github.com/7-Dany/store/backend/internal/domain/auth/verification"
 	me "github.com/7-Dany/store/backend/internal/domain/profile/me"
+	email "github.com/7-Dany/store/backend/internal/domain/profile/email"
 	profilesession "github.com/7-Dany/store/backend/internal/domain/profile/session"
 	setpassword "github.com/7-Dany/store/backend/internal/domain/profile/set-password"
 	username "github.com/7-Dany/store/backend/internal/domain/profile/username"
@@ -323,4 +324,41 @@ func (f *UsernameFakeServicer) UpdateUsername(ctx context.Context, in username.U
 		return err
 	}
 	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EmailChangeFakeServicer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// EmailChangeFakeServicer is a hand-written implementation of email.Servicer for
+// handler unit tests. Each method delegates to its Fn field if non-nil, otherwise
+// returns the zero value and nil error so tests only configure the fields they need.
+type EmailChangeFakeServicer struct {
+	RequestEmailChangeFn func(ctx context.Context, in email.EmailChangeRequestInput) (email.EmailChangeRequestResult, error)
+	VerifyCurrentEmailFn func(ctx context.Context, in email.EmailChangeVerifyCurrentInput) (email.EmailChangeVerifyCurrentResult, error)
+	ConfirmEmailChangeFn func(ctx context.Context, in email.EmailChangeConfirmInput) (email.ConfirmEmailChangeResult, error)
+}
+
+// compile-time interface check.
+var _ email.Servicer = (*EmailChangeFakeServicer)(nil)
+
+func (f *EmailChangeFakeServicer) RequestEmailChange(ctx context.Context, in email.EmailChangeRequestInput) (email.EmailChangeRequestResult, error) {
+	if f.RequestEmailChangeFn != nil {
+		return f.RequestEmailChangeFn(ctx, in)
+	}
+	return email.EmailChangeRequestResult{}, nil
+}
+
+func (f *EmailChangeFakeServicer) VerifyCurrentEmail(ctx context.Context, in email.EmailChangeVerifyCurrentInput) (email.EmailChangeVerifyCurrentResult, error) {
+	if f.VerifyCurrentEmailFn != nil {
+		return f.VerifyCurrentEmailFn(ctx, in)
+	}
+	return email.EmailChangeVerifyCurrentResult{GrantToken: "fake-grant-token", ExpiresIn: 600}, nil
+}
+
+func (f *EmailChangeFakeServicer) ConfirmEmailChange(ctx context.Context, in email.EmailChangeConfirmInput) (email.ConfirmEmailChangeResult, error) {
+	if f.ConfirmEmailChangeFn != nil {
+		return f.ConfirmEmailChangeFn(ctx, in)
+	}
+	return email.ConfirmEmailChangeResult{}, nil
 }

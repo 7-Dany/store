@@ -164,6 +164,39 @@ func (n *nopQuerier) GetUserForUsernameUpdate(_ context.Context, _ pgtype.UUID) 
 func (n *nopQuerier) SetUsername(_ context.Context, _ db.SetUsernameParams) (int64, error) {
 	return 0, nil
 }
+func (n *nopQuerier) CheckEmailAvailableForChange(_ context.Context, _ db.CheckEmailAvailableForChangeParams) (bool, error) {
+	return false, nil
+}
+func (n *nopQuerier) GetLatestEmailChangeVerifyTokenCreatedAt(_ context.Context, _ pgtype.UUID) (time.Time, error) {
+	return time.Time{}, nil
+}
+func (n *nopQuerier) InvalidateUserEmailChangeVerifyTokens(_ context.Context, _ pgtype.UUID) error {
+	return nil
+}
+func (n *nopQuerier) CreateEmailChangeVerifyToken(_ context.Context, _ db.CreateEmailChangeVerifyTokenParams) (db.CreateEmailChangeVerifyTokenRow, error) {
+	return db.CreateEmailChangeVerifyTokenRow{}, nil
+}
+func (n *nopQuerier) GetEmailChangeVerifyToken(_ context.Context, _ pgtype.UUID) (db.GetEmailChangeVerifyTokenRow, error) {
+	return db.GetEmailChangeVerifyTokenRow{}, nil
+}
+func (n *nopQuerier) ConsumeEmailChangeToken(_ context.Context, _ pgtype.UUID) (int64, error) {
+	return 0, nil
+}
+func (n *nopQuerier) InvalidateUserEmailChangeConfirmTokens(_ context.Context, _ pgtype.UUID) error {
+	return nil
+}
+func (n *nopQuerier) CreateEmailChangeConfirmToken(_ context.Context, _ db.CreateEmailChangeConfirmTokenParams) (db.CreateEmailChangeConfirmTokenRow, error) {
+	return db.CreateEmailChangeConfirmTokenRow{}, nil
+}
+func (n *nopQuerier) GetEmailChangeConfirmToken(_ context.Context, _ pgtype.UUID) (db.GetEmailChangeConfirmTokenRow, error) {
+	return db.GetEmailChangeConfirmTokenRow{}, nil
+}
+func (n *nopQuerier) GetUserForEmailChangeTx(_ context.Context, _ pgtype.UUID) (db.GetUserForEmailChangeTxRow, error) {
+	return db.GetUserForEmailChangeTxRow{}, nil
+}
+func (n *nopQuerier) SetUserEmail(_ context.Context, _ db.SetUserEmailParams) (int64, error) {
+	return 0, nil
+}
 
 // compile-time guard
 var _ db.Querier = (*nopQuerier)(nil)

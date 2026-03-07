@@ -1,0 +1,199 @@
+---
+title: "Email Change Flow"
+description: "How to guide a user through changing their email address — from requesting the code to signing back in."
+---
+
+Changing an email address takes three API calls and three UI screens. The user must prove ownership of both the **current** address and the **new** address before the swap is committed. On success, all active sessions are revoked and the user must sign in again.
+
+---
+
+## Overview
+
+```
+POST /me/email/request-change   →  OTP sent to current email
+POST /me/email/verify-current   →  current-email code  →  { grant_token }
+POST /me/email/confirm-change   →  grant_token + new-email code  →  200
+POST /login                     →  sign in with new address
+```
+
+---
+
+## Screen 1 — Enter new email address
+
+The user types the address they want to switch to. Send it to [`POST /me/email/request-change`](/api-reference/profile/email/request-change):
+
+```json
+{
+  "new_email": "jane.new@example.com"
+}
+```
+
+On success the server sends a 6-digit OTP to the account's **current** email address and returns:
+
+```json
+{
+  "message": "verification code sent to your current email address"
+}
+```
+
+Tell the user to check their current inbox and advance to screen 2.
+
+**2-minute cooldown** — If a code was already issued within the last 2 minutes the server returns `429 cooldown_active`. Let the user know the previous code is still valid and prompt them to check their inbox.
+
+**Email already taken** — If the new address is registered to another active account the server returns `409 email_taken`. Ask the user to choose a different address.
+
+---
+
+## Screen 2 — Enter the code from the current address
+
+The user checks their **current** inbox and enters the 6-digit code. Submit it to [`POST /me/email/verify-current`](/api-reference/profile/email/verify-current):
+
+```json
+{
+  "code": "482910"
+}
+```
+
+On success you receive a grant token and a second OTP is sent to the **new** email address:
+
+```json
+{
+  "grant_token": "550e8400-e29b-41d4-a716-446655440000",
+  "expires_in": 600
+}
+```
+
+Store the `grant_token` in your frontend state and advance the user to screen 3. The token expires in 10 minutes.
+
+**If the code is wrong** — the server returns `422 validation_error`. Show an "incorrect code" message and let the user try again. Each wrong attempt increments a counter; once the limit is reached the token is locked and `429 too_many_attempts` is returned. At that point the user must go back to screen 1 for a fresh code after the cooldown elapses.
+
+---
+
+## Screen 3 — Enter the code from the new address
+
+The user checks their **new** inbox and enters the second 6-digit code. Submit it together with the grant token to [`POST /me/email/confirm-change`](/api-reference/profile/email/confirm-change):
+
+```json
+{
+  "grant_token": "550e8400-e29b-41d4-a716-446655440000",
+  "code": "371045"
+}
+```
+
+On success:
+
+```json
+{
+  "message": "email address updated successfully"
+}
+```
+
+At this point the email swap is committed, every active session on every device is signed out, all previously issued refresh tokens are revoked, and the caller's access token is immediately blocklisted. A notification email is sent to the old address. Discard all cached tokens and redirect to the login screen.
+
+**Grant token expired** — If the user takes more than 10 minutes on screen 3, the grant token expires and the server returns `422 invalid_grant_token`. Send the user back to screen 1.
+
+**Email taken at commit time** — If another account registered the target address between steps 1 and 3, the server returns `409 email_taken`. Send the user back to screen 1 with a different address.
+
+---
+
+## Error handling
+
+| Screen | Response | Cause | Action |
+|---|---|---|---|
+| 1 | `409 email_taken` | New address already registered | Stay on screen 1, ask for a different address |
+| 1 | `422 validation_error` | Invalid email format or over 254 bytes | Stay on screen 1, show requirements |
+| 1 | `422 same_email` | New address matches the current one | Stay on screen 1 |
+| 1 | `429 cooldown_active` | Code issued less than 2 minutes ago | Tell the user the previous code is still valid |
+| 1 | `429 too_many_requests` | User exceeded 3 req / 10 min | Show `Retry-After` value |
+| 2 | `422 validation_error` | Wrong code, expired token, or already used | Show "incorrect code", let user retry |
+| 2 | `429 too_many_attempts` | Code locked after too many wrong guesses | Back to screen 1 for a fresh code |
+| 2 | `429 too_many_requests` | User exceeded 5 req / 15 min | Show `Retry-After` value |
+| 3 | `422 invalid_grant_token` | Grant token expired (10 min) or not found | Back to screen 1 |
+| 3 | `422 validation_error` | Wrong new-email code, expired, or already used | Show "incorrect code", let user retry |
+| 3 | `429 too_many_attempts` | New-email code locked | Back to screen 1 for a fresh code |
+| 3 | `429 too_many_requests` | User exceeded 5 req / 15 min | Show `Retry-After` value |
+| 3 | `409 email_taken` | Address registered by another account between steps 1–3 | Back to screen 1 with a different address |
+
+---
+
+## Screen 4 — Sign in
+
+Redirect the user to your login screen. Their old email address no longer works as an identifier and all previous sessions have been cleared.
+
+```json
+{
+  "identifier": "jane.new@example.com",
+  "password": "their-existing-password"
+}
+```
+
+---
+
+## Full sequence
+
+<Steps>
+  <Step title="POST /me/email/request-change — Request an OTP to the current address">
+    Send the desired new email. The server validates it, checks availability, enforces the 2-minute cooldown, then sends a 6-digit OTP to the account's **current** address.
+
+    ```json Request
+    {
+      "new_email": "jane.new@example.com"
+    }
+    ```
+
+    ```json Response — 200
+    {
+      "message": "verification code sent to your current email address"
+    }
+    ```
+  </Step>
+
+  <Step title="POST /me/email/verify-current — Verify ownership of the current address">
+    Submit the 6-digit code from the current inbox. The server consumes the verify token, sends a second OTP to the **new** address, and issues a short-lived grant token. Store `grant_token` in frontend state.
+
+    ```json Request
+    {
+      "code": "482910"
+    }
+    ```
+
+    ```json Response — 200
+    {
+      "grant_token": "550e8400-e29b-41d4-a716-446655440000",
+      "expires_in": 600
+    }
+    ```
+
+    <Note>The grant token expires in 10 minutes and is single-use. If the user takes too long on screen 3, restart from screen 1.</Note>
+  </Step>
+
+  <Step title="POST /me/email/confirm-change — Verify ownership of the new address and commit">
+    Submit the grant token and the 6-digit code from the new inbox. The server atomically swaps the email, revokes all refresh tokens and sessions, and blocklists the caller's current access token.
+
+    ```json Request
+    {
+      "grant_token": "550e8400-e29b-41d4-a716-446655440000",
+      "code": "371045"
+    }
+    ```
+
+    ```json Response — 200
+    {
+      "message": "email address updated successfully"
+    }
+    ```
+
+    <Warning>All sessions are invalidated immediately. Discard all cached tokens on the client and redirect the user to the login screen.</Warning>
+  </Step>
+
+  <Step title="POST /login — Sign in with the new address">
+    <Tooltip tip="POST /api/v1/auth/login — Authenticates with email or username + password. Returns a short-lived access token (15 min) and a long-lived refresh token (30 days) as an HttpOnly cookie.">[Redirect](/api-reference/auth/login/login)</Tooltip> the user to the login screen. Their new email address is now the active identifier.
+
+    ```json Request
+    {
+      "identifier": "jane.new@example.com",
+      "password": "their-existing-password"
+    }
+    ```
+  </Step>
+</Steps>

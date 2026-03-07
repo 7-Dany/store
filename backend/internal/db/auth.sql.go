@@ -15,6 +15,70 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const CheckEmailAvailableForChange = `-- name: CheckEmailAvailableForChange :one
+
+/*
+  Email-change flow — three steps, each with its own OTP.
+
+  Step 1 (POST /email/request-change):
+    1. Validate new_email; check it differs from current and is not taken.
+    2. Enforce 2-minute cooldown via GetLatestEmailChangeVerifyTokenCreatedAt.
+    3. Invalidate any existing email_change_verify tokens for this user.
+    4. Create a new email_change_verify token; store new_email in metadata column.
+    5. Email the OTP to the user's CURRENT email address.
+
+  Step 2 (POST /email/verify-current):
+    1. Fetch and lock the email_change_verify token (FOR UPDATE).
+    2. Validate expiry, attempts, and OTP hash in the application layer.
+    3. Consume the verify token; invalidate any existing email_change_confirm tokens.
+    4. Create a new email_change_confirm token (email column = new_email).
+    5. Email the OTP to the new address.
+    6. Issue a short-lived KV grant token (echg:gt:, 10 min); return it to the caller.
+
+  Step 3 (POST /email/confirm-change):
+    1. Validate the KV grant token (proves step 2 was completed).
+    2. Fetch and lock the email_change_confirm token (FOR UPDATE).
+    3. Validate expiry, attempts, and OTP hash in the application layer.
+    4. Run ConfirmEmailChangeTx: ConsumeEmailChangeToken + SetUserEmail +
+       RevokeAllUserRefreshTokens + EndAllUserSessions + blocklist access token.
+
+  Index notes:
+    - idx_ott_active (user_id, token_type) covers the verify/confirm token lookups.
+    - idx_email_change_verify_tokens_user_active (partial unique on user_id) prevents
+      duplicate active verify tokens; 23505 → ErrCooldownActive in the store.
+    - idx_email_change_confirm_tokens_user_active (partial unique on user_id) prevents
+      duplicate active confirm tokens.
+    - D-01 resolved: new_email is carried step 1 → 2 via the metadata JSONB column on
+      the email_change_verify token row (001_core.sql comment). No KV needed for this leg.
+*/
+
+SELECT EXISTS(
+    SELECT 1
+    FROM users
+    WHERE email      = $1
+      AND id        != $2::uuid
+      AND deleted_at IS NULL
+) AS exists
+`
+
+type CheckEmailAvailableForChangeParams struct {
+	NewEmail pgtype.Text `db:"new_email" json:"new_email"`
+	UserID   pgtype.UUID `db:"user_id" json:"user_id"`
+}
+
+// ── Email change ───────────────────────────────────────────────────────────
+// Returns true when no active (non-deleted) user holds @new_email.
+// Excludes the calling user (id != @user_id) so a same-address re-request
+// is not rejected here — the same-email guard in the service handles that.
+// No FOR UPDATE — point-in-time check; SetUserEmail catches 23505 via
+// idx_users_email_active as the definitive uniqueness guard.
+func (q *Queries) CheckEmailAvailableForChange(ctx context.Context, arg CheckEmailAvailableForChangeParams) (bool, error) {
+	row := q.db.QueryRow(ctx, CheckEmailAvailableForChange, arg.NewEmail, arg.UserID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const CheckUsernameAvailable = `-- name: CheckUsernameAvailable :one
 
 SELECT EXISTS(
@@ -33,6 +97,25 @@ func (q *Queries) CheckUsernameAvailable(ctx context.Context, username pgtype.Te
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const ConsumeEmailChangeToken = `-- name: ConsumeEmailChangeToken :execrows
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE id      = $1::uuid
+  AND used_at IS NULL
+`
+
+// Marks an email_change_verify or email_change_confirm token as used.
+// AND used_at IS NULL ensures idempotency: a concurrent correct submission
+// cannot consume the same token twice.
+// Shared by step 2 (consume verify token) and step 3 (consume confirm token).
+func (q *Queries) ConsumeEmailChangeToken(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, ConsumeEmailChangeToken, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const ConsumeEmailVerificationToken = `-- name: ConsumeEmailVerificationToken :execrows
@@ -85,6 +168,122 @@ func (q *Queries) ConsumeUnlockToken(ctx context.Context, id pgtype.UUID) (int64
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const CreateEmailChangeConfirmToken = `-- name: CreateEmailChangeConfirmToken :one
+INSERT INTO one_time_tokens (
+    token_type,
+    user_id,
+    email,
+    code_hash,
+    expires_at,
+    ip_address,
+    max_attempts
+)
+VALUES (
+    'email_change_confirm',
+    $1::uuid,
+    $2,
+    $3,
+    NOW() + make_interval(secs => $4::float8),
+    $5::inet,
+    5
+)
+RETURNING
+    id,
+    expires_at
+`
+
+type CreateEmailChangeConfirmTokenParams struct {
+	UserID     pgtype.UUID `db:"user_id" json:"user_id"`
+	NewEmail   string      `db:"new_email" json:"new_email"`
+	CodeHash   pgtype.Text `db:"code_hash" json:"code_hash"`
+	TtlSeconds float64     `db:"ttl_seconds" json:"ttl_seconds"`
+	IpAddress  *netip.Addr `db:"ip_address" json:"ip_address"`
+}
+
+type CreateEmailChangeConfirmTokenRow struct {
+	ID        uuid.UUID          `db:"id" json:"id"`
+	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+}
+
+// Issues a new email_change_confirm OTP token for step 2.
+// @new_email is stored in the email column (D-09: for audit readability; also
+// lets step 3 retrieve new_email directly from the token row without a separate query).
+// max_attempts = 5 (Stage 0 D-12).
+// The DB constraint chk_ott_ecc_ttl_max caps the TTL at 15 minutes.
+func (q *Queries) CreateEmailChangeConfirmToken(ctx context.Context, arg CreateEmailChangeConfirmTokenParams) (CreateEmailChangeConfirmTokenRow, error) {
+	row := q.db.QueryRow(ctx, CreateEmailChangeConfirmToken,
+		arg.UserID,
+		arg.NewEmail,
+		arg.CodeHash,
+		arg.TtlSeconds,
+		arg.IpAddress,
+	)
+	var i CreateEmailChangeConfirmTokenRow
+	err := row.Scan(&i.ID, &i.ExpiresAt)
+	return i, err
+}
+
+const CreateEmailChangeVerifyToken = `-- name: CreateEmailChangeVerifyToken :one
+INSERT INTO one_time_tokens (
+    token_type,
+    user_id,
+    email,
+    code_hash,
+    metadata,
+    expires_at,
+    ip_address,
+    max_attempts
+)
+VALUES (
+    'email_change_verify',
+    $1::uuid,
+    $2,
+    $3,
+    $4,
+    NOW() + make_interval(secs => $5::float8),
+    $6::inet,
+    5
+)
+RETURNING
+    id,
+    expires_at
+`
+
+type CreateEmailChangeVerifyTokenParams struct {
+	UserID     pgtype.UUID `db:"user_id" json:"user_id"`
+	Email      string      `db:"email" json:"email"`
+	CodeHash   pgtype.Text `db:"code_hash" json:"code_hash"`
+	Metadata   []byte      `db:"metadata" json:"metadata"`
+	TtlSeconds float64     `db:"ttl_seconds" json:"ttl_seconds"`
+	IpAddress  *netip.Addr `db:"ip_address" json:"ip_address"`
+}
+
+type CreateEmailChangeVerifyTokenRow struct {
+	ID        uuid.UUID          `db:"id" json:"id"`
+	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+}
+
+// Issues a new email_change_verify OTP token.
+// @email is the user's CURRENT address (for audit readability).
+// @metadata stores {"new_email": "..."} so step 2 can retrieve the destination
+// without a separate KV lookup (one_time_tokens.metadata JSONB, see 001_core.sql).
+// TTL via @ttl_seconds::float8 — same clock pattern as CreateEmailVerificationToken.
+// The DB constraint chk_ott_ecv_ttl_max caps the TTL at 15 minutes.
+// max_attempts = 5 (Stage 0 D-12).
+func (q *Queries) CreateEmailChangeVerifyToken(ctx context.Context, arg CreateEmailChangeVerifyTokenParams) (CreateEmailChangeVerifyTokenRow, error) {
+	row := q.db.QueryRow(ctx, CreateEmailChangeVerifyToken,
+		arg.UserID,
+		arg.Email,
+		arg.CodeHash,
+		arg.Metadata,
+		arg.TtlSeconds,
+		arg.IpAddress,
+	)
+	var i CreateEmailChangeVerifyTokenRow
+	err := row.Scan(&i.ID, &i.ExpiresAt)
+	return i, err
 }
 
 const CreateEmailVerificationToken = `-- name: CreateEmailVerificationToken :one
@@ -567,6 +766,114 @@ func (q *Queries) GetActiveSessions(ctx context.Context, userID pgtype.UUID) ([]
 	return items, nil
 }
 
+const GetEmailChangeConfirmToken = `-- name: GetEmailChangeConfirmToken :one
+SELECT
+    id,
+    user_id,
+    email,
+    code_hash,
+    attempts,
+    max_attempts,
+    expires_at,
+    used_at
+FROM one_time_tokens
+WHERE user_id    = $1::uuid
+  AND token_type = 'email_change_confirm'
+  AND code_hash  IS NOT NULL
+  AND used_at    IS NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+FOR UPDATE
+`
+
+type GetEmailChangeConfirmTokenRow struct {
+	ID          uuid.UUID          `db:"id" json:"id"`
+	UserID      pgtype.UUID        `db:"user_id" json:"user_id"`
+	Email       string             `db:"email" json:"email"`
+	CodeHash    pgtype.Text        `db:"code_hash" json:"code_hash"`
+	Attempts    int16              `db:"attempts" json:"attempts"`
+	MaxAttempts int16              `db:"max_attempts" json:"max_attempts"`
+	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	UsedAt      pgtype.Timestamptz `db:"used_at" json:"used_at"`
+}
+
+// Fetches the active email_change_confirm token for the given authenticated user.
+// Lookup by (user_id, token_type) — the user is authenticated via grant token.
+// The email column holds the new_email address for use in step 3.
+// FOR UPDATE prevents concurrent double-consumption.
+func (q *Queries) GetEmailChangeConfirmToken(ctx context.Context, userID pgtype.UUID) (GetEmailChangeConfirmTokenRow, error) {
+	row := q.db.QueryRow(ctx, GetEmailChangeConfirmToken, userID)
+	var i GetEmailChangeConfirmTokenRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Email,
+		&i.CodeHash,
+		&i.Attempts,
+		&i.MaxAttempts,
+		&i.ExpiresAt,
+		&i.UsedAt,
+	)
+	return i, err
+}
+
+const GetEmailChangeVerifyToken = `-- name: GetEmailChangeVerifyToken :one
+SELECT
+    id,
+    user_id,
+    email,
+    code_hash,
+    metadata,
+    attempts,
+    max_attempts,
+    expires_at,
+    used_at
+FROM one_time_tokens
+WHERE user_id    = $1::uuid
+  AND token_type = 'email_change_verify'
+  AND code_hash  IS NOT NULL
+  AND used_at    IS NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+FOR UPDATE
+`
+
+type GetEmailChangeVerifyTokenRow struct {
+	ID          uuid.UUID          `db:"id" json:"id"`
+	UserID      pgtype.UUID        `db:"user_id" json:"user_id"`
+	Email       string             `db:"email" json:"email"`
+	CodeHash    pgtype.Text        `db:"code_hash" json:"code_hash"`
+	Metadata    []byte             `db:"metadata" json:"metadata"`
+	Attempts    int16              `db:"attempts" json:"attempts"`
+	MaxAttempts int16              `db:"max_attempts" json:"max_attempts"`
+	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	UsedAt      pgtype.Timestamptz `db:"used_at" json:"used_at"`
+}
+
+// Fetches the active email_change_verify token for the given authenticated user.
+// Lookup is by (user_id, token_type) — no email parameter needed because the user
+// is already authenticated via JWT.
+// Returns metadata so the caller can extract new_email.
+// FOR UPDATE prevents concurrent double-consumption.
+// ORDER BY created_at DESC, id DESC picks the most recent token in the unlikely
+// event that two rows exist (race between invalidation and insert).
+func (q *Queries) GetEmailChangeVerifyToken(ctx context.Context, userID pgtype.UUID) (GetEmailChangeVerifyTokenRow, error) {
+	row := q.db.QueryRow(ctx, GetEmailChangeVerifyToken, userID)
+	var i GetEmailChangeVerifyTokenRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Email,
+		&i.CodeHash,
+		&i.Metadata,
+		&i.Attempts,
+		&i.MaxAttempts,
+		&i.ExpiresAt,
+		&i.UsedAt,
+	)
+	return i, err
+}
+
 const GetEmailVerificationToken = `-- name: GetEmailVerificationToken :one
 
 /*
@@ -633,6 +940,28 @@ func (q *Queries) GetEmailVerificationToken(ctx context.Context, email string) (
 		&i.UsedAt,
 	)
 	return i, err
+}
+
+const GetLatestEmailChangeVerifyTokenCreatedAt = `-- name: GetLatestEmailChangeVerifyTokenCreatedAt :one
+SELECT created_at
+FROM one_time_tokens
+WHERE user_id    = $1::uuid
+  AND token_type = 'email_change_verify'
+  AND used_at    IS NULL
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+// Returns created_at of the most recent active (used_at IS NULL) email_change_verify
+// token for this user. Used by the service to enforce the 2-minute cooldown
+// before allowing a new request-change call.
+// Returns pgx.ErrNoRows when no active verify token exists.
+// Index: idx_ott_active covers (user_id, token_type, used_at IS NULL).
+func (q *Queries) GetLatestEmailChangeVerifyTokenCreatedAt(ctx context.Context, userID pgtype.UUID) (time.Time, error) {
+	row := q.db.QueryRow(ctx, GetLatestEmailChangeVerifyTokenCreatedAt, userID)
+	var created_at time.Time
+	err := row.Scan(&created_at)
+	return created_at, err
 }
 
 const GetLatestVerificationTokenCreatedAt = `-- name: GetLatestVerificationTokenCreatedAt :one
@@ -924,6 +1253,30 @@ func (q *Queries) GetUserEmailVerified(ctx context.Context, email pgtype.Text) (
 	var email_verified bool
 	err := row.Scan(&email_verified)
 	return email_verified, err
+}
+
+const GetUserForEmailChangeTx = `-- name: GetUserForEmailChangeTx :one
+SELECT id, email
+FROM users
+WHERE id         = $1::uuid
+  AND deleted_at IS NULL
+LIMIT 1
+FOR UPDATE
+`
+
+type GetUserForEmailChangeTxRow struct {
+	ID    uuid.UUID   `db:"id" json:"id"`
+	Email pgtype.Text `db:"email" json:"email"`
+}
+
+// Returns id and current email for the authenticated user inside a transaction.
+// FOR UPDATE locks the row to prevent a concurrent email-change from racing past
+// the uniqueness re-check (D-05) or producing stale old_email in audit metadata.
+func (q *Queries) GetUserForEmailChangeTx(ctx context.Context, userID pgtype.UUID) (GetUserForEmailChangeTxRow, error) {
+	row := q.db.QueryRow(ctx, GetUserForEmailChangeTx, userID)
+	var i GetUserForEmailChangeTxRow
+	err := row.Scan(&i.ID, &i.Email)
+	return i, err
 }
 
 const GetUserForLogin = `-- name: GetUserForLogin :one
@@ -1469,6 +1822,38 @@ func (q *Queries) InvalidateAllUserTokens(ctx context.Context, userID pgtype.UUI
 	return err
 }
 
+const InvalidateUserEmailChangeConfirmTokens = `-- name: InvalidateUserEmailChangeConfirmTokens :exec
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE user_id    = $1::uuid
+  AND token_type = 'email_change_confirm'
+  AND used_at    IS NULL
+`
+
+// Voids all unused email_change_confirm tokens for this user before issuing a new one.
+// Called inside the same transaction as CreateEmailChangeConfirmToken (step 2).
+func (q *Queries) InvalidateUserEmailChangeConfirmTokens(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, InvalidateUserEmailChangeConfirmTokens, userID)
+	return err
+}
+
+const InvalidateUserEmailChangeVerifyTokens = `-- name: InvalidateUserEmailChangeVerifyTokens :exec
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE user_id    = $1::uuid
+  AND token_type = 'email_change_verify'
+  AND used_at    IS NULL
+`
+
+// Voids all unused email_change_verify tokens for this user before issuing a new one.
+// Prevents token accumulation and ensures the partial unique index
+// (idx_email_change_verify_tokens_user_active) never blocks a legitimate re-request.
+// Called inside the same transaction as CreateEmailChangeVerifyToken.
+func (q *Queries) InvalidateUserEmailChangeVerifyTokens(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, InvalidateUserEmailChangeVerifyTokens, userID)
+	return err
+}
+
 const LockAccount = `-- name: LockAccount :execrows
 UPDATE users
 SET is_locked = TRUE
@@ -1676,6 +2061,31 @@ type SetPasswordHashParams struct {
 // 0 rows affected, which the store maps to ErrPasswordAlreadySet.
 func (q *Queries) SetPasswordHash(ctx context.Context, arg SetPasswordHashParams) (int64, error) {
 	result, err := q.db.Exec(ctx, SetPasswordHash, arg.PasswordHash, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const SetUserEmail = `-- name: SetUserEmail :execrows
+UPDATE users
+SET email = $1
+WHERE id         = $2::uuid
+  AND deleted_at IS NULL
+`
+
+type SetUserEmailParams struct {
+	NewEmail pgtype.Text `db:"new_email" json:"new_email"`
+	UserID   pgtype.UUID `db:"user_id" json:"user_id"`
+}
+
+// Updates users.email for the given active user.
+// Returns rows affected so the store can distinguish:
+//
+//	23505 on idx_users_email_active → ErrEmailTaken (concurrent race past service guard)
+//	rows == 0                       → ErrUserNotFound (account deleted between steps)
+func (q *Queries) SetUserEmail(ctx context.Context, arg SetUserEmailParams) (int64, error) {
+	result, err := q.db.Exec(ctx, SetUserEmail, arg.NewEmail, arg.UserID)
 	if err != nil {
 		return 0, err
 	}

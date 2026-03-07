@@ -13,11 +13,23 @@ import (
 )
 
 type Querier interface {
+	// ── Email change ───────────────────────────────────────────────────────────
+	// Returns true when no active (non-deleted) user holds @new_email.
+	// Excludes the calling user (id != @user_id) so a same-address re-request
+	// is not rejected here — the same-email guard in the service handles that.
+	// No FOR UPDATE — point-in-time check; SetUserEmail catches 23505 via
+	// idx_users_email_active as the definitive uniqueness guard.
+	CheckEmailAvailableForChange(ctx context.Context, arg CheckEmailAvailableForChangeParams) (bool, error)
 	// ── Username ───────────────────────────────────────────────────────────────────
 	// Returns true when no row with username = @username exists in users.
 	// No FOR UPDATE — this is a point-in-time availability check; the write path
 	// enforces uniqueness via idx_users_username (23505 on conflict).
 	CheckUsernameAvailable(ctx context.Context, username pgtype.Text) (bool, error)
+	// Marks an email_change_verify or email_change_confirm token as used.
+	// AND used_at IS NULL ensures idempotency: a concurrent correct submission
+	// cannot consume the same token twice.
+	// Shared by step 2 (consume verify token) and step 3 (consume confirm token).
+	ConsumeEmailChangeToken(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Marks the token as used. The AND used_at IS NULL guard ensures idempotency:
 	// a race between two concurrent correct submissions cannot consume the same token twice.
 	ConsumeEmailVerificationToken(ctx context.Context, id pgtype.UUID) (int64, error)
@@ -28,6 +40,20 @@ type Querier interface {
 	// idempotency: a race between two concurrent correct submissions cannot consume
 	// the same token twice.
 	ConsumeUnlockToken(ctx context.Context, id pgtype.UUID) (int64, error)
+	// Issues a new email_change_confirm OTP token for step 2.
+	// @new_email is stored in the email column (D-09: for audit readability; also
+	// lets step 3 retrieve new_email directly from the token row without a separate query).
+	// max_attempts = 5 (Stage 0 D-12).
+	// The DB constraint chk_ott_ecc_ttl_max caps the TTL at 15 minutes.
+	CreateEmailChangeConfirmToken(ctx context.Context, arg CreateEmailChangeConfirmTokenParams) (CreateEmailChangeConfirmTokenRow, error)
+	// Issues a new email_change_verify OTP token.
+	// @email is the user's CURRENT address (for audit readability).
+	// @metadata stores {"new_email": "..."} so step 2 can retrieve the destination
+	// without a separate KV lookup (one_time_tokens.metadata JSONB, see 001_core.sql).
+	// TTL via @ttl_seconds::float8 — same clock pattern as CreateEmailVerificationToken.
+	// The DB constraint chk_ott_ecv_ttl_max caps the TTL at 15 minutes.
+	// max_attempts = 5 (Stage 0 D-12).
+	CreateEmailChangeVerifyToken(ctx context.Context, arg CreateEmailChangeVerifyTokenParams) (CreateEmailChangeVerifyTokenRow, error)
 	// Issues a new email_verification OTP token with a caller-controlled TTL and max 3 attempts.
 	// 3 attempts × 1-in-1,000,000 chance per attempt = 0.0003% brute-force success rate per token.
 	//
@@ -77,11 +103,30 @@ type Querier interface {
 	// ── Sessions ─────────────────────────────────────────────────────────────────
 	// Returns all open sessions for the user, newest-activity first.
 	GetActiveSessions(ctx context.Context, userID pgtype.UUID) ([]GetActiveSessionsRow, error)
+	// Fetches the active email_change_confirm token for the given authenticated user.
+	// Lookup by (user_id, token_type) — the user is authenticated via grant token.
+	// The email column holds the new_email address for use in step 3.
+	// FOR UPDATE prevents concurrent double-consumption.
+	GetEmailChangeConfirmToken(ctx context.Context, userID pgtype.UUID) (GetEmailChangeConfirmTokenRow, error)
+	// Fetches the active email_change_verify token for the given authenticated user.
+	// Lookup is by (user_id, token_type) — no email parameter needed because the user
+	// is already authenticated via JWT.
+	// Returns metadata so the caller can extract new_email.
+	// FOR UPDATE prevents concurrent double-consumption.
+	// ORDER BY created_at DESC, id DESC picks the most recent token in the unlikely
+	// event that two rows exist (race between invalidation and insert).
+	GetEmailChangeVerifyToken(ctx context.Context, userID pgtype.UUID) (GetEmailChangeVerifyTokenRow, error)
 	// ── Email verification ───────────────────────────────────────────────────────
 	// Looks up by email only — the client sends email + OTP code, no user_id required.
 	// ORDER BY created_at DESC, id DESC picks the most recent valid token.
 	// FOR UPDATE prevents concurrent double-use (two simultaneous correct submissions).
 	GetEmailVerificationToken(ctx context.Context, email string) (GetEmailVerificationTokenRow, error)
+	// Returns created_at of the most recent active (used_at IS NULL) email_change_verify
+	// token for this user. Used by the service to enforce the 2-minute cooldown
+	// before allowing a new request-change call.
+	// Returns pgx.ErrNoRows when no active verify token exists.
+	// Index: idx_ott_active covers (user_id, token_type, used_at IS NULL).
+	GetLatestEmailChangeVerifyTokenCreatedAt(ctx context.Context, userID pgtype.UUID) (time.Time, error)
 	// Returns created_at of the most recent unused email_verification token for this user.
 	// Used to enforce the resend cooldown window in the application layer.
 	// Index note (F11): idx_ott_active covers the filter (user_id, token_type, used_at IS NULL)
@@ -119,6 +164,10 @@ type Querier interface {
 	// Used to assert that VerifyEmailTx actually flipped the flag without
 	// resorting to raw tx.QueryRow calls in tests.
 	GetUserEmailVerified(ctx context.Context, email pgtype.Text) (bool, error)
+	// Returns id and current email for the authenticated user inside a transaction.
+	// FOR UPDATE locks the row to prevent a concurrent email-change from racing past
+	// the uniqueness re-check (D-05) or producing stale old_email in audit metadata.
+	GetUserForEmailChangeTx(ctx context.Context, userID pgtype.UUID) (GetUserForEmailChangeTxRow, error)
 	// ── Login ────────────────────────────────────────────────────────────────────
 	// Fetches the fields needed to authenticate a login by either email or username.
 	// The caller passes the raw identifier; the query matches against whichever column equals it.
@@ -211,6 +260,14 @@ type Querier interface {
 	// or magic-link tokens are not silently nuked on a re-registration attempt.
 	// Called inside the same transaction as CreateEmailVerificationToken.
 	InvalidateAllUserTokens(ctx context.Context, userID pgtype.UUID) error
+	// Voids all unused email_change_confirm tokens for this user before issuing a new one.
+	// Called inside the same transaction as CreateEmailChangeConfirmToken (step 2).
+	InvalidateUserEmailChangeConfirmTokens(ctx context.Context, userID pgtype.UUID) error
+	// Voids all unused email_change_verify tokens for this user before issuing a new one.
+	// Prevents token accumulation and ensures the partial unique index
+	// (idx_email_change_verify_tokens_user_active) never blocks a legitimate re-request.
+	// Called inside the same transaction as CreateEmailChangeVerifyToken.
+	InvalidateUserEmailChangeVerifyTokens(ctx context.Context, userID pgtype.UUID) error
 	// Sets is_locked = TRUE after max OTP attempts are exhausted.
 	// Does NOT touch is_active: an unverified account (is_active=FALSE) stays inactive;
 	// a verified account (is_active=TRUE) stays active — in both cases the auth path
@@ -268,6 +325,11 @@ type Querier interface {
 	// a concurrent set-password call that races past the service guard returns
 	// 0 rows affected, which the store maps to ErrPasswordAlreadySet.
 	SetPasswordHash(ctx context.Context, arg SetPasswordHashParams) (int64, error)
+	// Updates users.email for the given active user.
+	// Returns rows affected so the store can distinguish:
+	//   23505 on idx_users_email_active → ErrEmailTaken (concurrent race past service guard)
+	//   rows == 0                       → ErrUserNotFound (account deleted between steps)
+	SetUserEmail(ctx context.Context, arg SetUserEmailParams) (int64, error)
 	// Sets username for the user identified by id.
 	// Returns rows affected so the store can distinguish:
 	//   23505 unique_violation on idx_users_username → ErrUsernameTaken

@@ -87,17 +87,6 @@ func newRouter(ctx context.Context, deps *app.Deps) http.Handler {
 		respond.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 
-	// ── Docs (gated) ──────────────────────────────────────────────────────
-	if deps.DocsEnabled {
-		// TODO(#1): serve docs/openapi.yaml and docs/index.html once files exist.
-		r.Get("/docs/openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, "docs/openapi.yaml")
-		})
-		r.Get("/docs", func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, "docs/index.html")
-		})
-	}
-
 	// ── API v1 ────────────────────────────────────────────────────────────
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", auth.Routes(ctx, deps))

@@ -1,5 +1,6 @@
 ---
 title: "Verify Email"
+authMethod: "none"
 description: "Confirms ownership of the registered email address using the 6-digit OTP sent at registration."
 api: "POST http://localhost:8080/api/v1/auth/verify-email"
 ---
@@ -21,9 +22,17 @@ api: "POST http://localhost:8080/api/v1/auth/verify-email"
 
 Submitting the correct OTP marks the account as verified and consumes the token so it cannot be replayed. If the account is already verified the endpoint returns `200` with a distinct message — it is safe to call more than once.
 
+**OTP lifetime** — The code is valid for **15 minutes** from the time it was issued (either at registration or via [`POST /resend-verification`](/api-reference/auth/verification/resend-verification)). After expiry the token is rejected and the user must request a fresh code.
+
 Wrong codes are tracked per-token. Once the attempt ceiling is reached the token is permanently locked and any further submission — including a correct code — returns `429`. A new OTP must be requested via [`POST /resend-verification`](/api-reference/auth/verification/resend-verification).
 
 An exponential backoff gate operates independently per IP. If the IP has accumulated enough failures it will be blocked before the request reaches the database.
+
+<AccordionGroup>
+  <Accordion title="Frontend implementation">
+    Start a 15:00 countdown the moment the code is sent (registration or resend). Disable the verify submit button when the timer hits zero and replace it with a prompt to request a new code via [`POST /resend-verification`](/api-reference/auth/verification/resend-verification). There is no server-side notification when a token expires — the client must drive this entirely from the timer.
+  </Accordion>
+</AccordionGroup>
 
 ## Rate Limiting
 

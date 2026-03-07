@@ -11,6 +11,13 @@
       "description": "Base URL of the running API server. Change to https://... for staging."
     },
     {
+      "key": "app_name",
+      "value": "",
+      "type": "default",
+      "enabled": true,
+      "description": "The application name as set by APP_NAME in .env. Used to build Gmail subject filters that match the emails sent by the mailer (e.g. 'Your {app_name} email change request'). Must match APP_NAME exactly (case-sensitive, no surrounding quotes)."
+    },
+    {
       "key": "gmail_test_email",
       "value": "",
       "type": "default",

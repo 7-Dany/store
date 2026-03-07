@@ -108,6 +108,24 @@ Ask which stage the user wants, or infer from context:
 
 If the user says "start from scratch" or "new route", begin at Stage 0.
 
+### C — Resolving "continue {feature}" (no stage number given)
+
+When the user says **"continue"**, **"let's continue"**, **"resume"**, or similar
+**without specifying a stage number**, do NOT assume they want the next stage
+prompt. Instead:
+
+1. **Check which stage prompts exist** under `docs/prompts/{feature}/` (list the directory).
+2. **Check whether the implementation code files exist** for the highest-numbered stage prompt:
+   - Stage 0 done → check `context.md` exists (it is written right after Stage 0).
+   - Stage 1 done → check whether `internal/domain/{domain}/{route}/models.go` exists.
+   - Stage 2 done → check whether `internal/domain/{domain}/{route}/store.go` exists.
+   - Stage 3 done → check whether `internal/domain/{domain}/{route}/service.go` (methods, not just interface) exists.
+   - Stage 4 done → check whether `internal/domain/{domain}/{route}/handler.go` (methods) exists.
+3. **Decide**:
+   - If the highest stage prompt exists **but its code files do NOT exist** → the user wants help **implementing that stage**. Tell them which stage you are resuming and proceed to Step 3 for that stage, then produce the implementation (code).
+   - If the highest stage prompt exists **and its code files DO exist** → the stage is implemented. Produce the **next stage prompt** per Step 7.
+4. **Never silently skip to the next stage** when implementation files are missing. Confirm with the user: "Stage N prompt exists but I don't see the code files yet — do you want me to help implement Stage N, or have you already done that and want Stage N+1?" if ambiguous.
+
 ---
 
 ## Step 3 — Targeted file reads (stage-specific)

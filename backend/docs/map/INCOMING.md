@@ -55,52 +55,6 @@ internal/domain/
 
 ## Group A — Profile Mangement
 
-### §B-2 — Email Change Flow
-
-New package: `internal/domain/profile/email/`
-
-Three-step flow: prove ownership of the **current** address first, then prove
-ownership of the **new** address before the change is applied.
-
-#### Step 1 — Request change (requires auth)
-`POST /api/v1/profile/me/email/request-change`
-- [ ] Requires valid JWT
-- [ ] Body: `{ "new_email": "..." }`
-- [ ] Validate `new_email` format + uniqueness against `users`
-- [ ] Sends OTP to the **current email** (proves the requester controls the account)
-- [ ] Cooldown guard: suppress duplicate OTPs within 2 min
-- [ ] Stores `new_email` in token `metadata` (token_type `email_change_verify`)
-- [ ] Audit row: `email_change_requested`
-- [ ] Rate-limit: 3 req / 10 min per user (key `echg:usr:`)
-
-#### Step 2 — Verify current email (requires auth)
-`POST /api/v1/profile/me/email/verify-current`
-- [ ] Requires valid JWT
-- [ ] Body: `{ "code": "123456" }`
-- [ ] Validates OTP against the active `email_change_verify` token for this user
-- [ ] Marks token consumed
-- [ ] Issues a short-lived grant token (KV, 10 min TTL) encoding `new_email`
-- [ ] Response: `{ "grant_token": "...", "expires_in": 600 }` — client holds this for step 3
-- [ ] Sends OTP to the **new email** (proves ownership of the destination)
-- [ ] Audit row: `email_change_current_verified`
-- [ ] Rate-limit: 5 req / 15 min per user (key `echg:usr:vfy:`)
-
-#### Step 3 — Confirm new email (requires auth)
-`POST /api/v1/profile/me/email/confirm-change`
-- [ ] Requires valid JWT
-- [ ] Body: `{ "grant_token": "...", "code": "123456" }`
-- [ ] Validates `grant_token` (must not be expired or already used)
-- [ ] Validates OTP sent to the new email in step 2
-- [ ] Atomically: updates `email` on `users`, marks OTP consumed, deletes grant token
-- [ ] Re-check uniqueness inside the DB transaction
-- [ ] Revokes all active refresh tokens (email is primary identifier)
-- [ ] Blocklists current access token
-- [ ] Sends confirmation notice to the **old email**
-- [ ] Audit row: `email_changed` (old + new email in `metadata`)
-- [ ] Rate-limit: 5 req / 15 min per user (key `echg:usr:cnf:`)
-
----
-
 ### §B-3 — Delete Account
 
 `DELETE /api/v1/profile/me` — extends `internal/domain/profile/me`

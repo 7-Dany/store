@@ -35,9 +35,9 @@ The AI only needs columns 1-3 to avoid re-implementing done work and to check KV
 | ✓ | POST /profile/set-password | `spw:usr:` |
 | ✓ | GET /profile/username/available | `unav:ip:` |
 | ✓ | PATCH /profile/me/username | `uchg:usr:` |
-| ⏳ | POST /profile/me/email/request-change | `echg:usr:` |
-| ⏳ | POST /profile/me/email/verify-current | `echg:usr:vfy:` |
-| ⏳ | POST /profile/me/email/confirm-change | `echg:usr:cnf:` |
+| ✓ | POST /profile/me/email/request-change | `echg:usr:` |
+| ✓ | POST /profile/me/email/verify-current | `echg:usr:vfy:` |
+| ✓ | POST /profile/me/email/confirm-change | `echg:usr:cnf:` |
 | ⏳ | DELETE /profile/me | *(TBD — see §B-3)* |
 
 ## Other domains (not yet started)

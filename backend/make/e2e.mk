@@ -9,11 +9,11 @@
 #   e2e/auth/unlock.json                → POST /request-unlock + POST /confirm-unlock
 #   e2e/auth/password-reset.json        → POST /forgot-password + POST /reset-password
 #   e2e/auth/change-password.json       → POST /change-password (requires JWT)
-#   e2e/auth/me.json                    → GET /me (requires JWT)
-#   e2e/auth/sessions.json              → GET /sessions (requires JWT)
-#   e2e/auth/revoke-session.json        → DELETE /sessions/{id} (requires JWT)
-#   e2e/auth/update-profile.json        → PATCH /me/profile (requires JWT)
-#   e2e/auth/set-password.json          → POST /set-password (requires JWT)
+#   e2e/profile/me.json                 → GET /me (requires JWT)
+#   e2e/profile/sessions.json           → GET /sessions (requires JWT)
+#   e2e/profile/revoke-session.json     → DELETE /sessions/{id} (requires JWT)
+#   e2e/profile/update-profile.json     → PATCH /me (requires JWT)
+#   e2e/profile/set-password.json       → POST /set-password (requires JWT)
 #
 # e2e-password runs both password collections (forgot/reset + change) in order.
 # e2e-profile runs the five profile collections (me + sessions + revoke-session + update-profile + set-password) in order.
@@ -40,6 +40,7 @@ E2E_DIR      := e2e
 E2E_ENV      := $(E2E_DIR)/environment.json
 E2E_TEMPLATE := $(E2E_DIR)/environment.template.json
 E2E_AUTH     := $(E2E_DIR)/auth
+E2E_PROFILE  := $(E2E_DIR)/profile
 E2E_DELAY    ?= 150
 
 .PHONY: e2e-install e2e e2e-health e2e-register e2e-unlock e2e-password e2e-profile e2e-auth _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
@@ -64,7 +65,7 @@ endif
 # auth_audit_log.user_id is ON DELETE CASCADE so audit rows are cleaned automatically.
 # Uses TEST_DATABASE_URL so e2e tests never touch the dev database.
 _e2e-db-clean:
-	@psql "$(TEST_DATABASE_URL)" -c "DELETE FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)';"
+	@psql "$(TEST_DATABASE_URL)" -c "DELETE FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%';"
 	@echo "[e2e] DB cleaned (e2e users removed from test DB)"
 
 # Flush Redis DB 1 (the test server's rate-limiter and blocklist store).
@@ -260,13 +261,13 @@ ifeq ($(DETECTED_OS),Windows)
 	@Write-Host "[e2e] --- POST /set-password ---" -ForegroundColor Cyan
 	@$(MAKE) _e2e-clean
 	@Write-Host "[e2e] Running: setup + failures + auth-failures + validation + rate-limiting-spw (single invocation)" -ForegroundColor DarkGray
-	@newman run "$(E2E_AUTH)/set-password.json" --environment "$(E2E_ENV)" --folder "setup" --folder "failures" --folder "auth-failures" --folder "validation" --folder "rate-limiting-spw" --delay-request 1 --reporters cli
+	@newman run "$(E2E_PROFILE)/set-password.json" --environment "$(E2E_ENV)" --folder "setup" --folder "failures" --folder "auth-failures" --folder "validation" --folder "rate-limiting-spw" --delay-request 1 --reporters cli
 	@Write-Host "[e2e] set-password suite passed" -ForegroundColor Green
 else
 	@echo "[e2e] --- POST /set-password ---"
 	@$(MAKE) _e2e-clean
 	@echo "[e2e] Running: setup + failures + auth-failures + validation + rate-limiting-spw (single invocation)"
-	@newman run "$(E2E_AUTH)/set-password.json" --environment "$(E2E_ENV)" \
+	@newman run "$(E2E_PROFILE)/set-password.json" --environment "$(E2E_ENV)" \
 		--folder "setup" --folder "failures" \
 		--folder "auth-failures" --folder "validation" \
 		--folder "rate-limiting-spw" \
@@ -279,13 +280,13 @@ ifeq ($(DETECTED_OS),Windows)
 	@Write-Host "[e2e] --- PATCH /me/profile ---" -ForegroundColor Cyan
 	@$(MAKE) _e2e-clean
 	@Write-Host "[e2e] Running: setup + happy-path + failures + auth-failures + validation + rate-limiting-prof (single invocation)" -ForegroundColor DarkGray
-	@newman run "$(E2E_AUTH)/update-profile.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "failures" --folder "auth-failures" --folder "validation" --folder "rate-limiting-prof" --delay-request 1 --reporters cli
+	@newman run "$(E2E_PROFILE)/update-profile.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "failures" --folder "auth-failures" --folder "validation" --folder "rate-limiting-prof" --delay-request 1 --reporters cli
 	@Write-Host "[e2e] update-profile suite passed" -ForegroundColor Green
 else
 	@echo "[e2e] --- PATCH /me/profile ---"
 	@$(MAKE) _e2e-clean
 	@echo "[e2e] Running: setup + happy-path + failures + auth-failures + validation + rate-limiting-prof (single invocation)"
-	@newman run "$(E2E_AUTH)/update-profile.json" --environment "$(E2E_ENV)" \
+	@newman run "$(E2E_PROFILE)/update-profile.json" --environment "$(E2E_ENV)" \
 		--folder "setup" --folder "happy-path" \
 		--folder "failures" --folder "auth-failures" --folder "validation" \
 		--folder "rate-limiting-prof" \
@@ -298,15 +299,15 @@ ifeq ($(DETECTED_OS),Windows)
 	@Write-Host "[e2e] --- GET /me ---" -ForegroundColor Cyan
 	@$(MAKE) _e2e-clean
 	@Write-Host "[e2e] Running: setup + happy-path + rate-limiting (single invocation)" -ForegroundColor DarkGray
-	@newman run "$(E2E_AUTH)/me.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "rate-limiting" --delay-request 1 --reporters cli
+	@newman run "$(E2E_PROFILE)/me.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "rate-limiting" --delay-request 1 --reporters cli
 	@Write-Host "[e2e] --- GET /sessions ---" -ForegroundColor Cyan
 	@$(MAKE) _e2e-clean
 	@Write-Host "[e2e] Running: setup + happy-path + rate-limiting (single invocation)" -ForegroundColor DarkGray
-	@newman run "$(E2E_AUTH)/sessions.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "rate-limiting" --delay-request 1 --reporters cli
+	@newman run "$(E2E_PROFILE)/sessions.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "rate-limiting" --delay-request 1 --reporters cli
 	@Write-Host "[e2e] --- DELETE /sessions/{id} ---" -ForegroundColor Cyan
 	@$(MAKE) _e2e-clean
 	@Write-Host "[e2e] Running: setup + happy-path + rate-limiting (single invocation)" -ForegroundColor DarkGray
-	@newman run "$(E2E_AUTH)/revoke-session.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "rate-limiting" --delay-request 1 --reporters cli
+	@newman run "$(E2E_PROFILE)/revoke-session.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "rate-limiting" --delay-request 1 --reporters cli
 	@$(MAKE) e2e-update-profile
 	@$(MAKE) e2e-set-password
 	@Write-Host "[e2e] profile suite passed" -ForegroundColor Green
@@ -314,19 +315,19 @@ else
 	@echo "[e2e] --- GET /me ---"
 	@$(MAKE) _e2e-clean
 	@echo "[e2e] Running: setup + happy-path + rate-limiting (single invocation)"
-	@newman run "$(E2E_AUTH)/me.json" --environment "$(E2E_ENV)" \
+	@newman run "$(E2E_PROFILE)/me.json" --environment "$(E2E_ENV)" \
 		--folder "setup" --folder "happy-path" --folder "rate-limiting" \
 		--delay-request 1 --reporters cli
 	@echo "[e2e] --- GET /sessions ---"
 	@$(MAKE) _e2e-clean
 	@echo "[e2e] Running: setup + happy-path + rate-limiting (single invocation)"
-	@newman run "$(E2E_AUTH)/sessions.json" --environment "$(E2E_ENV)" \
+	@newman run "$(E2E_PROFILE)/sessions.json" --environment "$(E2E_ENV)" \
 		--folder "setup" --folder "happy-path" --folder "rate-limiting" \
 		--delay-request 1 --reporters cli
 	@echo "[e2e] --- DELETE /sessions/{id} ---"
 	@$(MAKE) _e2e-clean
 	@echo "[e2e] Running: setup + happy-path + rate-limiting (single invocation)"
-	@newman run "$(E2E_AUTH)/revoke-session.json" --environment "$(E2E_ENV)" \
+	@newman run "$(E2E_PROFILE)/revoke-session.json" --environment "$(E2E_ENV)" \
 		--folder "setup" --folder "happy-path" --folder "rate-limiting" \
 		--delay-request 1 --reporters cli
 	@$(MAKE) e2e-update-profile

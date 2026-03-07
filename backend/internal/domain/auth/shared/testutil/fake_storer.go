@@ -14,6 +14,8 @@ import (
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
 	"github.com/7-Dany/store/backend/internal/domain/auth/verification"
+	me "github.com/7-Dany/store/backend/internal/domain/profile/me"
+	profilesession "github.com/7-Dany/store/backend/internal/domain/profile/session"
 	setpassword "github.com/7-Dany/store/backend/internal/domain/profile/set-password"
 )
 
@@ -222,6 +224,38 @@ func (f *ProfileFakeStorer) RevokeSessionTx(ctx context.Context, sessionID, owne
 
 // UpdateProfileTx delegates to UpdateProfileTxFn if set.
 func (f *ProfileFakeStorer) UpdateProfileTx(ctx context.Context, in profile.UpdateProfileInput) error {
+	if f.UpdateProfileTxFn != nil {
+		return f.UpdateProfileTxFn(ctx, in)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MeFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// MeFakeStorer is a hand-written implementation of me.Storer for service unit
+// tests. Each method delegates to its Fn field if non-nil, otherwise returns
+// the zero value and nil error so tests only need to configure the fields they
+// care about.
+type MeFakeStorer struct {
+	GetUserProfileFn  func(ctx context.Context, userID [16]byte) (me.UserProfile, error)
+	UpdateProfileTxFn func(ctx context.Context, in me.UpdateProfileInput) error
+}
+
+// compile-time interface check.
+var _ me.Storer = (*MeFakeStorer)(nil)
+
+// GetUserProfile delegates to GetUserProfileFn if set.
+func (f *MeFakeStorer) GetUserProfile(ctx context.Context, userID [16]byte) (me.UserProfile, error) {
+	if f.GetUserProfileFn != nil {
+		return f.GetUserProfileFn(ctx, userID)
+	}
+	return me.UserProfile{}, nil
+}
+
+// UpdateProfileTx delegates to UpdateProfileTxFn if set.
+func (f *MeFakeStorer) UpdateProfileTx(ctx context.Context, in me.UpdateProfileInput) error {
 	if f.UpdateProfileTxFn != nil {
 		return f.UpdateProfileTxFn(ctx, in)
 	}
@@ -441,6 +475,36 @@ func (f *VerificationFakeStorer) ResendVerificationTx(ctx context.Context, in ve
 func (f *VerificationFakeStorer) VerifyEmailTx(ctx context.Context, email, ipAddress, userAgent string, checkFn func(authshared.VerificationToken) error) error {
 	if f.VerifyEmailTxFn != nil {
 		return f.VerifyEmailTxFn(ctx, email, ipAddress, userAgent, checkFn)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProfileSessionFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ProfileSessionFakeStorer is a hand-written implementation of
+// profilesession.Storer for service unit tests. Each method delegates to its
+// Fn field if non-nil, otherwise returns the zero value and nil error so tests
+// only need to configure the fields they care about.
+type ProfileSessionFakeStorer struct {
+	GetActiveSessionsFn func(ctx context.Context, userID [16]byte) ([]profilesession.ActiveSession, error)
+	RevokeSessionTxFn   func(ctx context.Context, sessionID, ownerUserID [16]byte, ipAddress, userAgent string) error
+}
+
+// compile-time interface check.
+var _ profilesession.Storer = (*ProfileSessionFakeStorer)(nil)
+
+func (f *ProfileSessionFakeStorer) GetActiveSessions(ctx context.Context, userID [16]byte) ([]profilesession.ActiveSession, error) {
+	if f.GetActiveSessionsFn != nil {
+		return f.GetActiveSessionsFn(ctx, userID)
+	}
+	return nil, nil
+}
+
+func (f *ProfileSessionFakeStorer) RevokeSessionTx(ctx context.Context, sessionID, ownerUserID [16]byte, ipAddress, userAgent string) error {
+	if f.RevokeSessionTxFn != nil {
+		return f.RevokeSessionTxFn(ctx, sessionID, ownerUserID, ipAddress, userAgent)
 	}
 	return nil
 }

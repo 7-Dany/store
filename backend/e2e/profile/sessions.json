@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "auth-sessions-e2e",
-    "name": "Auth – GET /sessions",
-    "description": "E2E tests for GET /api/v1/auth/sessions.\n\nFolders:\n  1. setup          — register → verify-email → login (device A)\n  2. happy-path     — login device B; assert sessions array + is_current flag\n  3. rate-limiting  — exhaust psess:ip: (10 slots) → 11th → 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "name": "Profile – GET /sessions",
+    "description": "E2E tests for GET /api/v1/profile/sessions.\n\nFolders:\n  1. setup          — register → verify-email → login (device A)\n  2. happy-path     — login device B; assert sessions array + is_current flag\n  3. rate-limiting  — exhaust psess:ip: (10 slots) → 11th → 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -294,9 +294,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/sessions",
+              "raw": "{{base_url}}/api/v1/profile/sessions",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "sessions"]
+              "path": ["api", "v1", "profile", "sessions"]
             }
           }
         }
@@ -318,55 +318,55 @@
         {
           "name": "warmup 1/10 — consume psess:ip: slot (→ not 429)",
           "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 1/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
-          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/sessions","host": ["{{base_url}}"],"path": ["api","v1","profile","sessions"]}}
         },
         {
           "name": "warmup 2/10 — consume psess:ip: slot (→ not 429)",
           "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 2/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
-          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/sessions","host": ["{{base_url}}"],"path": ["api","v1","profile","sessions"]}}
         },
         {
           "name": "warmup 3/10 — consume psess:ip: slot (→ not 429)",
           "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 3/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
-          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/sessions","host": ["{{base_url}}"],"path": ["api","v1","profile","sessions"]}}
         },
         {
           "name": "warmup 4/10 — consume psess:ip: slot (→ not 429)",
           "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 4/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
-          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/sessions","host": ["{{base_url}}"],"path": ["api","v1","profile","sessions"]}}
         },
         {
           "name": "warmup 5/10 — consume psess:ip: slot (→ not 429)",
           "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 5/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
-          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/sessions","host": ["{{base_url}}"],"path": ["api","v1","profile","sessions"]}}
         },
         {
           "name": "warmup 6/10 — consume psess:ip: slot (→ not 429)",
           "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 6/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
-          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/sessions","host": ["{{base_url}}"],"path": ["api","v1","profile","sessions"]}}
         },
         {
           "name": "warmup 7/10 — consume psess:ip: slot (→ not 429)",
           "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 7/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
-          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/sessions","host": ["{{base_url}}"],"path": ["api","v1","profile","sessions"]}}
         },
         {
           "name": "warmup 8/10 — consume psess:ip: slot (→ not 429)",
           "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 8/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
-          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/sessions","host": ["{{base_url}}"],"path": ["api","v1","profile","sessions"]}}
         },
         {
           "name": "warmup 9/10 — consume psess:ip: slot (→ not 429)",
           "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 9/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
-          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/sessions","host": ["{{base_url}}"],"path": ["api","v1","profile","sessions"]}}
         },
         {
           "name": "warmup 10/10 — consume psess:ip: slot (→ not 429)",
           "event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (psess:ip: slot 10/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
-          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/sessions","host": ["{{base_url}}"],"path": ["api","v1","auth","sessions"]}}
+          "request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{sess_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/sessions","host": ["{{base_url}}"],"path": ["api","v1","profile","sessions"]}}
         },
         {
-          "name": "GET /api/v1/auth/sessions: 11th request → 429 (psess:ip: exhausted)",
+          "name": "GET /api/v1/profile/sessions: 11th request → 429 (psess:ip: exhausted)",
           "event": [
             {
               "listen": "test",
@@ -395,9 +395,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/sessions",
+              "raw": "{{base_url}}/api/v1/profile/sessions",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "sessions"]
+              "path": ["api", "v1", "profile", "sessions"]
             }
           }
         }

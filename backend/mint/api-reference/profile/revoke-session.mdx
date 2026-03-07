@@ -1,11 +1,11 @@
 ---
 title: "Revoke Session"
 description: "Revokes a specific active session belonging to the authenticated user."
-api: "DELETE http://localhost:8080/api/v1/auth/sessions/{id}"
+api: "DELETE http://localhost:8080/api/v1/profile/sessions/{id}"
 ---
 
 <ParamField path="id" type="string" required>
-  The UUID of the session to revoke. Must be a valid UUID v4 string. Session IDs are returned by `GET /sessions`.
+  The UUID of the session to revoke. Must be a valid UUID v4 string. Session IDs are returned by `GET /profile/sessions`.
 </ParamField>
 
 ## Behaviour
@@ -25,7 +25,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 <RequestExample>
 ```json Example
 // No request body — the session ID is passed as a path parameter.
-// DELETE /api/v1/auth/sessions/018f42c3-dead-beef-9f56-0a1b2c3d4e5f
+// DELETE /api/v1/profile/sessions/018f42c3-dead-beef-9f56-0a1b2c3d4e5f
 ```
 </RequestExample>
 

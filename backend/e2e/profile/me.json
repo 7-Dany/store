@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "auth-me-e2e",
-    "name": "Auth – GET /me",
-    "description": "E2E tests for GET /api/v1/auth/me.\n\nFolders:\n  1. setup          — register → verify-email → login (stores me_access_token)\n  2. happy-path     — assert all /me response fields\n  3. rate-limiting  — exhaust pme:ip: (10 slots) → 11th → 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "name": "Profile \u2013 GET /me",
+    "description": "E2E tests for GET /api/v1/profile/me.\n\nFolders:\n  1. setup          \u2014 register \u2192 verify-email \u2192 login (stores me_access_token)\n  2. happy-path     \u2014 assert all /me response fields\n  3. rate-limiting  \u2014 exhaust pme:ip: (10 slots) \u2192 11th \u2192 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -25,7 +25,7 @@
       "description": "Register, verify email (via Gmail API), and log in to obtain an access token for Me tests.",
       "item": [
         {
-          "name": "POST /register → 201",
+          "name": "POST /register \u2192 201",
           "event": [
             {
               "listen": "prerequest",
@@ -91,7 +91,7 @@
           }
         },
         {
-          "name": "POST /verify-email → 200",
+          "name": "POST /verify-email \u2192 200",
           "event": [
             {
               "listen": "prerequest",
@@ -99,7 +99,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "const code = pm.collectionVariables.get('me_code');",
-                  "if (!code) { console.error('[ERROR] OTP not set — Gmail fetch did not complete. Check gmail_access_token and --delay-request >= 8000.'); }"
+                  "if (!code) { console.error('[ERROR] OTP not set \u2014 Gmail fetch did not complete. Check gmail_access_token and --delay-request >= 8000.'); }"
                 ]
               }
             },
@@ -130,7 +130,7 @@
           }
         },
         {
-          "name": "POST /login → 200 (store access_token)",
+          "name": "POST /login \u2192 200 (store access_token)",
           "event": [
             {
               "listen": "test",
@@ -171,10 +171,10 @@
     },
     {
       "name": "happy-path",
-      "description": "Exercises GET /me against a real registered+verified user and asserts every documented field.\n\nWhy E2E:\n  • last_login_at non-null — requires a real login row in the DB; cannot be injected via fake service.\n  • avatar_url absent (omitempty) — confirms the omitempty tag survives real HTTP JSON serialisation.\n  • id UUID format — asserted here as a cheap addition to the in-flight request.\n\nNot covered here (internal tests):\n  • avatar_url omitempty unit test         — handler_test.go TestHandler_Me_AvatarURLOmittedWhenEmpty\n  • last_login_at omitempty when nil        — handler_test.go TestHandler_Me/success_nil_LastLoginAt_is_omitted_from_response\n  • Missing/expired/tampered token → 401   — handler_test.go TestHandler_Me\n  • Blocklisted token → 401                — session.json 'GET /me with old access_token_a → 401'",
+      "description": "Exercises GET /me against a real registered+verified user and asserts every documented field.\n\nWhy E2E:\n  \u2022 last_login_at non-null \u2014 requires a real login row in the DB; cannot be injected via fake service.\n  \u2022 avatar_url absent (omitempty) \u2014 confirms the omitempty tag survives real HTTP JSON serialisation.\n  \u2022 id UUID format \u2014 asserted here as a cheap addition to the in-flight request.\n\nNot covered here (internal tests):\n  \u2022 avatar_url omitempty unit test         \u2014 handler_test.go TestHandler_Me_AvatarURLOmittedWhenEmpty\n  \u2022 last_login_at omitempty when nil        \u2014 handler_test.go TestHandler_Me/success_nil_LastLoginAt_is_omitted_from_response\n  \u2022 Missing/expired/tampered token \u2192 401   \u2014 handler_test.go TestHandler_Me\n  \u2022 Blocklisted token \u2192 401                \u2014 session.json 'GET /me with old access_token_a \u2192 401'",
       "item": [
         {
-          "name": "GET /me → 200 (all fields, last_login_at non-null, avatar_url absent)",
+          "name": "GET /me \u2192 200 (all fields, last_login_at non-null, avatar_url absent)",
           "event": [
             {
               "listen": "test",
@@ -191,12 +191,10 @@
                   "pm.test('is_active is a boolean', () => pm.expect(body.is_active).to.be.a('boolean'));",
                   "pm.test('is_locked is false', () => pm.expect(body.is_locked).to.be.false);",
                   "pm.test('created_at present', () => pm.expect(body.created_at).to.be.a('string').and.not.empty);",
-                  "// last_login_at must be present — setup already ran a real /login",
                   "pm.test('last_login_at present and non-null after prior login', () => {",
                   "    pm.expect(body).to.have.property('last_login_at');",
                   "    pm.expect(body.last_login_at).to.be.a('string').and.not.empty;",
                   "});",
-                  "// avatar_url must be absent for a freshly-registered user (omitempty on empty string)",
                   "pm.test('avatar_url absent (never set, omitempty)', () => pm.expect(body).to.not.have.property('avatar_url'));"
                 ]
               }
@@ -209,9 +207,9 @@
               {"key": "X-Forwarded-For", "value": "{{_xff}}"}
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/me",
+              "raw": "{{base_url}}/api/v1/profile/me",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "me"]
+              "path": ["api", "v1", "profile", "me"]
             }
           }
         }
@@ -219,7 +217,7 @@
     },
     {
       "name": "rate-limiting",
-      "description": "pme:ip: limiter — burst=10, rate=10/1min (0.1667 t/s).\nAll 10 warmup requests use the valid access_token from setup (JWT auth fires before the limiter\ninside the JWT middleware group). 11th request → 429 rate_limited, Retry-After=6.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
+      "description": "pme:ip: limiter \u2014 burst=10, rate=10/1min (0.1667 t/s).\nAll 10 warmup requests use the valid access_token from setup (JWT auth fires before the limiter\ninside the JWT middleware group). 11th request \u2192 429 rate_limited, Retry-After=6.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
       "event": [
         {
           "listen": "prerequest",
@@ -230,18 +228,18 @@
         }
       ],
       "item": [
-        {"name": "warmup 1/10 — consume pme:ip: slot (→ not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 1/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
-        {"name": "warmup 2/10 — consume pme:ip: slot (→ not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 2/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
-        {"name": "warmup 3/10 — consume pme:ip: slot (→ not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 3/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
-        {"name": "warmup 4/10 — consume pme:ip: slot (→ not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 4/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
-        {"name": "warmup 5/10 — consume pme:ip: slot (→ not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 5/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
-        {"name": "warmup 6/10 — consume pme:ip: slot (→ not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 6/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
-        {"name": "warmup 7/10 — consume pme:ip: slot (→ not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 7/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
-        {"name": "warmup 8/10 — consume pme:ip: slot (→ not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 8/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
-        {"name": "warmup 9/10 — consume pme:ip: slot (→ not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 9/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
-        {"name": "warmup 10/10 — consume pme:ip: slot (→ not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 10/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/auth/me","host": ["{{base_url}}"],"path": ["api","v1","auth","me"]}}},
+        {"name": "warmup 1/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 1/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
+        {"name": "warmup 2/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 2/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
+        {"name": "warmup 3/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 3/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
+        {"name": "warmup 4/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 4/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
+        {"name": "warmup 5/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 5/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
+        {"name": "warmup 6/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 6/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
+        {"name": "warmup 7/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 7/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
+        {"name": "warmup 8/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 8/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
+        {"name": "warmup 9/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 9/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
+        {"name": "warmup 10/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 10/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
         {
-          "name": "GET /api/v1/auth/me: 11th request → 429 (pme:ip: exhausted)",
+          "name": "GET /api/v1/profile/me: 11th request \u2192 429 (pme:ip: exhausted)",
           "event": [
             {
               "listen": "test",
@@ -264,9 +262,9 @@
               {"key": "X-Forwarded-For", "value": "{{_xff}}"}
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/me",
+              "raw": "{{base_url}}/api/v1/profile/me",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "me"]
+              "path": ["api", "v1", "profile", "me"]
             }
           }
         }

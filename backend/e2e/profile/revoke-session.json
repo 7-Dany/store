@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "auth-revoke-session-e2e",
-    "name": "Auth – DELETE /sessions/{id}",
-    "description": "E2E tests for DELETE /api/v1/auth/sessions/{id}.\n\nFolders:\n  1. setup          — register → verify-email → login (device A)\n  2. happy-path\n       revoke-other — device A revokes device B; confirms session gone + /refresh dead\n       revoke-self  — device C revokes its own session; confirms /refresh dead\n  3. rate-limiting  — exhaust rsess:ip: (5 slots) → 6th → 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "name": "Profile – DELETE /sessions/{id}",
+    "description": "E2E tests for DELETE /api/v1/profile/sessions/{id}.\n\nFolders:\n  1. setup          — register → verify-email → login (device A)\n  2. happy-path\n       revoke-other — device A revokes device B; confirms session gone + /refresh dead\n       revoke-self  — device C revokes its own session; confirms /refresh dead\n  3. rate-limiting  — exhaust rsess:ip: (5 slots) → 6th → 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -285,9 +285,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/v1/auth/sessions",
+                  "raw": "{{base_url}}/api/v1/profile/sessions",
                   "host": ["{{base_url}}"],
-                  "path": ["api", "v1", "auth", "sessions"]
+                  "path": ["api", "v1", "profile", "sessions"]
                 }
               }
             },
@@ -328,12 +328,12 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/v1/auth/sessions/{{rev_session_id_b}}",
+                  "raw": "{{base_url}}/api/v1/profile/sessions/{{rev_session_id_b}}",
                   "host": ["{{base_url}}"],
                   "path": [
                     "api",
                     "v1",
-                    "auth",
+                    "profile",
                     "sessions",
                     "{{rev_session_id_b}}"
                   ]
@@ -373,9 +373,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/v1/auth/sessions",
+                  "raw": "{{base_url}}/api/v1/profile/sessions",
                   "host": ["{{base_url}}"],
-                  "path": ["api", "v1", "auth", "sessions"]
+                  "path": ["api", "v1", "profile", "sessions"]
                 }
               }
             },
@@ -497,9 +497,9 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/v1/auth/sessions",
+                  "raw": "{{base_url}}/api/v1/profile/sessions",
                   "host": ["{{base_url}}"],
-                  "path": ["api", "v1", "auth", "sessions"]
+                  "path": ["api", "v1", "profile", "sessions"]
                 }
               }
             },
@@ -540,12 +540,12 @@
                   }
                 ],
                 "url": {
-                  "raw": "{{base_url}}/api/v1/auth/sessions/{{rev_session_id_c}}",
+                  "raw": "{{base_url}}/api/v1/profile/sessions/{{rev_session_id_c}}",
                   "host": ["{{base_url}}"],
                   "path": [
                     "api",
                     "v1",
-                    "auth",
+                    "profile",
                     "sessions",
                     "{{rev_session_id_c}}"
                   ]
@@ -628,12 +628,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/sessions/00000000-0000-0000-0000-000000000001",
+              "raw": "{{base_url}}/api/v1/profile/sessions/00000000-0000-0000-0000-000000000001",
               "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "auth",
+                "profile",
                 "sessions",
                 "00000000-0000-0000-0000-000000000001"
               ]
@@ -666,12 +666,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/sessions/00000000-0000-0000-0000-000000000001",
+              "raw": "{{base_url}}/api/v1/profile/sessions/00000000-0000-0000-0000-000000000001",
               "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "auth",
+                "profile",
                 "sessions",
                 "00000000-0000-0000-0000-000000000001"
               ]
@@ -704,12 +704,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/sessions/00000000-0000-0000-0000-000000000001",
+              "raw": "{{base_url}}/api/v1/profile/sessions/00000000-0000-0000-0000-000000000001",
               "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "auth",
+                "profile",
                 "sessions",
                 "00000000-0000-0000-0000-000000000001"
               ]
@@ -717,7 +717,7 @@
           }
         },
         {
-          "name": "DELETE /api/v1/auth/sessions/00000000-0000-0000-0000-000000000001: 4th request → 429 (rsess:ip: exhausted)",
+          "name": "DELETE /api/v1/profile/sessions/00000000-0000-0000-0000-000000000001: 4th request → 429 (rsess:ip: exhausted)",
           "event": [
             {
               "listen": "test",
@@ -746,12 +746,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/sessions/00000000-0000-0000-0000-000000000001",
+              "raw": "{{base_url}}/api/v1/profile/sessions/00000000-0000-0000-0000-000000000001",
               "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "auth",
+                "profile",
                 "sessions",
                 "00000000-0000-0000-0000-000000000001"
               ]

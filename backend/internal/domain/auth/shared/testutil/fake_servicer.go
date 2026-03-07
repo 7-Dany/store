@@ -13,6 +13,8 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/auth/session"
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
 	"github.com/7-Dany/store/backend/internal/domain/auth/verification"
+	me "github.com/7-Dany/store/backend/internal/domain/profile/me"
+	profilesession "github.com/7-Dany/store/backend/internal/domain/profile/session"
 	setpassword "github.com/7-Dany/store/backend/internal/domain/profile/set-password"
 )
 
@@ -131,6 +133,37 @@ func (f *ProfileFakeServicer) UpdateProfile(ctx context.Context, in profile.Upda
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// MeFakeServicer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// MeFakeServicer is a hand-written implementation of me.Servicer for handler
+// unit tests. Each method delegates to its Fn field if non-nil, otherwise
+// returns the zero value and nil error.
+type MeFakeServicer struct {
+	GetUserProfileFn func(ctx context.Context, userID string) (me.UserProfile, error)
+	UpdateProfileFn  func(ctx context.Context, in me.UpdateProfileInput) error
+}
+
+// compile-time interface check.
+var _ me.Servicer = (*MeFakeServicer)(nil)
+
+// GetUserProfile delegates to GetUserProfileFn if set.
+func (f *MeFakeServicer) GetUserProfile(ctx context.Context, userID string) (me.UserProfile, error) {
+	if f.GetUserProfileFn != nil {
+		return f.GetUserProfileFn(ctx, userID)
+	}
+	return me.UserProfile{}, nil
+}
+
+// UpdateProfile delegates to UpdateProfileFn if set.
+func (f *MeFakeServicer) UpdateProfile(ctx context.Context, in me.UpdateProfileInput) error {
+	if f.UpdateProfileFn != nil {
+		return f.UpdateProfileFn(ctx, in)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // RegisterFakeServicer
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -240,6 +273,35 @@ func (f *VerificationFakeServicer) ResendVerification(ctx context.Context, in ve
 		return f.ResendVerificationFn(ctx, in)
 	}
 	return authshared.OTPIssuanceResult{}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProfileSessionFakeServicer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ProfileSessionFakeServicer is a hand-written implementation of
+// profilesession.Servicer for handler unit tests. Each method delegates to its
+// Fn field if non-nil, otherwise returns the zero value and nil error.
+type ProfileSessionFakeServicer struct {
+	GetActiveSessionsFn func(ctx context.Context, userID string) ([]profilesession.ActiveSession, error)
+	RevokeSessionFn     func(ctx context.Context, userID, sessionID, ipAddress, userAgent string) error
+}
+
+// compile-time interface check.
+var _ profilesession.Servicer = (*ProfileSessionFakeServicer)(nil)
+
+func (f *ProfileSessionFakeServicer) GetActiveSessions(ctx context.Context, userID string) ([]profilesession.ActiveSession, error) {
+	if f.GetActiveSessionsFn != nil {
+		return f.GetActiveSessionsFn(ctx, userID)
+	}
+	return nil, nil
+}
+
+func (f *ProfileSessionFakeServicer) RevokeSession(ctx context.Context, userID, sessionID, ipAddress, userAgent string) error {
+	if f.RevokeSessionFn != nil {
+		return f.RevokeSessionFn(ctx, userID, sessionID, ipAddress, userAgent)
+	}
+	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

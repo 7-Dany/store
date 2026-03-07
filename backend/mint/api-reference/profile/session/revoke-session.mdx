@@ -5,7 +5,7 @@ api: "DELETE http://localhost:8080/api/v1/profile/sessions/{id}"
 ---
 
 <ParamField path="id" type="string" required>
-  The UUID of the session to revoke. Must be a valid UUID v4 string. Session IDs are returned by `GET /profile/sessions`.
+  The UUID of the session to revoke. Must be a valid UUID v4 string. Session IDs are returned by [`GET /profile/sessions`](/api-reference/profile/session/sessions).
 </ParamField>
 
 ## Behaviour
@@ -13,8 +13,6 @@ api: "DELETE http://localhost:8080/api/v1/profile/sessions/{id}"
 **Ownership check** — The session must belong to the authenticated user. If the session ID is valid but owned by a different user, the endpoint returns `404 not_found`, indistinguishable from a session that does not exist. This prevents cross-user session probing.
 
 **Revoking the current session** — You can revoke your own current session. After revocation, the associated refresh token and access token are invalidated, effectively logging out that device.
-
-**Context cancellation safety** — The revocation runs inside `context.WithoutCancel`, so a client disconnect cannot interrupt the database commit and leave the session in an inconsistent state.
 
 ## Rate Limiting
 
@@ -50,8 +48,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
 ```json 429
 {
-  "code": "rate_limited",
-  "message": "too many requests"
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
 }
 ```
 </ResponseExample>
@@ -101,8 +99,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
     ```json
     {
-      "code": "rate_limited",
-      "message": "too many requests"
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
     }
     ```
   </Accordion>

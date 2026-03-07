@@ -20,3 +20,9 @@ func ExportedValidateAndNormalise(req *registerRequest) error {
 func ExportedRegisterRequest(displayName, email, password string) registerRequest {
 	return registerRequest{DisplayName: displayName, Email: email, Password: password}
 }
+
+// ExportedRegisterRequestWithUsername constructs a registerRequest value
+// including the optional username field for use in external test packages.
+func ExportedRegisterRequestWithUsername(displayName, email, password, username string) registerRequest {
+	return registerRequest{DisplayName: displayName, Email: email, Password: password, Username: username}
+}

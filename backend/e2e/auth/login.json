@@ -194,8 +194,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{bad json", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -218,8 +226,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -242,8 +258,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"password\": \"P@ssw0rd1!\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"password\": \"P@ssw0rd1!\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -266,8 +290,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"P@ssw0rd1!\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"P@ssw0rd1!\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -292,8 +324,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"   \", \"password\": \"P@ssw0rd1!\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"   \", \"password\": \"P@ssw0rd1!\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -326,8 +366,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_id_too_long}}\", \"password\": \"P@ssw0rd1!\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_id_too_long}}\", \"password\": \"P@ssw0rd1!\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -350,8 +398,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"user@e2e.test\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"user@e2e.test\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -376,8 +432,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"user@e2e.test\", \"password\": \"\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"user@e2e.test\", \"password\": \"\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -414,8 +478,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         }
       ]
@@ -817,48 +889,283 @@
         },
         {
           "name": "wrong password 1/10 — increment counter (→ 401, not yet locked)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401 (attempt 1/10, not locked yet)', () => pm.response.to.have.status(401));", "pm.test('code is invalid_credentials', () => pm.expect(pm.response.json().code).to.eql('invalid_credentials'));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (attempt 1/10, not locked yet)', () => pm.response.to.have.status(401));",
+                  "pm.test('code is invalid_credentials', () => pm.expect(pm.response.json().code).to.eql('invalid_credentials'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "wrong password 2/10 — increment counter (→ 401, not yet locked)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401 (attempt 2/10, not locked yet)', () => pm.response.to.have.status(401));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (attempt 2/10, not locked yet)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "wrong password 3/10 — increment counter (→ 401, not yet locked)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401 (attempt 3/10, not locked yet)', () => pm.response.to.have.status(401));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (attempt 3/10, not locked yet)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "wrong password 4/10 — increment counter (→ 401, not yet locked)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401 (attempt 4/10, not locked yet)', () => pm.response.to.have.status(401));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (attempt 4/10, not locked yet)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "wrong password 5/10 — increment counter (→ 401, not yet locked)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401 (attempt 5/10, not locked yet)', () => pm.response.to.have.status(401));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (attempt 5/10, not locked yet)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "wrong password 6/10 — increment counter (→ 401, not yet locked)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401 (attempt 6/10, not locked yet)', () => pm.response.to.have.status(401));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (attempt 6/10, not locked yet)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "wrong password 7/10 — increment counter (→ 401, not yet locked)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401 (attempt 7/10, not locked yet)', () => pm.response.to.have.status(401));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (attempt 7/10, not locked yet)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "wrong password 8/10 — increment counter (→ 401, not yet locked)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401 (attempt 8/10, not locked yet)', () => pm.response.to.have.status(401));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (attempt 8/10, not locked yet)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "wrong password 9/10 — increment counter (→ 401, not yet locked)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401 (attempt 9/10, not locked yet)', () => pm.response.to.have.status(401));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (attempt 9/10, not locked yet)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "wrong password 10/10 — threshold reached, login_locked_until set (→ 401)",
@@ -878,7 +1185,23 @@
               }
             }
           ],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "correct password after lockout → 429 login_locked + Retry-After",
@@ -930,7 +1253,7 @@
     },
     {
       "name": "rate-limiting",
-      "description": "Verifies the lgn:ip: IP rate limiter (burst=12, rate=12/15min). The folder prerequest pins _xff to 127.0.0.1 so all requests share one bucket. 12 warmups drain the burst capacity; the 13th must return 429 with code=rate_limited and Retry-After: 75 (ceil(1/rate) = ceil(75) = 75s). Requires TRUSTED_PROXIES=127.0.0.1/32 in .env and Redis flushed (make _e2e-kv-clean) before this folder.",
+      "description": "Verifies the lgn:ip: IP rate limiter (burst=12, rate=12/15min). The folder prerequest pins _xff to 127.0.0.1 so all requests share one bucket. 12 warmups drain the burst capacity; the 13th must return 429 with code=too_many_requests and Retry-After: 75 (ceil(1/rate) = ceil(75) = 75s). Requires TRUSTED_PROXIES=127.0.0.1/32 in .env and Redis flushed (make _e2e-kv-clean) before this folder.",
       "event": [
         {
           "listen": "prerequest",
@@ -964,8 +1287,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -987,8 +1318,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -1010,8 +1349,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -1033,8 +1380,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -1056,39 +1411,203 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
           "name": "warmup 6/12 — consume slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (lgn:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (lgn:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "warmup 7/12 — consume slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (lgn:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (lgn:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "warmup 8/12 — consume slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (lgn:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (lgn:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "warmup 9/12 — consume slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (lgn:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (lgn:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "warmup 10/12 — consume slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (lgn:ip: slot 10)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (lgn:ip: slot 10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "warmup 11/12 — consume slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (lgn:ip: slot 11)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (lgn:ip: slot 11)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
         },
         {
           "name": "warmup 12/12 — consume slot (→ not 429, last allowed)",
@@ -1109,8 +1628,16 @@
               { "key": "Content-Type", "value": "application/json" },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         },
         {
@@ -1122,7 +1649,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
                   "pm.test('Retry-After is 75 (ceil(1 / (12/900)) = 75s)', () => {",
                   "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('75');",
                   "});"
@@ -1141,7 +1668,11 @@
               "raw": "{\"identifier\": \"lgn-rl@e2e.test\", \"password\": \"bad\"}",
               "options": { "raw": { "language": "json" } }
             },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         }
       ]

@@ -199,6 +199,105 @@ func TestHandler_Register_BodyTooLarge(t *testing.T) {
 	require.Equal(t, http.StatusRequestEntityTooLarge, w.Code)
 }
 
+func TestHandler_Register_WithUsername_Success(t *testing.T) {
+	t.Parallel()
+	h := newHandler(t, &authsharedtest.RegisterFakeServicer{}, nil)
+	w := httptest.NewRecorder()
+	h.Register(w, newRegisterRequest(t, map[string]any{
+		"display_name": "Alice",
+		"email":        "alice@example.com",
+		"password":     "P@ssw0rd!1",
+		"username":     "alice123",
+	}))
+	require.Equal(t, http.StatusCreated, w.Code,
+		"valid username must be accepted and result in 201")
+}
+
+func TestHandler_Register_UsernameTaken(t *testing.T) {
+	t.Parallel()
+	svc := &authsharedtest.RegisterFakeServicer{
+		RegisterFn: func(_ context.Context, _ register.RegisterInput) (register.RegisterResult, error) {
+			return register.RegisterResult{}, authshared.ErrUsernameTaken
+		},
+	}
+	h := newHandler(t, svc, nil)
+	w := httptest.NewRecorder()
+	h.Register(w, newRegisterRequest(t, map[string]any{
+		"display_name": "Alice",
+		"email":        "alice@example.com",
+		"password":     "P@ssw0rd!1",
+		"username":     "alice123",
+	}))
+	require.Equal(t, http.StatusConflict, w.Code)
+
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	require.Equal(t, "username_taken", body["code"],
+		"response body code must be username_taken")
+}
+
+func TestHandler_Register_UsernameInvalid(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		username string
+	}{
+		{"too short", "ab"},
+		{"invalid chars symbol", "alice!"},
+		{"invalid chars hyphen", "alice-bob"},
+		{"leading underscore", "_alice"},
+		{"trailing underscore", "alice_"},
+		{"consecutive underscores", "alice__bob"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHandler(t, &authsharedtest.RegisterFakeServicer{}, nil)
+			w := httptest.NewRecorder()
+			h.Register(w, newRegisterRequest(t, map[string]any{
+				"display_name": "Alice",
+				"email":        "alice@example.com",
+				"password":     "P@ssw0rd!1",
+				"username":     tc.username,
+			}))
+			require.Equal(t, http.StatusUnprocessableEntity, w.Code,
+				"invalid username %q must be rejected with 422", tc.username)
+
+			var body map[string]string
+			require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+			require.Equal(t, "validation_error", body["code"])
+		})
+	}
+}
+
+func TestHandler_Register_UsernameNormalisedBeforeService(t *testing.T) {
+	t.Parallel()
+	// Verify the handler passes the normalised (lowercased) username to the service.
+	var capturedInput register.RegisterInput
+	svc := &authsharedtest.RegisterFakeServicer{
+		RegisterFn: func(_ context.Context, in register.RegisterInput) (register.RegisterResult, error) {
+			capturedInput = in
+			return register.RegisterResult{
+				UserID:  "00000000-0000-0000-0000-000000000001",
+				Email:   in.Email,
+				RawCode: "123456",
+			}, nil
+		},
+	}
+	h := newHandler(t, svc, nil)
+	w := httptest.NewRecorder()
+	h.Register(w, newRegisterRequest(t, map[string]any{
+		"display_name": "Alice",
+		"email":        "alice@example.com",
+		"password":     "P@ssw0rd!1",
+		"username":     "ALICE123",
+	}))
+	require.Equal(t, http.StatusCreated, w.Code)
+	require.Equal(t, "alice123", capturedInput.Username,
+		"username must be lowercased by validateAndNormalise before reaching the service")
+}
+
 func TestHandler_Register_WeakPassword(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

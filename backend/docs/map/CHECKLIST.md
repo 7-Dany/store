@@ -424,6 +424,35 @@ scenario is covered by a real e2e test running against the live stack.
 
 ---
 
+
+### §B-1 — Username Management
+
+New package: `internal/domain/profile/username/`
+
+#### Availability check
+`GET /api/v1/profile/username/available?username=X`
+- [X] Public (no auth required) — used by frontend live-validation
+- [X] Returns `{"available": true|false}` — always 200; never reveal account existence
+      through different response shapes
+- [X] Normalise input (trim, lowercase) the same way the DB stores it before checking
+- [X] Validate: not empty, same length/charset rules as registration
+- [X] Rate-limit: 20 req / 1 min per IP (key `unav:ip:`)
+
+#### Update username (requires auth)
+`PATCH /api/v1/profile/me/username`
+- [X] Requires valid JWT
+- [X] Body: `{ "username": "..." }`
+- [X] Validate format (same length/charset rules as registration)
+- [X] Check availability; return 409 `username_taken` if already in use
+- [X] Atomically update `username` on `users` with a re-check inside the DB transaction
+- [X] Guard: no-op if the new username is identical to the current one (422 `same_username`)
+- [X] Audit row: `username_changed` (old + new username in `metadata`)
+- [X] No session/token revocation (username is not in the JWT payload)
+- [X] Rate-limit: 5 req / 10 min per user (key `uchg:usr:`)
+
+---
+
+
 ## Cross-cutting / flow scenarios
 
 Items in this section require multiple endpoints, real HTTP cookies, or live infrastructure

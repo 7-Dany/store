@@ -55,6 +55,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		DisplayName: req.DisplayName,
 		Email:       req.Email,
 		Password:    req.Password,
+		Username:    req.Username,
 		IPAddress:   respond.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	})
@@ -62,6 +63,8 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, authshared.ErrEmailTaken):
 			respond.Error(w, http.StatusConflict, "email_taken", "this email is already registered")
+		case errors.Is(err, authshared.ErrUsernameTaken):
+			respond.Error(w, http.StatusConflict, "username_taken", "this username is already taken")
 		default:
 			slog.ErrorContext(r.Context(), "register.Register: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")

@@ -155,6 +155,15 @@ func (n *nopQuerier) GetUserForSetPassword(_ context.Context, _ pgtype.UUID) (db
 func (n *nopQuerier) SetPasswordHash(_ context.Context, _ db.SetPasswordHashParams) (int64, error) {
 	return 0, nil
 }
+func (n *nopQuerier) CheckUsernameAvailable(_ context.Context, _ pgtype.Text) (bool, error) {
+	return false, nil
+}
+func (n *nopQuerier) GetUserForUsernameUpdate(_ context.Context, _ pgtype.UUID) (db.GetUserForUsernameUpdateRow, error) {
+	return db.GetUserForUsernameUpdateRow{}, nil
+}
+func (n *nopQuerier) SetUsername(_ context.Context, _ db.SetUsernameParams) (int64, error) {
+	return 0, nil
+}
 
 // compile-time guard
 var _ db.Querier = (*nopQuerier)(nil)

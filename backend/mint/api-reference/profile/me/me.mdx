@@ -6,7 +6,9 @@ api: "GET http://localhost:8080/api/v1/profile/me"
 
 ## Behaviour
 
-**`is_locked` vs admin lock** — `is_locked` reflects a self-service OTP brute-force lock that can be cleared via `POST /request-unlock`. A separate admin-initiated lock exists but is intentionally not surfaced here — affected users must contact support.
+**`username`** — Omitted from the response when the user has not yet set a username. Set a username via [`PATCH /me/username`](/api-reference/profile/username/update-username).
+
+**`is_locked` vs admin lock** — `is_locked` reflects a self-service OTP brute-force lock that can be cleared via [`POST /request-unlock`](/api-reference/auth/unlock/request-unlock). A separate admin-initiated lock exists but is intentionally not surfaced here — affected users must contact support.
 
 **`avatar_url` and `last_login_at`** — Both fields are omitted from the response when they have not been set.
 
@@ -22,6 +24,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   "id": "018f42c3-1a2b-7e4d-9f56-0a1b2c3d4e5f",
   "email": "alice@example.com",
   "display_name": "Alice",
+  "username": "alice_codes",
   "avatar_url": "https://cdn.example.com/avatars/alice.png",
   "email_verified": true,
   "is_active": true,
@@ -40,8 +43,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
 ```json 429
 {
-  "code": "rate_limited",
-  "message": "too many requests"
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
 }
 ```
 </ResponseExample>
@@ -50,13 +53,14 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
 <AccordionGroup>
   <Accordion title="200 — OK">
-    The user's public profile. `avatar_url` and `last_login_at` are omitted when not set.
+    The user's public profile. `username`, `avatar_url`, and `last_login_at` are omitted when not set.
 
     ```json
     {
       "id": "018f42c3-1a2b-7e4d-9f56-0a1b2c3d4e5f",
       "email": "alice@example.com",
       "display_name": "Alice",
+      "username": "alice_codes",
       "avatar_url": "https://cdn.example.com/avatars/alice.png",
       "email_verified": true,
       "is_active": true,
@@ -65,6 +69,19 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
       "created_at": "2025-10-01T08:00:00Z"
     }
     ```
+
+    | Field | Type | Notes |
+    |---|---|---|
+    | `id` | UUID string | Canonical UUID of the user |
+    | `email` | string | Normalised email address |
+    | `display_name` | string | Profile display name |
+    | `username` | string | Unique handle; omitted if not yet set |
+    | `avatar_url` | string | Profile picture URL; omitted if not set |
+    | `email_verified` | bool | Whether the email address has been verified |
+    | `is_active` | bool | Whether the account is active |
+    | `is_locked` | bool | Whether the account is OTP-brute-force locked |
+    | `last_login_at` | RFC 3339 timestamp | Most recent login time; omitted if never logged in |
+    | `created_at` | RFC 3339 timestamp | Account creation time |
   </Accordion>
 
   <Accordion title="401 — Unauthorized">
@@ -94,8 +111,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
     ```json
     {
-      "code": "rate_limited",
-      "message": "too many requests"
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
     }
     ```
   </Accordion>

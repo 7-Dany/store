@@ -420,12 +420,11 @@ func mustSetup(t *testing.T, initialAttempts int16) ([16]byte, [16]byte) {
 
 	t.Cleanup(func() {
 		ctx := context.Background()
+		cleanQ := db.New(testPool)
 		testPool.Exec(ctx, `DELETE FROM auth_audit_log WHERE user_id = $1`,
 			pgtype.UUID{Bytes: userID, Valid: true})
-		testPool.Exec(ctx, `DELETE FROM one_time_tokens WHERE id = $1`,
-			pgtype.UUID{Bytes: tokenID, Valid: true})
-		testPool.Exec(ctx, `DELETE FROM users WHERE id = $1`,
-			pgtype.UUID{Bytes: userID, Valid: true})
+		cleanQ.DeleteOTPTokenByID(ctx, pgtype.UUID{Bytes: tokenID, Valid: true})
+		cleanQ.DeleteUserByEmail(ctx, email)
 	})
 
 	return userID, tokenID

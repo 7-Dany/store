@@ -162,6 +162,60 @@ func TestCreateUserTx_Integration(t *testing.T) {
 		require.False(t, row.UsedAt.Valid, "used_at must be NULL after register")
 	})
 
+	t.Run("duplicate username returns ErrUsernameTaken", func(t *testing.T) {
+		t.Parallel()
+		s, _, _ := txStores(t)
+
+		// First user claims the username.
+		in := newCreateUserInput(t)
+		in.Username = "sharedhandle1"
+		_, err := s.CreateUserTx(context.Background(), in)
+		require.NoError(t, err)
+
+		// Second user with a different email but the same username must be rejected.
+		in2 := newCreateUserInput(t)
+		in2.Username = "sharedhandle1"
+		_, err = s.CreateUserTx(context.Background(), in2)
+		require.ErrorIs(t, err, authshared.ErrUsernameTaken)
+	})
+
+	t.Run("username stored when provided", func(t *testing.T) {
+		t.Parallel()
+		s, _, tx := txStores(t)
+
+		in := newCreateUserInput(t)
+		in.Username = "storeduser1"
+		result, err := s.CreateUserTx(context.Background(), in)
+		require.NoError(t, err)
+		require.NotEmpty(t, result.UserID)
+
+		// Verify the username column was persisted. Query within the same tx so
+		// the assertion stays scoped to this rolled-back test.
+		var stored pgtype.Text
+		err = tx.QueryRow(context.Background(),
+			"SELECT username FROM users WHERE email = $1", in.Email).Scan(&stored)
+		require.NoError(t, err)
+		require.True(t, stored.Valid, "username column must be non-NULL when a username is provided")
+		require.Equal(t, "storeduser1", stored.String)
+	})
+
+	t.Run("no username → stored as NULL", func(t *testing.T) {
+		t.Parallel()
+		s, _, tx := txStores(t)
+
+		in := newCreateUserInput(t)
+		in.Username = "" // omitted
+		result, err := s.CreateUserTx(context.Background(), in)
+		require.NoError(t, err)
+		require.NotEmpty(t, result.UserID)
+
+		var stored pgtype.Text
+		err = tx.QueryRow(context.Background(),
+			"SELECT username FROM users WHERE email = $1", in.Email).Scan(&stored)
+		require.NoError(t, err)
+		require.False(t, stored.Valid, "username column must be NULL when username is empty")
+	})
+
 	t.Run("token row: expires_at is within expected TTL window", func(t *testing.T) {
 		t.Parallel()
 		s, q, _ := txStores(t)

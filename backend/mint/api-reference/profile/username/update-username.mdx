@@ -1,0 +1,175 @@
+---
+title: "Update Username"
+description: "Sets or replaces the authenticated user's username."
+api: "PATCH http://localhost:8080/api/v1/profile/me/username"
+authMethod: "bearer"
+---
+
+<ParamField body="username" type="string" required>
+  The desired username.
+
+  <Expandable title="requirements">
+    - 3–30 characters
+    - Lowercase letters, digits, and underscores only (`[a-z0-9_]`)
+    - Must not start or end with an underscore
+    - Must not contain consecutive underscores
+  </Expandable>
+</ParamField>
+
+## Behaviour
+
+**Normalisation** — The server lowercases and trims whitespace from the value before persisting it. `Alice_Dev` is stored as `alice_dev`.
+
+**Same-username rejection** — Submitting the username the account already holds returns `422 same_username`. This prevents silent no-ops from consuming a rate-limit slot.
+
+**Uniqueness enforcement** — If another account claims the name between an availability check and this call, the request returns `409 username_taken`.
+
+**First-time set vs update** — This endpoint handles both cases. Accounts without a username can call it to set one for the first time; accounts with an existing username can call it to change it.
+
+## Rate Limiting
+
+**5 requests per 10 minutes per authenticated user**.
+
+This limit is keyed on the user ID from the access token, not the IP address. Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "username": "alice_codes"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "message": "username updated successfully"
+}
+```
+
+```json 409
+{
+  "code": "username_taken",
+  "message": "username is already taken"
+}
+```
+
+```json 422 Same username
+{
+  "code": "same_username",
+  "message": "new username is the same as the current username"
+}
+```
+
+```json 422 Validation error
+{
+  "code": "validation_error",
+  "message": "username must be at least 3 characters"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The username was set or updated successfully.
+
+    ```json
+    {
+      "message": "username updated successfully"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid JWT or the user ID could not be extracted from the token context.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing user id in context"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    The requested username is already registered to another account. Use [`GET /username/available`](/api-reference/profile/username/username-available) to check availability before calling this endpoint.
+
+    ```json
+    {
+      "code": "username_taken",
+      "message": "username is already taken"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="413 — Payload Too Large">
+    The request body exceeds the allowed limit.
+
+    ```json
+    {
+      "message": "request body too large"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    Returned for two distinct cases — check the `code` field for details.
+
+    **Same username** — The submitted username is identical to the one already stored on the account.
+
+    ```json
+    {
+      "code": "same_username",
+      "message": "new username is the same as the current username"
+    }
+    ```
+
+    **Validation failure** — The username did not pass format or length checks. Possible messages:
+
+    | Message | Cause |
+    |---|---|
+    | `username is required` | Field absent or blank after trimming |
+    | `username must be at least 3 characters` | Fewer than 3 characters after normalisation |
+    | `username must not exceed 30 characters` | More than 30 characters |
+    | `username may only contain lowercase letters, digits, and underscores` | Contains a disallowed character |
+    | `username must not start or end with an underscore, and must not contain consecutive underscores` | Format rule violated |
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "username must be at least 3 characters"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The authenticated user has exceeded 5 requests per 10 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred while updating the username.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

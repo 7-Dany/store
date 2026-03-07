@@ -130,15 +130,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "register"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
             }
           }
         },
@@ -195,15 +188,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         }
@@ -250,15 +236,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -299,15 +278,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -348,15 +320,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -407,15 +372,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -456,15 +414,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -505,15 +456,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -554,15 +498,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -603,15 +540,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -652,15 +582,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -715,15 +638,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -764,15 +680,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         }
@@ -822,15 +731,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -872,15 +774,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "login"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
             }
           }
         },
@@ -935,15 +830,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         }
@@ -1001,15 +889,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -1052,15 +933,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         }
@@ -1107,15 +981,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         },
@@ -1156,15 +1023,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         },
@@ -1205,15 +1065,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         },
@@ -1264,15 +1117,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         },
@@ -1326,15 +1172,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         },
@@ -1375,15 +1214,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         }
@@ -1440,15 +1272,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "register"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
             }
           }
         },
@@ -1489,15 +1314,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         },
@@ -1540,15 +1358,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         },
@@ -1600,15 +1411,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         }
@@ -1678,15 +1482,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -1736,15 +1533,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -1794,15 +1584,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -1852,15 +1635,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -1910,15 +1686,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -1931,7 +1700,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
                   "pm.test('Retry-After header present', () => pm.expect(pm.response.headers.get('Retry-After')).to.be.a('string').and.not.empty);"
                 ]
               }
@@ -1960,15 +1729,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
             }
           }
         },
@@ -2008,15 +1770,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         },
@@ -2056,15 +1811,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         },
@@ -2104,15 +1852,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         },
@@ -2125,7 +1866,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
                   "pm.test('Retry-After header present', () => pm.expect(pm.response.headers.get('Retry-After')).to.be.a('string').and.not.empty);"
                 ]
               }
@@ -2154,15 +1895,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/resend-verification",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "resend-verification"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "resend-verification"]
             }
           }
         }

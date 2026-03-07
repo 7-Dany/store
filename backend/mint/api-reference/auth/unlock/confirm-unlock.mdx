@@ -21,13 +21,13 @@ api: "POST http://localhost:8080/api/v1/auth/confirm-unlock"
 
 On success the account is fully unlocked and can log in immediately. The unlock code is consumed and cannot be reused.
 
-Too many wrong submissions will permanently invalidate the code — at that point even the correct code will be rejected. Request a new one via `POST /request-unlock`.
+Too many wrong submissions will permanently invalidate the code — at that point even the correct code will be rejected. Request a new one via [`POST /request-unlock`](/api-reference/auth/unlock/request-unlock).
 
 All failure responses look identical regardless of the cause, so the server does not reveal whether an account or code exists.
 
 ## Rate Limiting
 
-**3 requests per 10 minutes per IP address.** This limit is shared with `POST /request-unlock` — requests to either endpoint count against the same bucket.
+**3 requests per 10 minutes per IP address.** This limit is shared with [`POST /request-unlock`](/api-reference/auth/unlock/request-unlock) — requests to either endpoint count against the same bucket.
 
 Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
 

@@ -152,7 +152,7 @@
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
                   "const b = pm.response.json();",
-                  "pm.test('code is rate_limited', () => pm.expect(b.code).to.eql('rate_limited'));",
+                  "pm.test('code is too_many_requests', () => pm.expect(b.code).to.eql('too_many_requests'));",
                   "pm.test('Retry-After header present', () => pm.expect(pm.response.headers.get('Retry-After')).to.eql('20'));"
                 ]
               }

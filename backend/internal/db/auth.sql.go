@@ -15,6 +15,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const CheckUsernameAvailable = `-- name: CheckUsernameAvailable :one
+
+SELECT EXISTS(
+    SELECT 1
+    FROM users
+    WHERE username = $1
+) AS exists
+`
+
+// ── Username ───────────────────────────────────────────────────────────────────
+// Returns true when no row with username = @username exists in users.
+// No FOR UPDATE — this is a point-in-time availability check; the write path
+// enforces uniqueness via idx_users_username (23505 on conflict).
+func (q *Queries) CheckUsernameAvailable(ctx context.Context, username pgtype.Text) (bool, error) {
+	row := q.db.QueryRow(ctx, CheckUsernameAvailable, username)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const ConsumeEmailVerificationToken = `-- name: ConsumeEmailVerificationToken :execrows
 UPDATE one_time_tokens
 SET used_at = NOW()
@@ -366,6 +386,7 @@ INSERT INTO users (
     email,
     display_name,
     password_hash,
+    username,
     is_active,
     email_verified
 )
@@ -373,6 +394,7 @@ VALUES (
     $1,
     $2,
     $3,
+    $4,
     FALSE,
     FALSE
 )
@@ -389,6 +411,7 @@ type CreateUserParams struct {
 	Email        pgtype.Text `db:"email" json:"email"`
 	DisplayName  pgtype.Text `db:"display_name" json:"display_name"`
 	PasswordHash pgtype.Text `db:"password_hash" json:"password_hash"`
+	Username     pgtype.Text `db:"username" json:"username"`
 }
 
 type CreateUserRow struct {
@@ -402,7 +425,12 @@ type CreateUserRow struct {
 
 // ── Registration ────────────────────────────────────────────────────────────
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error) {
-	row := q.db.QueryRow(ctx, CreateUser, arg.Email, arg.DisplayName, arg.PasswordHash)
+	row := q.db.QueryRow(ctx, CreateUser,
+		arg.Email,
+		arg.DisplayName,
+		arg.PasswordHash,
+		arg.Username,
+	)
 	var i CreateUserRow
 	err := row.Scan(
 		&i.ID,
@@ -1126,6 +1154,30 @@ func (q *Queries) GetUserForUnlock(ctx context.Context, email pgtype.Text) (GetU
 	return i, err
 }
 
+const GetUserForUsernameUpdate = `-- name: GetUserForUsernameUpdate :one
+SELECT id, username
+FROM users
+WHERE id = $1::uuid
+LIMIT 1
+FOR UPDATE
+`
+
+type GetUserForUsernameUpdateRow struct {
+	ID       uuid.UUID   `db:"id" json:"id"`
+	Username pgtype.Text `db:"username" json:"username"`
+}
+
+// Returns id and current username for the calling user.
+// FOR UPDATE locks the row inside UpdateUsernameTx to prevent a concurrent
+// rename from racing past the same-username guard or producing stale audit
+// metadata (i.e. old_username in the audit log).
+func (q *Queries) GetUserForUsernameUpdate(ctx context.Context, userID pgtype.UUID) (GetUserForUsernameUpdateRow, error) {
+	row := q.db.QueryRow(ctx, GetUserForUsernameUpdate, userID)
+	var i GetUserForUsernameUpdateRow
+	err := row.Scan(&i.ID, &i.Username)
+	return i, err
+}
+
 const GetUserPasswordHash = `-- name: GetUserPasswordHash :one
 
 SELECT id, password_hash
@@ -1154,6 +1206,7 @@ SELECT
     id,
     email,
     display_name,
+    username,
     avatar_url,
     email_verified,
     is_active,
@@ -1170,6 +1223,7 @@ type GetUserProfileRow struct {
 	ID            uuid.UUID          `db:"id" json:"id"`
 	Email         pgtype.Text        `db:"email" json:"email"`
 	DisplayName   pgtype.Text        `db:"display_name" json:"display_name"`
+	Username      pgtype.Text        `db:"username" json:"username"`
 	AvatarURL     pgtype.Text        `db:"avatar_url" json:"avatar_url"`
 	EmailVerified bool               `db:"email_verified" json:"email_verified"`
 	IsActive      bool               `db:"is_active" json:"is_active"`
@@ -1187,6 +1241,7 @@ func (q *Queries) GetUserProfile(ctx context.Context, userID pgtype.UUID) (GetUs
 		&i.ID,
 		&i.Email,
 		&i.DisplayName,
+		&i.Username,
 		&i.AvatarURL,
 		&i.EmailVerified,
 		&i.IsActive,
@@ -1621,6 +1676,30 @@ type SetPasswordHashParams struct {
 // 0 rows affected, which the store maps to ErrPasswordAlreadySet.
 func (q *Queries) SetPasswordHash(ctx context.Context, arg SetPasswordHashParams) (int64, error) {
 	result, err := q.db.Exec(ctx, SetPasswordHash, arg.PasswordHash, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const SetUsername = `-- name: SetUsername :execrows
+UPDATE users
+SET username = $1
+WHERE id = $2::uuid
+`
+
+type SetUsernameParams struct {
+	Username pgtype.Text `db:"username" json:"username"`
+	UserID   pgtype.UUID `db:"user_id" json:"user_id"`
+}
+
+// Sets username for the user identified by id.
+// Returns rows affected so the store can distinguish:
+//
+//	23505 unique_violation on idx_users_username → ErrUsernameTaken
+//	rows == 0                                    → ErrUserNotFound
+func (q *Queries) SetUsername(ctx context.Context, arg SetUsernameParams) (int64, error) {
+	result, err := q.db.Exec(ctx, SetUsername, arg.Username, arg.UserID)
 	if err != nil {
 		return 0, err
 	}

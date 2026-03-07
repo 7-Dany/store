@@ -39,6 +39,7 @@ INSERT INTO users (
     email,
     display_name,
     password_hash,
+    username,
     is_active,
     email_verified
 )
@@ -46,6 +47,7 @@ VALUES (
     @email,
     @display_name,
     @password_hash,
+    sqlc.narg('username'),
     FALSE,
     FALSE
 )
@@ -896,6 +898,7 @@ SELECT
     id,
     email,
     display_name,
+    username,
     avatar_url,
     email_verified,
     is_active,
@@ -939,3 +942,38 @@ UPDATE users
 SET    password_hash = @password_hash
 WHERE  id            = @user_id::uuid
   AND  password_hash IS NULL;
+
+
+/* ── Username ─────────────────────────────────────────────────────────────────── */
+
+-- name: CheckUsernameAvailable :one
+-- Returns true when no row with username = @username exists in users.
+-- No FOR UPDATE — this is a point-in-time availability check; the write path
+-- enforces uniqueness via idx_users_username (23505 on conflict).
+SELECT EXISTS(
+    SELECT 1
+    FROM users
+    WHERE username = @username
+) AS exists;
+
+
+-- name: GetUserForUsernameUpdate :one
+-- Returns id and current username for the calling user.
+-- FOR UPDATE locks the row inside UpdateUsernameTx to prevent a concurrent
+-- rename from racing past the same-username guard or producing stale audit
+-- metadata (i.e. old_username in the audit log).
+SELECT id, username
+FROM users
+WHERE id = @user_id::uuid
+LIMIT 1
+FOR UPDATE;
+
+
+-- name: SetUsername :execrows
+-- Sets username for the user identified by id.
+-- Returns rows affected so the store can distinguish:
+--   23505 unique_violation on idx_users_username → ErrUsernameTaken
+--   rows == 0                                    → ErrUserNotFound
+UPDATE users
+SET username = @username
+WHERE id = @user_id::uuid;

@@ -6,13 +6,12 @@ import (
 	"testing"
 	"time"
 
-	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
-	authsharedtest "github.com/7-Dany/store/backend/internal/domain/auth/shared/testutil"
 	"github.com/7-Dany/store/backend/internal/domain/auth/login"
 	"github.com/7-Dany/store/backend/internal/domain/auth/password"
-	"github.com/7-Dany/store/backend/internal/domain/auth/profile"
 	"github.com/7-Dany/store/backend/internal/domain/auth/register"
 	"github.com/7-Dany/store/backend/internal/domain/auth/session"
+	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	authsharedtest "github.com/7-Dany/store/backend/internal/domain/auth/shared/testutil"
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
 	"github.com/7-Dany/store/backend/internal/domain/auth/verification"
 	"github.com/stretchr/testify/require"
@@ -90,33 +89,6 @@ func TestPasswordFakeStorer_IncrementAttemptsTx_NilFn_ReturnsNil(t *testing.T) {
 	t.Parallel()
 	f := &authsharedtest.PasswordFakeStorer{}
 	err := f.IncrementAttemptsTx(context.Background(), authshared.IncrementInput{})
-	require.NoError(t, err)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ProfileFakeStorer — nil-Fn default-return paths
-// ─────────────────────────────────────────────────────────────────────────────
-
-func TestProfileFakeStorer_GetUserProfile_NilFn_ReturnsZero(t *testing.T) {
-	t.Parallel()
-	f := &authsharedtest.ProfileFakeStorer{}
-	got, err := f.GetUserProfile(context.Background(), [16]byte{})
-	require.NoError(t, err)
-	require.Equal(t, profile.UserProfile{}, got)
-}
-
-func TestProfileFakeStorer_GetActiveSessions_NilFn_ReturnsNil(t *testing.T) {
-	t.Parallel()
-	f := &authsharedtest.ProfileFakeStorer{}
-	got, err := f.GetActiveSessions(context.Background(), [16]byte{})
-	require.NoError(t, err)
-	require.Nil(t, got)
-}
-
-func TestProfileFakeStorer_RevokeSessionTx_NilFn_ReturnsNil(t *testing.T) {
-	t.Parallel()
-	f := &authsharedtest.ProfileFakeStorer{}
-	err := f.RevokeSessionTx(context.Background(), [16]byte{}, [16]byte{}, "127.0.0.1", "agent")
 	require.NoError(t, err)
 }
 
@@ -391,41 +363,6 @@ func TestPasswordFakeStorer_IncrementAttemptsTx_FnCalled(t *testing.T) {
 		IncrementAttemptsTxFn: func(_ context.Context, _ authshared.IncrementInput) error { return sentinel },
 	}
 	require.ErrorIs(t, f.IncrementAttemptsTx(context.Background(), authshared.IncrementInput{}), sentinel)
-}
-
-// ── ProfileFakeStorer Fn paths ────────────────────────────────────────────────
-
-func TestProfileFakeStorer_GetUserProfile_FnCalled(t *testing.T) {
-	t.Parallel()
-	sentinel := errors.New("sentinel")
-	f := &authsharedtest.ProfileFakeStorer{
-		GetUserProfileFn: func(_ context.Context, _ [16]byte) (profile.UserProfile, error) {
-			return profile.UserProfile{}, sentinel
-		},
-	}
-	_, err := f.GetUserProfile(context.Background(), [16]byte{})
-	require.ErrorIs(t, err, sentinel)
-}
-
-func TestProfileFakeStorer_GetActiveSessions_FnCalled(t *testing.T) {
-	t.Parallel()
-	sentinel := errors.New("sentinel")
-	f := &authsharedtest.ProfileFakeStorer{
-		GetActiveSessionsFn: func(_ context.Context, _ [16]byte) ([]profile.ActiveSession, error) {
-			return nil, sentinel
-		},
-	}
-	_, err := f.GetActiveSessions(context.Background(), [16]byte{})
-	require.ErrorIs(t, err, sentinel)
-}
-
-func TestProfileFakeStorer_RevokeSessionTx_FnCalled(t *testing.T) {
-	t.Parallel()
-	sentinel := errors.New("sentinel")
-	f := &authsharedtest.ProfileFakeStorer{
-		RevokeSessionTxFn: func(_ context.Context, _, _ [16]byte, _, _ string) error { return sentinel },
-	}
-	require.ErrorIs(t, f.RevokeSessionTx(context.Background(), [16]byte{}, [16]byte{}, "", ""), sentinel)
 }
 
 func TestPasswordFakeStorer_GetUserPasswordHash_FnCalled(t *testing.T) {

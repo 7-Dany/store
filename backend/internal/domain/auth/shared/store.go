@@ -180,6 +180,16 @@ func (b BaseStore) IsDuplicateEmail(err error) bool {
 	return false
 }
 
+// IsDuplicateUsername reports whether err is a Postgres unique-violation (23505)
+// on the idx_users_username partial unique index (users.username WHERE username IS NOT NULL).
+func (b BaseStore) IsDuplicateUsername(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505" && pgErr.ConstraintName == "idx_users_username"
+	}
+	return false
+}
+
 // ── Shared transactional methods ────────────────────────────────────────────────
 
 // IncrementAttemptsTx records a failed OTP attempt and, if the threshold is

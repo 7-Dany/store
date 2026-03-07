@@ -24,11 +24,11 @@ api: "POST http://localhost:8080/api/v1/auth/verify-reset-code"
 
 ## Behaviour
 
-**Code is not consumed** — This endpoint validates the OTP without consuming it. The code remains valid and must be presented again (via the grant token) to `POST /reset-password`. This allows the frontend to confirm the code on screen 2 before asking the user to choose a new password on screen 3.
+**Code is not consumed** — This endpoint validates the OTP without consuming it. The code remains valid and must be presented again (via the grant token) to [`POST /reset-password`](/api-reference/auth/password/reset-password). This allows the frontend to confirm the code on screen 2 before asking the user to choose a new password on screen 3.
 
-**Grant token** — On success a short-lived grant token is returned. It encodes the verified email and code and is stored server-side with a 10-minute TTL. Pass it directly to `POST /reset-password` — it is single-use and cannot be reused after a successful password reset.
+**Grant token** — On success a short-lived grant token is returned. It encodes the verified email and code and is stored server-side with a 10-minute TTL. Pass it directly to [`POST /reset-password`](/api-reference/auth/password/reset-password) — it is single-use and cannot be reused after a successful password reset.
 
-**Attempt tracking** — A wrong code still increments the per-token attempt counter. Too many wrong attempts lock the code and return `429`, at which point the user must restart from `POST /forgot-password`.
+**Attempt tracking** — A wrong code still increments the per-token attempt counter. Too many wrong attempts lock the code and return `429`, at which point the user must restart from [`POST /forgot-password`](/api-reference/auth/password/forgot-password).
 
 ## Rate Limiting
 
@@ -138,8 +138,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
     ```json
     {
-      "code": "rate_limited",
-      "message": "too many requests"
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
     }
     ```
   </Accordion>

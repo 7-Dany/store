@@ -23,7 +23,7 @@ This flow covers lockouts caused by repeated failed login or verification attemp
 
 ## Rate Limiting
 
-**3 requests per 10 minutes per IP address.** This limit is shared with `POST /confirm-unlock` — requests to either endpoint count against the same bucket.
+**3 requests per 10 minutes per IP address.** This limit is shared with [`POST /confirm-unlock`](/api-reference/auth/unlock/confirm-unlock) — requests to either endpoint count against the same bucket.
 
 Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
 
@@ -51,8 +51,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
 ```json 429
 {
-  "code": "rate_limited",
-  "message": "too many requests"
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
 }
 ```
 </ResponseExample>
@@ -86,8 +86,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
     ```json
     {
-      "code": "rate_limited",
-      "message": "too many requests"
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
     }
     ```
   </Accordion>

@@ -60,7 +60,7 @@ func (l *UserRateLimiter) Limit(next http.Handler) http.Handler {
 		}
 		if !l.Allow(r.Context(), userID) {
 			w.Header().Set("Retry-After", l.retryAfterSecs)
-			respond.Error(w, http.StatusTooManyRequests, "rate_limited", "too many requests — please slow down")
+			respond.Error(w, http.StatusTooManyRequests, "too_many_requests", "too many requests — please slow down")
 			return
 		}
 		next.ServeHTTP(w, r)

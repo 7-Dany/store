@@ -9,6 +9,7 @@ type UserProfile struct {
 	ID            [16]byte
 	Email         string
 	DisplayName   string
+	Username      string // empty string when the user has no username set
 	AvatarURL     string
 	EmailVerified bool
 	IsActive      bool

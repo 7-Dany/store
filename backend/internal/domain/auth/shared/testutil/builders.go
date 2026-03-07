@@ -294,10 +294,7 @@ func CreateVerificationTokenCommitted(t *testing.T, pool *pgxpool.Pool, userID u
 		t.Fatalf("CreateVerificationTokenCommitted: %v", err)
 	}
 	t.Cleanup(func() {
-		_ = db.New(pool).DeleteOTPTokenByID(
-			context.Background(),
-			pgtype.UUID{Bytes: [16]byte(row.ID), Valid: true},
-		)
+		_ = db.New(pool).DeleteOTPTokenByID(context.Background(), pgtype.UUID{Bytes: [16]byte(row.ID), Valid: true})
 	})
 	return [16]byte(row.ID)
 }

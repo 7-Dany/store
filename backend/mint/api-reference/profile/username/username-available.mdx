@@ -1,0 +1,117 @@
+---
+title: "Check Username Availability"
+description: "Returns whether a given username is available to claim. Public endpoint — no authentication required."
+api: "GET http://localhost:8080/api/v1/profile/username/available"
+---
+
+<ParamField query="username" type="string" required>
+  The candidate username to check.
+
+  <Expandable title="requirements">
+    - 3–30 characters
+    - Lowercase letters, digits, and underscores only (`[a-z0-9_]`)
+    - Must not start or end with an underscore
+    - Must not contain consecutive underscores
+  </Expandable>
+</ParamField>
+
+## Behaviour
+
+**Always returns `200`** — On a valid username, `{"available": true}` or `{"available": false}` is returned regardless of whether the name is taken. The endpoint never distinguishes between a taken name and a non-existent one through HTTP status codes.
+
+**Point-in-time read** — Availability is checked at the moment of the request. A `true` response does not guarantee the username will still be free when [`PATCH /me/username`](/api-reference/profile/username/update-username) is called.
+
+**Normalisation** — The server lowercases and trims whitespace from the candidate before querying, so `Alice` and `alice` resolve to the same check.
+
+## Rate Limiting
+
+**20 requests per 1 minute per IP address**.
+
+This limit is designed to allow live frontend type-ahead without enabling bulk username enumeration. Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<ResponseExample>
+```json 200 Available
+{
+  "available": true
+}
+```
+
+```json 200 Taken
+{
+  "available": false
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "username must be at least 3 characters"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The username passed validation. The `available` field indicates whether the username is currently unclaimed.
+
+    ```json
+    {
+      "available": true
+    }
+    ```
+
+    | Field | Type | Notes |
+    |---|---|---|
+    | `available` | bool | `true` if unclaimed at time of request, `false` if already registered |
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    The username failed validation. Possible messages:
+
+    | Message | Cause |
+    |---|---|
+    | `username is required` | Query param absent or blank after trimming |
+    | `username must be at least 3 characters` | Fewer than 3 characters after normalisation |
+    | `username must not exceed 30 characters` | More than 30 characters |
+    | `username may only contain lowercase letters, digits, and underscores` | Contains a disallowed character |
+    | `username must not start or end with an underscore, and must not contain consecutive underscores` | Format rule violated |
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "username must be at least 3 characters"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 20 requests per 1 minute. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred while checking availability.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

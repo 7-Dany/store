@@ -95,6 +95,11 @@ type QuerierProxy struct {
 	FailGetUserForSetPassword bool
 	FailSetPasswordHash       bool
 
+	// ── username ─────────────────────────────────────────────────────────────
+	FailCheckUsernameAvailable   bool
+	FailGetUserForUsernameUpdate bool
+	FailSetUsername              bool
+
 	// ── verification ─────────────────────────────────────────────────────────
 	FailGetEmailVerificationToken           bool
 	FailConsumeEmailVerificationToken       bool
@@ -600,4 +605,31 @@ func (b *QuerierProxy) SetPasswordHash(ctx context.Context, arg db.SetPasswordHa
 		return 0, ErrProxy
 	}
 	return b.Base.SetPasswordHash(ctx, arg)
+}
+
+// ── CheckUsernameAvailable ────────────────────────────────────────────────────
+
+func (b *QuerierProxy) CheckUsernameAvailable(ctx context.Context, username pgtype.Text) (bool, error) {
+	if b.FailCheckUsernameAvailable {
+		return false, ErrProxy
+	}
+	return b.Base.CheckUsernameAvailable(ctx, username)
+}
+
+// ── GetUserForUsernameUpdate ──────────────────────────────────────────────────
+
+func (b *QuerierProxy) GetUserForUsernameUpdate(ctx context.Context, userID pgtype.UUID) (db.GetUserForUsernameUpdateRow, error) {
+	if b.FailGetUserForUsernameUpdate {
+		return db.GetUserForUsernameUpdateRow{}, ErrProxy
+	}
+	return b.Base.GetUserForUsernameUpdate(ctx, userID)
+}
+
+// ── SetUsername ───────────────────────────────────────────────────────────────
+
+func (b *QuerierProxy) SetUsername(ctx context.Context, arg db.SetUsernameParams) (int64, error) {
+	if b.FailSetUsername {
+		return 0, ErrProxy
+	}
+	return b.Base.SetUsername(ctx, arg)
 }

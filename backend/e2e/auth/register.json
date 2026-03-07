@@ -793,6 +793,269 @@
           }
         },
         {
+          "name": "username too short (< 3 chars) → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Alice\", \"email\": \"uname-short@e2e.test\", \"password\": \"P@ssw0rd1!\", \"username\": \"ab\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "username too long (> 30 chars) → 422",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.variables.set('uname_too_long', 'a'.repeat(31));"]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Alice\", \"email\": \"uname-long@e2e.test\", \"password\": \"P@ssw0rd1!\", \"username\": \"{{uname_too_long}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "username invalid chars (symbol !) → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Alice\", \"email\": \"uname-badchar@e2e.test\", \"password\": \"P@ssw0rd1!\", \"username\": \"alice!\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "username invalid chars (hyphen) → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Alice\", \"email\": \"uname-hyphen@e2e.test\", \"password\": \"P@ssw0rd1!\", \"username\": \"alice-bob\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "username leading underscore → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Alice\", \"email\": \"uname-lead@e2e.test\", \"password\": \"P@ssw0rd1!\", \"username\": \"_alice\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "username trailing underscore → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Alice\", \"email\": \"uname-trail@e2e.test\", \"password\": \"P@ssw0rd1!\", \"username\": \"alice_\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "username consecutive underscores → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Alice\", \"email\": \"uname-dunder@e2e.test\", \"password\": \"P@ssw0rd1!\", \"username\": \"alice__bob\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "username whitespace-only → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Alice\", \"email\": \"uname-wsonly@e2e.test\", \"password\": \"P@ssw0rd1!\", \"username\": \"   \"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
           "name": "body > 1 MiB → 413",
           "event": [
             {
@@ -1000,6 +1263,90 @@
           }
         },
         {
+          "name": "valid username at registration → 201",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = 'uname-happy-' + Date.now() + '@e2e.test';",
+                  "const uname = 'user' + Date.now().toString().slice(-6);",
+                  "pm.collectionVariables.set('reg_happy_email_with_uname', email);",
+                  "pm.collectionVariables.set('reg_happy_username', uname);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Alice\", \"email\": \"{{reg_happy_email_with_uname}}\", \"password\": \"P@ssw0rd1!\", \"username\": \"{{reg_happy_username}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "uppercase username → 201 (normalised to lowercase)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('upper_uname_email', 'uname-upper-' + Date.now() + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Alice\", \"email\": \"{{upper_uname_email}}\", \"password\": \"P@ssw0rd1!\", \"username\": \"ALICE999\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
           "name": "unicode domain email (IDNA input) → 201",
           "event": [
             {
@@ -1111,6 +1458,49 @@
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"Alice Upper\", \"email\": \"{{dup_upper_email}}\", \"password\": \"P@ssw0rd1!\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "duplicate username → 409 username_taken",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('uname_dup_email', 'uname-dup-' + Date.now() + '@e2e.test');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "const b = pm.response.json();",
+                  "pm.test('code is username_taken', () => pm.expect(b.code).to.eql('username_taken'));",
+                  "pm.test('message field present', () => pm.expect(b.message).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Bob\", \"email\": \"{{uname_dup_email}}\", \"password\": \"P@ssw0rd1!\", \"username\": \"{{reg_happy_username}}\"}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
@@ -1332,7 +1722,7 @@
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
                   "const b = pm.response.json();",
-                  "pm.test('code is rate_limited', () => pm.expect(b.code).to.eql('rate_limited'));",
+                  "pm.test('code is too_many_requests', () => pm.expect(b.code).to.eql('too_many_requests'));",
                   "pm.test('Retry-After header present', () => pm.expect(pm.response.headers.get('Retry-After')).to.eql('120'));"
                 ]
               }
@@ -1424,6 +1814,16 @@
       "key": "_xff",
       "value": "",
       "description": "Current X-Forwarded-For value. Set to a unique IP by the collection prerequest; overridden to 127.0.0.1 by the rate-limiting folder prerequest."
+    },
+    {
+      "key": "reg_happy_username",
+      "value": "",
+      "description": "Set by the happy-path 'valid username at registration' test. Reused by the conflict folder's username_taken test."
+    },
+    {
+      "key": "reg_happy_email_with_uname",
+      "value": "",
+      "description": "Email of the user registered with a username in the happy-path folder."
     }
   ]
 }

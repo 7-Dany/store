@@ -29,6 +29,17 @@ api: "POST http://localhost:8080/api/v1/auth/register"
   </Expandable>
 </ParamField>
 
+<ParamField body="username" type="string">
+  An optional unique handle for your account. Can be set or changed later via [`PATCH /me/username`](/api-reference/profile/username/update-username).
+
+  <Expandable title="constraints">
+    - Length: 3–30 characters
+    - Only lowercase letters, digits, and underscores (`[a-z0-9_]`)
+    - Must not start or end with an underscore
+    - Must not contain consecutive underscores (`__`)
+  </Expandable>
+</ParamField>
+
 ## Rate Limiting
 
 **5 requests per 10 minutes per IP address**.
@@ -36,7 +47,16 @@ api: "POST http://localhost:8080/api/v1/auth/register"
 Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
 
 <RequestExample>
-```json Example
+```json With username
+{
+  "display_name": "Alice",
+  "email": "alice@example.com",
+  "password": "P@ssw0rd1!",
+  "username": "alice_codes"
+}
+```
+
+```json Without username
 {
   "display_name": "Alice",
   "email": "alice@example.com",
@@ -59,6 +79,13 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 }
 ```
 
+```json 409
+{
+  "code": "username_taken",
+  "message": "this username is already taken"
+}
+```
+
 ```json 422
 {
   "code": "validation_error",
@@ -68,8 +95,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
 ```json 429
 {
-  "code": "rate_limited",
-  "message": "too many requests"
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
 }
 ```
 
@@ -95,14 +122,16 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="409 — Conflict">
-    An account with a matching email already exists. Email comparison is case-insensitive — `Alice@example.com` and `alice@example.com` are treated as the same address.
+    Either the email or the username is already registered.
 
     ```json
-    {
-      "code": "email_taken",
-      "message": "an account with that email already exists"
-    }
+    { "code": "email_taken", "message": "an account with that email already exists" }
     ```
+    ```json
+    { "code": "username_taken", "message": "this username is already taken" }
+    ```
+
+    Email comparison is case-insensitive — `Alice@example.com` and `alice@example.com` are treated as the same address.
   </Accordion>
 
   <Accordion title="422 — Validation Error">
@@ -121,8 +150,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
     ```json
     {
-      "code": "rate_limited",
-      "message": "too many requests"
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
     }
     ```
   </Accordion>

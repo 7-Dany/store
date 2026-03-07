@@ -2,6 +2,7 @@ package register
 
 import (
 	"net/mail"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -23,9 +24,10 @@ const (
 //
 // Normalisation: display_name is space-trimmed; email is lowercased, trimmed,
 // and its domain is converted to ASCII (IDNA). Password is intentionally NOT
-// trimmed — whitespace is a valid part of a password.
+// trimmed — whitespace is a valid part of a password. Username, if provided,
+// is lowercased and trimmed.
 //
-// Validation order: display_name → email → password.
+// Validation order: display_name → email → password → username (optional).
 // Returns the first authshared.ErrXxx sentinel encountered.
 func validateAndNormalise(req *registerRequest) error {
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
@@ -89,5 +91,43 @@ func validateAndNormalise(req *registerRequest) error {
 		return authshared.ErrEmailTooLong
 	}
 
-	return authshared.ValidatePassword(req.Password)
+	if err := authshared.ValidatePassword(req.Password); err != nil {
+		return err
+	}
+
+	// Username is optional at registration. If provided, normalise and validate it.
+	if req.Username != "" {
+		norm, err := normaliseAndValidateUsername(req.Username)
+		if err != nil {
+			return err
+		}
+		req.Username = norm
+	}
+	return nil
+}
+
+// usernameCharsetRe mirrors the rule in profile/username — duplicated here to
+// avoid a cross-domain import.
+var usernameCharsetRe = regexp.MustCompile(`^[a-z0-9_]+$`)
+
+// normaliseAndValidateUsername trims, lowercases, and validates a username.
+// Returns the normalised value or a sentinel error.
+func normaliseAndValidateUsername(s string) (string, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if len(s) == 0 {
+		return "", authshared.ErrUsernameEmpty
+	}
+	if len(s) < 3 {
+		return "", authshared.ErrUsernameTooShort
+	}
+	if len(s) > 30 {
+		return "", authshared.ErrUsernameTooLong
+	}
+	if !usernameCharsetRe.MatchString(s) {
+		return "", authshared.ErrUsernameInvalidChars
+	}
+	if s[0] == '_' || s[len(s)-1] == '_' || strings.Contains(s, "__") {
+		return "", authshared.ErrUsernameInvalidFormat
+	}
+	return s, nil
 }

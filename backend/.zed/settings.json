@@ -2,8 +2,8 @@
   "lsp": {
     "gopls": {
       "initialization_options": {
-        "buildFlags": ["-tags=integration_test"]
-      }
-    }
-  }
+        "buildFlags": ["-tags=integration_test"],
+      },
+    },
+  },
 }

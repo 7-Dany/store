@@ -5,4 +5,5 @@ type registerRequest struct {
 	DisplayName string `json:"display_name"`
 	Email       string `json:"email"`
 	Password    string `json:"password"`
+	Username    string `json:"username"` // optional; validated and stored if non-empty
 }

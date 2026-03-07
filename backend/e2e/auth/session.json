@@ -325,7 +325,10 @@
             "method": "POST",
             "header": [
               { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              { "key": "Cookie", "value": "refresh_token={{sss_refresh_token_a}}" }
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{sss_refresh_token_a}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/auth/refresh",
@@ -364,9 +367,15 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{sss_new_access_token_a}}" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sss_new_access_token_a}}"
+              },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              { "key": "Cookie", "value": "refresh_token={{sss_new_refresh_token_a}}" }
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{sss_new_refresh_token_a}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/auth/logout",
@@ -400,13 +409,16 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{sss_new_access_token_a}}" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sss_new_access_token_a}}"
+              },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/me",
+              "raw": "{{base_url}}/api/v1/profile/me",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "me"]
+              "path": ["api", "v1", "profile", "me"]
             }
           }
         },
@@ -432,7 +444,10 @@
             "method": "POST",
             "header": [
               { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              { "key": "Cookie", "value": "refresh_token={{sss_refresh_token_b}}" }
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{sss_refresh_token_b}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/auth/refresh",
@@ -503,9 +518,15 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{sss_access_token_c}}" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{sss_access_token_c}}"
+              },
               { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              { "key": "Cookie", "value": "refresh_token={{sss_refresh_token_c}}" }
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{sss_refresh_token_c}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/auth/logout",
@@ -547,7 +568,10 @@
             "method": "POST",
             "header": [
               { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              { "key": "Cookie", "value": "refresh_token={{sss_refresh_token_c}}" }
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{sss_refresh_token_c}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/auth/refresh",
@@ -631,7 +655,10 @@
             "method": "POST",
             "header": [
               { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              { "key": "Cookie", "value": "refresh_token={{sss_reuse_refresh_d}}" }
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{sss_reuse_refresh_d}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/auth/refresh",
@@ -670,7 +697,10 @@
             "method": "POST",
             "header": [
               { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              { "key": "Cookie", "value": "refresh_token={{sss_reuse_refresh_d}}" }
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{sss_reuse_refresh_d}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/auth/refresh",
@@ -704,7 +734,10 @@
             "method": "POST",
             "header": [
               { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              { "key": "Cookie", "value": "refresh_token={{sss_reuse_refresh_e}}" }
+              {
+                "key": "Cookie",
+                "value": "refresh_token={{sss_reuse_refresh_e}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/auth/refresh",
@@ -717,7 +750,7 @@
     },
     {
       "name": "rate-limiting",
-      "description": "Verifies both rate limiters by pinning all requests to a single IP (127.0.0.1).\nRequires Redis flushed (make _e2e-kv-clean) before this folder runs \u2014 enforced by make e2e-auth.\n\nPOST /refresh \u2014 rfsh:ip: limiter: burst=5, rate=5/15min, key prefix rfsh:ip:\n  Warmup 1\u20135 consume the bucket. The 6th request returns 429 rate_limited.\n  Retry-After = ceil(1 / (5/900)) = 180 s.\n  Warmup requests carry no valid cookie \u2014 the rate limiter is middleware that\n  fires before token validation, so any request triggers a slot deduction.\n\nPOST /logout \u2014 lgout:ip: limiter: burst=5, rate=5/1min, key prefix lgout:ip:\n  Warmup 1\u20135 consume the bucket. The 6th request returns 429 rate_limited.\n  Retry-After = ceil(1 / (5/60)) = 12 s.\n  Warmup requests carry no valid cookie \u2014 logout returns 204 for missing/invalid\n  tokens (best-effort design) so the rate limiter slot still fires.\n\nThe two limiters use different bucket prefixes (rfsh:ip: vs lgout:ip:) and do not\ninterfere with each other within the same folder run.",
+      "description": "Verifies both rate limiters by pinning all requests to a single IP (127.0.0.1).\nRequires Redis flushed (make _e2e-kv-clean) before this folder runs \u2014 enforced by make e2e-auth.\n\nPOST /refresh \u2014 rfsh:ip: limiter: burst=5, rate=5/15min, key prefix rfsh:ip:\n  Warmup 1\u20135 consume the bucket. The 6th request returns 429 too_many_requests.\n  Retry-After = ceil(1 / (5/900)) = 180 s.\n  Warmup requests carry no valid cookie \u2014 the rate limiter is middleware that\n  fires before token validation, so any request triggers a slot deduction.\n\nPOST /logout \u2014 lgout:ip: limiter: burst=5, rate=5/1min, key prefix lgout:ip:\n  Warmup 1\u20135 consume the bucket. The 6th request returns 429 too_many_requests.\n  Retry-After = ceil(1 / (5/60)) = 12 s.\n  Warmup requests carry no valid cookie \u2014 logout returns 204 for missing/invalid\n  tokens (best-effort design) so the rate limiter slot still fires.\n\nThe two limiters use different bucket prefixes (rfsh:ip: vs lgout:ip:) and do not\ninterfere with each other within the same folder run.",
       "event": [
         {
           "listen": "prerequest",
@@ -734,38 +767,94 @@
       "item": [
         {
           "name": "refresh warmup 1/5 \u2014 consume rfsh:ip: slot (\u2192 not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (rfsh:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (rfsh:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "refresh"]
+            }
           }
         },
         {
           "name": "refresh warmup 2/5 \u2014 consume rfsh:ip: slot (\u2192 not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (rfsh:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (rfsh:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "refresh"]
+            }
           }
         },
         {
           "name": "refresh warmup 3/5 \u2014 consume rfsh:ip: slot (\u2192 not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (rfsh:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (rfsh:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "refresh"]
+            }
           }
         },
         {
           "name": "refresh warmup 4/5 \u2014 consume rfsh:ip: slot (\u2192 not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (rfsh:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (rfsh:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "refresh"]
+            }
           }
         },
         {
@@ -784,7 +873,11 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "refresh"]
+            }
           }
         },
         {
@@ -796,7 +889,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
                   "pm.test('Retry-After is 180 (ceil(1 / (5/900)) = 180 s)', () => {",
                   "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('180');",
                   "});"
@@ -807,43 +900,103 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/refresh",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "refresh"]
+            }
           }
         },
         {
           "name": "logout warmup 1/5 \u2014 consume lgout:ip: slot (\u2192 not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (lgout:ip: slot 1/5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (lgout:ip: slot 1/5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "logout"]
+            }
           }
         },
         {
           "name": "logout warmup 2/5 \u2014 consume lgout:ip: slot (\u2192 not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (lgout:ip: slot 2/5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (lgout:ip: slot 2/5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "logout"]
+            }
           }
         },
         {
           "name": "logout warmup 3/5 \u2014 consume lgout:ip: slot (\u2192 not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (lgout:ip: slot 3/5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (lgout:ip: slot 3/5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "logout"]
+            }
           }
         },
         {
           "name": "logout warmup 4/5 \u2014 consume lgout:ip: slot (\u2192 not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (lgout:ip: slot 4/5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (lgout:ip: slot 4/5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "logout"]
+            }
           }
         },
         {
@@ -862,7 +1015,11 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "logout"]
+            }
           }
         },
         {
@@ -874,7 +1031,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
                   "pm.test('Retry-After is 12 (ceil(1 / (5/60)) = 12 s)', () => {",
                   "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('12');",
                   "});"
@@ -885,7 +1042,11 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/logout",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "logout"]
+            }
           }
         }
       ]

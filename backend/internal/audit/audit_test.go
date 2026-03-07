@@ -121,6 +121,7 @@ func TestEventConstants_ExactValues(t *testing.T) {
 		{audit.EventPasswordResetCodeVerified, "password_reset_code_verified"},
 		{audit.EventProfileUpdated, "profile_updated"},
 		{audit.EventPasswordSet, "password_set"},
+		{audit.EventUsernameChanged, "username_changed"},
 	}
 
 	// Enforce exhaustiveness: AllEvents() must contain exactly as many entries

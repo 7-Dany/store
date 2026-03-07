@@ -10,7 +10,6 @@ import (
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/domain/auth/login"
 	"github.com/7-Dany/store/backend/internal/domain/auth/password"
-	"github.com/7-Dany/store/backend/internal/domain/auth/profile"
 	"github.com/7-Dany/store/backend/internal/domain/auth/register"
 	"github.com/7-Dany/store/backend/internal/domain/auth/session"
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
@@ -34,7 +33,6 @@ func Routes(ctx context.Context, deps *app.Deps) *chi.Mux {
 	session.Routes(ctx, r, deps)
 	unlock.Routes(ctx, r, deps)
 	password.Routes(ctx, r, deps)
-	profile.Routes(ctx, r, deps)
 
 	return r
 }

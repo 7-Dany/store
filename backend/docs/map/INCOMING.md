@@ -23,28 +23,27 @@ internal/domain/
 ├── auth/
 │   │
 │   └── oauth/
-│       ├── google/    ← GET     /oauth/google              §D-1  (new package, external OIDC)
+│     ├── google/    ← GET     /oauth/google              §D-1  (new package, external OIDC)
 │       │              ← GET     /oauth/google/callback
 │       │              ← POST    /oauth/google/link
 │       │              ← DELETE  /oauth/google/unlink
-│       └── telegram/  ← POST    /oauth/telegram/callback §D-2  (new package, HMAC-only)
+│       └── telegram/  ← POST    /oauth/telegram/callback   §D-2  (new package, HMAC-only)
 │                      ← POST    /oauth/telegram/link
 │                      ← DELETE  /oauth/telegram/unlink
 │
 │   ├── profile/       
-│   │   │
-│   │   ├── username/   ← GET    /username/available         §B-1  (new package, no auth)
+│   │   ├── username/   ← GET    /username/available        §B-1  (new package, no auth)
 │   │   │               ← PATCH  /me/username
-│   │   ├── me/         ← GET    /me/identities              §E-1  (extends existing, requires OAuth)
-│   │   │
+│   │   ├── me/         ← GET    /me/identities             §E-1  (extends existing, requires OAuth)
 │   │   ├── email/      ← POST   /me/email/request-change   §B-2  (new package)
 │   │   │               ← POST   /me/email/confirm-change
-│   │   ├── profile/    ← DELETE /me                      §B-3  (extends existing, schema decision)
-│   │   │
-│   │   └── magiclink/  ← GET    /magic-link/verify          §F-5  (new package, paired with admin recovery)
-│
-└── admin/              ← all admin routes                §F-*  (new top-level domain)
-    ├── bootstrap/      ← POST   /owner/bootstrap           §C-1  (new package, needs roles seed)     
+│   │   ├── profile/    ← DELETE /me                        §B-3  (extends existing, schema decision)
+│   │   └── magiclink/  ← GET    /magic-link/verify         §F-5  (new package, paired with admin recovery)
+│   │
+├── owner/              ← all owner routes                  §F-*  (new top-level domain)
+│   ├── bootstrap/      ← POST   /owner/bootstrap           §C-1  (new package, needs roles seed)
+│   │
+└── admin/              ← all admin routes                  §F-*  (new top-level domain)
     ├── users/
     ├── audit/
     ├── sessions/
@@ -79,33 +78,6 @@ The following additions are required before implementing any Group B routes:
 - [X] `users`: decide on and add `deleted_at TIMESTAMPTZ` — see §B-3 for trade-offs
 - [X] `roles` seed: ensure the owner role (`is_owner_role = TRUE`) is present before
       §C-1 bootstrap route can work
-
----
-
-### §B-1 — Username Management
-
-New package: `internal/domain/profile/username/`
-
-#### Availability check
-`GET /api/v1/profile/username/available?username=X`
-- [ ] Public (no auth required) — used by frontend live-validation
-- [ ] Returns `{"available": true|false}` — always 200; never reveal account existence
-      through different response shapes
-- [ ] Normalise input (trim, lowercase) the same way the DB stores it before checking
-- [ ] Validate: not empty, same length/charset rules as registration
-- [ ] Rate-limit: 20 req / 1 min per IP (key `unav:ip:`)
-
-#### Update username (requires auth)
-`PATCH /api/v1/profile/me/username`
-- [ ] Requires valid JWT
-- [ ] Body: `{ "username": "..." }`
-- [ ] Validate format (same length/charset rules as registration)
-- [ ] Check availability; return 409 `username_taken` if already in use
-- [ ] Atomically update `username` on `users` with a re-check inside the DB transaction
-- [ ] Guard: no-op if the new username is identical to the current one (422 `same_username`)
-- [ ] Audit row: `username_changed` (old + new username in `metadata`)
-- [ ] No session/token revocation (username is not in the JWT payload)
-- [ ] Rate-limit: 5 req / 10 min per user (key `uchg:usr:`)
 
 ---
 
@@ -184,9 +156,9 @@ ownership of the **new** address before the change is applied.
 
 ### §C-1 — Owner Bootstrap
 
-New package: `internal/domain/auth/bootstrap/`
+New package: `internal/domain/admin/bootstrap/`
 
-`POST /api/v1/auth/owner/bootstrap`
+`POST /api/v1/owner/bootstrap`
 - [ ] **Environment-gated**: only callable when `OWNER_BOOTSTRAP_SECRET` is set;
       returns 404 when absent
 - [ ] Body: `{ "secret": "...", "email": "...", "password": "...", "display_name": "..." }`

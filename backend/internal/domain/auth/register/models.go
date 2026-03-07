@@ -13,6 +13,7 @@ type RegisterInput struct {
 	DisplayName string
 	Email       string
 	Password    string
+	Username    string // optional; empty string means no username at registration time
 	IPAddress   string
 	UserAgent   string
 }
@@ -33,6 +34,7 @@ type CreateUserInput struct {
 	DisplayName  string
 	Email        string
 	PasswordHash string
+	Username     string // optional; empty string stores NULL in the username column
 	CodeHash     string
 	TTL          time.Duration
 	IPAddress    string

@@ -1435,7 +1435,7 @@
                   "// Three slots consumed across both endpoints; the 4th request must be",
                   "// rate-limited regardless of which endpoint it targets.",
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
                   "pm.test('Retry-After header is present', () => pm.expect(pm.response.headers.get('Retry-After')).to.be.a('string').and.not.empty);"
                 ]
               }

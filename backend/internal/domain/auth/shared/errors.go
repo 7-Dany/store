@@ -42,6 +42,26 @@ var ErrAccountLocked = errors.New("account locked — contact support")
 // ErrEmailTaken is returned when the requested email address is already registered.
 var ErrEmailTaken = errors.New("email address is already registered")
 
+// ErrUsernameTaken is returned when the requested username is already registered.
+var ErrUsernameTaken = errors.New("username is already taken")
+
+// ErrUsernameEmpty is returned when the username field is absent or blank after trimming.
+var ErrUsernameEmpty = errors.New("username is required")
+
+// ErrUsernameTooShort is returned when the username is shorter than 3 characters.
+var ErrUsernameTooShort = errors.New("username must be at least 3 characters")
+
+// ErrUsernameTooLong is returned when the username exceeds 30 characters.
+var ErrUsernameTooLong = errors.New("username must not exceed 30 characters")
+
+// ErrUsernameInvalidChars is returned when the username contains characters
+// outside the allowed set [a-z0-9_].
+var ErrUsernameInvalidChars = errors.New("username may only contain lowercase letters, digits, and underscores")
+
+// ErrUsernameInvalidFormat is returned when the username starts or ends with an
+// underscore, or contains consecutive underscores.
+var ErrUsernameInvalidFormat = errors.New("username must not start or end with an underscore, and must not contain consecutive underscores")
+
 // ErrResetTokenCooldown is returned by store.RequestPasswordResetTx when a
 // partial-unique-index violation signals that an active password-reset token
 // already exists for this user. The service treats this as a silent no-op

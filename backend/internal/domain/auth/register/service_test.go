@@ -209,6 +209,96 @@ func TestRegister_ErrEmailTaken_AuditWriteFailure(t *testing.T) {
 		"audit write failure must not mask ErrEmailTaken")
 }
 
+// TestRegister_UsernamePassedThrough asserts that a non-empty username in
+// RegisterInput is forwarded verbatim to CreateUserInput.
+func TestRegister_UsernamePassedThrough(t *testing.T) {
+	t.Parallel()
+
+	var capturedInput register.CreateUserInput
+	store := &authsharedtest.RegisterFakeStorer{
+		CreateUserTxFn: func(_ context.Context, in register.CreateUserInput) (register.CreatedUser, error) {
+			capturedInput = in
+			return register.CreatedUser{UserID: "user-1", Email: in.Email}, nil
+		},
+	}
+
+	svc := register.NewService(store)
+	_, err := svc.Register(context.Background(), register.RegisterInput{
+		DisplayName: "Alice",
+		Email:       "alice@example.com",
+		Password:    "P@ssw0rd!1",
+		Username:    "alice123",
+		IPAddress:   "127.0.0.1",
+		UserAgent:   "test-agent",
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, "alice123", capturedInput.Username,
+		"Username must be forwarded from RegisterInput to CreateUserInput unchanged")
+}
+
+// TestRegister_EmptyUsername_PassedThrough asserts that an empty username in
+// RegisterInput (the optional-omitted case) is forwarded as an empty string to
+// CreateUserInput, which the store will persist as NULL.
+func TestRegister_EmptyUsername_PassedThrough(t *testing.T) {
+	t.Parallel()
+
+	var capturedInput register.CreateUserInput
+	store := &authsharedtest.RegisterFakeStorer{
+		CreateUserTxFn: func(_ context.Context, in register.CreateUserInput) (register.CreatedUser, error) {
+			capturedInput = in
+			return register.CreatedUser{UserID: "user-1", Email: in.Email}, nil
+		},
+	}
+
+	svc := register.NewService(store)
+	_, err := svc.Register(context.Background(), register.RegisterInput{
+		DisplayName: "Alice",
+		Email:       "alice@example.com",
+		Password:    "P@ssw0rd!1",
+		Username:    "", // omitted
+		IPAddress:   "127.0.0.1",
+		UserAgent:   "test-agent",
+	})
+
+	require.NoError(t, err)
+	require.Empty(t, capturedInput.Username,
+		"empty Username must be forwarded as empty string so the store can persist NULL")
+}
+
+// TestRegister_ErrUsernameTaken_PropagatedUnchanged asserts that ErrUsernameTaken
+// from CreateUserTx is propagated unchanged to the caller without triggering an
+// audit write (audit is only written on ErrEmailTaken).
+func TestRegister_ErrUsernameTaken_PropagatedUnchanged(t *testing.T) {
+	t.Parallel()
+
+	var auditCalled bool
+	store := &authsharedtest.RegisterFakeStorer{
+		CreateUserTxFn: func(_ context.Context, _ register.CreateUserInput) (register.CreatedUser, error) {
+			return register.CreatedUser{}, authshared.ErrUsernameTaken
+		},
+		WriteRegisterFailedAuditTxFn: func(_ context.Context, _ [16]byte, _, _ string) error {
+			auditCalled = true
+			return nil
+		},
+	}
+
+	svc := register.NewService(store)
+	_, err := svc.Register(context.Background(), register.RegisterInput{
+		DisplayName: "Alice",
+		Email:       "alice@example.com",
+		Password:    "P@ssw0rd!1",
+		Username:    "alice123",
+		IPAddress:   "127.0.0.1",
+		UserAgent:   "test-agent",
+	})
+
+	require.ErrorIs(t, err, authshared.ErrUsernameTaken,
+		"ErrUsernameTaken must propagate unchanged so the handler can map it to 409")
+	require.False(t, auditCalled,
+		"WriteRegisterFailedAuditTx must NOT be called for ErrUsernameTaken — audit is only written for ErrEmailTaken")
+}
+
 // TestRegister_TimingInvariant asserts that HashPassword is called before
 // CreateUserTx on both the success path and the duplicate-email path.
 // The spy records call order; CreateUserTx executes after HashPassword iff

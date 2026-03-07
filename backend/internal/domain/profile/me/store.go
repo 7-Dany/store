@@ -88,6 +88,7 @@ func (s *Store) GetUserProfile(ctx context.Context, userID [16]byte) (UserProfil
 		ID:            s.UUIDToBytes(row.ID),
 		Email:         row.Email.String,
 		DisplayName:   row.DisplayName.String,
+		Username:      row.Username.String,
 		AvatarURL:     row.AvatarURL.String,
 		EmailVerified: row.EmailVerified,
 		IsActive:      row.IsActive,

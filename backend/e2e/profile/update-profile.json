@@ -29,74 +29,137 @@
           "event": [
             {
               "listen": "prerequest",
-              "script": { "type": "text/javascript", "exec": [
-                "const email = pm.environment.get('gmail_test_email');",
-                "if (!email) { console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.'); }",
-                "pm.collectionVariables.set('prof_email', email);",
-                "pm.collectionVariables.set('prof_password', 'P@ssw0rd1!');"
-              ]}
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) { console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.'); }",
+                  "pm.collectionVariables.set('prof_email', email);",
+                  "pm.collectionVariables.set('prof_password', 'P@ssw0rd1!');"
+                ]
+              }
             },
             {
               "listen": "test",
-              "script": { "type": "text/javascript", "exec": [
-                "pm.test('status is 201', () => pm.response.to.have.status(201));",
-                "pm.test('message field present', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
-                "const token = pm.variables.get('gmail_access_token');",
-                "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
-                "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
-                "const start = Date.now(); while (Date.now() - start < 8000) {}",
-                "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
-                "pm.sendRequest({ url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3', method: 'GET', header: { Authorization: 'Bearer ' + token } }, (err, res) => {",
-                "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
-                "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
-                "    const msgs = res.json().messages;",
-                "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching verification email found in Gmail.'); return; }",
-                "    pm.sendRequest({ url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full', method: 'GET', header: { Authorization: 'Bearer ' + token } }, (err2, res2) => {",
-                "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
-                "        const msg = res2.json(); let body = '';",
-                "        const parts = msg.payload && msg.payload.parts;",
-                "        if (parts && parts.length) { const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html'); if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/')); }",
-                "        else if (msg.payload && msg.payload.body && msg.payload.body.data) { body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/')); }",
-                "        if (!body) { console.warn('[WARN] Could not decode verification email body.'); return; }",
-                "        const match = body.match(/\\b(\\d{6})\\b/);",
-                "        if (!match) { console.warn('[WARN] No 6-digit OTP found in verification email.'); return; }",
-                "        pm.collectionVariables.set('prof_vfy_code', match[1]);",
-                "        console.log('[INFO] Verification OTP stored in prof_vfy_code:', match[1]);",
-                "    });",
-                "});"
-              ]}
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
+                  "const start = Date.now(); while (Date.now() - start < 8000) {}",
+                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "pm.sendRequest({ url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3', method: 'GET', header: { Authorization: 'Bearer ' + token } }, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching verification email found in Gmail.'); return; }",
+                  "    pm.sendRequest({ url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full', method: 'GET', header: { Authorization: 'Bearer ' + token } }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json(); let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) { const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html'); if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/')); }",
+                  "        else if (msg.payload && msg.payload.body && msg.payload.body.data) { body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/')); }",
+                  "        if (!body) { console.warn('[WARN] Could not decode verification email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in verification email.'); return; }",
+                  "        pm.collectionVariables.set('prof_vfy_code', match[1]);",
+                  "        console.log('[INFO] Verification OTP stored in prof_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
             }
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "body": { "mode": "raw", "raw": "{\"display_name\": \"ProfSetup\", \"email\": \"{{prof_email}}\", \"password\": \"{{prof_password}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/register", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "register"] }
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"ProfSetup\", \"email\": \"{{prof_email}}\", \"password\": \"{{prof_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
           }
         },
         {
           "name": "POST /verify-email → 200 (consume verification OTP)",
           "event": [
-            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["const code = pm.collectionVariables.get('prof_vfy_code'); if (!code) { console.error('[ERROR] prof_vfy_code is empty.'); }"] } },
-            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 200', () => pm.response.to.have.status(200)); pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"] } }
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('prof_vfy_code'); if (!code) { console.error('[ERROR] prof_vfy_code is empty.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200)); pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "body": { "mode": "raw", "raw": "{\"email\": \"{{prof_email}}\", \"code\": \"{{prof_vfy_code}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/verify-email", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "verify-email"] }
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{prof_email}}\", \"code\": \"{{prof_vfy_code}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
           }
         },
         {
           "name": "POST /login → 200 (store access token)",
           "event": [
-            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 200', () => pm.response.to.have.status(200)); const body = pm.response.json(); pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty); pm.collectionVariables.set('prof_access_token', body.access_token);"] } }
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200)); const body = pm.response.json(); pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty); pm.collectionVariables.set('prof_access_token', body.access_token);"
+                ]
+              }
+            }
           ],
           "request": {
             "method": "POST",
-            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "body": { "mode": "raw", "raw": "{\"identifier\": \"{{prof_email}}\", \"password\": \"{{prof_password}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{prof_email}}\", \"password\": \"{{prof_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
           }
         }
       ]
@@ -107,100 +170,246 @@
       "item": [
         {
           "name": "PATCH /me → 200 (both fields)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('status is 200', () => pm.response.to.have.status(200));",
-            "pm.test('message is \"profile updated successfully\"', () => { pm.expect(pm.response.json().message).to.eql('profile updated successfully'); });",
-            "pm.collectionVariables.set('prof_display_name', 'Happy Path User');",
-            "pm.collectionVariables.set('prof_avatar_url', 'https://cdn.example.com/avatars/happy.png');"
-          ]}}],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message is \"profile updated successfully\"', () => { pm.expect(pm.response.json().message).to.eql('profile updated successfully'); });",
+                  "pm.collectionVariables.set('prof_display_name', 'Happy Path User');",
+                  "pm.collectionVariables.set('prof_avatar_url', 'https://cdn.example.com/avatars/happy.png');"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "PATCH",
-            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "body": { "mode": "raw", "raw": "{\"display_name\": \"Happy Path User\", \"avatar_url\": \"https://cdn.example.com/avatars/happy.png\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] }
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Happy Path User\", \"avatar_url\": \"https://cdn.example.com/avatars/happy.png\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
           }
         },
         {
           "name": "GET /me → 200 (confirms both fields written to DB)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('status is 200', () => pm.response.to.have.status(200));",
-            "const body = pm.response.json();",
-            "pm.test('display_name updated in DB', () => { pm.expect(body.display_name).to.eql(pm.collectionVariables.get('prof_display_name')); });",
-            "pm.test('avatar_url updated in DB', () => { pm.expect(body.avatar_url).to.eql(pm.collectionVariables.get('prof_avatar_url')); });"
-          ]}}],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('display_name updated in DB', () => { pm.expect(body.display_name).to.eql(pm.collectionVariables.get('prof_display_name')); });",
+                  "pm.test('avatar_url updated in DB', () => { pm.expect(body.avatar_url).to.eql(pm.collectionVariables.get('prof_avatar_url')); });"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] }
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
           }
         },
         {
           "name": "PATCH /me → 200 (display_name only)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('status is 200', () => pm.response.to.have.status(200));",
-            "pm.test('message is \"profile updated successfully\"', () => { pm.expect(pm.response.json().message).to.eql('profile updated successfully'); });",
-            "pm.collectionVariables.set('prof_display_name', 'Display Only');"
-          ]}}],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message is \"profile updated successfully\"', () => { pm.expect(pm.response.json().message).to.eql('profile updated successfully'); });",
+                  "pm.collectionVariables.set('prof_display_name', 'Display Only');"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "PATCH",
-            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "body": { "mode": "raw", "raw": "{\"display_name\": \"Display Only\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] }
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Display Only\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
           }
         },
         {
           "name": "GET /me → 200 (display_name changed, avatar_url unchanged)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('status is 200', () => pm.response.to.have.status(200));",
-            "const body = pm.response.json();",
-            "pm.test('display_name updated', () => { pm.expect(body.display_name).to.eql('Display Only'); });",
-            "pm.test('avatar_url unchanged (COALESCE left it intact)', () => { pm.expect(body.avatar_url).to.eql(pm.collectionVariables.get('prof_avatar_url')); });"
-          ]}}],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('display_name updated', () => { pm.expect(body.display_name).to.eql('Display Only'); });",
+                  "pm.test('avatar_url unchanged (COALESCE left it intact)', () => { pm.expect(body.avatar_url).to.eql(pm.collectionVariables.get('prof_avatar_url')); });"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] }
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
           }
         },
         {
           "name": "PATCH /me → 200 (avatar_url only)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('status is 200', () => pm.response.to.have.status(200));",
-            "pm.test('message is \"profile updated successfully\"', () => { pm.expect(pm.response.json().message).to.eql('profile updated successfully'); });",
-            "pm.collectionVariables.set('prof_avatar_url', 'https://cdn.example.com/avatars/avatar-only.png');"
-          ]}}],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message is \"profile updated successfully\"', () => { pm.expect(pm.response.json().message).to.eql('profile updated successfully'); });",
+                  "pm.collectionVariables.set('prof_avatar_url', 'https://cdn.example.com/avatars/avatar-only.png');"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "PATCH",
-            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "body": { "mode": "raw", "raw": "{\"avatar_url\": \"https://cdn.example.com/avatars/avatar-only.png\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] }
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"avatar_url\": \"https://cdn.example.com/avatars/avatar-only.png\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
           }
         },
         {
           "name": "GET /me → 200 (avatar_url changed, display_name unchanged)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('status is 200', () => pm.response.to.have.status(200));",
-            "const body = pm.response.json();",
-            "pm.test('avatar_url updated', () => { pm.expect(body.avatar_url).to.eql('https://cdn.example.com/avatars/avatar-only.png'); });",
-            "pm.test('display_name unchanged (COALESCE left it intact)', () => { pm.expect(body.display_name).to.eql('Display Only'); });"
-          ]}}],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('avatar_url updated', () => { pm.expect(body.avatar_url).to.eql('https://cdn.example.com/avatars/avatar-only.png'); });",
+                  "pm.test('display_name unchanged (COALESCE left it intact)', () => { pm.expect(body.display_name).to.eql('Display Only'); });"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] }
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
           }
         },
         {
           "name": "PATCH /me → 200 (same values re-sent — no-op accepted, D-03)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('status is 200 (no-op accepted per D-03)', () => pm.response.to.have.status(200));",
-            "pm.test('message is \"profile updated successfully\"', () => { pm.expect(pm.response.json().message).to.eql('profile updated successfully'); });"
-          ]}}],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (no-op accepted per D-03)', () => pm.response.to.have.status(200));",
+                  "pm.test('message is \"profile updated successfully\"', () => { pm.expect(pm.response.json().message).to.eql('profile updated successfully'); });"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "PATCH",
-            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "body": { "mode": "raw", "raw": "{\"display_name\": \"Display Only\", \"avatar_url\": \"https://cdn.example.com/avatars/avatar-only.png\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] }
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Display Only\", \"avatar_url\": \"https://cdn.example.com/avatars/avatar-only.png\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
           }
         }
       ]
@@ -211,49 +420,301 @@
       "item": [
         {
           "name": "empty patch {} → 422 validation_error (both fields absent)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrEmptyPatch)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrEmptyPatch)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         },
         {
           "name": "display_name blank after trim → 422 validation_error",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrDisplayNameEmpty)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"display_name\": \"   \"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrDisplayNameEmpty)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"   \"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         },
         {
           "name": "display_name > 100 runes → 422 validation_error",
           "event": [
-            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["const longName = 'a'.repeat(101); pm.request.body.update({ mode: 'raw', raw: JSON.stringify({ display_name: longName }) });"] } },
-            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const longName = 'a'.repeat(101); pm.request.body.update({ mode: 'raw', raw: JSON.stringify({ display_name: longName }) });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
           ],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         },
         {
           "name": "display_name contains ASCII control char → 422 validation_error",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrDisplayNameInvalid)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"display_name\": \"Bad\u0001Name\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrDisplayNameInvalid)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Bad\u0001Name\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         },
         {
           "name": "avatar_url no scheme → 422 validation_error",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrAvatarURLInvalid)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"avatar_url\": \"not-a-url\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrAvatarURLInvalid)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"avatar_url\": \"not-a-url\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         },
         {
           "name": "avatar_url ftp:// scheme → 422 validation_error",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrAvatarURLInvalid — bad scheme)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"avatar_url\": \"ftp://example.com/img.png\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrAvatarURLInvalid — bad scheme)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"avatar_url\": \"ftp://example.com/img.png\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         },
         {
           "name": "avatar_url too long (> 2048 bytes) → 422 validation_error",
           "event": [
-            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["const prefix = 'https://x.com/'; const longUrl = prefix + 'a'.repeat(2049 - prefix.length); pm.request.body.update({ mode: 'raw', raw: JSON.stringify({ avatar_url: longUrl }) });"] } },
-            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrAvatarURLTooLong)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const prefix = 'https://x.com/'; const longUrl = prefix + 'a'.repeat(2049 - prefix.length); pm.request.body.update({ mode: 'raw', raw: JSON.stringify({ avatar_url: longUrl }) });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrAvatarURLTooLong)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
           ],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         },
         {
           "name": "avatar_url empty string → 422 validation_error (D-04: clearing is not supported)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (empty avatar_url — D-04)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"avatar_url\": \"\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (empty avatar_url — D-04)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"avatar_url\": \"\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         }
       ]
     },
@@ -263,13 +724,69 @@
       "item": [
         {
           "name": "missing Authorization header → 401",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401', () => pm.response.to.have.status(401));"] } }],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"display_name\": \"No Auth\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"No Auth\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         },
         {
           "name": "tampered token signature → 401",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401', () => pm.response.to.have.status(401));"] } }],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"display_name\": \"Tampered\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Tampered\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         }
       ]
     },
@@ -280,58 +797,515 @@
         {
           "name": "body > 1 MiB → 413",
           "event": [
-            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["const pad = 'x'.repeat(1024 * 1024 + 1); pm.request.body.update({ mode: 'raw', raw: JSON.stringify({ display_name: 'ok', _pad: pad }) });"] } },
-            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 413', () => pm.response.to.have.status(413));"] } }
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const pad = 'x'.repeat(1024 * 1024 + 1); pm.request.body.update({ mode: 'raw', raw: JSON.stringify({ display_name: 'ok', _pad: pad }) });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 413', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
           ],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         },
         {
           "name": "malformed JSON → 422",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
-          "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{bad json", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
         }
       ]
     },
     {
       "name": "rate-limiting-prof",
       "description": "Verifies the prof:ip: IP rate limiter for PATCH /profile/me (burst=10, rate=10/1min).\nAll folders run in ONE newman invocation so prof_access_token is preserved.",
-      "event": [{ "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["pm.collectionVariables.set('_xff', '127.0.0.1');"] } }],
-      "item": [
-        { "name": "warmup 1/10 — consume slot (→ not 429)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (prof:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } } },
-        { "name": "warmup 2/10 — consume slot (→ not 429)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (prof:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } } },
-        { "name": "warmup 3/10 — consume slot (→ not 429)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (prof:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } } },
-        { "name": "warmup 4/10 — consume slot (→ not 429)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (prof:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } } },
-        { "name": "warmup 5/10 — consume slot (→ not 429)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (prof:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } } },
-        { "name": "warmup 6/10 — consume slot (→ not 429)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (prof:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } } },
-        { "name": "warmup 7/10 — consume slot (→ not 429)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (prof:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } } },
-        { "name": "warmup 8/10 — consume slot (→ not 429)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (prof:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } } },
-        { "name": "warmup 9/10 — consume slot (→ not 429)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (prof:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } } },
-        { "name": "warmup 10/10 — consume slot (→ not 429, last allowed)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (prof:ip: slot 10 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "PATCH", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] } } },
+      "event": [
         {
-          "name": "11th request → 429 (prof:ip: bucket exhausted)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('status is 429', () => pm.response.to.have.status(429));",
-            "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
-            "pm.test('Retry-After is 6 (ceil(1/(10/60))=6 s)', () => { pm.expect(pm.response.headers.get('Retry-After')).to.eql('6'); });"
-          ]}}],
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": ["pm.collectionVariables.set('_xff', '127.0.0.1');"]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "warmup 1/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (prof:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "PATCH",
-            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{prof_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "body": { "mode": "raw", "raw": "{\"display_name\": \"Rate Limited\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] }
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (prof:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (prof:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (prof:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (prof:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 6/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (prof:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 7/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (prof:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 8/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (prof:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 9/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (prof:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 10/10 — consume slot (→ not 429, last allowed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (prof:ip: slot 10 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "11th request → 429 (prof:ip: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
+                  "pm.test('Retry-After is 6 (ceil(1/(10/60))=6 s)', () => { pm.expect(pm.response.headers.get('Retry-After')).to.eql('6'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{prof_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"Rate Limited\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
           }
         }
       ]
     }
   ],
   "variable": [
-    { "key": "_req_seq", "value": "0", "description": "Auto-incremented counter for unique X-Forwarded-For IPs." },
-    { "key": "_xff", "value": "", "description": "Current XFF. Set per-request; overridden to 127.0.0.1 by rate-limiting-prof folder." },
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter for unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current XFF. Set per-request; overridden to 127.0.0.1 by rate-limiting-prof folder."
+    },
     { "key": "prof_email", "value": "" },
     { "key": "prof_password", "value": "" },
     { "key": "prof_vfy_code", "value": "" },
-    { "key": "prof_access_token", "value": "", "description": "Access token from setup/login. Used by all folders including rate-limiting-prof." },
-    { "key": "prof_display_name", "value": "", "description": "Tracks most recently patched display_name for GET /me assertions." },
-    { "key": "prof_avatar_url", "value": "", "description": "Tracks most recently patched avatar_url for GET /me assertions." }
+    {
+      "key": "prof_access_token",
+      "value": "",
+      "description": "Access token from setup/login. Used by all folders including rate-limiting-prof."
+    },
+    {
+      "key": "prof_display_name",
+      "value": "",
+      "description": "Tracks most recently patched display_name for GET /me assertions."
+    },
+    {
+      "key": "prof_avatar_url",
+      "value": "",
+      "description": "Tracks most recently patched avatar_url for GET /me assertions."
+    }
   ]
 }

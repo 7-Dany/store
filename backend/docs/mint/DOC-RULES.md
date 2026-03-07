@@ -138,8 +138,8 @@ Use `<AccordionGroup>` with one `<Accordion>` per status code. Each accordion co
 
     ```json
     {
-      "code": "rate_limited",
-      "message": "too many requests"
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
     }
     ```
   </Accordion>
@@ -219,8 +219,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
 ```json 429
 {
-  "code": "rate_limited",
-  "message": "too many requests"
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
 }
 \```
 </ResponseExample>
@@ -254,8 +254,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
     ```json
     {
-      "code": "rate_limited",
-      "message": "too many requests"
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
     }
     ```
   </Accordion>

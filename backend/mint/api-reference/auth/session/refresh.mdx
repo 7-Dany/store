@@ -58,7 +58,7 @@ The limiter fires before token validation — every request to this endpoint con
 
 ```json 429
 {
-  "code": "rate_limited",
+  "code": "too_many_requests",
   "message": "too many requests — please slow down"
 }
 ```
@@ -138,7 +138,7 @@ The limiter fires before token validation — every request to this endpoint con
 
     ```json
     {
-      "code": "rate_limited",
+      "code": "too_many_requests",
       "message": "too many requests — please slow down"
     }
     ```

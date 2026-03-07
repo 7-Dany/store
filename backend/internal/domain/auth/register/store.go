@@ -53,10 +53,14 @@ func (s *Store) CreateUserTx(ctx context.Context, in CreateUserInput) (CreatedUs
 		Email:        s.ToText(in.Email),
 		DisplayName:  s.ToText(in.DisplayName),
 		PasswordHash: s.ToText(in.PasswordHash),
+		Username:     s.ToText(in.Username), // Valid=false when empty → stored as NULL
 	})
 	if err != nil {
-		if s.IsDuplicateEmail(err) {
+		switch {
+		case s.IsDuplicateEmail(err):
 			return CreatedUser{}, authshared.ErrEmailTaken
+		case s.IsDuplicateUsername(err):
+			return CreatedUser{}, authshared.ErrUsernameTaken
 		}
 		return CreatedUser{}, fmt.Errorf("store.CreateUserTx: create user: %w", err)
 	}

@@ -55,6 +55,7 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 		ID:            uuid.UUID(profile.ID).String(),
 		Email:         profile.Email,
 		DisplayName:   profile.DisplayName,
+		Username:      profile.Username,
 		AvatarURL:     profile.AvatarURL,
 		EmailVerified: profile.EmailVerified,
 		IsActive:      profile.IsActive,

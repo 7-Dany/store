@@ -187,7 +187,7 @@ func (l *IPRateLimiter) Limit(next http.Handler) http.Handler {
 			// is available. Computed at limiter construction so no bucket state
 			// needs to be exposed here.
 			w.Header().Set("Retry-After", l.retryAfterSecs)
-			respond.Error(w, http.StatusTooManyRequests, "rate_limited", "too many requests — please slow down")
+			respond.Error(w, http.StatusTooManyRequests, "too_many_requests", "too many requests — please slow down")
 			return
 		}
 		next.ServeHTTP(w, r)

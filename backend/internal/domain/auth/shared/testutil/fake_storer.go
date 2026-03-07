@@ -8,7 +8,6 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/domain/auth/login"
 	"github.com/7-Dany/store/backend/internal/domain/auth/password"
-	"github.com/7-Dany/store/backend/internal/domain/auth/profile"
 	"github.com/7-Dany/store/backend/internal/domain/auth/register"
 	"github.com/7-Dany/store/backend/internal/domain/auth/session"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
@@ -17,6 +16,7 @@ import (
 	me "github.com/7-Dany/store/backend/internal/domain/profile/me"
 	profilesession "github.com/7-Dany/store/backend/internal/domain/profile/session"
 	setpassword "github.com/7-Dany/store/backend/internal/domain/profile/set-password"
+	username "github.com/7-Dany/store/backend/internal/domain/profile/username"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -85,14 +85,14 @@ type PasswordFakeStorer struct {
 	GetUserForPasswordResetFn           func(ctx context.Context, email string) (password.GetUserForPasswordResetResult, error)
 	GetPasswordResetTokenForVerifyFn    func(ctx context.Context, email string) (authshared.VerificationToken, error)
 	GetPasswordResetTokenCreatedAtFn    func(ctx context.Context, email string) (time.Time, error)
-	RequestPasswordResetTxFn         func(ctx context.Context, in password.RequestPasswordResetStoreInput) error
-	ConsumeAndUpdatePasswordTxFn     func(ctx context.Context, in password.ConsumeAndUpdateInput, checkFn func(authshared.VerificationToken) error) ([16]byte, error)
-	IncrementAttemptsTxFn            func(ctx context.Context, in authshared.IncrementInput) error
-	GetUserPasswordHashFn                     func(ctx context.Context, userID [16]byte) (password.CurrentCredentials, error)
-	UpdatePasswordHashTxFn                    func(ctx context.Context, userID [16]byte, newHash, ipAddress, userAgent string) error
-	IncrementChangePasswordFailuresTxFn       func(ctx context.Context, userID [16]byte, ipAddress, userAgent string) (int16, error)
-	ResetChangePasswordFailuresTxFn           func(ctx context.Context, userID [16]byte) error
-	WritePasswordChangeFailedAuditTxFn        func(ctx context.Context, userID [16]byte, ipAddress, userAgent string) error
+	RequestPasswordResetTxFn            func(ctx context.Context, in password.RequestPasswordResetStoreInput) error
+	ConsumeAndUpdatePasswordTxFn        func(ctx context.Context, in password.ConsumeAndUpdateInput, checkFn func(authshared.VerificationToken) error) ([16]byte, error)
+	IncrementAttemptsTxFn               func(ctx context.Context, in authshared.IncrementInput) error
+	GetUserPasswordHashFn               func(ctx context.Context, userID [16]byte) (password.CurrentCredentials, error)
+	UpdatePasswordHashTxFn              func(ctx context.Context, userID [16]byte, newHash, ipAddress, userAgent string) error
+	IncrementChangePasswordFailuresTxFn func(ctx context.Context, userID [16]byte, ipAddress, userAgent string) (int16, error)
+	ResetChangePasswordFailuresTxFn     func(ctx context.Context, userID [16]byte) error
+	WritePasswordChangeFailedAuditTxFn  func(ctx context.Context, userID [16]byte, ipAddress, userAgent string) error
 }
 
 // compile-time interface check.
@@ -179,53 +179,6 @@ func (f *PasswordFakeStorer) ResetChangePasswordFailuresTx(ctx context.Context, 
 func (f *PasswordFakeStorer) WritePasswordChangeFailedAuditTx(ctx context.Context, userID [16]byte, ipAddress, userAgent string) error {
 	if f.WritePasswordChangeFailedAuditTxFn != nil {
 		return f.WritePasswordChangeFailedAuditTxFn(ctx, userID, ipAddress, userAgent)
-	}
-	return nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ProfileFakeStorer
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ProfileFakeStorer is a hand-written implementation of profile.Storer for
-// service unit tests. Each method delegates to its Fn field if non-nil,
-// otherwise returns the zero value and nil error so tests only need to
-// configure the fields they care about.
-type ProfileFakeStorer struct {
-	GetUserProfileFn    func(ctx context.Context, userID [16]byte) (profile.UserProfile, error)
-	GetActiveSessionsFn func(ctx context.Context, userID [16]byte) ([]profile.ActiveSession, error)
-	RevokeSessionTxFn   func(ctx context.Context, sessionID, ownerUserID [16]byte, ipAddress, userAgent string) error
-	UpdateProfileTxFn   func(ctx context.Context, in profile.UpdateProfileInput) error
-}
-
-// compile-time interface check.
-var _ profile.Storer = (*ProfileFakeStorer)(nil)
-
-func (f *ProfileFakeStorer) GetUserProfile(ctx context.Context, userID [16]byte) (profile.UserProfile, error) {
-	if f.GetUserProfileFn != nil {
-		return f.GetUserProfileFn(ctx, userID)
-	}
-	return profile.UserProfile{}, nil
-}
-
-func (f *ProfileFakeStorer) GetActiveSessions(ctx context.Context, userID [16]byte) ([]profile.ActiveSession, error) {
-	if f.GetActiveSessionsFn != nil {
-		return f.GetActiveSessionsFn(ctx, userID)
-	}
-	return nil, nil
-}
-
-func (f *ProfileFakeStorer) RevokeSessionTx(ctx context.Context, sessionID, ownerUserID [16]byte, ipAddress, userAgent string) error {
-	if f.RevokeSessionTxFn != nil {
-		return f.RevokeSessionTxFn(ctx, sessionID, ownerUserID, ipAddress, userAgent)
-	}
-	return nil
-}
-
-// UpdateProfileTx delegates to UpdateProfileTxFn if set.
-func (f *ProfileFakeStorer) UpdateProfileTx(ctx context.Context, in profile.UpdateProfileInput) error {
-	if f.UpdateProfileTxFn != nil {
-		return f.UpdateProfileTxFn(ctx, in)
 	}
 	return nil
 }
@@ -541,4 +494,36 @@ func (f *SetPasswordFakeStorer) SetPasswordHashTx(ctx context.Context, in setpas
 	return nil
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// UsernameFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
 
+// UsernameFakeStorer is a hand-written implementation of username.Storer for
+// service unit tests. Each method delegates to its Fn field if non-nil,
+// otherwise returns the zero value and nil error so tests only need to
+// configure the fields they care about.
+type UsernameFakeStorer struct {
+	CheckUsernameAvailableFn func(ctx context.Context, uname string) (bool, error)
+	UpdateUsernameTxFn       func(ctx context.Context, in username.UpdateUsernameInput) error
+}
+
+// compile-time interface check.
+var _ username.Storer = (*UsernameFakeStorer)(nil)
+
+// CheckUsernameAvailable delegates to CheckUsernameAvailableFn if set.
+// Default: returns (true, nil) — username is available — so tests that do not
+// configure it never cause a spurious "taken" result.
+func (f *UsernameFakeStorer) CheckUsernameAvailable(ctx context.Context, uname string) (bool, error) {
+	if f.CheckUsernameAvailableFn != nil {
+		return f.CheckUsernameAvailableFn(ctx, uname)
+	}
+	return true, nil
+}
+
+// UpdateUsernameTx delegates to UpdateUsernameTxFn if set.
+func (f *UsernameFakeStorer) UpdateUsernameTx(ctx context.Context, in username.UpdateUsernameInput) error {
+	if f.UpdateUsernameTxFn != nil {
+		return f.UpdateUsernameTxFn(ctx, in)
+	}
+	return nil
+}

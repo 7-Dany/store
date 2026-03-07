@@ -260,4 +260,112 @@ func TestValidateAndNormalise(t *testing.T) {
 			require.NoError(t, err)
 		})
 	})
+
+	// ── username ──────────────────────────────────────────────────────────────
+
+	t.Run("username", func(t *testing.T) {
+		t.Parallel()
+
+		t.Run("omitted (empty) → nil (optional field)", func(t *testing.T) {
+			t.Parallel()
+			// Username is optional at registration. An empty string must be accepted
+			// without triggering any validation error.
+			req := register.ExportedRegisterRequest("Alice", "alice@example.com", "P@ssw0rd!1")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.NoError(t, err, "empty username must be accepted as the optional-field path")
+		})
+
+		t.Run("too short (< 3 chars) → ErrUsernameTooShort", func(t *testing.T) {
+			t.Parallel()
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", "ab")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.ErrorIs(t, err, authshared.ErrUsernameTooShort)
+		})
+
+		t.Run("exactly 3 chars → nil (lower boundary accepted)", func(t *testing.T) {
+			t.Parallel()
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", "abc")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.NoError(t, err, "username of exactly 3 characters must be accepted")
+		})
+
+		t.Run("too long (> 30 chars) → ErrUsernameTooLong", func(t *testing.T) {
+			t.Parallel()
+			long := strings.Repeat("a", 31)
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", long)
+			err := register.ExportedValidateAndNormalise(&req)
+			require.ErrorIs(t, err, authshared.ErrUsernameTooLong)
+		})
+
+		t.Run("exactly 30 chars → nil (upper boundary accepted)", func(t *testing.T) {
+			t.Parallel()
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", strings.Repeat("a", 30))
+			err := register.ExportedValidateAndNormalise(&req)
+			require.NoError(t, err, "username of exactly 30 characters must be accepted")
+		})
+
+		t.Run("invalid chars (symbol) → ErrUsernameInvalidChars", func(t *testing.T) {
+			t.Parallel()
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", "alice!")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.ErrorIs(t, err, authshared.ErrUsernameInvalidChars)
+		})
+
+		t.Run("invalid chars (hyphen) → ErrUsernameInvalidChars", func(t *testing.T) {
+			t.Parallel()
+			// Hyphens are not in [a-z0-9_]; a common mistake to allow them.
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", "alice-bob")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.ErrorIs(t, err, authshared.ErrUsernameInvalidChars)
+		})
+
+		t.Run("leading underscore → ErrUsernameInvalidFormat", func(t *testing.T) {
+			t.Parallel()
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", "_alice")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.ErrorIs(t, err, authshared.ErrUsernameInvalidFormat)
+		})
+
+		t.Run("trailing underscore → ErrUsernameInvalidFormat", func(t *testing.T) {
+			t.Parallel()
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", "alice_")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.ErrorIs(t, err, authshared.ErrUsernameInvalidFormat)
+		})
+
+		t.Run("consecutive underscores → ErrUsernameInvalidFormat", func(t *testing.T) {
+			t.Parallel()
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", "alice__bob")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.ErrorIs(t, err, authshared.ErrUsernameInvalidFormat)
+		})
+
+		t.Run("uppercase letters → lowercased in-place", func(t *testing.T) {
+			t.Parallel()
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", "ALICE123")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.NoError(t, err)
+			require.Equal(t, "alice123", req.Username,
+				"username must be fully lowercased after normalisation")
+		})
+
+		t.Run("leading/trailing whitespace → trimmed and accepted", func(t *testing.T) {
+			t.Parallel()
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", "  alice  ")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.NoError(t, err)
+			require.Equal(t, "alice", req.Username,
+				"leading and trailing whitespace must be stripped from username")
+		})
+
+		t.Run("whitespace-only → ErrUsernameEmpty", func(t *testing.T) {
+			t.Parallel()
+			// After trimming, a whitespace-only value collapses to empty. The
+			// validator must return ErrUsernameEmpty, not ErrUsernameTooShort,
+			// because the field is logically absent after normalisation.
+			req := register.ExportedRegisterRequestWithUsername("Alice", "alice@example.com", "P@ssw0rd!1", "   ")
+			err := register.ExportedValidateAndNormalise(&req)
+			require.ErrorIs(t, err, authshared.ErrUsernameEmpty)
+		})
+	})
 }

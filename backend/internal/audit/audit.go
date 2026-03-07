@@ -119,6 +119,9 @@ const (
 	// EventPasswordSet is emitted when an OAuth-only user successfully adds a
 	// password to their account via POST /set-password.
 	EventPasswordSet EventType = "password_set"
+
+	// EventUsernameChanged is emitted when a user successfully updates their username.
+	EventUsernameChanged EventType = "username_changed"
 )
 
 // AllEvents returns a slice of every audit event constant defined in this package.
@@ -151,5 +154,6 @@ func AllEvents() []EventType {
 		EventAllSessionsRevoked,
 		EventProfileUpdated,
 		EventPasswordSet,
+		EventUsernameChanged,
 	}
 }

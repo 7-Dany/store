@@ -75,13 +75,13 @@
           "request": {
             "method": "POST",
             "header": [
-              {"key": "Content-Type", "value": "application/json"},
-              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\":\"MeUser\",\"email\":\"{{me_email}}\",\"password\":\"{{me_password}}\"}",
-              "options": {"raw": {"language": "json"}}
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -107,20 +107,22 @@
               "listen": "test",
               "script": {
                 "type": "text/javascript",
-                "exec": ["pm.test('status is 200', () => pm.response.to.have.status(200));"]
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
               }
             }
           ],
           "request": {
             "method": "POST",
             "header": [
-              {"key": "Content-Type", "value": "application/json"},
-              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\":\"{{me_email}}\",\"code\":\"{{me_code}}\"}",
-              "options": {"raw": {"language": "json"}}
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
@@ -152,13 +154,13 @@
           "request": {
             "method": "POST",
             "header": [
-              {"key": "Content-Type", "value": "application/json"},
-              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\":\"{{me_email}}\",\"password\":\"{{me_password}}\"}",
-              "options": {"raw": {"language": "json"}}
+              "options": { "raw": { "language": "json" } }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -203,8 +205,8 @@
           "request": {
             "method": "GET",
             "header": [
-              {"key": "Authorization", "value": "Bearer {{me_access_token}}"},
-              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -217,7 +219,7 @@
     },
     {
       "name": "rate-limiting",
-      "description": "pme:ip: limiter \u2014 burst=10, rate=10/1min (0.1667 t/s).\nAll 10 warmup requests use the valid access_token from setup (JWT auth fires before the limiter\ninside the JWT middleware group). 11th request \u2192 429 rate_limited, Retry-After=6.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
+      "description": "pme:ip: limiter \u2014 burst=10, rate=10/1min (0.1667 t/s).\nAll 10 warmup requests use the valid access_token from setup (JWT auth fires before the limiter\ninside the JWT middleware group). 11th request \u2192 429 too_many_requests, Retry-After=6.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
       "event": [
         {
           "listen": "prerequest",
@@ -228,16 +230,266 @@
         }
       ],
       "item": [
-        {"name": "warmup 1/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 1/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
-        {"name": "warmup 2/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 2/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
-        {"name": "warmup 3/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 3/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
-        {"name": "warmup 4/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 4/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
-        {"name": "warmup 5/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 5/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
-        {"name": "warmup 6/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 6/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
-        {"name": "warmup 7/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 7/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
-        {"name": "warmup 8/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 8/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
-        {"name": "warmup 9/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 9/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
-        {"name": "warmup 10/10 \u2014 consume pme:ip: slot (\u2192 not 429)","event": [{"listen": "test","script": {"type": "text/javascript","exec": ["pm.test('not rate-limited yet (pme:ip: slot 10/10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],"request": {"method": "GET","header": [{"key": "Authorization","value": "Bearer {{me_access_token}}"},{"key": "X-Forwarded-For","value": "{{_xff}}"}],"url": {"raw": "{{base_url}}/api/v1/profile/me","host": ["{{base_url}}"],"path": ["api","v1","profile","me"]}}},
+        {
+          "name": "warmup 1/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (pme:ip: slot 1/10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (pme:ip: slot 2/10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (pme:ip: slot 3/10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (pme:ip: slot 4/10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (pme:ip: slot 5/10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 6/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (pme:ip: slot 6/10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 7/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (pme:ip: slot 7/10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 8/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (pme:ip: slot 8/10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 9/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (pme:ip: slot 9/10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
+        {
+          "name": "warmup 10/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (pme:ip: slot 10/10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        },
         {
           "name": "GET /api/v1/profile/me: 11th request \u2192 429 (pme:ip: exhausted)",
           "event": [
@@ -247,7 +499,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is rate_limited', () => pm.expect(pm.response.json().code).to.eql('rate_limited'));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
                   "pm.test('Retry-After is 6 (ceil(1/(10/60))=6 s)', () => {",
                   "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('6');",
                   "});"
@@ -258,8 +510,8 @@
           "request": {
             "method": "GET",
             "header": [
-              {"key": "Authorization", "value": "Bearer {{me_access_token}}"},
-              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -272,12 +524,32 @@
     }
   ],
   "variable": [
-    {"key": "_req_seq", "value": "0", "description": "Auto-incremented counter for unique X-Forwarded-For IPs."},
-    {"key": "_xff", "value": "", "description": "Current XFF. Set per-request by collection prerequest; overridden to 127.0.0.1 by rate-limiting folder."},
-    {"key": "me_email", "value": "", "description": "Set by setup from gmail_test_email."},
-    {"key": "me_password", "value": "", "description": "Set by setup."},
-    {"key": "me_code", "value": "", "description": "6-digit OTP from Gmail."},
-    {"key": "me_access_token", "value": "", "description": "Access token from setup /login. Also used by rate-limiting warmup."},
-    {"key": "me_refresh_token", "value": "", "description": "Refresh token from setup /login."}
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter for unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current XFF. Set per-request by collection prerequest; overridden to 127.0.0.1 by rate-limiting folder."
+    },
+    {
+      "key": "me_email",
+      "value": "",
+      "description": "Set by setup from gmail_test_email."
+    },
+    { "key": "me_password", "value": "", "description": "Set by setup." },
+    { "key": "me_code", "value": "", "description": "6-digit OTP from Gmail." },
+    {
+      "key": "me_access_token",
+      "value": "",
+      "description": "Access token from setup /login. Also used by rate-limiting warmup."
+    },
+    {
+      "key": "me_refresh_token",
+      "value": "",
+      "description": "Refresh token from setup /login."
+    }
   ]
 }

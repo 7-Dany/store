@@ -13,6 +13,11 @@ import (
 )
 
 type Querier interface {
+	// ── Username ───────────────────────────────────────────────────────────────────
+	// Returns true when no row with username = @username exists in users.
+	// No FOR UPDATE — this is a point-in-time availability check; the write path
+	// enforces uniqueness via idx_users_username (23505 on conflict).
+	CheckUsernameAvailable(ctx context.Context, username pgtype.Text) (bool, error)
 	// Marks the token as used. The AND used_at IS NULL guard ensures idempotency:
 	// a race between two concurrent correct submissions cannot consume the same token twice.
 	ConsumeEmailVerificationToken(ctx context.Context, id pgtype.UUID) (int64, error)
@@ -150,6 +155,11 @@ type Querier interface {
 	// Returns the row regardless of lock state so the service can decide whether to
 	// issue a token without leaking information to unauthenticated callers.
 	GetUserForUnlock(ctx context.Context, email pgtype.Text) (GetUserForUnlockRow, error)
+	// Returns id and current username for the calling user.
+	// FOR UPDATE locks the row inside UpdateUsernameTx to prevent a concurrent
+	// rename from racing past the same-username guard or producing stale audit
+	// metadata (i.e. old_username in the audit log).
+	GetUserForUsernameUpdate(ctx context.Context, userID pgtype.UUID) (GetUserForUsernameUpdateRow, error)
 	// ── Change password ───────────────────────────────────────────────────────────
 	// Fetches the current bcrypt hash for credential re-verification before a password change.
 	GetUserPasswordHash(ctx context.Context, userID pgtype.UUID) (GetUserPasswordHashRow, error)
@@ -258,6 +268,11 @@ type Querier interface {
 	// a concurrent set-password call that races past the service guard returns
 	// 0 rows affected, which the store maps to ErrPasswordAlreadySet.
 	SetPasswordHash(ctx context.Context, arg SetPasswordHashParams) (int64, error)
+	// Sets username for the user identified by id.
+	// Returns rows affected so the store can distinguish:
+	//   23505 unique_violation on idx_users_username → ErrUsernameTaken
+	//   rows == 0                                    → ErrUserNotFound
+	SetUsername(ctx context.Context, arg SetUsernameParams) (int64, error)
 	// Clears is_locked, failed_login_attempts, and login_locked_until atomically.
 	// Called after a successful account-unlock OTP confirmation.
 	UnlockAccount(ctx context.Context, userID pgtype.UUID) error

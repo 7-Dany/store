@@ -21,7 +21,7 @@ api: "POST http://localhost:8080/api/v1/auth/verify-email"
 
 Submitting the correct OTP marks the account as verified and consumes the token so it cannot be replayed. If the account is already verified the endpoint returns `200` with a distinct message — it is safe to call more than once.
 
-Wrong codes are tracked per-token. Once the attempt ceiling is reached the token is permanently locked and any further submission — including a correct code — returns `429`. A new OTP must be requested via `POST /resend-verification`.
+Wrong codes are tracked per-token. Once the attempt ceiling is reached the token is permanently locked and any further submission — including a correct code — returns `429`. A new OTP must be requested via [`POST /resend-verification`](/api-reference/auth/verification/resend-verification).
 
 An exponential backoff gate operates independently per IP. If the IP has accumulated enough failures it will be blocked before the request reaches the database.
 

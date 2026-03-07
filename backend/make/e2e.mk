@@ -14,6 +14,7 @@
 #   e2e/profile/revoke-session.json     → DELETE /sessions/{id} (requires JWT)
 #   e2e/profile/update-profile.json     → PATCH /me (requires JWT)
 #   e2e/profile/set-password.json       → POST /set-password (requires JWT)
+#   e2e/profile/username.json             → GET /username/available + PATCH /me/username (requires JWT for PATCH)
 #
 # e2e-password runs both password collections (forgot/reset + change) in order.
 # e2e-profile runs the five profile collections (me + sessions + revoke-session + update-profile + set-password) in order.
@@ -43,7 +44,7 @@ E2E_AUTH     := $(E2E_DIR)/auth
 E2E_PROFILE  := $(E2E_DIR)/profile
 E2E_DELAY    ?= 150
 
-.PHONY: e2e-install e2e e2e-health e2e-register e2e-unlock e2e-password e2e-profile e2e-auth _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
+.PHONY: e2e-install e2e e2e-health e2e-register e2e-unlock e2e-password e2e-profile e2e-auth e2e-username _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
 
 # ── Tooling ───────────────────────────────────────────────────────────────────
 
@@ -65,7 +66,7 @@ endif
 # auth_audit_log.user_id is ON DELETE CASCADE so audit rows are cleaned automatically.
 # Uses TEST_DATABASE_URL so e2e tests never touch the dev database.
 _e2e-db-clean:
-	@psql "$(TEST_DATABASE_URL)" -c "DELETE FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%';"
+	@psql "$(TEST_DATABASE_URL)" -c "DELETE FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%';"
 	@echo "[e2e] DB cleaned (e2e users removed from test DB)"
 
 # Flush Redis DB 1 (the test server's rate-limiter and blocklist store).
@@ -275,6 +276,35 @@ else
 	@echo "[e2e] set-password suite passed"
 endif
 
+e2e-username: _e2e-check-env ## Run GET /username/available + PATCH /me/username E2E
+ifeq ($(DETECTED_OS),Windows)
+	@Write-Host "[e2e] --- GET /username/available + PATCH /me/username ---" -ForegroundColor Cyan
+	@$(MAKE) _e2e-clean
+	@Write-Host "[e2e] Running: setup + happy-path + failures + auth-failures + validation + rate-limiting-uchg (single invocation)" -ForegroundColor DarkGray
+	@newman run "$(E2E_PROFILE)/username.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "failures" --folder "auth-failures" --folder "validation" --folder "rate-limiting-uchg" --delay-request 1 --reporters cli
+	@Write-Host "[e2e] Flushing Redis before rate-limiting-unav folder..." -ForegroundColor DarkGray
+	@$(MAKE) _e2e-kv-clean
+	@Write-Host "[e2e] Running: rate-limiting-unav" -ForegroundColor DarkGray
+	@newman run "$(E2E_PROFILE)/username.json" --environment "$(E2E_ENV)" --folder "rate-limiting-unav" --delay-request 1 --reporters cli
+	@Write-Host "[e2e] username suite passed" -ForegroundColor Green
+else
+	@echo "[e2e] --- GET /username/available + PATCH /me/username ---"
+	@$(MAKE) _e2e-clean
+	@echo "[e2e] Running: setup + happy-path + failures + auth-failures + validation + rate-limiting-uchg (single invocation)"
+	@newman run "$(E2E_PROFILE)/username.json" --environment "$(E2E_ENV)" \
+		--folder "setup" --folder "happy-path" \
+		--folder "failures" --folder "auth-failures" --folder "validation" \
+		--folder "rate-limiting-uchg" \
+		--delay-request 1 --reporters cli
+	@echo "[e2e] Flushing Redis before rate-limiting-unav folder..."
+	@$(MAKE) _e2e-kv-clean
+	@echo "[e2e] Running: rate-limiting-unav"
+	@newman run "$(E2E_PROFILE)/username.json" --environment "$(E2E_ENV)" \
+		--folder "rate-limiting-unav" \
+		--delay-request 1 --reporters cli
+	@echo "[e2e] username suite passed"
+endif
+
 e2e-update-profile: _e2e-check-env ## Run PATCH /me/profile E2E (requires JWT — all folders in one invocation)
 ifeq ($(DETECTED_OS),Windows)
 	@Write-Host "[e2e] --- PATCH /me/profile ---" -ForegroundColor Cyan
@@ -310,6 +340,7 @@ ifeq ($(DETECTED_OS),Windows)
 	@newman run "$(E2E_PROFILE)/revoke-session.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "rate-limiting" --delay-request 1 --reporters cli
 	@$(MAKE) e2e-update-profile
 	@$(MAKE) e2e-set-password
+	@$(MAKE) e2e-username
 	@Write-Host "[e2e] profile suite passed" -ForegroundColor Green
 else
 	@echo "[e2e] --- GET /me ---"
@@ -332,6 +363,7 @@ else
 		--delay-request 1 --reporters cli
 	@$(MAKE) e2e-update-profile
 	@$(MAKE) e2e-set-password
+	@$(MAKE) e2e-username
 	@echo "[e2e] profile suite passed"
 endif
 

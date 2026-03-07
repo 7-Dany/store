@@ -5,17 +5,17 @@ package authsharedtest
 import (
 	"context"
 
-	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	"github.com/7-Dany/store/backend/internal/domain/auth/login"
 	"github.com/7-Dany/store/backend/internal/domain/auth/password"
-	"github.com/7-Dany/store/backend/internal/domain/auth/profile"
 	"github.com/7-Dany/store/backend/internal/domain/auth/register"
 	"github.com/7-Dany/store/backend/internal/domain/auth/session"
+	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
 	"github.com/7-Dany/store/backend/internal/domain/auth/verification"
 	me "github.com/7-Dany/store/backend/internal/domain/profile/me"
 	profilesession "github.com/7-Dany/store/backend/internal/domain/profile/session"
 	setpassword "github.com/7-Dany/store/backend/internal/domain/profile/set-password"
+	username "github.com/7-Dany/store/backend/internal/domain/profile/username"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -82,52 +82,6 @@ func (f *PasswordFakeServicer) ConsumePasswordResetToken(ctx context.Context, in
 func (f *PasswordFakeServicer) UpdatePasswordHash(ctx context.Context, in password.ChangePasswordInput) error {
 	if f.UpdatePasswordHashFn != nil {
 		return f.UpdatePasswordHashFn(ctx, in)
-	}
-	return nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ProfileFakeServicer
-// ─────────────────────────────────────────────────────────────────────────────
-
-// ProfileFakeServicer is a hand-written implementation of profile.Servicer for
-// handler unit tests. Each method delegates to its Fn field if non-nil,
-// otherwise returns the zero value and nil error.
-type ProfileFakeServicer struct {
-	GetUserProfileFn    func(ctx context.Context, userID string) (profile.UserProfile, error)
-	GetActiveSessionsFn func(ctx context.Context, userID string) ([]profile.ActiveSession, error)
-	RevokeSessionFn     func(ctx context.Context, userID, sessionID, ipAddress, userAgent string) error
-	UpdateProfileFn     func(ctx context.Context, in profile.UpdateProfileInput) error
-}
-
-// compile-time interface check.
-var _ profile.Servicer = (*ProfileFakeServicer)(nil)
-
-func (f *ProfileFakeServicer) GetUserProfile(ctx context.Context, userID string) (profile.UserProfile, error) {
-	if f.GetUserProfileFn != nil {
-		return f.GetUserProfileFn(ctx, userID)
-	}
-	return profile.UserProfile{}, nil
-}
-
-func (f *ProfileFakeServicer) GetActiveSessions(ctx context.Context, userID string) ([]profile.ActiveSession, error) {
-	if f.GetActiveSessionsFn != nil {
-		return f.GetActiveSessionsFn(ctx, userID)
-	}
-	return nil, nil
-}
-
-func (f *ProfileFakeServicer) RevokeSession(ctx context.Context, userID, sessionID, ipAddress, userAgent string) error {
-	if f.RevokeSessionFn != nil {
-		return f.RevokeSessionFn(ctx, userID, sessionID, ipAddress, userAgent)
-	}
-	return nil
-}
-
-// UpdateProfile delegates to UpdateProfileFn if set.
-func (f *ProfileFakeServicer) UpdateProfile(ctx context.Context, in profile.UpdateProfileInput) error {
-	if f.UpdateProfileFn != nil {
-		return f.UpdateProfileFn(ctx, in)
 	}
 	return nil
 }
@@ -323,6 +277,50 @@ var _ setpassword.Servicer = (*SetPasswordFakeServicer)(nil)
 func (f *SetPasswordFakeServicer) SetPassword(ctx context.Context, in setpassword.SetPasswordInput) error {
 	if f.SetPasswordFn != nil {
 		return f.SetPasswordFn(ctx, in)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UsernameFakeServicer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// UsernameFakeServicer is a hand-written implementation of username.Servicer for
+// handler unit tests. Each method delegates to its Fn field if non-nil,
+// otherwise returns the zero value and nil error so tests only configure the
+// fields they care about.
+type UsernameFakeServicer struct {
+	CheckUsernameAvailableFn func(ctx context.Context, uname string) (bool, error)
+	UpdateUsernameFn         func(ctx context.Context, in username.UpdateUsernameInput) error
+}
+
+// compile-time interface check.
+var _ username.Servicer = (*UsernameFakeServicer)(nil)
+
+// CheckUsernameAvailable delegates to CheckUsernameAvailableFn if set.
+// Default: runs the real NormaliseAndValidateUsername so that handler tests
+// which pass invalid inputs receive the correct validation sentinel without
+// needing to configure a Fn. Returns (true, nil) for any valid username.
+func (f *UsernameFakeServicer) CheckUsernameAvailable(ctx context.Context, uname string) (bool, error) {
+	if f.CheckUsernameAvailableFn != nil {
+		return f.CheckUsernameAvailableFn(ctx, uname)
+	}
+	if _, err := username.NormaliseAndValidateUsername(uname); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// UpdateUsername delegates to UpdateUsernameFn if set.
+// Default: runs the real NormaliseAndValidateUsername so that handler tests
+// which pass invalid inputs receive the correct validation sentinel without
+// needing to configure a Fn. Returns nil for any valid username.
+func (f *UsernameFakeServicer) UpdateUsername(ctx context.Context, in username.UpdateUsernameInput) error {
+	if f.UpdateUsernameFn != nil {
+		return f.UpdateUsernameFn(ctx, in)
+	}
+	if _, err := username.NormaliseAndValidateUsername(in.Username); err != nil {
+		return err
 	}
 	return nil
 }

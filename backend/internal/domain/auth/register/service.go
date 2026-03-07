@@ -71,6 +71,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegisterResul
 		DisplayName:  in.DisplayName,
 		Email:        in.Email,
 		PasswordHash: passwordHash,
+		Username:     in.Username,
 		CodeHash:     codeHash,
 		TTL:          s.tokenTTL,
 		IPAddress:    in.IPAddress,

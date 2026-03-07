@@ -20,6 +20,7 @@ type meResponse struct {
 	ID            string     `json:"id"`
 	Email         string     `json:"email"`
 	DisplayName   string     `json:"display_name"`
+	Username      string     `json:"username,omitempty"`
 	AvatarURL     string     `json:"avatar_url,omitempty"`
 	EmailVerified bool       `json:"email_verified"`
 	IsActive      bool       `json:"is_active"`

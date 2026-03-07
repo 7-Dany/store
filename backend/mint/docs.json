@@ -59,12 +59,12 @@
             "group": "Auth",
             "icon": "lock",
             "pages": [
-              "api-reference/auth/register",
-              "api-reference/auth/verify-email",
-              "api-reference/auth/resend-verification",
-              "api-reference/auth/login",
-              "api-reference/auth/refresh",
-              "api-reference/auth/logout",
+              "api-reference/auth/register/register",
+              "api-reference/auth/verification/verify-email",
+              "api-reference/auth/verification/resend-verification",
+              "api-reference/auth/login/login",
+              "api-reference/auth/session/refresh",
+              "api-reference/auth/session/logout",
               "api-reference/auth/unlock/request-unlock",
               "api-reference/auth/unlock/confirm-unlock",
               "api-reference/auth/password/forgot-password",
@@ -77,11 +77,13 @@
             "group": "Profile",
             "icon": "user",
             "pages": [
-              "api-reference/profile/me",
-              "api-reference/profile/update-profile",
-              "api-reference/profile/sessions",
-              "api-reference/profile/revoke-session",
-              "api-reference/profile/set-password"
+              "api-reference/profile/me/me",
+              "api-reference/profile/me/update-profile",
+              "api-reference/profile/session/sessions",
+              "api-reference/profile/session/revoke-session",
+              "api-reference/profile/set-password/set-password",
+              "api-reference/profile/username/update-username",
+              "api-reference/profile/username/username-available"
             ]
           }
         ]

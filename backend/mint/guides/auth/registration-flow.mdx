@@ -111,7 +111,7 @@ The response is always `202` — display the message as-is. A **60-second cooldo
 | 1 | `422 validation_error` | Invalid field | Show inline field error |
 | 1 | `503 mail_delivery_failed` | Account created, email not sent | Advance to screen 2, offer resend |
 | 2 | `422 validation_error` | Wrong code, expired, already used, or no token | Show "incorrect code", offer resend |
-| 2 | `429 too_many_attempts` | OTP attempt ceiling reached — code locked | Show resend button to issue a fresh code |
+| 2 | `429 too_many_requests` | OTP attempt ceiling reached — code locked | Show resend button to issue a fresh code |
 | 2 | `429 rate_limited` | IP limit exceeded | Show `Retry-After` countdown |
 | 2 | `423 account_locked` | Admin lock set after token was issued | Direct to support |
 

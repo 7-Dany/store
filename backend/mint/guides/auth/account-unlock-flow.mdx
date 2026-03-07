@@ -102,7 +102,7 @@ The `Retry-After` header tells the client exactly how many seconds remain. The u
 |---|---|---|---|
 | 2 | `422 validation_error` | Wrong code, code expired, already used, or no active token | Show "incorrect code", offer resend |
 | 2 | `423 account_locked` | Admin lock set after token was issued | Direct to support — self-service unlock cannot clear an admin lock |
-| 2 | `429 too_many_attempts` | OTP attempt ceiling reached — code locked | Show "resend" button to issue a fresh code |
+| 2 | `429 too_many_requests` | OTP attempt ceiling reached — code locked | Show "resend" button to issue a fresh code |
 | 2 | `429 rate_limited` | Shared IP limit exceeded (3 req / 10 min across both endpoints) | Show `Retry-After` countdown |
 
 ---

@@ -2,9 +2,12 @@ package token
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/respond"
@@ -84,22 +87,39 @@ func Auth(secret string, blocklist kvstore.TokenBlocklist, userStore kvstore.Sto
 			}
 
 			// 3b. Per-user block check (written by reset-password after a successful
-			// reset). Fail closed on transient errors so a KV hiccup does not leave
-			// pre-reset tokens valid for their remaining TTL.
+			// reset). The value is a Unix timestamp recording when the block was
+			// placed. Only tokens whose iat ≤ blockTime are rejected; tokens minted
+			// after the reset (fresh logins) have iat > blockTime and pass through.
+			// Fail closed on transient errors or unparseable values.
 			if userStore != nil {
-				userBlocked, ubErr := userStore.Exists(r.Context(), "pr_blocked_user:"+claims.Subject)
-				if ubErr != nil {
+				blockVal, ubErr := userStore.Get(r.Context(), "pr_blocked_user:"+claims.Subject)
+				if ubErr == nil {
+					// Key exists — parse the stored timestamp.
+					blockUnix, parseErr := strconv.ParseInt(blockVal, 10, 64)
+					if parseErr != nil {
+						// Unrecognised format (e.g. legacy "1" entry) — fail closed.
+						slog.ErrorContext(r.Context(), "token.Auth: user block value unrecognised",
+							"user_id", claims.Subject, "value", blockVal)
+						respond.Error(w, http.StatusUnauthorized, "token_revoked",
+							"access token has been revoked")
+						return
+					}
+					// Block only tokens issued at or before the reset timestamp.
+					if claims.IssuedAt == nil || !claims.IssuedAt.Time.After(time.Unix(blockUnix, 0)) {
+						respond.Error(w, http.StatusUnauthorized, "token_revoked",
+							"access token has been revoked")
+						return
+					}
+					// Token was issued after the reset — not blocked, continue.
+				} else if !errors.Is(ubErr, kvstore.ErrNotFound) {
+					// Transient error — fail closed.
 					slog.ErrorContext(r.Context(), "token.Auth: user block check error",
 						"user_id", claims.Subject, "error", ubErr)
 					respond.Error(w, http.StatusUnauthorized, "token_revoked",
 						"access token has been revoked")
 					return
 				}
-				if userBlocked {
-					respond.Error(w, http.StatusUnauthorized, "token_revoked",
-						"access token has been revoked")
-					return
-				}
+				// ErrNotFound → key absent → not blocked.
 			}
 
 			// 4. Inject claims into context and continue.

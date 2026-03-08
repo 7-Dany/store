@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,7 +35,12 @@ func (b *userBlocklist) Block(ctx context.Context, userID string) error {
 	if b.store == nil {
 		return nil
 	}
-	return b.store.Set(ctx, "pr_blocked_user:"+userID, "1", b.ttl)
+	// Store the block Unix timestamp instead of a static "1" so the middleware
+	// can compare it against the token's iat claim. Tokens minted after the
+	// reset (fresh logins) will have iat > blockTime and are allowed through;
+	// tokens issued before the reset remain blocked for the full TTL window.
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	return b.store.Set(ctx, "pr_blocked_user:"+userID, ts, b.ttl)
 }
 
 // Servicer is the subset of the service that the handler requires.

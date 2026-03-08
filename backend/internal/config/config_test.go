@@ -21,8 +21,8 @@ func validBaseConfig() *Config {
 		SMTPFrom:            "no-reply@example.com",
 		OTPValidMinutes:     15,
 		AllowedOrigins:      []string{"http://localhost:3000"},
-		JWTAccessSecret:     "abcdef1234567890abcdef1234567890ab",          // 34 unique chars
-		JWTRefreshSecret:    "1234567890abcdef1234567890abcdef12",          // distinct, unique chars
+		JWTAccessSecret:     "abcdef1234567890abcdef1234567890ab",                                // 34 unique chars
+		JWTRefreshSecret:    "1234567890abcdef1234567890abcdef12",                                // distinct, unique chars
 		TokenEncryptionKey:  "a1b2c3d4e5f67890abcdef1234567890a1b2c3d4e5f67890abcdef1234567890", // 64 hex chars
 		MailWorkers:         4,
 		MailDeliveryTimeout: 30 * time.Second,
@@ -32,6 +32,12 @@ func validBaseConfig() *Config {
 		DBMaxConnLifetime:   30 * time.Minute,
 		DBMaxConnIdle:       5 * time.Minute,
 		DBHealthCheck:       1 * time.Minute,
+		// OAuth
+		GoogleClientID:     "fake-google-client-id.apps.googleusercontent.com",
+		GoogleClientSecret: "fake-google-client-secret",
+		GoogleRedirectURI:  "http://localhost:8080/api/v1/oauth/google/callback",
+		OAuthSuccessURL:    "http://localhost:3000/dashboard",
+		OAuthErrorURL:      "http://localhost:3000/login",
 	}
 }
 
@@ -63,6 +69,66 @@ func TestConfigValidate_RejectsMissingTokenEncryptionKey(t *testing.T) {
 	}
 }
 
+func TestConfigValidate_RejectsMissingGoogleClientID(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.GoogleClientID = ""
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for missing GOOGLE_CLIENT_ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOOGLE_CLIENT_ID") {
+		t.Errorf("error should mention GOOGLE_CLIENT_ID, got: %v", err)
+	}
+}
+
+func TestConfigValidate_RejectsMissingGoogleClientSecret(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.GoogleClientSecret = ""
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for missing GOOGLE_CLIENT_SECRET, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOOGLE_CLIENT_SECRET") {
+		t.Errorf("error should mention GOOGLE_CLIENT_SECRET, got: %v", err)
+	}
+}
+
+func TestConfigValidate_RejectsMissingGoogleRedirectURI(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.GoogleRedirectURI = ""
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for missing GOOGLE_REDIRECT_URI, got nil")
+	}
+	if !strings.Contains(err.Error(), "GOOGLE_REDIRECT_URI") {
+		t.Errorf("error should mention GOOGLE_REDIRECT_URI, got: %v", err)
+	}
+}
+
+func TestConfigValidate_RejectsMissingOAuthSuccessURL(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.OAuthSuccessURL = ""
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for missing OAUTH_SUCCESS_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "OAUTH_SUCCESS_URL") {
+		t.Errorf("error should mention OAUTH_SUCCESS_URL, got: %v", err)
+	}
+}
+
+func TestConfigValidate_RejectsMissingOAuthErrorURL(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.OAuthErrorURL = ""
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for missing OAUTH_ERROR_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "OAUTH_ERROR_URL") {
+		t.Errorf("error should mention OAUTH_ERROR_URL, got: %v", err)
+	}
+}
+
 func TestConfigValidate_ReportsAllMissingFieldsAtOnce(t *testing.T) {
 	cfg := &Config{
 		AppEnv:           "development",
@@ -77,7 +143,12 @@ func TestConfigValidate_ReportsAllMissingFieldsAtOnce(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for multiple missing fields, got nil")
 	}
-	for _, field := range []string{"DATABASE_URL", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM", "TOKEN_ENCRYPTION_KEY"} {
+	for _, field := range []string{
+		"DATABASE_URL", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
+		"TOKEN_ENCRYPTION_KEY",
+		"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI",
+		"OAUTH_SUCCESS_URL", "OAUTH_ERROR_URL",
+	} {
 		if !strings.Contains(err.Error(), field) {
 			t.Errorf("error should mention %s, got: %v", field, err)
 		}
@@ -680,8 +751,8 @@ func TestConfigValidate_AcceptsValidCIDRTrustedProxies(t *testing.T) {
 func TestConfigValidate_RejectsInvalidCIDRTrustedProxies(t *testing.T) {
 	cases := []string{
 		"not-a-cidr",
-		"10.0.0.0",         // plain IP, not CIDR
-		"10.0.0.0/8,bad",  // valid then invalid
+		"10.0.0.0",        // plain IP, not CIDR
+		"10.0.0.0/8,bad", // valid then invalid
 	}
 	for _, cidr := range cases {
 		cfg := validBaseConfig()
@@ -801,6 +872,12 @@ func setLoadEnv(t *testing.T) func() {
 		"JWT_ACCESS_SECRET":    "abcdef1234567890abcdef1234567890ab",
 		"JWT_REFRESH_SECRET":   "1234567890abcdef1234567890abcdef12",
 		"TOKEN_ENCRYPTION_KEY": "a1b2c3d4e5f67890abcdef1234567890a1b2c3d4e5f67890abcdef1234567890",
+		// OAuth
+		"GOOGLE_CLIENT_ID":     "fake-google-client-id.apps.googleusercontent.com",
+		"GOOGLE_CLIENT_SECRET": "fake-google-client-secret",
+		"GOOGLE_REDIRECT_URI":  "http://localhost:8080/api/v1/oauth/google/callback",
+		"OAUTH_SUCCESS_URL":    "http://localhost:3000/dashboard",
+		"OAUTH_ERROR_URL":      "http://localhost:3000/login",
 	}
 	keys := make([]string, 0, len(vars))
 	for k, v := range vars {
@@ -936,6 +1013,8 @@ func TestLoad_ReturnsErrorOnMissingRequired(t *testing.T) {
 		"DATABASE_URL", "SMTP_HOST", "SMTP_USERNAME",
 		"SMTP_PASSWORD", "SMTP_FROM", "ALLOWED_ORIGINS",
 		"JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET", "TOKEN_ENCRYPTION_KEY",
+		"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI",
+		"OAUTH_SUCCESS_URL", "OAUTH_ERROR_URL",
 	} {
 		t.Setenv(key, "")
 	}
@@ -946,6 +1025,29 @@ func TestLoad_ReturnsErrorOnMissingRequired(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "DATABASE_URL") {
 		t.Errorf("error should mention DATABASE_URL, got: %v", err)
+	}
+}
+
+func TestLoad_ParsesOAuthFieldsFromEnv(t *testing.T) {
+	setLoadEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.GoogleClientID != "fake-google-client-id.apps.googleusercontent.com" {
+		t.Errorf("GoogleClientID = %q, want fake-google-client-id.apps.googleusercontent.com", cfg.GoogleClientID)
+	}
+	if cfg.GoogleClientSecret != "fake-google-client-secret" {
+		t.Errorf("GoogleClientSecret = %q, want fake-google-client-secret", cfg.GoogleClientSecret)
+	}
+	if cfg.GoogleRedirectURI != "http://localhost:8080/api/v1/oauth/google/callback" {
+		t.Errorf("GoogleRedirectURI = %q, unexpected", cfg.GoogleRedirectURI)
+	}
+	if cfg.OAuthSuccessURL != "http://localhost:3000/dashboard" {
+		t.Errorf("OAuthSuccessURL = %q, unexpected", cfg.OAuthSuccessURL)
+	}
+	if cfg.OAuthErrorURL != "http://localhost:3000/login" {
+		t.Errorf("OAuthErrorURL = %q, unexpected", cfg.OAuthErrorURL)
 	}
 }
 
@@ -1107,7 +1209,7 @@ func TestConfigValidate_RejectsCRLFInSMTPFrom(t *testing.T) {
 		cfg := validBaseConfig()
 		cfg.SMTPFrom = from
 		if err := cfg.validate(); err == nil {
-			t.Errorf("expected error for SMTPFrom=%q with CRLF, got nil", from)
+			t.Errorf("expected error for SmtpFrom=%q with CRLF, got nil", from)
 		}
 	}
 }
@@ -1236,12 +1338,12 @@ func TestTrimAppName_StripsQuotes(t *testing.T) {
 		want  string
 	}{
 		{`"Vend"`, "Vend"},          // double-quoted .env value
-		{`Vend`, "Vend"},             // unquoted
-		{`  Vend  `, "Vend"},         // whitespace only
-		{`  "Vend"  `, "Vend"},       // whitespace + quotes
+		{`Vend`, "Vend"},            // unquoted
+		{`  Vend  `, "Vend"},        // whitespace only
+		{`  "Vend"  `, "Vend"},      // whitespace + quotes
 		{`"Acme Corp"`, "Acme Corp"}, // quoted with space inside
 		{`""`, ""},                   // empty quoted string → empty (caught by validate)
-		{``, ""},                      // truly empty
+		{``, ""},                     // truly empty
 		{`"`, `"`},                   // single quote, not a pair → unchanged
 	}
 	for _, tc := range cases {

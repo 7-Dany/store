@@ -52,6 +52,7 @@ internal/
   config/         # Env-based config
   db/             # SQLC-generated queries
   domain/auth/    # Auth feature modules (login, register, password, session, …)
+  domain/oauth/   # OAuth providers (Google, …)
   platform/       # Shared utilities (token, mailer, ratelimit, crypto, kvstore)
   server/         # HTTP server + route registration
 sql/
@@ -71,3 +72,58 @@ Copy `.env.example` to `.env` and set at minimum:
 - `JWT_ACCESS_SECRET` + `JWT_REFRESH_SECRET` (generate with `openssl rand -hex 32`)
 - `SMTP_*` credentials for transactional email
 - `ALLOWED_ORIGINS` for CORS
+- `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REDIRECT_URI` (see below)
+
+## Google OAuth Setup
+
+The API supports Google OAuth 2.0 (login, register, and account linking). Follow these steps to configure your credentials.
+
+### 1. Create a Google Cloud project
+
+Go to [console.cloud.google.com](https://console.cloud.google.com), create a new project (or select an existing one).
+
+### 2. Configure the OAuth consent screen
+
+Navigate to **APIs & Services → OAuth consent screen**:
+
+- **User type** — choose **External** (allows any Google account, not just your org)
+- Fill in **App name**, **User support email**, and **Developer contact email**
+- Under **Scopes**, add: `openid`, `email`, `profile` — these are non-sensitive and require no Google review
+- Leave everything else at defaults and save
+
+> The app starts in **Testing** mode. You'll see a "Google hasn't verified this app" warning during the OAuth flow — this is normal in development. Publish the app when you're ready for production.
+
+### 3. Create an OAuth 2.0 Client ID
+
+Navigate to **APIs & Services → Credentials → Create Credentials → OAuth 2.0 Client ID**:
+
+- **Application type** — Web application
+- **Authorized JavaScript origins** — leave empty (the flow is server-side; the browser never calls Google directly)
+- **Authorized redirect URIs** — add:
+  ```
+  http://localhost:8080/api/v1/oauth/google/callback
+  ```
+  For production, also add:
+  ```
+  https://api.yourdomain.com/api/v1/oauth/google/callback
+  ```
+
+Click **Create**. Copy the **Client ID** and **Client Secret** from the dialog that appears (the secret is shown once).
+
+### 4. Add credentials to `.env`
+
+```env
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-your-client-secret
+
+# Must exactly match the redirect URI registered above
+GOOGLE_REDIRECT_URI=http://localhost:8080/api/v1/oauth/google/callback
+
+# Frontend URL to redirect to after a successful OAuth login/register/link
+OAUTH_SUCCESS_URL=http://localhost:3000/dashboard
+
+# Frontend URL to redirect to on failure (?error=<code> is appended)
+OAUTH_ERROR_URL=http://localhost:3000/login
+```
+
+> The `GOOGLE_REDIRECT_URI` value must be **character-for-character identical** to what is registered in the Google Cloud Console. Any mismatch causes a `redirect_uri_mismatch` error from Google.

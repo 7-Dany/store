@@ -126,6 +126,30 @@ type Config struct {
 	// Operators must supply a valid key on every deployment in preparation for
 	// that feature going live.
 	TokenEncryptionKey string
+
+	// ── OAuth ─────────────────────────────────────────────────
+	// GoogleClientID is the OAuth 2.0 client ID issued by the Google Cloud Console.
+	// Required.
+	GoogleClientID string
+	// GoogleClientSecret is the OAuth 2.0 client secret. Keep out of version control.
+	// Required.
+	GoogleClientSecret string
+	// GoogleRedirectURI is the callback URL registered in the Google Cloud Console.
+	// Must exactly match one of the authorised redirect URIs for the client.
+	// Example: http://localhost:8080/api/v1/oauth/google/callback
+	// Required.
+	GoogleRedirectURI string
+	// OAuthSuccessURL is the frontend URL the callback redirects to on success
+	// (login, register, or link). Session cookies are set on the API domain before
+	// the redirect — no query params are appended.
+	// Example: http://localhost:3000/dashboard
+	// Required.
+	OAuthSuccessURL string
+	// OAuthErrorURL is the frontend URL the callback redirects to on failure.
+	// The handler appends ?error=<code> so the SPA can display a user-facing message.
+	// Example: http://localhost:3000/login
+	// Required.
+	OAuthErrorURL string
 }
 
 // Load reads every environment variable, applies defaults, validates required
@@ -172,6 +196,13 @@ func Load() (*Config, error) {
 
 		// Security
 		TokenEncryptionKey: os.Getenv("TOKEN_ENCRYPTION_KEY"),
+
+		// OAuth
+		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
+		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
+		GoogleRedirectURI:  os.Getenv("GOOGLE_REDIRECT_URI"),
+		OAuthSuccessURL:    os.Getenv("OAUTH_SUCCESS_URL"),
+		OAuthErrorURL:      os.Getenv("OAUTH_ERROR_URL"),
 	}
 
 	// Parse ALLOWED_ORIGINS before validation so the required-field check
@@ -233,6 +264,11 @@ func (c *Config) validate() error {
 		{"JWT_ACCESS_SECRET", c.JWTAccessSecret},
 		{"JWT_REFRESH_SECRET", c.JWTRefreshSecret},
 		{"TOKEN_ENCRYPTION_KEY", c.TokenEncryptionKey},
+		{"GOOGLE_CLIENT_ID", c.GoogleClientID},
+		{"GOOGLE_CLIENT_SECRET", c.GoogleClientSecret},
+		{"GOOGLE_REDIRECT_URI", c.GoogleRedirectURI},
+		{"OAUTH_SUCCESS_URL", c.OAuthSuccessURL},
+		{"OAUTH_ERROR_URL", c.OAuthErrorURL},
 	}
 
 	var missing []string

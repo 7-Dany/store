@@ -144,6 +144,18 @@ const (
 	// EventEmailChanged is emitted when a user's email address is successfully updated.
 	// The metadata field contains old_email and new_email.
 	EventEmailChanged EventType = "email_changed"
+
+	// EventOAuthLogin is emitted when a user successfully authenticates or registers
+	// via an OAuth provider. The metadata field contains provider and new_user (bool).
+	EventOAuthLogin EventType = "oauth_login"
+
+	// EventOAuthLinked is emitted when an OAuth identity is linked to an existing
+	// authenticated account (link mode). The metadata field contains provider.
+	EventOAuthLinked EventType = "oauth_linked"
+
+	// EventOAuthUnlinked is emitted when an OAuth identity is removed from a user
+	// account via DELETE /oauth/{provider}/unlink.
+	EventOAuthUnlinked EventType = "oauth_unlinked"
 )
 
 // AllEvents returns a slice of every audit event constant defined in this package.
@@ -182,5 +194,8 @@ func AllEvents() []EventType {
 		EventEmailChanged,
 		EventEmailChangeVerifyAttemptFailed,
 		EventEmailChangeConfirmAttemptFailed,
+		EventOAuthLogin,
+		EventOAuthLinked,
+		EventOAuthUnlinked,
 	}
 }

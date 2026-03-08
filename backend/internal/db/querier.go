@@ -8,6 +8,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -63,6 +64,7 @@ type Querier interface {
 	// The DB constraint chk_ott_ev_ttl_max caps the TTL at 15 minutes (see 001_core.sql).
 	// The authoritative TTL value lives in config.Config.OTPValidMinutes (env: OTP_VALID_MINUTES).
 	CreateEmailVerificationToken(ctx context.Context, arg CreateEmailVerificationTokenParams) (CreateEmailVerificationTokenRow, error)
+	CreateOAuthUser(ctx context.Context, arg CreateOAuthUserParams) (uuid.UUID, error)
 	// Issues a new password_reset OTP token with a caller-controlled TTL and max 3 attempts.
 	// Caller must call InvalidateAllUserPasswordResetTokens first (within the same
 	// transaction) to void any outstanding unused tokens.
@@ -91,6 +93,7 @@ type Querier interface {
 	// Opens a new login session row. The returned id is embedded in JWT claims and
 	// stored on the refresh_token row so tokens can be tied back to a specific device session.
 	CreateUserSession(ctx context.Context, arg CreateUserSessionParams) (CreateUserSessionRow, error)
+	DeleteUserIdentity(ctx context.Context, arg DeleteUserIdentityParams) (int64, error)
 	// Closes every open session for the user.
 	// Called in the same transaction as RevokeAllUserRefreshTokens so the token ledger
 	// and the session list stay consistent.
@@ -121,6 +124,11 @@ type Querier interface {
 	// ORDER BY created_at DESC, id DESC picks the most recent valid token.
 	// FOR UPDATE prevents concurrent double-use (two simultaneous correct submissions).
 	GetEmailVerificationToken(ctx context.Context, email string) (GetEmailVerificationTokenRow, error)
+	// oauth.sql — queries for the OAuth domain (Google provider).
+	// Appended to by future providers (Telegram). Do not merge into auth.sql.
+	// ── OAuth Identity ──
+	GetIdentityByProviderUID(ctx context.Context, arg GetIdentityByProviderUIDParams) (GetIdentityByProviderUIDRow, error)
+	GetIdentityByUserAndProvider(ctx context.Context, arg GetIdentityByUserAndProviderParams) (GetIdentityByUserAndProviderRow, error)
 	// Returns created_at of the most recent active (used_at IS NULL) email_change_verify
 	// token for this user. Used by the service to enforce the 2-minute cooldown
 	// before allowing a new request-change call.
@@ -159,6 +167,9 @@ type Querier interface {
 	// ORDER BY created_at DESC, id DESC picks the most recently issued token.
 	// FOR UPDATE prevents concurrent double-consumption.
 	GetUnlockToken(ctx context.Context, email string) (GetUnlockTokenRow, error)
+	// ── OAuth User ──
+	GetUserAuthMethods(ctx context.Context, userID pgtype.UUID) (GetUserAuthMethodsRow, error)
+	GetUserByEmailForOAuth(ctx context.Context, email pgtype.Text) (GetUserByEmailForOAuthRow, error)
 	// Returns email_verified for a user looked up by email.
 	// NOTE: called by store tests only — not used in production store code.
 	// Used to assert that VerifyEmailTx actually flipped the flag without
@@ -184,6 +195,7 @@ type Querier interface {
 	//   username branch → idx_users_username (partial unique on username WHERE NOT NULL)
 	// Postgres evaluates both OR branches and uses whichever index is available.
 	GetUserForLogin(ctx context.Context, identifier pgtype.Text) (GetUserForLoginRow, error)
+	GetUserForOAuthCallback(ctx context.Context, userID pgtype.UUID) (GetUserForOAuthCallbackRow, error)
 	// Fetches the minimal fields needed to gate a password-reset request.
 	// Returns the row regardless of lock state so the service can make its own
 	// anti-enumeration decision without leaking information about account state.
@@ -359,6 +371,7 @@ type Querier interface {
 	// Called by UpdateProfileTx after input validation in the handler confirms
 	// at least one field is non-nil.
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
+	UpsertUserIdentity(ctx context.Context, arg UpsertUserIdentityParams) (UserIdentity, error)
 }
 
 var _ Querier = (*Queries)(nil)

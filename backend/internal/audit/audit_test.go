@@ -127,6 +127,9 @@ func TestEventConstants_ExactValues(t *testing.T) {
 		{audit.EventEmailChanged, "email_changed"},
 		{audit.EventEmailChangeVerifyAttemptFailed, "email_change_verify_attempt_failed"},
 		{audit.EventEmailChangeConfirmAttemptFailed, "email_change_confirm_attempt_failed"},
+		{audit.EventOAuthLogin,    "oauth_login"},
+		{audit.EventOAuthLinked,   "oauth_linked"},
+		{audit.EventOAuthUnlinked, "oauth_unlinked"},
 	}
 
 	// Enforce exhaustiveness: AllEvents() must contain exactly as many entries

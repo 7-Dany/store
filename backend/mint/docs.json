@@ -40,7 +40,8 @@
               "guides/auth/registration-flow",
               "guides/auth/session-lifecycle",
               "guides/auth/account-unlock-flow",
-              "guides/auth/password-reset-flow"
+              "guides/auth/password-reset-flow",
+              "guides/auth/google-oauth-flow"
             ]
           },
           {
@@ -79,6 +80,15 @@
               "api-reference/auth/password/verify-reset-code",
               "api-reference/auth/password/reset-password",
               "api-reference/auth/password/change-password"
+            ]
+          },
+          {
+            "group": "OAuth",
+            "icon": "google",
+            "pages": [
+              "api-reference/oauth/google/initiate",
+              "api-reference/oauth/google/callback",
+              "api-reference/oauth/google/unlink"
             ]
           },
           {

@@ -97,8 +97,20 @@ type Deps struct {
 	// ── Crypto ────────────────────────────────────────────────────────────────
 	// Encryptor is the AES-256-GCM encryptor for OAuth tokens at rest.
 	// It is pre-wired from TOKEN_ENCRYPTION_KEY at startup so the key is
-	// validated on every deployment. No active route consumes it yet;
-	// it will be injected into the OAuth token-storage layer once that
-	// feature ships. See config.Config.TokenEncryptionKey for context.
+	// validated on every deployment. See config.Config.TokenEncryptionKey for context.
 	Encryptor *crypto.Encryptor
+
+	// ── OAuth ─────────────────────────────────────────────────────────────────
+	// OAuth holds the Google OAuth 2.0 config values threaded from config.Config.
+	// Consumed by the oauth domain assembler to construct the provider and handler.
+	OAuth OAuthConfig
+}
+
+// OAuthConfig holds the Google OAuth 2.0 configuration values.
+type OAuthConfig struct {
+	GoogleClientID     string
+	GoogleClientSecret string
+	GoogleRedirectURI  string
+	SuccessURL         string
+	ErrorURL           string
 }

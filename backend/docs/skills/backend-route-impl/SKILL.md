@@ -205,11 +205,27 @@ is unclear or missing.
 
 ### Stage 5 — Audit
 
-| File | Required / If needed |
-|---|---|
-| All Stage 1–4 production files + test files for this feature | Required (full read) |
-| `0-design.md` | Required (source of truth) |
-| `RULES.md §3.13` | Required |
+Read the following before writing the audit prompt. Each file maps to a specific
+reviewer role — read them in order and note what each role will focus on.
+
+| File | Role that needs it | What to extract |
+|---|---|---|
+| `docs/prompts/{feature}/context.md` | All roles | Resolved paths, decisions, KV prefixes, test case IDs |
+| `docs/prompts/{feature}/0-design.md` — §5 guard ordering + §7 test inventory | All roles | Source of truth for guard order + every expected test case |
+| `{feature}/handler.go` | Security + Go Engineer + Test Coverage | Guard ordering, error mapping, cookie logic |
+| `{feature}/routes.go` | Go Engineer + Platform | Rate-limiter wiring, middleware order, route pattern |
+| `{domain}/routes.go` (domain assembler) | Platform | Return type, AllowContentType usage, mount pattern |
+| `{feature}/service.go` | Security + Go Engineer | context.WithoutCancel audit, error wrapping |
+| `{feature}/models.go` | Go Engineer | Type correctness, KV state struct |
+| `{feature}/errors.go` + `shared/errors.go` | Security + Go Engineer | Sentinel package ownership |
+| `internal/audit/audit.go` — const block + AllEvents() | Security + Platform | Verify all new events are declared and exported |
+| `internal/platform/token/cookie.go` | Security + Platform | SetRefreshCookie signature and flags |
+| `internal/platform/token/jwt.go` | Security + Platform | ParseAccessToken vs JWTSubjectExtractor distinction |
+| `internal/platform/kvstore/store.go` | Platform | Store interface methods used in handler |
+| `internal/platform/respond/respond.go` | Platform | Canonical response helpers |
+| `docs/RULES.md` — §3.10 + §3.13 | Go Engineer + Platform | HTTP layer rules + test checklist |
+| `{feature}/handler_test.go` | Test Coverage | Which T-NN cases are present vs missing |
+| Analogous `handler.go` from another domain | Go Engineer | Convention baseline (read head 60 lines only) |
 
 ### Stage 8 — Docs
 
@@ -241,6 +257,35 @@ to the current stage (see Step 3 lists above).
 
 For stages 0–5 and 8, produce the completed stage prompt document. The stage
 prompt is the deliverable — do not implement code in this session.
+
+For Stage 5 specifically, produce a **multi-role audit prompt** following the
+structure in §Appendix B. Do NOT write a flat checklist or a single-perspective
+review. The prompt must have exactly four parts, each written from a distinct
+reviewer role:
+
+| Part | Role | Primary focus |
+|---|---|---|
+| 1 | Security Engineer | OAuth/OIDC protocol, secrets, cookies, PKCE, CSRF, audit logs, information leakage |
+| 2 | Go Senior Engineer | Error wrapping, guard ordering vs spec, concurrency/shutdown, interface correctness, idioms |
+| 3 | Platform Compliance Reviewer | Correct use of every `internal/platform/` abstraction; route shape conventions |
+| 4 | Test Coverage Reviewer | `[x]` / `[❌]` checklist of every T-NN case from Stage 0 §7; missing tests flagged |
+
+**How to fill in each part from the files you read:**
+- Part 1 checklist items — derive from the feature’s auth/security decisions in `context.md` (D-xx entries) and `0-design.md §5`.
+- Part 2 guard-ordering tables — copy guard steps verbatim from `0-design.md §5` (one sub-section per handler method).
+- Part 3 platform table — populate rows based on what platform helpers the feature’s handler actually calls; mark N/A for concerns that don’t apply (e.g. body decode for a GET endpoint).
+- Part 4 T-NN table — copy every test case from `context.md §Test case IDs` and `0-design.md §7`; mark `[x]` only for cases that are already present in the current `handler_test.go`; mark `[❌]` for all others.
+
+**Sync checklist** at the end of every Stage 5 prompt must list:
+- All Part 1 Critical/High findings resolved
+- All Part 2 guard-ordering deviations corrected
+- All Part 3 platform violations corrected
+- All Part 4 `[❌]` missing tests added
+- `go build ./...` passes
+- `go vet ./...` passes
+- `go test` for the feature package green
+
+See §Appendix B for the full template.
 
 For Stage 0 specifically, produce the full design doc including:
 - HTTP contract (§2): every endpoint, every error code, exact status + code string
@@ -413,4 +458,219 @@ Write this file immediately after Stage 0. Keep it under 80 lines.
 - S-layer: T-01 to T-{N}
 - H-layer: T-{N+1} to T-{M}
 - I-layer: T-{M+1} to T-{K}
+```
+
+---
+
+## Appendix B — Stage 5 Audit Prompt Template
+
+Copy this template and fill in every `{placeholder}` from the files read in
+Step 3. Leave no placeholder unfilled. The four parts are mandatory and must
+appear in order. Do not add extra sections or collapse parts.
+
+---
+
+```markdown
+# {Feature} — Stage 5: Audit Review
+
+**Feature:** {Feature} (§{section})
+**Package:** `{package path}`
+**Depends on:** Stage 4 complete — all production files compile.
+`go build ./{package path}/...` passes. All H-layer unit tests green.
+
+---
+
+## Instructions for the reviewer
+
+You are performing a structured multi-role audit of the {Feature} HTTP layer.
+
+**Before writing anything, read these files in full:**
+
+1. `docs/prompts/{feature}/context.md` — resolved paths, decisions, sentinel names, rate-limit prefixes, test case IDs
+2. `docs/prompts/{feature}/0-design.md` — full Stage 0 design spec (§5 guard ordering, §7 test cases)
+3. `{feature}/handler.go`
+4. `{feature}/routes.go`
+5. `{domain}/routes.go` (domain assembler)
+6. `{feature}/models.go`
+7. `{feature}/errors.go`
+8. `{feature}/service.go`
+9. `{shared errors file}`
+10. `internal/audit/audit.go` — `const` block + `AllEvents()`
+11. `internal/platform/token/cookie.go`
+12. `internal/platform/token/jwt.go`
+13. `internal/platform/kvstore/store.go`
+14. `internal/platform/respond/respond.go`
+15. `docs/RULES.md`
+
+Produce **exactly four parts**, in order. Each part is written from the
+perspective of a different reviewer role. No extra sections.
+
+---
+
+## Part 1 — Security Engineer
+
+*Focus: {feature-specific security concerns — e.g. for OAuth: PKCE integrity,
+state CSRF, cookie flags, token delivery, lock enforcement, audit logging,
+OIDC provider setup; for password flows: timing invariants, hash algorithm,
+bcrypt-in-tx prohibition; for session flows: token rotation, reuse detection}*
+
+For each finding, produce one entry:
+
+```
+SEVERITY    Critical | High | Medium | Low | Info
+LOCATION    <file>:<function or line>
+FINDING     <one-sentence description>
+IMPACT      <what an attacker or buggy client could do if unfixed>
+FIX         <what to change and why>
+```
+
+Cover **every item** in this checklist — report ✓ (pass) or a finding for each:
+
+### 1.1 {Security area 1 — e.g. PKCE Integrity / Token Hashing / State Validation}
+{Derive checklist items from 0-design.md §5 security decisions and context.md D-xx entries.
+One checkbox per verifiable security property. Examples:
+- [ ] {specific cryptographic requirement from spec}
+- [ ] {specific secret handling requirement}
+- [ ] {specific client-disconnect / WithoutCancel requirement}
+}
+
+### 1.2 {Security area 2 — e.g. Cookie Security / Credential Storage}
+- [ ] {item}
+
+### 1.3 {Security area 3 — e.g. Audit Logging (D-17 equivalent)}
+- [ ] Every {action} writes {EventName} via `context.WithoutCancel`
+- [ ] A client disconnect cannot abort any of the {N} audit writes
+
+### 1.4 {Security area 4 — e.g. Error Information Leakage}
+- [ ] {item}
+
+---
+
+## Part 2 — Go Senior Engineer
+
+*Focus: idiomatic Go, error handling discipline, guard ordering correctness,
+concurrency and shutdown, interface satisfaction, import hygiene, code clarity.*
+
+Use the same finding format as Part 1.
+
+Cover **every item** in this checklist:
+
+### 2.1 Error Handling
+- [ ] All `fmt.Errorf` wrapping uses `%w` (not `%v`) so `errors.Is` chains work
+- [ ] No sentinel defined in wrong package
+- [ ] `errors.Is` used for all sentinel comparisons — no `==` on error values
+- [ ] No service error silently swallowed in default branch
+- [ ] Default branch logs via `slog.ErrorContext` before responding
+
+### 2.2 Guard Ordering
+Compare each handler method in `handler.go` against `0-design.md §5` line-by-line.
+Create one sub-section per handler method:
+
+**{MethodName} (§{design-section}):**
+{Copy the guard steps from 0-design.md verbatim, then add a checkbox for each:
+- [ ] Step N: {guard description} — verify it fires at this position, not earlier/later
+}
+
+### 2.3 Concurrency and Shutdown
+- [ ] Every `go limiter.StartCleanup(ctx)` passes the application root `ctx` — not `context.Background()`
+- [ ] No goroutines ignore `ctx.Done()` (shutdown bug per §2.6)
+- [ ] No shared mutable state accessed across goroutines without synchronisation
+
+### 2.4 Interface Satisfaction
+- [ ] {Confirm each interface declared in the package has a compile-time check or is registered directly}
+- [ ] {Confirm injected dependencies satisfy their local interface}
+
+### 2.5 Package and Import Hygiene
+- [ ] No production file imports a `testutil` / `_test` package
+- [ ] No circular domain imports (domain packages never import each other)
+- [ ] {Any feature-specific import rules from context.md decisions}
+
+### 2.6 Code Clarity and Idioms
+- [ ] Helper functions are pure where possible (no hidden side effects)
+- [ ] Package-level constants used for magic values (TTLs, prefixes)
+- [ ] No `TODO`, `FIXME`, or `HACK` comments without an issue reference
+
+---
+
+## Part 3 — Platform Compliance Reviewer
+
+*Focus: correct and consistent use of `internal/platform/` abstractions.
+Every concern in the table must use the canonical platform helper.*
+
+For each row, state **✓ Correct**, **✗ Violation**, or **N/A**.
+For violations, add a finding entry in the same format as Part 1.
+
+| Concern | Required platform helper | Status |
+|---|---|---|
+| JSON success response | `respond.JSON` | |
+| JSON error response | `respond.Error` | |
+| 204 No Content | `respond.NoContent` | |
+| Request body decode | `respond.DecodeJSON[T]` | |
+| Client IP extraction | `respond.ClientIP(r)` | |
+| Body size cap | `http.MaxBytesReader` + `respond.MaxBodyBytes` | |
+| Refresh token cookie | `token.SetRefreshCookie` or `token.MintTokens` (sets it internally) | |
+| Access token signing | `token.GenerateAccessToken` via `token.MintTokens` — not hand-rolled | |
+| User ID from context | `token.UserIDFromContext` | |
+| JWT parsing (best-effort) | `token.ParseAccessToken` — not `token.JWTSubjectExtractor` (rate-limiter use only) | |
+| KV get / set / delete | `kvstore.Store` interface methods | |
+| IP rate limiting | `ratelimit.NewIPRateLimiter` | |
+| User rate limiting | `ratelimit.NewUserRateLimiter` | |
+| Encryption at rest | `*crypto.Encryptor` injected via `deps.Encryptor` — not constructed in handler | |
+{Add or remove rows that don't apply to this feature.}
+
+Additionally verify:
+- [ ] Domain assembler `{domain}/routes.go` returns `*chi.Mux` — matches `auth.Routes` / `profile.Routes` pattern
+- [ ] Feature `routes.go` has signature `func Routes(ctx, r chi.Router, deps *app.Deps)` — no return value
+- [ ] `{AllowContentType rule from context.md D-xx}` is respected or correctly omitted
+- [ ] All audit event constants appear in `AllEvents()` in `internal/audit/audit.go`
+- [ ] All KV prefix strings match `context.md` exactly: {list prefixes}
+
+---
+
+## Part 4 — Test Coverage Reviewer
+
+*Focus: identify every untested path in `handler.go`. Mark existing tests,
+flag missing tests, and explain structurally unreachable branches.*
+
+Cross-reference `handler_test.go` against the complete handler source.
+
+Structure your output as:
+
+```
+### handler.go
+
+#### {MethodName} — unit tests (no build tag)
+- [x/❌] T-NN: {scenario} → {expected outcome}
+
+#### Structurally unreachable paths (no test stub needed)
+- {function}:{branch} — {reason}
+```
+
+Use `[x]` for cases already in `handler_test.go`.
+Use `[❌]` for cases that are **missing and must be added** before Stage 6.
+
+**Required test cases from Stage 0 §7 (H-layer):**
+
+| ID | Handler method | Scenario |
+|---|---|---|
+{Copy every H-layer row from 0-design.md §7 verbatim.}
+
+**Additional cases to check for (full coverage beyond T-NN list):**
+{Derive from handler source: every branch not covered by the T-NN table.}
+- {MethodName}: {branch description} → {expected outcome}
+
+---
+
+## Sync checklist before closing this stage
+
+- [ ] All Part 1 Critical and High findings resolved
+- [ ] All Part 2 guard-ordering deviations corrected
+- [ ] All Part 3 platform violations corrected
+- [ ] All Part 4 `[❌]` missing tests added to `handler_test.go`
+- [ ] `go build ./{package path}/...` passes
+- [ ] `go vet ./{package path}/...` passes
+- [ ] `go test ./{package path}/...` green — all H-layer T-NN cases pass
+
+Once all items are checked, run unit tests manually and proceed to Stage 6 when
+they pass.
 ```

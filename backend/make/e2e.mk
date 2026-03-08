@@ -15,6 +15,7 @@
 #   e2e/profile/update-profile.json     → PATCH /me (requires JWT)
 #   e2e/profile/set-password.json       → POST /set-password (requires JWT)
 #   e2e/profile/username.json             → GET /username/available + PATCH /me/username (requires JWT for PATCH)
+#   e2e/oauth/google.json               --> GET /oauth/google + GET /oauth/google/callback + DELETE /oauth/google/unlink
 #   e2e/profile/email.json              → POST /email/request-change + POST /email/verify-current + POST /email/confirm-change (requires JWT)
 #
 # e2e-password runs both password collections (forgot/reset + change) in order.
@@ -45,7 +46,7 @@ E2E_AUTH     := $(E2E_DIR)/auth
 E2E_PROFILE  := $(E2E_DIR)/profile
 E2E_DELAY    ?= 150
 
-.PHONY: e2e-install e2e e2e-health e2e-register e2e-unlock e2e-password e2e-profile e2e-auth e2e-username e2e-email _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
+.PHONY: e2e-install e2e e2e-health e2e-register e2e-unlock e2e-password e2e-profile e2e-auth e2e-username e2e-email e2e-oauth-google _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
 
 # ── Tooling ───────────────────────────────────────────────────────────────────
 
@@ -67,7 +68,7 @@ endif
 # auth_audit_log.user_id is ON DELETE CASCADE so audit rows are cleaned automatically.
 # Uses TEST_DATABASE_URL so e2e tests never touch the dev database.
 _e2e-db-clean:
-	@psql "$(TEST_DATABASE_URL)" -c "DELETE FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%';"
+	@psql "$(TEST_DATABASE_URL)" -c "DELETE FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%';"
 	@echo "[e2e] DB cleaned (e2e users removed from test DB)"
 
 # Flush Redis DB 1 (the test server's rate-limiter and blocklist store).
@@ -426,6 +427,7 @@ ifeq ($(DETECTED_OS),Windows)
 	@newman run "$(E2E_AUTH)/unlock.json" --environment "$(E2E_ENV)" --folder "rate-limiting" --delay-request $(E2E_DELAY) --reporters cli
 	@$(MAKE) e2e-password
 	@$(MAKE) e2e-profile
+	@$(MAKE) e2e-oauth-google
 	@Write-Host "[e2e] All auth suites passed" -ForegroundColor Green
 else
 	@echo "[e2e] --- POST /register ---"
@@ -488,5 +490,45 @@ else
 		--delay-request $(E2E_DELAY) --reporters cli
 	@$(MAKE) e2e-password
 	@$(MAKE) e2e-profile
+	@$(MAKE) e2e-oauth-google
 	@echo "[e2e] All auth suites passed"
+endif
+
+e2e-oauth-google: _e2e-check-env ## Run Google OAuth E2E (GET /oauth/google + callback guards + DELETE /oauth/google/unlink)
+ifeq ($(DETECTED_OS),Windows)
+	@Write-Host "[e2e] --- GET /oauth/google + GET /oauth/google/callback + DELETE /oauth/google/unlink ---" -ForegroundColor Cyan
+	@$(MAKE) _e2e-clean
+	@Write-Host "[e2e] Running: setup + initiate + callback-guards + unlink-failures + rate-limiting-unl (single invocation)" -ForegroundColor DarkGray
+	@newman run "$(E2E_DIR)/oauth/google.json" --environment "$(E2E_ENV)" --folder "setup" --folder "initiate" --folder "callback-guards" --folder "unlink-failures" --folder "rate-limiting-unl" --delay-request 1 --reporters cli
+	@Write-Host "[e2e] Flushing Redis before rate-limiting-init folder..." -ForegroundColor DarkGray
+	@$(MAKE) _e2e-kv-clean
+	@Write-Host "[e2e] Running: rate-limiting-init" -ForegroundColor DarkGray
+	@newman run "$(E2E_DIR)/oauth/google.json" --environment "$(E2E_ENV)" --folder "rate-limiting-init" --delay-request 1 --reporters cli
+	@Write-Host "[e2e] Flushing Redis before rate-limiting-cb folder..." -ForegroundColor DarkGray
+	@$(MAKE) _e2e-kv-clean
+	@Write-Host "[e2e] Running: rate-limiting-cb" -ForegroundColor DarkGray
+	@newman run "$(E2E_DIR)/oauth/google.json" --environment "$(E2E_ENV)" --folder "rate-limiting-cb" --delay-request 1 --reporters cli
+	@Write-Host "[e2e] oauth-google suite passed" -ForegroundColor Green
+else
+	@echo "[e2e] --- GET /oauth/google + GET /oauth/google/callback + DELETE /oauth/google/unlink ---"
+	@$(MAKE) _e2e-clean
+	@echo "[e2e] Running: setup + initiate + callback-guards + unlink-failures + rate-limiting-unl (single invocation)"
+	@newman run "$(E2E_DIR)/oauth/google.json" --environment "$(E2E_ENV)" \
+		--folder "setup" --folder "initiate" \
+		--folder "callback-guards" --folder "unlink-failures" \
+		--folder "rate-limiting-unl" \
+		--delay-request 1 --reporters cli
+	@echo "[e2e] Flushing Redis before rate-limiting-init folder..."
+	@$(MAKE) _e2e-kv-clean
+	@echo "[e2e] Running: rate-limiting-init"
+	@newman run "$(E2E_DIR)/oauth/google.json" --environment "$(E2E_ENV)" \
+		--folder "rate-limiting-init" \
+		--delay-request 1 --reporters cli
+	@echo "[e2e] Flushing Redis before rate-limiting-cb folder..."
+	@$(MAKE) _e2e-kv-clean
+	@echo "[e2e] Running: rate-limiting-cb"
+	@newman run "$(E2E_DIR)/oauth/google.json" --environment "$(E2E_ENV)" \
+		--folder "rate-limiting-cb" \
+		--delay-request 1 --reporters cli
+	@echo "[e2e] oauth-google suite passed"
 endif

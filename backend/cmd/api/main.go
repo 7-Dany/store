@@ -27,6 +27,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// In development, lower the log level to DEBUG so service/handler debug
+	// traces (token exchange, encryption, DB writes, session creation) are visible.
+	// In staging/production the default INFO level is kept to reduce noise.
+	if cfg.AppEnv == "development" {
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})))
+		slog.Debug("debug logging enabled", "env", cfg.AppEnv)
+	}
+
 	// ctx is cancelled on SIGINT / SIGTERM; server.New propagates it to every
 	// background goroutine (KV store cleanup, etc.).
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

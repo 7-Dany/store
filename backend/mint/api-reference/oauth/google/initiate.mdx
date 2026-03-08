@@ -1,0 +1,66 @@
+---
+title: "Initiate Google Sign-In"
+description: "Starts the Google OAuth flow by redirecting the browser to Google's sign-in page."
+api: "GET http://localhost:8080/api/v1/oauth/google"
+authMethod: "none"
+---
+
+<Callout icon="arrow-up-right-from-square" iconType="regular">
+  This endpoint responds with a browser redirect, not JSON. Navigate to it directly — do not call it with `fetch` or `XMLHttpRequest`.
+</Callout>
+
+<ParamField header="Authorization" type="string">
+  `Bearer <access_token>`. Optional. When provided with a valid access token, the
+  OAuth flow runs in **link mode** — the Google account is linked to the
+  currently signed-in user instead of creating or logging into a separate account.
+  Omit this header for normal sign-in and registration.
+</ParamField>
+
+## Behaviour
+
+**Redirect-only** — Navigating to this URL starts the sign-in process and immediately redirects the browser to Google's sign-in page. The user completes the Google authentication there and is sent back to the callback URL automatically.
+
+**No body or query parameters required** — The link to this endpoint is all that's needed. All cryptographic parameters are generated server-side and stored temporarily (10 minutes) before the redirect.
+
+**Link mode** — If the user is already signed in and your `Authorization: Bearer` header is present and valid, completing the Google sign-in will attach that Google account to the existing user profile instead of creating a new session. After a successful link, the user is redirected to the success URL with `?provider=google&action=linked` appended.
+
+**Anonymous visitors** — No authentication is required to initiate sign-in. Unauthenticated users who complete the Google flow will be signed in (if they have a matching account) or registered automatically.
+
+## Rate Limiting
+
+**20 requests per 5 minutes per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After: 15` header indicating how many seconds to wait before retrying.
+
+<ResponseExample>
+```json 302
+// 302 Found — browser is redirected to accounts.google.com
+// Location: https://accounts.google.com/o/oauth2/v2/auth?...
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="302 — Redirect to Google">
+    The browser is redirected to Google's sign-in page. This is the only success response. The user completes sign-in on Google's side and is then sent back to the callback URL automatically.
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 20 requests per 5 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

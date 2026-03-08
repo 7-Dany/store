@@ -498,6 +498,43 @@ ownership of the **new** address before the change is applied.
 
 ---
 
+## §D-1 — OAuth — Google
+
+Package: `internal/domain/auth/oauth/google/`
+
+### GET /api/v1/oauth/google (initiate)
+- [x] Generates `state` (CSRF token, short-lived KV entry)
+- [x] Generates PKCE `code_verifier` / `code_challenge`
+- [x] Redirects to Google authorization endpoint with `state`, `code_challenge`, scopes (`openid email profile`)
+
+### GET /api/v1/oauth/google/callback
+- [x] Validates `state` (CSRF check)
+- [x] Exchanges `code` for tokens; verifies ID token (signature, `aud`, `exp`)
+- [x] **New user**: creates `users` row (`email_verified = TRUE`), creates `user_identities` row, issues session + token pair
+- [x] **Existing user**: refreshes identity data, issues new session
+- [x] Stores encrypted `access_token` in `user_identities` (`enc:` prefix required)
+- [x] Audit row: `oauth_login` with `provider = 'google'`
+- [x] Failure: redirect to frontend error page; never expose raw Google errors
+- [x] Sets `oauth_access_token` cookie (`SameSite=Lax`, non-HttpOnly, 30s TTL, `path=/`) for frontend pickup
+- [x] Sets `refresh_token` cookie (`HttpOnly`, `SameSite=Strict`, `path=/api/v1/auth`)
+- [x] Redirects to frontend success URL (`OAUTH_SUCCESS_URL`) with `?provider=google&new_user=<bool>`
+
+### DELETE /api/v1/oauth/google/unlink
+- [x] Requires valid JWT
+- [x] Guard: user must have at least one other auth method (422 `last_auth_method`)
+- [x] Deletes `user_identities` row for `(user_id, 'google')`
+- [x] Audit row: `oauth_unlinked` with `provider = 'google'`
+- [x] Rate-limit: 5 req / 15 min per user (key `unl:usr:`)
+
+### Failures
+- [x] Missing or invalid `state` → redirect to frontend error page
+- [x] Google token exchange failure → redirect to frontend error page
+- [x] Unlink with no other auth method → 422 `last_auth_method`
+- [x] Unlink when identity not linked → 401 `unauthorized`
+- [x] Unauthenticated unlink attempt (missing token) → 401 `missing_token`
+- [x] Unauthenticated unlink attempt (invalid token) → 401 `invalid_token`
+
+---
 
 ## Cross-cutting / flow scenarios
 

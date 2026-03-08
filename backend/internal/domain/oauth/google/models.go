@@ -2,6 +2,7 @@
 package google
 
 import (
+	"github.com/7-Dany/store/backend/internal/audit"
 	oauthshared "github.com/7-Dany/store/backend/internal/domain/oauth/shared"
 )
 
@@ -69,4 +70,50 @@ type UpsertIdentityInput struct {
 	DisplayName   string
 	AvatarURL     string
 	AccessToken   string // must already carry "enc:" prefix
+}
+
+// OAuthLoginTxInput carries the parameters for Store.OAuthLoginTx.
+type OAuthLoginTxInput struct {
+	UserID    [16]byte
+	IPAddress string
+	UserAgent string
+	NewUser   bool // true when registering a brand-new user via OAuth
+}
+
+// OAuthRegisterTxInput carries the parameters for Store.OAuthRegisterTx.
+type OAuthRegisterTxInput struct {
+	Email         string // may be empty
+	DisplayName   string // may be empty
+	ProviderUID   string // Google subject
+	ProviderEmail string
+	AvatarURL     string
+	AccessToken   string // must already carry "enc:" prefix
+	IPAddress     string
+	UserAgent     string
+}
+
+// OAuthAuditInput carries the parameters for Store.InsertAuditLogTx.
+// Used by link and unlink flows that write their own audit row outside
+// OAuthLoginTx / OAuthRegisterTx.
+type OAuthAuditInput struct {
+	UserID    [16]byte
+	Event     audit.EventType
+	IPAddress string
+	UserAgent string
+	Metadata  map[string]any
+}
+
+// GoogleTokens holds the raw tokens returned by the Google token endpoint.
+type GoogleTokens struct {
+	IDToken     string
+	AccessToken string
+}
+
+// OAuthState is the JSON value stored in KV under "goauth:state:<state>".
+// It carries the PKCE code verifier and an optional link_user_id that
+// encodes whether the initiate request was made by an authenticated user
+// (link mode) or an anonymous visitor (login/register mode).
+type OAuthState struct {
+	CodeVerifier string `json:"code_verifier"`
+	LinkUserID   string `json:"link_user_id"` // empty string when not in link mode
 }

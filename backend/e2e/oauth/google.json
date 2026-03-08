@@ -1,0 +1,1856 @@
+{
+  "info": {
+    "_postman_id": "auth-oauth-google-e2e",
+    "name": "Auth – Google OAuth (GET /api/v1/oauth/google + callback + DELETE /api/v1/oauth/google/unlink)",
+    "description": "E2E tests for Google OAuth endpoints.\n\nFolder execution order (orchestrated by make e2e-oauth-google):\n\n  Invocation 1 (single Newman run — JWT token must survive across folders):\n    1. setup             — register gmail_test_email, fetch verification OTP from Gmail, verify email, login\n    2. initiate          — GET /oauth/google → 302 to Google; assert PKCE params; capture state UUID\n    3. callback-guards   — guard cases that do not require a real Google code (state/code missing or unknown)\n    4. unlink-failures   — auth failures + not_found for DELETE /unlink\n    5. rate-limiting-unl — register +goauthr alias, login, burst=5 exhaustion → 429 (Retry-After: 180)\n\n  Invocation 2 (after Redis flush — fresh goauth:init:ip: bucket):\n    6. rate-limiting-init — 20 warmups GET /oauth/google from 127.0.0.1 → 21st → 429 (Retry-After: 15)\n\n  Invocation 3 (after Redis flush — fresh goauth:cb:ip: bucket):\n    7. rate-limiting-cb   — 20 warmups GET /oauth/google/callback from 127.0.0.1 → 21st → 429 (Retry-After: 15)\n\nNOT covered here and why:\n  - Full callback happy path (login / register / email-match / link modes): Requires a real Google-issued\n    authorization code obtainable only through a browser OAuth flow. Covered by service_test.go T-12 to T-35\n    and store_test.go T-36 to T-38.\n  - Unlink happy path (T-39): Requires a user with a linked Google identity created via the real callback.\n    Covered by service_test.go T-39 and store_test.go T-51.\n  - last_auth_method guard (T-42, T-43): Requires a Google-only user (no password_hash). Covered by\n    service_test.go T-42 and handler_test.go T-43.\n  - oauth_access_token and refresh_token cookie flags (T-30, T-31, T-32): Covered by handler_test.go.\n  - Audit row content and DB-level metadata: Covered by store_test.go.\n  - context.WithoutCancel timing invariants (T-33, T-34, T-48): Covered by service_test.go.\n  - Individual field-level service errors: Covered by service_test.go.\n  - DB-level error injection via QuerierProxy: Covered by store_test.go.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Increment the request sequence counter and derive a unique X-Forwarded-For IP",
+          "// for every request so non-RL folders never exhaust any rate-limit bucket.",
+          "// rate-limiting-init and rate-limiting-cb override _xff to 127.0.0.1 in their",
+          "// folder prerequest so all warmup requests hit the same IP bucket.",
+          "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.' + ((n>>16)&0xff) + '.' + ((n>>8)&0xff) + '.' + (n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Registers gmail_test_email, fetches the verification OTP from Gmail, verifies the email, and logs in. Stores goauth_access_token for use by later folders.\n\nThis user is registered with a password and therefore has no linked Google identity. The unlink-failures folder uses goauth_access_token to confirm the not_found path (no Google identity linked for this user).",
+      "item": [
+        {
+          "name": "POST /register → 201 (setup account)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) {",
+                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
+                  "}",
+                  "pm.collectionVariables.set('goauth_email', email);",
+                  "pm.collectionVariables.set('goauth_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "// --- Gmail verification OTP fetch ---",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "console.log('[INFO] Done waiting. Querying Gmail API...');",
+                  "",
+                  "const goauthEmail = pm.collectionVariables.get('goauth_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + goauthEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching verification email found in Gmail.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode verification email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in verification email.'); return; }",
+                  "        pm.collectionVariables.set('goauth_vfy_code', match[1]);",
+                  "        console.log('[INFO] Verification OTP stored in goauth_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"GoauthSetup\", \"email\": \"{{goauth_email}}\", \"password\": \"{{goauth_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200 (consume verification OTP)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('goauth_vfy_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] goauth_vfy_code is empty — Gmail fetch in register step did not complete.');",
+                  "    console.error('        Check: gmail_access_token is set, token not expired, --delay-request >= 8000.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{goauth_email}}\", \"code\": \"{{goauth_vfy_code}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (store access token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('goauth_access_token', body.access_token);",
+                  "console.log('[INFO] Access token stored in goauth_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{goauth_email}}\", \"password\": \"{{goauth_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "initiate",
+      "description": "Verifies that GET /api/v1/oauth/google returns a 302 redirect to Google with correct PKCE and state parameters.\n\nAll requests must NOT follow redirects (protocolProfileBehavior.followRedirects=false). Without this, Newman follows the 302 to accounts.google.com and assertions are made against the wrong response.\n\nThe second request (authenticated) captures the state UUID from the Location header into goauth_state_from_initiate for use in the callback-guards folder.",
+      "item": [
+        {
+          "name": "GET /oauth/google (no auth) → 302 to Google",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// HandleInitiate returns 302 with Location pointing to accounts.google.com.",
+                  "// The PKCE code_challenge and state UUID are included as query params.",
+                  "// This request has no Authorization header — anonymous users can initiate OAuth.",
+                  "pm.test('status is 302', () => pm.response.to.have.status(302));",
+                  "",
+                  "const loc = pm.response.headers.get('Location');",
+                  "pm.test('Location header is present', () => pm.expect(loc).to.be.a('string').and.not.empty);",
+                  "pm.test('Location points to accounts.google.com', () => pm.expect(loc).to.include('accounts.google.com'));",
+                  "pm.test('Location contains code_challenge=', () => pm.expect(loc).to.include('code_challenge='));",
+                  "pm.test('Location contains code_challenge_method=S256', () => pm.expect(loc).to.include('code_challenge_method=S256'));",
+                  "pm.test('Location contains state=', () => pm.expect(loc).to.include('state='));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
+          }
+        },
+        {
+          "name": "GET /oauth/google (authenticated) → 302; capture state",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// An authenticated user initiating OAuth (link mode).",
+                  "// HandleInitiate encodes the user ID in the KV state so the callback can link the account.",
+                  "// The response is still a 302 to accounts.google.com — same as unauthenticated.",
+                  "pm.test('status is 302', () => pm.response.to.have.status(302));",
+                  "",
+                  "const loc = pm.response.headers.get('Location');",
+                  "pm.test('Location header is present', () => pm.expect(loc).to.be.a('string').and.not.empty);",
+                  "pm.test('Location points to accounts.google.com', () => pm.expect(loc).to.include('accounts.google.com'));",
+                  "",
+                  "// Parse state= from Location: \"...?...&state=<uuid>&...\"",
+                  "// Store it in goauth_state_from_initiate for the callback-guards folder.",
+                  "const match = loc && loc.match(/[?&]state=([^&]+)/);",
+                  "if (match) {",
+                  "    pm.collectionVariables.set('goauth_state_from_initiate', match[1]);",
+                  "    console.log('[INFO] Captured state:', match[1]);",
+                  "} else {",
+                  "    console.warn('[WARN] Could not extract state from Location header.');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{goauth_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "callback-guards",
+      "description": "Verifies every pre-service guard in HandleCallback that can be triggered without a real Google authorization code.\n\nAll requests must NOT follow redirects (protocolProfileBehavior.followRedirects=false). The callback never returns a JSON body — every outcome is a 302 redirect. Error codes appear as ?error=<code> in the Location header.\n\nThe final request (valid KV state, missing code) uses goauth_state_from_initiate captured by the initiate folder. This state was created by a real initiate call, so it exists in KV. The callback deletes it on first use, which also implicitly verifies the single-use property.",
+      "item": [
+        {
+          "name": "GET /callback?error=access_denied → 302 oauth_cancelled",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// When Google returns ?error=access_denied the handler redirects to OAuthErrorURL",
+                  "// with ?error=oauth_cancelled immediately, before any KV or token exchange.",
+                  "pm.test('status is 302', () => pm.response.to.have.status(302));",
+                  "",
+                  "const loc = pm.response.headers.get('Location');",
+                  "pm.test('Location contains error=oauth_cancelled', () => {",
+                  "    pm.expect(loc).to.be.a('string').and.include('error=oauth_cancelled');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=access_denied",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [{ "key": "error", "value": "access_denied" }]
+            }
+          }
+        },
+        {
+          "name": "GET /callback?code=fakecode (missing state) → 302 invalid_state",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No state param at all — the handler cannot find a KV entry.",
+                  "// Guard: state is required → redirect to OAuthErrorURL with ?error=invalid_state.",
+                  "pm.test('status is 302', () => pm.response.to.have.status(302));",
+                  "",
+                  "const loc = pm.response.headers.get('Location');",
+                  "pm.test('Location contains error=invalid_state (missing state param)', () => {",
+                  "    pm.expect(loc).to.be.a('string').and.include('error=invalid_state');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?code=fakecode",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [{ "key": "code", "value": "fakecode" }]
+            }
+          }
+        },
+        {
+          "name": "GET /callback?state=00000000-0000-0000-0000-000000000000&code=fakecode → 302 invalid_state",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// state param is present but refers to a UUID that was never stored in KV.",
+                  "// KV Get miss → redirect to OAuthErrorURL with ?error=invalid_state.",
+                  "pm.test('status is 302', () => pm.response.to.have.status(302));",
+                  "",
+                  "const loc = pm.response.headers.get('Location');",
+                  "pm.test('Location contains error=invalid_state (unknown state UUID)', () => {",
+                  "    pm.expect(loc).to.be.a('string').and.include('error=invalid_state');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?state=00000000-0000-0000-0000-000000000000&code=fakecode",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                { "key": "state", "value": "00000000-0000-0000-0000-000000000000" },
+                { "key": "code", "value": "fakecode" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /callback?state={{goauth_state_from_initiate}} (no code) → 302 invalid_state",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const state = pm.collectionVariables.get('goauth_state_from_initiate');",
+                  "if (!state) {",
+                  "    console.warn('[WARN] goauth_state_from_initiate is empty — the initiate folder\\'s second request did not capture it.');",
+                  "    console.warn('        This test will still run but may not exercise the KV-hit guard.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// state is present and exists in KV (created by the initiate folder), but code is missing.",
+                  "// Guard: code is required → redirect with ?error=invalid_state.",
+                  "// This request also implicitly verifies the single-use property: the callback deletes",
+                  "// the KV entry on first use, so a second request with the same state would also get",
+                  "// invalid_state (KV miss on the second attempt).",
+                  "pm.test('status is 302', () => pm.response.to.have.status(302));",
+                  "",
+                  "const loc = pm.response.headers.get('Location');",
+                  "pm.test('Location contains error=invalid_state (valid KV state, missing code)', () => {",
+                  "    pm.expect(loc).to.be.a('string').and.include('error=invalid_state');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?state={{goauth_state_from_initiate}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [{ "key": "state", "value": "{{goauth_state_from_initiate}}" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unlink-failures",
+      "description": "Verifies that DELETE /api/v1/oauth/google/unlink correctly handles auth failures and the not_found domain error.\n\nUnlike initiate and callback, unlink returns JSON. No followRedirects override is needed.\n\nThe third request uses goauth_access_token (setup user). The setup user was registered via email+password and has no linked Google identity, so ErrIdentityNotFound is returned and the handler responds 404.\n\nNOTE: This folder consumes 1 slot of the goauth:unl:usr: bucket for the setup user's bucket.\nThe rate-limiting-unl folder uses a dedicated +goauthr alias user (goauth_rl_access_token) to guarantee a fresh burst=5 bucket.",
+      "item": [
+        {
+          "name": "DELETE /unlink (no Authorization header) → 401 unauthorized",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No Authorization header — the JWTAuth middleware must reject this before the",
+                  "// handler body or rate limiter runs.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /unlink (tampered token signature) → 401 unauthorized",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A JWT with the last character of the signature replaced by 'X'.",
+                  "// The JWTAuth middleware validates the access token and must reject this with 401.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is invalid_token', () => pm.expect(pm.response.json().code).to.eql('invalid_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /unlink (valid JWT, no Google identity linked) → 404 not_found",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// This request uses goauth_access_token. The setup user has no linked Google",
+                  "// identity, so ErrIdentityNotFound is returned and the handler responds 404.",
+                  "// This also confirms the JWT auth → rate limiter → handler wiring is correct end-to-end.",
+                  "// NOTE: This consumes 1 slot of the goauth:unl:usr: bucket for the setup user.",
+                  "// The rate-limiting-unl folder uses a dedicated alias user (goauth_rl_access_token)",
+                  "// to guarantee a fresh burst=5 bucket.",
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code is not_found', () => pm.expect(pm.response.json().code).to.eql('not_found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{goauth_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "unlink"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-unl",
+      "description": "Verifies the goauth:unl:usr: user rate limiter for DELETE /unlink (burst=5, rate=5/15 min, Retry-After=180 s).\n\nWhy a dedicated user (goauth_rl_access_token):\n  The goauth:unl:usr: limiter is user-keyed. The unlink-failures folder consumed 1 slot from\n  goauth_access_token's bucket. To guarantee a fresh burst=5 bucket, this folder registers and logs\n  in as a dedicated gmail_test_email+goauthr alias user. Gmail delivers +goauthr mail to the same inbox;\n  the OTP fetch targets the alias with a to: filter.\n\nSequence:\n  rl-setup 1-3: register +goauthr alias → verify email (Gmail OTP) → login (store goauth_rl_access_token)\n  warmup 1-5:   not 429 (slots 1-5 consumed; each returns 404 not_found since the RL user has no\n                Google identity, but the rate limiter fires first so slots are consumed regardless)\n  6th request → 429 too_many_requests (bucket exhausted)\n\nRetry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
+      "item": [
+        {
+          "name": "rl-setup 1/3 — POST /register → 201 (+goauthr alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Derive the +goauthr Gmail alias from gmail_test_email.",
+                  "// Gmail delivers user+goauthr@gmail.com to the same inbox as user@gmail.com.",
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const rlEmail = base.slice(0, at) + '+goauthr' + base.slice(at);",
+                  "pm.collectionVariables.set('goauth_rl_email', rlEmail);",
+                  "pm.collectionVariables.set('goauth_rl_password', 'RlGoauthP@ss1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "// Fetch the verification OTP for the +goauthr alias specifically.",
+                  "// Using to: filter so we get the right email when both users registered in the same hour.",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for +goauthr verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const rlEmail = pm.collectionVariables.get('goauth_rl_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + rlEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +goauthr verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +goauthr email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +goauthr email.'); return; }",
+                  "        pm.collectionVariables.set('goauth_rl_vfy_code', match[1]);",
+                  "        console.log('[INFO] +goauthr OTP stored in goauth_rl_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"GoauthRL\", \"email\": \"{{goauth_rl_email}}\", \"password\": \"{{goauth_rl_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "rl-setup 2/3 — POST /verify-email → 200 (+goauthr alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('goauth_rl_vfy_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] goauth_rl_vfy_code is empty — Gmail fetch in rl-setup 1/3 did not complete.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{goauth_rl_email}}\", \"code\": \"{{goauth_rl_vfy_code}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "rl-setup 3/3 — POST /login → 200 (store goauth_rl_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('goauth_rl_access_token', body.access_token);",
+                  "console.log('[INFO] RL access token stored in goauth_rl_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{goauth_rl_email}}\", \"password\": \"{{goauth_rl_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "warmup 1/5 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Uses goauth_rl_access_token (fresh bucket — no prior unlink calls for this user).",
+                  "// Returns 404 not_found (RL user has no linked Google identity), but the rate",
+                  "// limiter fires first so the slot is still consumed.",
+                  "pm.test('not rate-limited yet (goauth:unl:usr: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/5 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:unl:usr: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/5 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:unl:usr: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/5 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:unl:usr: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/5 — consume slot (→ not 429, last allowed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:unl:usr: slot 5 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "6th request → 429 (goauth:unl:usr: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// burst=5 is exhausted. The rate limiter fires before the handler.",
+                  "// Retry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
+                  "pm.test('Retry-After header is 180 s', () => {",
+                  "    const retryAfter = pm.response.headers.get('Retry-After');",
+                  "    pm.expect(retryAfter).to.be.a('string').and.not.empty;",
+                  "    pm.expect(retryAfter).to.eql('180');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "unlink"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-init",
+      "description": "Verifies the goauth:init:ip: IP rate limiter for GET /oauth/google (burst=20, rate=20/5 min, Retry-After=15 s).\n\nAll requests pin _xff to 127.0.0.1 (folder prerequest override) so all warmup hits land on the same IP bucket.\nAll requests must NOT follow redirects — GET /oauth/google returns 302 when not rate-limited.\n\nRetry-After = ceil(1 / (20/300)) = ceil(15) = 15 seconds.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Override _xff to 127.0.0.1 so all requests in this folder hit the same IP bucket.",
+              "// The collection prerequest has already run and set a 10.x.x.x value; we overwrite it here.",
+              "pm.collectionVariables.set('_xff', '127.0.0.1');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "warmup 1/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// goauth:init:ip: is IP-keyed. All warmup requests come from 127.0.0.1",
+                  "// (overridden in folder prerequest). The 302 response from /oauth/google",
+                  "// confirms the rate limiter passed this request through. Slot 1 consumed.",
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 3/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 4/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 5/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 6/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 7/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 8/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 9/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 10/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 11/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 11)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 12/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 12)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 13/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 13)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 14/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 14)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 15/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 15)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 16/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 16)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 17/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 17)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 18/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 18)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 19/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 19)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "warmup 20/20 — consume slot (→ not 429, last allowed)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:init:ip: slot 20 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        },
+        {
+          "name": "21st request → 429 (goauth:init:ip: bucket exhausted)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// burst=20 is exhausted. The rate limiter fires before the handler.",
+                  "// Retry-After = ceil(1 / (20/300)) = ceil(15) = 15 seconds.",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
+                  "pm.test('Retry-After header is 15 s', () => {",
+                  "    const retryAfter = pm.response.headers.get('Retry-After');",
+                  "    pm.expect(retryAfter).to.be.a('string').and.not.empty;",
+                  "    pm.expect(retryAfter).to.eql('15');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-cb",
+      "description": "Verifies the goauth:cb:ip: IP rate limiter for GET /oauth/google/callback (burst=20, rate=20/5 min, Retry-After=15 s).\n\nAll requests pin _xff to 127.0.0.1 (folder prerequest override) so all warmup hits land on the same IP bucket.\nAll requests must NOT follow redirects — the callback always returns a 302.\n\nEach warmup request uses ?error=test which does not match access_denied, so the handler proceeds to check state, finds none, and redirects with error=invalid_state. The rate limiter fires before the handler body, so the slot is consumed regardless of the error code produced.\n\nRetry-After = ceil(1 / (20/300)) = ceil(15) = 15 seconds.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Override _xff to 127.0.0.1 so all requests in this folder hit the same IP bucket.",
+              "pm.collectionVariables.set('_xff', '127.0.0.1');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "warmup 1/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// goauth:cb:ip: is IP-keyed. All warmup requests come from 127.0.0.1.",
+                  "// Any request to /callback returns 302 (e.g. ?error=test → oauth_cancelled or invalid_state).",
+                  "// The rate limiter fires before the handler, so the slot is consumed regardless. Slot 1 consumed.",
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [{ "key": "error", "value": "test" }]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 3/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 4/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 5/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 6/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 7/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 8/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 9/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 10/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 11/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 11)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 12/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 12)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 13/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 13)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 14/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 14)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 15/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 15)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 16/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 16)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 17/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 17)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 18/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 18)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 19/20 — consume slot (→ not 429)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 19)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "warmup 20/20 — consume slot (→ not 429, last allowed)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (goauth:cb:ip: slot 20 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        },
+        {
+          "name": "21st request → 429 (goauth:cb:ip: bucket exhausted)",
+          "protocolProfileBehavior": { "followRedirects": false },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// burst=20 is exhausted. The rate limiter fires before the handler.",
+                  "// Retry-After = ceil(1 / (20/300)) = ceil(15) = 15 seconds.",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
+                  "pm.test('Retry-After header is 15 s', () => {",
+                  "    const retryAfter = pm.response.headers.get('Retry-After');",
+                  "    pm.expect(retryAfter).to.be.a('string').and.not.empty;",
+                  "    pm.expect(retryAfter).to.eql('15');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter used by the collection prerequest to generate unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current X-Forwarded-For value. Set to a unique 10.x.x.x IP by the collection prerequest. Overridden to 127.0.0.1 by rate-limiting-init and rate-limiting-cb folder prerequest."
+    },
+    {
+      "key": "goauth_email",
+      "value": "",
+      "description": "Set from gmail_test_email in setup/register prerequest."
+    },
+    {
+      "key": "goauth_password",
+      "value": "",
+      "description": "Setup user password (P@ssw0rd1!). Set in setup/register prerequest."
+    },
+    {
+      "key": "goauth_vfy_code",
+      "value": "",
+      "description": "Verification OTP for goauth_email fetched from Gmail by setup/register test script."
+    },
+    {
+      "key": "goauth_access_token",
+      "value": "",
+      "description": "Access token for goauth_email from setup/login. Used by initiate (authenticated) and unlink-failures folders."
+    },
+    {
+      "key": "goauth_state_from_initiate",
+      "value": "",
+      "description": "State UUID captured from the Location header of the authenticated GET /oauth/google request in the initiate folder. Used by the last request in callback-guards."
+    },
+    {
+      "key": "goauth_rl_email",
+      "value": "",
+      "description": "gmail_test_email+goauthr alias. Derived and set in rate-limiting-unl rl-setup 1/3 prerequest. Fresh goauth:unl:usr: bucket — not used by any other folder."
+    },
+    {
+      "key": "goauth_rl_password",
+      "value": "",
+      "description": "Password for goauth_rl_email (RlGoauthP@ss1!). Set in rate-limiting-unl rl-setup 1/3 prerequest."
+    },
+    {
+      "key": "goauth_rl_vfy_code",
+      "value": "",
+      "description": "Verification OTP for goauth_rl_email fetched from Gmail by rl-setup 1/3 test script (to: filter targets the +goauthr alias)."
+    },
+    {
+      "key": "goauth_rl_access_token",
+      "value": "",
+      "description": "Access token for goauth_rl_email from rl-setup 3/3. Used exclusively by rate-limiting-unl warmups and the 6th-request trigger. Guarantees a fresh burst=5 goauth:unl:usr: bucket."
+    }
+  ]
+}

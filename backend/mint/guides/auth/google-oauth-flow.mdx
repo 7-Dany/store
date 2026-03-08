@@ -1,0 +1,168 @@
+---
+title: "Google Sign-In Flow"
+icon: "google"
+description: "How to sign in, register, and link a Google account — including how to handle success and error redirects."
+---
+
+Google sign-in lets users authenticate with their Google account without setting a password. The browser handles the redirect sequence automatically — your frontend only needs to start the flow and handle where the user lands afterward.
+
+---
+
+## Overview
+
+```
+Navigate to GET /oauth/google     →  browser goes to Google sign-in
+User completes Google sign-in     →  Google sends browser back to the API
+API validates the response        →  browser is redirected to your app
+```
+
+On success, the user lands on your configured **success URL** with a session ready to use. On failure, they land on your **error URL** with an `?error=<code>` query parameter to display a helpful message.
+
+---
+
+## Sign-in and registration
+
+There is no separate "register with Google" step — both sign-in and registration use the same flow. When the user's Google email matches an existing account they are signed in; when it doesn't match any account a new one is created automatically.
+
+<Steps>
+  <Step title="Navigate to the initiate URL">
+    Render a "Continue with Google" button that navigates the browser to the initiate endpoint:
+
+    ```
+    GET http://localhost:8080/api/v1/oauth/google
+    ```
+
+    Use a plain `<a href="...">` or `window.location.href` — do **not** use `fetch` or `XMLHttpRequest`. The server responds with a browser redirect to Google's sign-in page.
+
+    <Note>
+      The sign-in session initiated here expires after 10 minutes. If the user takes longer or navigates back and retries the same flow, they will see an `invalid_state` error. Always start a fresh navigation from your sign-in page.
+    </Note>
+  </Step>
+
+  <Step title="User completes sign-in on Google">
+    The browser handles this step entirely. The user sees Google's sign-in interface, selects their account, and grants permission. Your app is not involved until the next step.
+
+    If the user clicks "Cancel" or denies access, they are sent directly to your error URL with `?error=oauth_cancelled`.
+  </Step>
+
+  <Step title="Handle the success redirect">
+    On success, the browser lands on your configured success URL:
+
+    ```
+    https://yourapp.com/dashboard?provider=google
+    ```
+
+    Two cookies are set before this redirect:
+
+    | Cookie | Readable by JS | Lifetime | Purpose |
+    |---|---|---|---|
+    | `oauth_access_token` | Yes | 30 seconds | Bootstrap the session in your frontend |
+    | `refresh_token` | No | 30 days | Silent token renewal via [`POST /refresh`](/api-reference/auth/session/refresh) |
+
+    Read `oauth_access_token` immediately — it expires in 30 seconds and is only for bootstrapping. Store the access token value in memory and use it as `Authorization: Bearer <token>` for subsequent API calls. Schedule a proactive refresh before the 15-minute access token TTL expires.
+
+    <Note>
+      The `provider=google` query parameter tells your app the sign-in method that was used. You can use this to show a "Signed in with Google" indicator or onboarding message for new users.
+    </Note>
+  </Step>
+
+  <Step title="Handle the error redirect">
+    On failure, the browser lands on your configured error URL:
+
+    ```
+    https://yourapp.com/login?error=oauth_cancelled
+    ```
+
+    Read the `error` query parameter and show the appropriate message. See the [error handling](#error-handling) table below.
+  </Step>
+</Steps>
+
+---
+
+## Linking a Google account
+
+An already signed-in user can connect their Google account to their profile. Once linked, they can sign in with either their password or Google.
+
+<Steps>
+  <Step title="Navigate to the initiate URL with your access token">
+    Include the `Authorization: Bearer` header when navigating to the initiate URL. The easiest way to do this is to construct a link via a short-lived redirect endpoint on your own frontend that injects the header before navigating.
+
+    Alternatively, open the initiate URL in a popup window and pass the access token via a query parameter on your own bridge endpoint.
+
+    <Note>
+      Plain `<a href="...">` links cannot send custom headers. For link mode, route the navigation through a server-side or frontend endpoint that adds the `Authorization` header before redirecting to the initiate URL.
+    </Note>
+  </Step>
+
+  <Step title="User completes sign-in on Google">
+    Same as the standard flow — the user authenticates on Google's side.
+  </Step>
+
+  <Step title="Handle the linked redirect">
+    On success, the browser lands on your success URL with `action=linked` appended:
+
+    ```
+    https://yourapp.com/dashboard?provider=google&action=linked
+    ```
+
+    No new session cookies are issued — the user's existing session continues unchanged. Use `action=linked` to show a confirmation message like "Your Google account has been connected."
+
+    <Warning>
+      If the Google account the user signs in with is already connected to a **different** profile, the flow fails with `?error=provider_already_linked`. Show a message like "This Google account is already connected to another profile" and offer to sign in to that account instead.
+    </Warning>
+  </Step>
+</Steps>
+
+---
+
+## Removing Google sign-in
+
+A signed-in user can disconnect their Google account via [`DELETE /oauth/google/unlink`](/api-reference/oauth/google/unlink).
+
+```bash
+curl --request DELETE \
+  --url http://localhost:8080/api/v1/oauth/google/unlink \
+  --header "Authorization: Bearer <access_token>"
+```
+
+```json Response — 200
+{
+  "message": "google account unlinked successfully"
+}
+```
+
+<Warning>
+  Google cannot be removed if it is the **only** sign-in method on the account. Direct the user to [set a password](/api-reference/profile/set-password/set-password) first, then try again. The API returns `422 last_auth_method` in this case.
+</Warning>
+
+---
+
+## Error handling
+
+These codes appear as `?error=<code>` on your error page URL after a failed callback, or as `code` in JSON responses for unlink failures.
+
+### Callback errors (redirect)
+
+| Code | When it appears | Suggested message |
+|---|---|---|
+| `oauth_cancelled` | User denied access on Google | "Sign-in was cancelled. Try again when you're ready." |
+| `invalid_state` | Sign-in session expired (10 min) or already used | "Your sign-in session expired. Please try again." |
+| `token_exchange_failed` | Could not verify identity with Google | "Something went wrong with Google sign-in. Please try again." |
+| `invalid_id_token` | Google returned an unexpected response | "Something went wrong with Google sign-in. Please try again." |
+| `provider_already_linked` | Google account belongs to a different profile | "This Google account is already connected to another profile." |
+| `account_locked` | Account has been locked | "Your account has been locked. Please contact support." |
+| `server_error` | Unexpected server-side error | "Something went wrong on our end. Please try again shortly." |
+
+### Unlink errors (JSON)
+
+| Response | Code | Suggested action |
+|---|---|---|
+| `404` | `not_found` | No Google account is linked — hide the unlink button |
+| `422` | `last_auth_method` | Prompt user to set a password first |
+| `429` | `too_many_requests` | Show `Retry-After` countdown |
+
+---
+
+## New user detection
+
+When a brand-new account is created via Google sign-in, the success URL does not include a specific `new_user` flag — both new registrations and returning sign-ins redirect to the same URL. If you need to distinguish them (e.g. to show an onboarding screen), check whether a `welcome` or onboarding step has already been completed in your app's own state.

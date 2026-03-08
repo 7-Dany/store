@@ -1,9 +1,14 @@
 ---
 title: "Guides"
+icon: "books"
 description: "End-to-end implementation guides for common Store API flows."
 ---
 
 The API reference documents individual endpoints. Guides document the **flows** — the sequences of calls, the state you need to carry between them, and the error cases that send a user back to an earlier screen.
+
+---
+
+## Authentication
 
 <CardGroup cols={2}>
   <Card
@@ -34,6 +39,20 @@ The API reference documents individual endpoints. Guides document the **flows** 
   >
     Walk a user through forgot password, OTP verification, grant token, and new password in three screens.
   </Card>
+  <Card
+    title="Google Sign-In Flow"
+    icon="google"
+    href="/guides/auth/google-oauth-flow"
+  >
+    Sign in, register, and link a Google account — including how to handle success and error redirects.
+  </Card>
+</CardGroup>
+
+---
+
+## Profile
+
+<CardGroup cols={2}>
   <Card
     title="Email Change Flow"
     icon="envelope"

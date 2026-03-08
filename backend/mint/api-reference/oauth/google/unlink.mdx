@@ -1,0 +1,132 @@
+---
+title: "Unlink Google Account"
+description: "Removes the Google sign-in connection from the caller's account."
+api: "DELETE http://localhost:8080/api/v1/oauth/google/unlink"
+authMethod: "bearer"
+---
+
+## Behaviour
+
+**Requires at least one other sign-in method** — Google cannot be unlinked if it is the only way to access the account. The account must have either a password set or another sign-in provider linked before Google can be removed. Attempting to unlink when it is the last method returns `422 last_auth_method`.
+
+**Immediate effect** — Once unlinked, signing in with Google will create a new account (or match by email if the same address is used again). The existing account data is not affected.
+
+## Rate Limiting
+
+**5 requests per 15 minutes per authenticated user**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After: 180` header indicating how many seconds to wait before retrying.
+
+<ResponseExample>
+```json 200
+{
+  "message": "google account unlinked successfully"
+}
+```
+
+```json 401
+{
+  "code": "missing_token",
+  "message": "Authorization: Bearer <token> header is required"
+}
+```
+
+```json 404
+{
+  "code": "not_found",
+  "message": "google account not linked"
+}
+```
+
+```json 422
+{
+  "code": "last_auth_method",
+  "message": "cannot unlink the only sign-in method — set a password or link another provider first"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The Google account was successfully unlinked.
+
+    ```json
+    {
+      "message": "google account unlinked successfully"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request did not include a valid access token, or the token has been revoked. Check the `code` field to distinguish the cause.
+
+    **Missing token** — No `Authorization: Bearer` header was provided.
+
+    ```json
+    {
+      "code": "missing_token",
+      "message": "Authorization: Bearer <token> header is required"
+    }
+    ```
+
+    **Invalid token** — The token is malformed, has an invalid signature, or has expired.
+
+    ```json
+    {
+      "code": "invalid_token",
+      "message": "invalid or expired access token"
+    }
+    ```
+
+    **Token revoked** — The token has been explicitly invalidated (e.g. after a password reset or logout from all devices).
+
+    ```json
+    {
+      "code": "token_revoked",
+      "message": "access token has been revoked"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    No Google account is linked to this user. There is nothing to unlink.
+
+    ```json
+    {
+      "code": "not_found",
+      "message": "google account not linked"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Last Sign-In Method">
+    Google is the only way to access this account. Add a password via [`POST /set-password`](/api-reference/profile/set-password/set-password) or link another provider before unlinking Google.
+
+    ```json
+    {
+      "code": "last_auth_method",
+      "message": "cannot unlink the only sign-in method — set a password or link another provider first"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The user has exceeded 5 unlink requests per 15 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

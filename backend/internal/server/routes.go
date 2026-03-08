@@ -13,6 +13,7 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/domain/auth"
+	"github.com/7-Dany/store/backend/internal/domain/oauth"
 	"github.com/7-Dany/store/backend/internal/domain/profile"
 	"github.com/7-Dany/store/backend/internal/platform/ratelimit"
 	"github.com/7-Dany/store/backend/internal/platform/respond"
@@ -90,6 +91,7 @@ func newRouter(ctx context.Context, deps *app.Deps) http.Handler {
 	// ── API v1 ────────────────────────────────────────────────────────────
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Mount("/auth", auth.Routes(ctx, deps))
+		r.Mount("/oauth", oauth.Routes(ctx, deps))
 		r.Mount("/profile", profile.Routes(ctx, deps))
 	})
 

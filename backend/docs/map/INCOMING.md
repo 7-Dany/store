@@ -87,41 +87,6 @@ sub-package structure.
 
 ---
 
-### §D-1 — OAuth — Google
-
-New package: `internal/domain/auth/oauth/google/`
-
-`GET /api/v1/auth/oauth/google`
-- [ ] Generates `state` (CSRF token, short-lived KV entry)
-- [ ] Generates PKCE `code_verifier` / `code_challenge`
-- [ ] Redirects to Google authorization endpoint with `state`, `code_challenge`,
-      scopes (`openid email profile`)
-
-`GET /api/v1/auth/oauth/google/callback`
-- [ ] Validates `state` (CSRF check)
-- [ ] Exchanges `code` for tokens; verifies ID token (signature, `aud`, `exp`)
-- [ ] **New user**: creates `users` row (`email_verified = TRUE`), creates
-      `user_identities` row, issues session + token pair
-- [ ] **Existing user**: refreshes identity data, issues new session
-- [ ] Stores encrypted `access_token` in `user_identities` (`enc:` prefix required)
-- [ ] Audit row: `oauth_login` with `provider = 'google'`
-- [ ] Failure: redirect to frontend error page; never expose raw Google errors
-
-`POST /api/v1/auth/oauth/google/link`
-- [ ] Requires valid JWT
-- [ ] Guard: `provider_uid` must not already be linked to a different user (409)
-- [ ] Inserts/upserts `user_identities` row for the authenticated user
-- [ ] Audit row: `oauth_linked` with `provider = 'google'`
-
-`DELETE /api/v1/auth/oauth/google/unlink`
-- [ ] Requires valid JWT
-- [ ] Guard: user must have at least one other auth method (422 `last_auth_method`)
-- [ ] Deletes `user_identities` row for `(user_id, 'google')`
-- [ ] Audit row: `oauth_unlinked` with `provider = 'google'`
-- [ ] Rate-limit: 5 req / 15 min per user (key `unl:usr:`)
-
----
-
 ### §D-2 — OAuth — Telegram
 
 New package: `internal/domain/auth/oauth/telegram/`

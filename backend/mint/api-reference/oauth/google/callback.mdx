@@ -1,0 +1,102 @@
+---
+title: "Google OAuth Callback"
+description: "Handles the redirect from Google after the user completes sign-in. Browser-only — this URL is visited automatically, never called directly."
+api: "GET http://localhost:8080/api/v1/oauth/google/callback"
+authMethod: "none"
+---
+
+<Callout icon="triangle-exclamation" color="#FFC107" iconType="regular">
+  This endpoint is visited automatically by the browser after Google redirects back. You never call it directly. It always responds with a redirect — never with a JSON body (except on rate limiting).
+</Callout>
+
+## Behaviour
+
+**Automatic redirect** — After the user completes sign-in on Google, Google sends the browser to this URL. The server validates the response and immediately redirects the browser again — either to your success URL or your error URL.
+
+**Success redirect** — On a successful sign-in or registration, the browser is sent to:
+```
+{OAUTH_SUCCESS_URL}?provider=google
+```
+
+On a successful account link (when the flow was started by an authenticated user):
+```
+{OAUTH_SUCCESS_URL}?provider=google&action=linked
+```
+
+A short-lived `oauth_access_token` cookie and a long-lived `refresh_token` HttpOnly cookie are set before the success redirect. For link mode, no new cookies are issued — the user's existing session continues.
+
+**Error redirect** — When something goes wrong, the browser is sent to:
+```
+{OAUTH_ERROR_URL}?error=<code>
+```
+
+Read the `error` query parameter on your error page to show an appropriate message. See the [error codes](#error-codes) table below for the full list.
+
+**Single-use state** — Each initiation generates a one-time token that expires after 10 minutes. Clicking the back button and retrying after a completed flow will result in an `invalid_state` error. The user should start fresh from the sign-in page.
+
+## Rate Limiting
+
+**20 requests per 5 minutes per IP address**.
+
+Exceeding this limit returns a `429` JSON response (the only case where this endpoint returns JSON rather than a redirect). The `Retry-After: 15` header indicates how many seconds to wait.
+
+## Error Codes
+
+These codes appear as `?error=<code>` on your error page URL.
+
+| Code | Cause | Suggested message |
+|---|---|---|
+| `oauth_cancelled` | User clicked "Cancel" or denied access on Google | "Sign-in was cancelled. Try again when you're ready." |
+| `invalid_state` | The sign-in session expired (10 min limit) or was already used | "Your sign-in session expired. Please try again." |
+| `token_exchange_failed` | Could not verify your identity with Google | "Something went wrong with Google sign-in. Please try again." |
+| `invalid_id_token` | Google returned an unexpected response | "Something went wrong with Google sign-in. Please try again." |
+| `provider_already_linked` | This Google account is already linked to a different user | "This Google account is already connected to another profile." |
+| `account_locked` | The account has been locked | "Your account has been locked. Please contact support." |
+| `server_error` | An unexpected server error occurred | "Something went wrong on our end. Please try again shortly." |
+
+<ResponseExample>
+```json 302 — Success
+// 302 Found — redirects to your success URL
+// Location: http://localhost:3000/dashboard?provider=google
+// Sets: oauth_access_token cookie (30s) + refresh_token cookie (30 days)
+```
+
+```json 302 — Error
+// 302 Found — redirects to your error URL
+// Location: http://localhost:3000/login?error=oauth_cancelled
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="302 — Success Redirect">
+    Google sign-in completed successfully. The browser is redirected to the configured success URL with `?provider=google` appended. For link mode, `?provider=google&action=linked` is appended instead.
+
+    Two cookies are set on sign-in and registration (not on link):
+    - `oauth_access_token` — short-lived (30 seconds), readable by your frontend to bootstrap the session.
+    - `refresh_token` — long-lived (30 days), HttpOnly, used for silent token renewal via [`POST /refresh`](/api-reference/auth/session/refresh).
+  </Accordion>
+
+  <Accordion title="302 — Error Redirect">
+    The sign-in could not be completed. The browser is redirected to the configured error URL with `?error=<code>` appended. See the [error codes](#error-codes) table above for the full list and suggested messages.
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 20 requests per 5 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

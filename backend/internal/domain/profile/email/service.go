@@ -223,7 +223,11 @@ func (s *Service) VerifyCurrentEmail(ctx context.Context, in EmailChangeVerifyCu
 	grantToken := uuid.New().String()
 
 	// 6. Store grant token → "userID:newEmail" with a 10-minute TTL.
-	if err := s.kv.Set(ctx, "echg:gt:"+grantToken,
+	// Security: WithoutCancel so a client disconnect cannot abort the KV write
+	// after the DB TX has already committed and consumed the verify token.
+	// Without this, the verify token would be consumed with no grant token
+	// issued, forcing the user to restart the entire email-change flow.
+	if err := s.kv.Set(context.WithoutCancel(ctx), "echg:gt:"+grantToken,
 		uuid.UUID(in.UserID).String()+":"+result.NewEmail,
 		10*time.Minute,
 	); err != nil {

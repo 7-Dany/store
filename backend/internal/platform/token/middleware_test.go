@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -242,8 +243,12 @@ func TestAuth_UserBlocked_Returns401(t *testing.T) {
 	userID := uuid.NewString()
 	sessionID := uuid.NewString()
 
-	// Write the per-user block key — this is what reset-password does after success.
-	require.NoError(t, store.Set(context.Background(), "pr_blocked_user:"+userID, "1", time.Minute))
+	// Write the per-user block key with a far-future Unix timestamp so that any
+	// token minted during this test has iat <= blockTime and is therefore blocked.
+	// Using "1" (Unix epoch) would let every real token through because their
+	// iat is in 2026, which is after time.Unix(1, 0).
+	blockTime := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+	require.NoError(t, store.Set(context.Background(), "pr_blocked_user:"+userID, blockTime, time.Minute))
 
 	next := &okHandler{}
 	mw := token.Auth(testSecret, nil, store)(next)

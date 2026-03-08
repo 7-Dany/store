@@ -132,9 +132,8 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		AllowedOrigins:      cfg.AllowedOrigins,
 		TrustedProxyCIDRs:   trustedCIDRs,
 		HTTPSEnabled:        cfg.HTTPSEnabled,
-		DocsEnabled:         cfg.DocsEnabled,
 		OTPTokenTTL:         time.Duration(cfg.OTPValidMinutes) * time.Minute,
-		Encryptor: encryptor,
+		Encryptor:           encryptor,
 		OAuth: app.OAuthConfig{
 			GoogleClientID:     cfg.GoogleClientID,
 			GoogleClientSecret: cfg.GoogleClientSecret,

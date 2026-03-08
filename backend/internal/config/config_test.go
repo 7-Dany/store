@@ -21,8 +21,8 @@ func validBaseConfig() *Config {
 		SMTPFrom:            "no-reply@example.com",
 		OTPValidMinutes:     15,
 		AllowedOrigins:      []string{"http://localhost:3000"},
-		JWTAccessSecret:     "abcdef1234567890abcdef1234567890ab",                                // 34 unique chars
-		JWTRefreshSecret:    "1234567890abcdef1234567890abcdef12",                                // distinct, unique chars
+		JWTAccessSecret:     "abcdef1234567890abcdef1234567890ab",                               // 34 unique chars
+		JWTRefreshSecret:    "1234567890abcdef1234567890abcdef12",                               // distinct, unique chars
 		TokenEncryptionKey:  "a1b2c3d4e5f67890abcdef1234567890a1b2c3d4e5f67890abcdef1234567890", // 64 hex chars
 		MailWorkers:         4,
 		MailDeliveryTimeout: 30 * time.Second,
@@ -751,7 +751,7 @@ func TestConfigValidate_AcceptsValidCIDRTrustedProxies(t *testing.T) {
 func TestConfigValidate_RejectsInvalidCIDRTrustedProxies(t *testing.T) {
 	cases := []string{
 		"not-a-cidr",
-		"10.0.0.0",        // plain IP, not CIDR
+		"10.0.0.0",       // plain IP, not CIDR
 		"10.0.0.0/8,bad", // valid then invalid
 	}
 	for _, cidr := range cases {
@@ -997,9 +997,6 @@ func TestLoad_ParsesBoolFlags(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() failed: %v", err)
-	}
-	if !cfg.DocsEnabled {
-		t.Error("DocsEnabled should be true when DOCS_ENABLED=true")
 	}
 	if !cfg.HTTPSEnabled {
 		t.Error("HTTPSEnabled should be true when HTTPS_ENABLED=true")
@@ -1337,10 +1334,10 @@ func TestTrimAppName_StripsQuotes(t *testing.T) {
 		input string
 		want  string
 	}{
-		{`"Vend"`, "Vend"},          // double-quoted .env value
-		{`Vend`, "Vend"},            // unquoted
-		{`  Vend  `, "Vend"},        // whitespace only
-		{`  "Vend"  `, "Vend"},      // whitespace + quotes
+		{`"Vend"`, "Vend"},           // double-quoted .env value
+		{`Vend`, "Vend"},             // unquoted
+		{`  Vend  `, "Vend"},         // whitespace only
+		{`  "Vend"  `, "Vend"},       // whitespace + quotes
 		{`"Acme Corp"`, "Acme Corp"}, // quoted with space inside
 		{`""`, ""},                   // empty quoted string → empty (caught by validate)
 		{``, ""},                     // truly empty

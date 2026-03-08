@@ -30,9 +30,6 @@ type Config struct {
 	// on load so APP_NAME="Vend" and APP_NAME=Vend both produce "Vend".
 	// Must be non-empty after trimming; max 64 characters.
 	AppName string
-	// DocsEnabled gates GET /docs and GET /docs/openapi.yaml.
-	// Never enable in production — the routes carry no authentication.
-	DocsEnabled bool
 	// HTTPSEnabled enables the Strict-Transport-Security header.
 	// Set true only when the app runs behind a TLS-terminating reverse proxy.
 	HTTPSEnabled bool
@@ -163,7 +160,6 @@ func Load() (*Config, error) {
 		AppEnv:              getEnv("APP_ENV", "development"),
 		Addr:                getEnv("ADDR", ":8080"),
 		AppName:             trimAppName(getEnv("APP_NAME", "Store")),
-		DocsEnabled:         parseBoolEnv("DOCS_ENABLED"),
 		HTTPSEnabled:        parseBoolEnv("HTTPS_ENABLED"),
 		HTTPSDisabled:       parseBoolEnv("HTTPS_DISABLED"),
 		TrustedProxies:      os.Getenv("TRUSTED_PROXIES"),

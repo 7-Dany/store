@@ -653,7 +653,7 @@ func TestUpdatePasswordHashTx_FailOnAuditLog_RollsBack_Integration(t *testing.T)
 	// rolled-back test transaction — the proxy injects an audit log failure.
 	store, txQ := txStores(t)
 	proxy := &authsharedtest.QuerierProxy{
-		Base:               txQ,
+		Querier:            txQ,
 		FailInsertAuditLog: true,
 	}
 	storeWithProxy := store.WithQuerier(proxy)
@@ -676,7 +676,7 @@ func TestUpdatePasswordHashTx_FailOnAuditLog_RollsBack_Integration(t *testing.T)
 
 // successQ shadows the methods that must succeed in unit tests that use a proxy
 // chain without a real database. Any un-overridden method promoted from the
-// embedded *QuerierProxy will attempt to call its nil Base and panic —
+// embedded *QuerierProxy will attempt to call its nil Querier and panic —
 // that is intentional: it flags an unexpected call in a code path that should
 // not have been reached.
 type successQ struct {
@@ -686,7 +686,7 @@ type successQ struct {
 
 func newSuccessQ(incrReturn int16) *successQ {
 	return &successQ{
-		QuerierProxy: &authsharedtest.QuerierProxy{Base: nil},
+		QuerierProxy: &authsharedtest.QuerierProxy{},
 		incrReturn:   incrReturn,
 	}
 }
@@ -740,7 +740,7 @@ func TestBeginOrBind_PoolError(t *testing.T) {
 // Commit and Rollback are no-ops and Q is the injected querier.
 func TestBeginOrBind_TxBound_NoopHelpers(t *testing.T) {
 	t.Parallel()
-	proxy := &authsharedtest.QuerierProxy{Base: nil}
+	proxy := &authsharedtest.QuerierProxy{}
 	store := authshared.BaseStore{}.WithQuerier(proxy)
 	h, err := store.BeginOrBind(context.Background())
 	require.NoError(t, err)
@@ -756,7 +756,6 @@ func TestBeginOrBind_TxBound_NoopHelpers(t *testing.T) {
 func TestIncrementAttemptsTx_FailIncrement(t *testing.T) {
 	t.Parallel()
 	proxy := &authsharedtest.QuerierProxy{
-		Base:                              nil,
 		FailIncrementVerificationAttempts: true,
 	}
 	store := authshared.BaseStore{}.WithQuerier(proxy)
@@ -770,7 +769,7 @@ func TestIncrementAttemptsTx_FailIncrement(t *testing.T) {
 func TestIncrementAttemptsTx_FailAuditLogFirstCall(t *testing.T) {
 	t.Parallel()
 	proxy := &authsharedtest.QuerierProxy{
-		Base:                     newSuccessQ(1), // increment succeeds, returns 1
+		Querier:                  newSuccessQ(1), // increment succeeds, returns 1
 		FailInsertAuditLog:       true,
 		InsertAuditLogFailOnCall: 1,
 	}
@@ -785,7 +784,7 @@ func TestIncrementAttemptsTx_FailAuditLogFirstCall(t *testing.T) {
 func TestIncrementAttemptsTx_BelowThreshold(t *testing.T) {
 	t.Parallel()
 	proxy := &authsharedtest.QuerierProxy{
-		Base: newSuccessQ(1), // returns 1 < MaxAttempts(3)
+		Querier: newSuccessQ(1), // returns 1 < MaxAttempts(3)
 	}
 	store := authshared.BaseStore{}.WithQuerier(proxy)
 	err := store.IncrementAttemptsTx(context.Background(), makeInput(3))
@@ -798,7 +797,7 @@ func TestIncrementAttemptsTx_FailLockAccount(t *testing.T) {
 	t.Parallel()
 	const maxAttempts int16 = 3
 	proxy := &authsharedtest.QuerierProxy{
-		Base:            newSuccessQ(maxAttempts), // increment returns MaxAttempts → triggers lock
+		Querier:         newSuccessQ(maxAttempts), // increment returns MaxAttempts → triggers lock
 		FailLockAccount: true,
 	}
 	store := authshared.BaseStore{}.WithQuerier(proxy)
@@ -813,7 +812,7 @@ func TestIncrementAttemptsTx_FailAuditLogSecondCall(t *testing.T) {
 	t.Parallel()
 	const maxAttempts int16 = 3
 	proxy := &authsharedtest.QuerierProxy{
-		Base:                     newSuccessQ(maxAttempts),
+		Querier:                  newSuccessQ(maxAttempts),
 		FailInsertAuditLog:       true,
 		InsertAuditLogFailOnCall: 2, // first call (attempt event) succeeds; second (locked) fails
 	}
@@ -841,7 +840,6 @@ func TestUpdatePasswordHashTx_PoolBeginFails(t *testing.T) {
 func TestUpdatePasswordHashTx_FailUpdateHash(t *testing.T) {
 	t.Parallel()
 	proxy := &authsharedtest.QuerierProxy{
-		Base:                   nil,
 		FailUpdatePasswordHash: true,
 	}
 	store := authshared.BaseStore{}.WithQuerier(proxy)
@@ -855,7 +853,7 @@ func TestUpdatePasswordHashTx_FailUpdateHash(t *testing.T) {
 func TestUpdatePasswordHashTx_FailRevokeTokens(t *testing.T) {
 	t.Parallel()
 	proxy := &authsharedtest.QuerierProxy{
-		Base:                           newSuccessQ(0),
+		Querier:                        newSuccessQ(0),
 		FailRevokeAllUserRefreshTokens: true,
 	}
 	store := authshared.BaseStore{}.WithQuerier(proxy)
@@ -869,7 +867,7 @@ func TestUpdatePasswordHashTx_FailRevokeTokens(t *testing.T) {
 func TestUpdatePasswordHashTx_FailEndSessions(t *testing.T) {
 	t.Parallel()
 	proxy := &authsharedtest.QuerierProxy{
-		Base:                   newSuccessQ(0),
+		Querier:                newSuccessQ(0),
 		FailEndAllUserSessions: true,
 	}
 	store := authshared.BaseStore{}.WithQuerier(proxy)
@@ -883,7 +881,7 @@ func TestUpdatePasswordHashTx_FailEndSessions(t *testing.T) {
 func TestUpdatePasswordHashTx_FailFinalAuditLog(t *testing.T) {
 	t.Parallel()
 	proxy := &authsharedtest.QuerierProxy{
-		Base:               newSuccessQ(0),
+		Querier:            newSuccessQ(0),
 		FailInsertAuditLog: true,
 	}
 	store := authshared.BaseStore{}.WithQuerier(proxy)
@@ -914,7 +912,7 @@ func TestIncrementAttemptsTx_ErrNoRows_UsesMaxAttempts(t *testing.T) {
 	t.Parallel()
 	const maxAttempts int16 = 3
 	q := &errNoRowsIncrQ{successQ: newSuccessQ(0)}
-	proxy := &authsharedtest.QuerierProxy{Base: q}
+	proxy := &authsharedtest.QuerierProxy{Querier: q}
 	store := authshared.BaseStore{}.WithQuerier(proxy)
 
 	err := store.IncrementAttemptsTx(context.Background(), makeInput(maxAttempts))

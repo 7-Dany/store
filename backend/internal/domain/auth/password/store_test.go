@@ -62,9 +62,9 @@ func createUser(t *testing.T, q db.Querier, email string) uuid.UUID {
 	return authsharedtest.CreateUserUUID(t, testPool, q, email)
 }
 
-// withProxy sets proxy.Base = q and returns a Store bound to the proxy.
+// withProxy sets proxy.Querier = q and returns a Store bound to the proxy.
 func withProxy(q db.Querier, proxy *authsharedtest.QuerierProxy) *password.Store {
-	proxy.Base = q
+	proxy.Querier = q
 	return password.NewStore(testPool).WithQuerier(proxy)
 }
 

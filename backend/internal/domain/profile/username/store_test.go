@@ -60,7 +60,7 @@ func txStores(t *testing.T) (*username.Store, *db.Queries) {
 
 // withProxy wraps q in proxy and returns a *username.Store that uses the proxy.
 func withProxy(q db.Querier, proxy *authsharedtest.QuerierProxy) *username.Store {
-	proxy.Base = q
+	proxy.Querier = q
 	return username.NewStore(testPool).WithQuerier(proxy)
 }
 

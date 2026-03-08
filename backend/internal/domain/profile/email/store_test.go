@@ -96,7 +96,7 @@ func txStores(t *testing.T) (*email.Store, *db.Queries) {
 
 // withProxy wraps q in proxy and returns a *email.Store that uses the proxy.
 func withProxy(q db.Querier, proxy *authsharedtest.QuerierProxy) *email.Store {
-	proxy.Base = q
+	proxy.Querier = q
 	return email.NewStore(testPool).WithQuerier(proxy)
 }
 

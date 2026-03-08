@@ -21,7 +21,12 @@ import (
 // exercise the proxy without a real database connection.
 // ─────────────────────────────────────────────────────────────────────────────
 
-type nopQuerier struct{}
+// nopQuerier satisfies db.Querier by embedding the interface (nil pointer)
+// for any method not explicitly implemented below — those return zero values
+// and nil errors. New methods added by `make sqlc` are handled automatically.
+type nopQuerier struct {
+	db.Querier // embedded nil — panics only if an unimplemented method is called
+}
 
 func (n *nopQuerier) ConsumeEmailVerificationToken(_ context.Context, _ pgtype.UUID) (int64, error) {
 	return 0, nil
@@ -225,7 +230,7 @@ var anyUUID = pgtype.UUID{}
 // All tests here exercise only InsertAuditLog via QuerierProxy, so no
 // other methods need to be implemented.
 type insertAuditLogStub struct {
-	// Embed QuerierProxy with a nil Base so that the compiler is satisfied
+	// Embed QuerierProxy with a nil Querier so that the compiler is satisfied
 	// by the remaining db.Querier methods; any unexpected call will panic with
 	// a clear nil-pointer message rather than a silent interface-nil dereference.
 	authsharedtest.QuerierProxy

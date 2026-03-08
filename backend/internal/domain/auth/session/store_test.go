@@ -67,7 +67,7 @@ func TestStore_GetRefreshTokenByJTI_Integration(t *testing.T) {
 
 	t.Run("query error returns ErrProxy", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailGetRefreshTokenByJTI: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailGetRefreshTokenByJTI: true}
 		_, err := session.NewStore(testPool).WithQuerier(proxy).GetRefreshTokenByJTI(ctx, [16]byte(uuid.New()))
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -129,7 +129,7 @@ func TestStore_RotateRefreshTokenTx_Integration(t *testing.T) {
 			UserID: userID, IPAddress: "127.0.0.1", UserAgent: "go-test/1.0",
 		})
 		require.NoError(t, err)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailRevokeRefreshTokenByJTI: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailRevokeRefreshTokenByJTI: true}
 		_, err = session.NewStore(testPool).WithQuerier(proxy).RotateRefreshTokenTx(ctx, makeInput(sess, userID))
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -141,7 +141,7 @@ func TestStore_RotateRefreshTokenTx_Integration(t *testing.T) {
 			UserID: userID, IPAddress: "127.0.0.1", UserAgent: "go-test/1.0",
 		})
 		require.NoError(t, err)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailCreateRotatedRefreshToken: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailCreateRotatedRefreshToken: true}
 		_, err = session.NewStore(testPool).WithQuerier(proxy).RotateRefreshTokenTx(ctx, makeInput(sess, userID))
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -153,7 +153,7 @@ func TestStore_RotateRefreshTokenTx_Integration(t *testing.T) {
 			UserID: userID, IPAddress: "127.0.0.1", UserAgent: "go-test/1.0",
 		})
 		require.NoError(t, err)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailUpdateSessionLastActive: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailUpdateSessionLastActive: true}
 		_, err = session.NewStore(testPool).WithQuerier(proxy).RotateRefreshTokenTx(ctx, makeInput(sess, userID))
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -165,7 +165,7 @@ func TestStore_RotateRefreshTokenTx_Integration(t *testing.T) {
 			UserID: userID, IPAddress: "127.0.0.1", UserAgent: "go-test/1.0",
 		})
 		require.NoError(t, err)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailUpdateLastLoginAt: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailUpdateLastLoginAt: true}
 		_, err = session.NewStore(testPool).WithQuerier(proxy).RotateRefreshTokenTx(ctx, makeInput(sess, userID))
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -177,7 +177,7 @@ func TestStore_RotateRefreshTokenTx_Integration(t *testing.T) {
 			UserID: userID, IPAddress: "127.0.0.1", UserAgent: "go-test/1.0",
 		})
 		require.NoError(t, err)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailInsertAuditLog: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailInsertAuditLog: true}
 		_, err = session.NewStore(testPool).WithQuerier(proxy).RotateRefreshTokenTx(ctx, makeInput(sess, userID))
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -209,7 +209,7 @@ func TestStore_RevokeFamilyTokens_Integration(t *testing.T) {
 
 	t.Run("RevokeFamilyRefreshTokens error", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailRevokeFamilyRefreshTokens: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailRevokeFamilyRefreshTokens: true}
 		err := session.NewStore(testPool).WithQuerier(proxy).RevokeFamilyTokensTx(ctx, [16]byte(uuid.New()), [16]byte(uuid.New()), "reuse_detected")
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -217,7 +217,7 @@ func TestStore_RevokeFamilyTokens_Integration(t *testing.T) {
 	t.Run("InsertAuditLog error", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
 		proxy := &authsharedtest.QuerierProxy{
-			Base:                     q,
+			Querier:                  q,
 			FailInsertAuditLog:       true,
 			InsertAuditLogFailOnCall: 1,
 		}
@@ -253,14 +253,14 @@ func TestStore_RevokeAllUserTokens_Integration(t *testing.T) {
 
 	t.Run("RevokeAllUserRefreshTokens error", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailRevokeAllUserRefreshTokens: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailRevokeAllUserRefreshTokens: true}
 		err := session.NewStore(testPool).WithQuerier(proxy).RevokeAllUserTokensTx(ctx, [16]byte(uuid.New()), "forced_logout", "", "")
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
 
 	t.Run("EndAllUserSessions error", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailEndAllUserSessions: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailEndAllUserSessions: true}
 		err := session.NewStore(testPool).WithQuerier(proxy).RevokeAllUserTokensTx(ctx, [16]byte(uuid.New()), "forced_logout", "", "")
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -268,7 +268,7 @@ func TestStore_RevokeAllUserTokens_Integration(t *testing.T) {
 	t.Run("InsertAuditLog error", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
 		proxy := &authsharedtest.QuerierProxy{
-			Base:                     q,
+			Querier:                  q,
 			FailInsertAuditLog:       true,
 			InsertAuditLogFailOnCall: 1,
 		}
@@ -328,7 +328,7 @@ func TestStore_LogoutTx_Integration(t *testing.T) {
 			UserID: userID, IPAddress: "127.0.0.1", UserAgent: "go-test/1.0",
 		})
 		require.NoError(t, err)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailRevokeRefreshTokenByJTI: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailRevokeRefreshTokenByJTI: true}
 		err = session.NewStore(testPool).WithQuerier(proxy).LogoutTx(ctx, makeInput(sess, userID))
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -340,7 +340,7 @@ func TestStore_LogoutTx_Integration(t *testing.T) {
 			UserID: userID, IPAddress: "127.0.0.1", UserAgent: "go-test/1.0",
 		})
 		require.NoError(t, err)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailEndUserSession: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailEndUserSession: true}
 		err = session.NewStore(testPool).WithQuerier(proxy).LogoutTx(ctx, makeInput(sess, userID))
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -352,7 +352,7 @@ func TestStore_LogoutTx_Integration(t *testing.T) {
 			UserID: userID, IPAddress: "127.0.0.1", UserAgent: "go-test/1.0",
 		})
 		require.NoError(t, err)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailInsertAuditLog: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailInsertAuditLog: true}
 		err = session.NewStore(testPool).WithQuerier(proxy).LogoutTx(ctx, makeInput(sess, userID))
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -413,7 +413,7 @@ func TestStore_GetUserVerifiedAndLocked_Integration(t *testing.T) {
 
 	t.Run("query error returns ErrProxy", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailGetUserVerifiedAndLocked: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailGetUserVerifiedAndLocked: true}
 		_, err := session.NewStore(testPool).WithQuerier(proxy).GetUserVerifiedAndLocked(ctx, [16]byte(uuid.New()))
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -439,7 +439,7 @@ func TestStore_WriteRefreshFailedAuditTx_Integration(t *testing.T) {
 
 	t.Run("InsertAuditLog error returns wrapped ErrProxy", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailInsertAuditLog: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailInsertAuditLog: true}
 		err := session.NewStore(testPool).WithQuerier(proxy).WriteRefreshFailedAuditTx(ctx, "1.2.3.4", "go-test")
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})

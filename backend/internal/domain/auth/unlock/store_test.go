@@ -53,7 +53,7 @@ func TestGetUserForUnlock_Integration(t *testing.T) {
 
 	t.Run("query error returns ErrProxy", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailGetUserForUnlock: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailGetUserForUnlock: true}
 		_, err := unlock.NewStore(testPool).WithQuerier(proxy).GetUserForUnlock(ctx, "x@example.com")
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -94,7 +94,7 @@ func TestGetUnlockToken_Integration(t *testing.T) {
 
 	t.Run("query error returns ErrProxy", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailGetUnlockToken: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailGetUnlockToken: true}
 		_, err := unlock.NewStore(testPool).WithQuerier(proxy).GetUnlockToken(ctx, "x@example.com")
 		require.ErrorIs(t, err, authsharedtest.ErrProxy)
 	})
@@ -136,7 +136,7 @@ func TestRequestUnlockTx_Integration(t *testing.T) {
 
 	t.Run("CreateUnlockToken error returns ErrProxy", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailCreateUnlockToken: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailCreateUnlockToken: true}
 		require.ErrorIs(t, unlock.NewStore(testPool).WithQuerier(proxy).RequestUnlockTx(ctx, fakeInput), authsharedtest.ErrProxy)
 	})
 
@@ -144,7 +144,7 @@ func TestRequestUnlockTx_Integration(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
 		email := authsharedtest.NewEmail(t)
 		userID := [16]byte(authsharedtest.CreateUserUUID(t, testPool, q, email))
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailInsertAuditLog: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailInsertAuditLog: true}
 		require.ErrorIs(t, unlock.NewStore(testPool).WithQuerier(proxy).RequestUnlockTx(ctx, unlock.RequestUnlockStoreInput{
 			UserID:    userID,
 			Email:     email,
@@ -210,19 +210,19 @@ func TestConsumeUnlockTokenTx_Integration(t *testing.T) {
 
 	t.Run("GetUnlockToken error returns ErrProxy", func(t *testing.T) {
 		_, q, _, _ := setup(t)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailGetUnlockToken: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailGetUnlockToken: true}
 		require.ErrorIs(t, unlock.NewStore(testPool).WithQuerier(proxy).ConsumeUnlockTokenTx(ctx, "x@example.com", checkFn), authsharedtest.ErrProxy)
 	})
 
 	t.Run("ConsumeUnlockToken error returns ErrProxy", func(t *testing.T) {
 		_, q, email, _ := setup(t)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailConsumeUnlockToken: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailConsumeUnlockToken: true}
 		require.ErrorIs(t, unlock.NewStore(testPool).WithQuerier(proxy).ConsumeUnlockTokenTx(ctx, email, checkFn), authsharedtest.ErrProxy)
 	})
 
 	t.Run("ConsumeUnlockToken returns 0 rows → ErrTokenAlreadyUsed", func(t *testing.T) {
 		_, q, email, _ := setup(t)
-		proxy := &authsharedtest.QuerierProxy{Base: q, ConsumeUnlockTokenZero: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, ConsumeUnlockTokenZero: true}
 		require.ErrorIs(t, unlock.NewStore(testPool).WithQuerier(proxy).ConsumeUnlockTokenTx(ctx, email, checkFn), authshared.ErrTokenAlreadyUsed)
 	})
 
@@ -269,13 +269,13 @@ func TestUnlockAccountTx_Integration(t *testing.T) {
 
 	t.Run("UnlockAccount error returns ErrProxy", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailUnlockAccount: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailUnlockAccount: true}
 		require.ErrorIs(t, unlock.NewStore(testPool).WithQuerier(proxy).UnlockAccountTx(ctx, userID, "ip", "ua"), authsharedtest.ErrProxy)
 	})
 
 	t.Run("InsertAuditLog error returns ErrProxy", func(t *testing.T) {
 		_, q := authsharedtest.MustBeginTx(t, testPool)
-		proxy := &authsharedtest.QuerierProxy{Base: q, FailInsertAuditLog: true}
+		proxy := &authsharedtest.QuerierProxy{Querier: q, FailInsertAuditLog: true}
 		require.ErrorIs(t, unlock.NewStore(testPool).WithQuerier(proxy).UnlockAccountTx(ctx, userID, "ip", "ua"), authsharedtest.ErrProxy)
 	})
 }
@@ -287,7 +287,7 @@ func TestUnlockAccountTx_Integration(t *testing.T) {
 // proxyStore wraps testPool store with proxy for IncrementAttemptsTx error paths.
 // Cannot use txStores because IncrementAttemptsTx bypasses TxBound.
 func proxyStore(proxy *authsharedtest.QuerierProxy) *unlock.Store {
-	proxy.Base = db.New(testPool)
+	proxy.Querier = db.New(testPool)
 	return unlock.NewStore(testPool).WithQuerier(proxy)
 }
 

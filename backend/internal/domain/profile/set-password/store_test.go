@@ -73,7 +73,7 @@ func createOAuthUser(t *testing.T, q *db.Queries, email string) [16]byte {
 
 // withProxy wraps q in proxy and returns a *setpassword.Store that uses the proxy.
 func withProxy(q db.Querier, proxy *authsharedtest.QuerierProxy) *setpassword.Store {
-	proxy.Base = q
+	proxy.Querier = q
 	return setpassword.NewStore(testPool).WithQuerier(proxy)
 }
 

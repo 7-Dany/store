@@ -17,6 +17,7 @@ import (
 type Servicer interface {
 	GetUserProfile(ctx context.Context, userID string) (UserProfile, error)
 	UpdateProfile(ctx context.Context, in UpdateProfileInput) error
+	GetUserIdentities(ctx context.Context, userID string) ([]LinkedIdentity, error) // §E-1
 }
 
 // Handler is the HTTP layer for the me sub-package. It parses requests,
@@ -120,6 +121,38 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respond.JSON(w, http.StatusOK, updateProfileResponse{Message: "profile updated successfully"})
+}
+
+// Identities handles GET /me/identities.
+// Returns all linked OAuth identities for the authenticated user.
+// access_token and refresh_token_provider are never present in the response —
+// they are excluded at the SQL and service layers.
+func (h *Handler) Identities(w http.ResponseWriter, r *http.Request) {
+	userID, ok := h.mustUserID(w, r)
+	if !ok {
+		return
+	}
+
+	identities, err := h.svc.GetUserIdentities(r.Context(), userID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "profile.Identities: service error", "error", err)
+		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+
+	items := make([]identityItem, 0, len(identities))
+	for _, id := range identities {
+		items = append(items, identityItem{
+			Provider:      id.Provider,
+			ProviderUID:   id.ProviderUID,
+			ProviderEmail: id.ProviderEmail,
+			DisplayName:   id.DisplayName,
+			AvatarURL:     id.AvatarURL,
+			CreatedAt:     id.CreatedAt,
+		})
+	}
+
+	respond.JSON(w, http.StatusOK, identitiesResponse{Identities: items})
 }
 
 // ── private helpers ───────────────────────────────────────────────────────────

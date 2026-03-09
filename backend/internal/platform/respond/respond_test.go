@@ -339,7 +339,7 @@ func TestDecodeJSON_MaxBytesReturns422(t *testing.T) {
 // DecodeJSON — malformed JSON
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestDecodeJSON_MalformedJSON_Returns422AndFalse(t *testing.T) {
+func TestDecodeJSON_MalformedJSON_Returns400AndFalse(t *testing.T) {
 	t.Parallel()
 
 	w, r := makeRequest(t, `{not valid json`, respond.MaxBodyBytes)
@@ -348,12 +348,12 @@ func TestDecodeJSON_MalformedJSON_Returns422AndFalse(t *testing.T) {
 
 	require.False(t, ok)
 	res := w.Result()
-	require.Equal(t, http.StatusUnprocessableEntity, res.StatusCode)
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 
 	var body respond.APIError
 	require.NoError(t, json.NewDecoder(res.Body).Decode(&body))
-	require.Equal(t, "validation_error", body.Code)
-	require.Equal(t, "invalid JSON body", body.Message)
+	require.Equal(t, "bad_request", body.Code)
+	require.Equal(t, "malformed JSON body", body.Message)
 }
 
 func TestDecodeJSON_EmptyBody_Returns422AndFalse(t *testing.T) {
@@ -529,7 +529,7 @@ func TestDecodeJSON_WithoutMaxBytesReader_AcceptsBodyLargerThanMaxBodyBytes(t *t
 // DecodeJSON — truncated / partially valid JSON
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestDecodeJSON_TruncatedJSON_Returns422AndFalse(t *testing.T) {
+func TestDecodeJSON_TruncatedJSON_Returns400AndFalse(t *testing.T) {
 	t.Parallel()
 
 	// Valid JSON start that is cut off before the closing brace.
@@ -538,7 +538,7 @@ func TestDecodeJSON_TruncatedJSON_Returns422AndFalse(t *testing.T) {
 	_, ok := respond.DecodeJSON[decodeTarget](w, r)
 
 	require.False(t, ok)
-	require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -71,7 +71,7 @@ func TestHandler_VerifyEmail_InvalidJSON(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/verify-email", bytes.NewBufferString("{bad json"))
 	r.Header.Set("Content-Type", "application/json")
 	h.VerifyEmail(w, r)
-	require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandler_VerifyEmail_ValidationError_EmptyCode(t *testing.T) {
@@ -424,7 +424,7 @@ func TestHandler_ResendVerification_InvalidJSON(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/resend-verification", bytes.NewBufferString("{bad json"))
 	r.Header.Set("Content-Type", "application/json")
 	h.ResendVerification(w, r)
-	require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandler_ResendVerification_EmptyEmail_Returns422(t *testing.T) {

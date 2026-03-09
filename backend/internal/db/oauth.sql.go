@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -193,6 +194,58 @@ func (q *Queries) GetUserForOAuthCallback(ctx context.Context, userID pgtype.UUI
 		&i.AdminLocked,
 	)
 	return i, err
+}
+
+const GetUserIdentities = `-- name: GetUserIdentities :many
+SELECT
+    provider,
+    provider_uid,
+    provider_email,
+    display_name,
+    avatar_url,
+    created_at
+FROM user_identities
+WHERE user_id = $1::uuid
+ORDER BY created_at ASC
+`
+
+type GetUserIdentitiesRow struct {
+	Provider      AuthProvider `db:"provider" json:"provider"`
+	ProviderUid   string       `db:"provider_uid" json:"provider_uid"`
+	ProviderEmail pgtype.Text  `db:"provider_email" json:"provider_email"`
+	DisplayName   pgtype.Text  `db:"display_name" json:"display_name"`
+	AvatarURL     pgtype.Text  `db:"avatar_url" json:"avatar_url"`
+	CreatedAt     time.Time    `db:"created_at" json:"created_at"`
+}
+
+// Returns all linked OAuth identities for the given user, oldest first.
+// access_token and refresh_token_provider are intentionally excluded —
+// they are provider secrets and must never be returned to clients.
+func (q *Queries) GetUserIdentities(ctx context.Context, userID pgtype.UUID) ([]GetUserIdentitiesRow, error) {
+	rows, err := q.db.Query(ctx, GetUserIdentities, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GetUserIdentitiesRow{}
+	for rows.Next() {
+		var i GetUserIdentitiesRow
+		if err := rows.Scan(
+			&i.Provider,
+			&i.ProviderUid,
+			&i.ProviderEmail,
+			&i.DisplayName,
+			&i.AvatarURL,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const UpsertUserIdentity = `-- name: UpsertUserIdentity :one

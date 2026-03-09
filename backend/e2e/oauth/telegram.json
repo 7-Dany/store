@@ -1,0 +1,2230 @@
+{
+  "info": {
+    "_postman_id": "auth-oauth-telegram-e2e",
+    "name": "Auth – Telegram OAuth (POST /api/v1/oauth/telegram/callback + /link + DELETE /unlink)",
+    "description": "E2E tests for Telegram OAuth endpoints.\n\nFolder execution order (orchestrated by make e2e-oauth-telegram):\n\n  Invocation 1 (single Newman run — JWT tokens must survive across folders):\n    1. setup                — register gmail_test_email, fetch verification OTP, verify email, login → tg_access_token\n    2. callback-happy-path  — new user callback (ID 99887766) → 201 + access_token body; same ID again → 200\n    3. callback-failures    — invalid HMAC, auth_date 90 000 s old, auth_date 120 s in future, id=0, malformed JSON\n    4. validation           — POST /callback body > 1 MiB → 413; POST /link body > 1 MiB → 413\n    5. link-happy-path      — POST /link (ID 99887700) with tg_access_token → 204; verify via GET /profile/me/identities\n    6. link-failures        — already linked (409), invalid HMAC (401), expired auth_date (401), malformed JSON (400)\n    7. unlink-happy-path    — DELETE /unlink with tg_access_token → 204 (setup user has password; last-auth-method guard does not fire)\n    8. unlink-failures      — provider_not_linked (404); last_auth_method (409) using Telegram-only user from callback-happy-path\n    9. auth-failures        — POST /link no Authorization → 401; DELETE /unlink no Authorization → 401\n   10. rate-limiting-lnk   — dedicated +tgrl alias; rl-setup (register+verify+login); rl-link (ID 99887744 → 204, slot 1);\n                              warmup 2-5 (already-linked 409, slots 2-5); 6th → 429 (Retry-After: 900)\n   11. rate-limiting-unlk  — use tg_rl_access_token; warmup 1 (204, slot 1); warmup 2-5 (404, slots 2-5); 6th → 429 (Retry-After: 900)\n\n  Invocation 2 (after Redis flush — fresh tgcb:ip: bucket):\n   12. rate-limiting-cb    — 10 POST /callback with invalid HMAC from 127.0.0.1 (slots 1-10); 11th → 429 (Retry-After: 6)\n\nNOT covered here and why:\n  - Account locked → 423 (T-07): creating a locked account requires admin tooling not yet in E2E suite. Covered by handler_test.go.\n  - Account inactive → 403 (T-08): same reason. Covered by handler_test.go.\n  - Provider UID race / provider_uid_taken on new-user callback (T-10): requires concurrent requests; covered by handler_test.go.\n  - Audit row content and metadata: covered by store_test.go.\n  - context.WithoutCancel invariants: covered by service_test.go.\n  - DB-level error injection: covered by integration tests.\n  - Individual field-validation variants beyond id=0: covered by handler_test.go.\n  - Refresh token cookie HttpOnly flag: covered by handler_test.go.\n  - MintTokens failure path: covered by handler_test.go.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Increment the request sequence counter and derive a unique X-Forwarded-For IP",
+          "// for every request so non-RL folders never exhaust any rate-limit bucket.",
+          "// rate-limiting-cb overrides _xff to 127.0.0.1 in its folder prerequest.",
+          "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.' + ((n>>16)&0xff) + '.' + ((n>>8)&0xff) + '.' + (n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Registers gmail_test_email, fetches the verification OTP from Gmail, verifies the email, and logs in. Stores tg_access_token for use by link/unlink folders.\n\nThis user has a password and no linked Telegram identity initially.",
+      "item": [
+        {
+          "name": "POST /register → 201 (setup account)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) {",
+                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
+                  "}",
+                  "pm.collectionVariables.set('tg_email', email);",
+                  "pm.collectionVariables.set('tg_password', 'TgS3tupP@ss1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "console.log('[INFO] Done waiting. Querying Gmail API...');",
+                  "",
+                  "const tgEmail = pm.collectionVariables.get('tg_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + tgEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching verification email found in Gmail.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode verification email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in verification email.'); return; }",
+                  "        pm.collectionVariables.set('tg_vfy_code', match[1]);",
+                  "        console.log('[INFO] Verification OTP stored in tg_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"TgSetup\", \"email\": \"{{tg_email}}\", \"password\": \"{{tg_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200 (consume verification OTP)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('tg_vfy_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] tg_vfy_code is empty — Gmail fetch in register step did not complete.');",
+                  "    console.error('        Check: gmail_access_token is set, token not expired, --delay-request >= 8000.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{tg_email}}\", \"code\": \"{{tg_vfy_code}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (store tg_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('tg_access_token', body.access_token);",
+                  "console.log('[INFO] Setup access token stored in tg_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{tg_email}}\", \"password\": \"{{tg_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "callback-happy-path",
+      "description": "Verifies POST /oauth/telegram/callback for new user registration (201) and existing user login (200).\n\nThe prerequest script computes a valid Telegram HMAC using telegram_bot_token from the environment and CryptoJS (available in the Newman sandbox). Telegram ID 99887766 is used.\n\nThe 201 access_token is stored in tg_cb_access_token for the unlink-failures/last_auth_method test (that user has no password and cannot unlink their only auth method).\n\nThe second request re-uses the same ID — the identity row now exists, so ExistingUserPath returns 200.",
+      "item": [
+        {
+          "name": "POST /oauth/telegram/callback (new user, ID 99887766) → 201",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Compute a valid Telegram HMAC.",
+                  "// secret_key = SHA256(botToken); hash = hex(HMAC_SHA256(secret_key, data_check_string)).",
+                  "// data_check_string = sorted 'key=value' pairs (exclude 'hash'), joined by newline.",
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "if (!botToken) { console.error('[ERROR] telegram_bot_token not set in environment.'); }",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const tgId = pm.collectionVariables.get('tg_callback_id');",
+                  "const authDate = Math.floor(Date.now() / 1000);",
+                  "const pairs = ['auth_date=' + authDate, 'first_name=TgNewUser', 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_auth_date', authDate);",
+                  "pm.collectionVariables.set('tg_hash', hash);",
+                  "console.log('[INFO] HMAC computed for ID', tgId, '/ auth_date', authDate);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// NewUserPath: no existing user_identity for provider=telegram, ID=99887766.",
+                  "// Creates user+identity+session in one TX, returns 201 with access_token body.",
+                  "// Stores token in tg_cb_access_token for the last_auth_method test in unlink-failures.",
+                  "pm.test('status is 201 (new Telegram user created)', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present in response body', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.test('refresh_token cookie is set', () => pm.expect(pm.response.headers.get('Set-Cookie')).to.include('refresh_token'));",
+                  "pm.collectionVariables.set('tg_cb_access_token', body.access_token);",
+                  "console.log('[INFO] Telegram-only user access token stored in tg_cb_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_callback_id}}, \"first_name\": \"TgNewUser\", \"auth_date\": {{tg_auth_date}}, \"hash\": \"{{tg_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "POST /oauth/telegram/callback (same ID 99887766, existing user) → 200",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Same tg_callback_id — identity row already exists. Recompute HMAC with fresh auth_date.",
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const tgId = pm.collectionVariables.get('tg_callback_id');",
+                  "const authDate = Math.floor(Date.now() / 1000);",
+                  "const pairs = ['auth_date=' + authDate, 'first_name=TgNewUser', 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_auth_date', authDate);",
+                  "pm.collectionVariables.set('tg_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ExistingUserPath: identity row for ID 99887766 now exists.",
+                  "// Creates a new session and returns 200 with access_token.",
+                  "pm.test('status is 200 (existing Telegram user login)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present for returning user', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_callback_id}}, \"first_name\": \"TgNewUser\", \"auth_date\": {{tg_auth_date}}, \"hash\": \"{{tg_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "callback-failures",
+      "description": "Verifies all error guards in POST /oauth/telegram/callback that can be exercised without admin tooling.\n\nNOT covered here:\n  - Account locked → 423 (T-07): requires admin tooling. Covered by handler_test.go.\n  - Account inactive → 403 (T-08): same reason. Covered by handler_test.go.\n  - provider_uid_taken concurrent race: covered by handler_test.go.",
+      "item": [
+        {
+          "name": "POST /oauth/telegram/callback (invalid HMAC) → 401 invalid_signature",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// VerifyHMAC fires before any DB read (D-07). A tampered hash is rejected with 401.",
+                  "// This confirms the HMAC guard is the first check after JSON decoding.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is invalid_signature', () => pm.expect(pm.response.json().code).to.eql('invalid_signature'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 99887766, \"first_name\": \"Test\", \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "POST /oauth/telegram/callback (auth_date 90 000 s old) → 401 auth_date_expired",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// auth_date is 90 000 s in the past (> 86 400 s replay window, D-09).",
+                  "// Compute a valid HMAC so the HMAC guard passes, then CheckAuthDate fires.",
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const staleDate = Math.floor(Date.now() / 1000) - 90000;",
+                  "const tgId = pm.collectionVariables.get('tg_callback_id');",
+                  "const pairs = ['auth_date=' + staleDate, 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_stale_date', staleDate);",
+                  "pm.collectionVariables.set('tg_stale_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// HMAC is valid; CheckAuthDate rejects the 90 000 s old timestamp.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is auth_date_expired (stale timestamp)', () => pm.expect(pm.response.json().code).to.eql('auth_date_expired'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_callback_id}}, \"auth_date\": {{tg_stale_date}}, \"hash\": \"{{tg_stale_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "POST /oauth/telegram/callback (auth_date 120 s in future) → 401 auth_date_expired",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// auth_date is 120 s ahead of server time (> 60 s clock-skew tolerance, D-09).",
+                  "// Valid HMAC so HMAC guard passes; then CheckAuthDate rejects it.",
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const futureDate = Math.floor(Date.now() / 1000) + 120;",
+                  "const tgId = pm.collectionVariables.get('tg_callback_id');",
+                  "const pairs = ['auth_date=' + futureDate, 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_future_date', futureDate);",
+                  "pm.collectionVariables.set('tg_future_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Both stale and future auth_date map to ErrTelegramAuthDateExpired → same error code.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is auth_date_expired (future timestamp)', () => pm.expect(pm.response.json().code).to.eql('auth_date_expired'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_callback_id}}, \"auth_date\": {{tg_future_date}}, \"hash\": \"{{tg_future_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "POST /oauth/telegram/callback (id=0) → 422 validation_error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// id=0 fails struct validation before HMAC; the handler returns 422.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error (id=0 rejected)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 0, \"auth_date\": 1700000000, \"hash\": \"invalid\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "POST /oauth/telegram/callback (malformed JSON) → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// DecodeJSON fails on a non-JSON body; returns 400 before any HMAC or DB check.",
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "not-valid-json",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "validation",
+      "description": "Verifies that MaxBytesReader rejects oversized request bodies with 413 for both POST /oauth/telegram/callback and POST /oauth/telegram/link.",
+      "item": [
+        {
+          "name": "POST /oauth/telegram/callback (body > 1 MiB) → 413",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const pad = 'A'.repeat(1048580);",
+                  "pm.collectionVariables.set('_large_body_pad', pad);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// MaxBytesReader enforces a 1 MiB limit; handler never reaches HMAC verification.",
+                  "pm.test('status is 413 (callback body > 1 MiB)', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"x\", \"first_name\": \"{{_large_body_pad}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "POST /oauth/telegram/link (body > 1 MiB) → 413",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// POST /link has the same MaxBytesReader guard; 413 before JWT or HMAC.",
+                  "pm.test('status is 413 (link body > 1 MiB)', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"x\", \"first_name\": \"{{_large_body_pad}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "link-happy-path",
+      "description": "Links Telegram ID 99887700 to the setup user (tg_access_token). POST /link returns 204. Then GET /profile/me/identities confirms the identity row was written.",
+      "item": [
+        {
+          "name": "POST /oauth/telegram/link (ID 99887700) → 204 (Telegram linked to setup user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// tg_link_id (99887700) is distinct from tg_callback_id (99887766) to avoid conflicts.",
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const tgId = pm.collectionVariables.get('tg_link_id');",
+                  "const authDate = Math.floor(Date.now() / 1000);",
+                  "const pairs = ['auth_date=' + authDate, 'first_name=TgLinkUser', 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_link_auth_date', authDate);",
+                  "pm.collectionVariables.set('tg_link_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// JWTAuth passes, HMAC valid, auth_date fresh, no existing Telegram identity for setup user.",
+                  "// InsertIdentity TX succeeds. POST /link returns 204 with no response body.",
+                  "pm.test('status is 204 (Telegram identity linked)', () => pm.response.to.have.status(204));",
+                  "pm.test('response body is empty', () => pm.expect(pm.response.text()).to.be.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_link_id}}, \"first_name\": \"TgLinkUser\", \"auth_date\": {{tg_link_auth_date}}, \"hash\": \"{{tg_link_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        },
+        {
+          "name": "GET /profile/me/identities → 200 (verify telegram identity present)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Confirms the user_identities row was written by POST /link.",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('identities array is present', () => pm.expect(body.identities).to.be.an('array'));",
+                  "const tgIdentity = body.identities.find(i => i.provider === 'telegram');",
+                  "pm.test('telegram identity present in identities list', () => pm.expect(tgIdentity).to.not.be.undefined);",
+                  "const linkId = pm.collectionVariables.get('tg_link_id').toString();",
+                  "pm.test('telegram provider_uid matches tg_link_id', () => pm.expect(tgIdentity.provider_uid).to.eql(linkId));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "link-failures",
+      "description": "Verifies guard paths for POST /oauth/telegram/link.",
+      "item": [
+        {
+          "name": "POST /oauth/telegram/link (already linked) → 409 provider_already_linked",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Setup user already has Telegram ID 99887700 linked (from link-happy-path).",
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const tgId = pm.collectionVariables.get('tg_link_id');",
+                  "const authDate = Math.floor(Date.now() / 1000);",
+                  "const pairs = ['auth_date=' + authDate, 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_link_auth_date', authDate);",
+                  "pm.collectionVariables.set('tg_link_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// GetIdentityByUserAndProvider finds an existing telegram row → ErrProviderAlreadyLinked → 409.",
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is provider_already_linked', () => pm.expect(pm.response.json().code).to.eql('provider_already_linked'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_link_id}}, \"auth_date\": {{tg_link_auth_date}}, \"hash\": \"{{tg_link_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        },
+        {
+          "name": "POST /oauth/telegram/link (invalid HMAC) → 401 invalid_signature",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// VerifyHMAC fires before any DB read. Wrong hash → 401 invalid_signature.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is invalid_signature', () => pm.expect(pm.response.json().code).to.eql('invalid_signature'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 99887766, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        },
+        {
+          "name": "POST /oauth/telegram/link (auth_date expired) → 401 auth_date_expired",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const staleDate = Math.floor(Date.now() / 1000) - 90000;",
+                  "const tgId = pm.collectionVariables.get('tg_link_id');",
+                  "const pairs = ['auth_date=' + staleDate, 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_link_stale_date', staleDate);",
+                  "pm.collectionVariables.set('tg_link_stale_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// HMAC passes; CheckAuthDate rejects the stale timestamp.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is auth_date_expired', () => pm.expect(pm.response.json().code).to.eql('auth_date_expired'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_link_id}}, \"auth_date\": {{tg_link_stale_date}}, \"hash\": \"{{tg_link_stale_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        },
+        {
+          "name": "POST /oauth/telegram/link (malformed JSON) → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{tg_cb_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "not-valid-json",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unlink-happy-path",
+      "description": "Verifies DELETE /oauth/telegram/unlink succeeds for the setup user (password present → last-auth-method guard does not fire). After this the setup user has no Telegram identity, exercised by provider_not_linked in unlink-failures.",
+      "item": [
+        {
+          "name": "DELETE /oauth/telegram/unlink → 204 (Telegram unlinked from setup user)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// password_hash IS NOT NULL → hasOtherAuthMethod = true → last-auth-method guard passes.",
+                  "// DeleteIdentityTx removes the telegram row. Returns 204 with no body.",
+                  "pm.test('status is 204 (Telegram identity removed)', () => pm.response.to.have.status(204));",
+                  "pm.test('response body is empty', () => pm.expect(pm.response.text()).to.be.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unlink-failures",
+      "description": "Verifies guard paths for DELETE /oauth/telegram/unlink.\n\nprovider_not_linked: setup user's Telegram identity was removed by unlink-happy-path.\n\nlast_auth_method: the Telegram-only user (ID 99887766) from callback-happy-path has no password and no other auth method. Uses tg_cb_access_token.",
+      "item": [
+        {
+          "name": "DELETE /oauth/telegram/unlink (no Telegram identity) → 404 provider_not_linked",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// GetIdentitiesByUser returns no telegram row (unlinked by unlink-happy-path).",
+                  "// ErrProviderNotLinked → 404 provider_not_linked.",
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code is provider_not_linked', () => pm.expect(pm.response.json().code).to.eql('provider_not_linked'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /oauth/telegram/unlink (Telegram-only user, no password) → 409 last_auth_method",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const token = pm.collectionVariables.get('tg_cb_access_token');",
+                  "if (!token) {",
+                  "    console.error('[ERROR] tg_cb_access_token is empty — callback-happy-path first request did not capture it.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// User was created by POST /callback (ID 99887766): no email, no password.",
+                  "// GetIdentitiesWithPassword: has_telegram=true, has_password=false, no other identities.",
+                  "// hasOtherAuthMethod = false → ErrLastAuthMethod → 409 last_auth_method.",
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is last_auth_method', () => pm.expect(pm.response.json().code).to.eql('last_auth_method'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_cb_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth-failures",
+      "description": "Verifies that POST /oauth/telegram/link and DELETE /oauth/telegram/unlink reject requests without a valid Authorization header. Both endpoints sit inside the JWTAuth middleware group.",
+      "item": [
+        {
+          "name": "POST /oauth/telegram/link (no Authorization header) → 401 missing_token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// JWTAuth middleware rejects before the handler or rate limiter runs.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 99887766, \"auth_date\": 1700000000, \"hash\": \"invalid\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /oauth/telegram/unlink (no Authorization header) → 401 missing_token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// JWTAuth middleware rejects before the handler or rate limiter runs.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-lnk",
+      "description": "Verifies the tglnk:usr: user rate limiter for POST /oauth/telegram/link (burst=5, rate=5/15 min, Retry-After=900 s).\n\nWhy a dedicated +tgrl user: tglnk:usr: is user-keyed. link-happy-path and link-failures consumed slots from tg_access_token. To guarantee a clean bucket, this folder registers a dedicated +tgrl alias.\n\nSequence:\n  rl-setup 1-3: register +tgrl → verify email (Gmail OTP) → login → tg_rl_access_token\n  rl-link:      POST /link ID 99887744 → 204 (slot 1)\n  warmup 2-5:   POST /link same ID → 409 provider_already_linked (slots 2-5 still charged)\n  6th request → 429 (Retry-After: 900)",
+      "item": [
+        {
+          "name": "rl-setup 1/3 — POST /register → 201 (+tgrl alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const rlEmail = base.slice(0, at) + '+tgrl' + base.slice(at);",
+                  "pm.collectionVariables.set('tg_rl_email', rlEmail);",
+                  "pm.collectionVariables.set('tg_rl_password', 'TgRlP@ss1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for +tgrl verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const rlEmail = pm.collectionVariables.get('tg_rl_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + rlEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +tgrl verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +tgrl email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +tgrl email.'); return; }",
+                  "        pm.collectionVariables.set('tg_rl_vfy_code', match[1]);",
+                  "        console.log('[INFO] +tgrl OTP stored in tg_rl_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"TgRL\", \"email\": \"{{tg_rl_email}}\", \"password\": \"{{tg_rl_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "rl-setup 2/3 — POST /verify-email → 200 (+tgrl alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('tg_rl_vfy_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] tg_rl_vfy_code is empty — Gmail fetch in rl-setup 1/3 did not complete.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{tg_rl_email}}\", \"code\": \"{{tg_rl_vfy_code}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "rl-setup 3/3 — POST /login → 200 (store tg_rl_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('tg_rl_access_token', body.access_token);",
+                  "console.log('[INFO] RL access token stored in tg_rl_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{tg_rl_email}}\", \"password\": \"{{tg_rl_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "rl-link — POST /oauth/telegram/link (ID 99887744) → 204 (slot 1)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// tg_rl_id (99887744) — third Telegram ID used only by the RL user.",
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const tgId = pm.collectionVariables.get('tg_rl_id');",
+                  "const authDate = Math.floor(Date.now() / 1000);",
+                  "const pairs = ['auth_date=' + authDate, 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_rl_auth_date', authDate);",
+                  "pm.collectionVariables.set('tg_rl_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh tglnk:usr: bucket for the RL user. Slot 1 consumed.",
+                  "pm.test('not rate-limited yet (tglnk:usr: slot 1 — rl-link → 204)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/5 — POST /oauth/telegram/link → 409 already_linked (slot 2)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const tgId = pm.collectionVariables.get('tg_rl_id');",
+                  "const authDate = Math.floor(Date.now() / 1000);",
+                  "const pairs = ['auth_date=' + authDate, 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_rl_auth_date', authDate);",
+                  "pm.collectionVariables.set('tg_rl_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Returns 409 provider_already_linked; tglnk:usr: still charges slot 2.",
+                  "pm.test('not rate-limited yet (tglnk:usr: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/5 — POST /oauth/telegram/link → 409 already_linked (slot 3)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const tgId = pm.collectionVariables.get('tg_rl_id');",
+                  "const authDate = Math.floor(Date.now() / 1000);",
+                  "const pairs = ['auth_date=' + authDate, 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_rl_auth_date', authDate);",
+                  "pm.collectionVariables.set('tg_rl_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tglnk:usr: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/5 — POST /oauth/telegram/link → 409 already_linked (slot 4)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const tgId = pm.collectionVariables.get('tg_rl_id');",
+                  "const authDate = Math.floor(Date.now() / 1000);",
+                  "const pairs = ['auth_date=' + authDate, 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_rl_auth_date', authDate);",
+                  "pm.collectionVariables.set('tg_rl_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tglnk:usr: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/5 — POST /oauth/telegram/link → 409 already_linked (slot 5, last allowed)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const tgId = pm.collectionVariables.get('tg_rl_id');",
+                  "const authDate = Math.floor(Date.now() / 1000);",
+                  "const pairs = ['auth_date=' + authDate, 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_rl_auth_date', authDate);",
+                  "pm.collectionVariables.set('tg_rl_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tglnk:usr: slot 5 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        },
+        {
+          "name": "6th request → 429 (tglnk:usr: bucket exhausted)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const botToken = pm.environment.get('telegram_bot_token');",
+                  "const secretKey = CryptoJS.SHA256(botToken);",
+                  "const tgId = pm.collectionVariables.get('tg_rl_id');",
+                  "const authDate = Math.floor(Date.now() / 1000);",
+                  "const pairs = ['auth_date=' + authDate, 'id=' + tgId].sort();",
+                  "const hash = CryptoJS.HmacSHA256(pairs.join('\\n'), secretKey).toString(CryptoJS.enc.Hex);",
+                  "pm.collectionVariables.set('tg_rl_auth_date', authDate);",
+                  "pm.collectionVariables.set('tg_rl_hash', hash);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// burst=5 exhausted. Retry-After = 900 s (tglnk:usr: window = 15 min).",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
+                  "pm.test('Retry-After header is 900 s', () => {",
+                  "    const retryAfter = pm.response.headers.get('Retry-After');",
+                  "    pm.expect(retryAfter).to.be.a('string').and.not.empty;",
+                  "    pm.expect(retryAfter).to.eql('900');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "link"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-unlk",
+      "description": "Verifies the tgunlk:usr: user rate limiter for DELETE /oauth/telegram/unlink (burst=5, rate=5/15 min, Retry-After=900 s).\n\nUses tg_rl_access_token. After rate-limiting-lnk, the RL user still has Telegram ID 99887744 linked.\n\nSequence:\n  warmup 1/5: DELETE /unlink → 204 (Telegram unlinked, tgunlk:usr: slot 1 consumed)\n  warmup 2-5: DELETE /unlink → 404 provider_not_linked (slots 2-5; 404 still charges the limiter)\n  6th request → 429 (Retry-After: 900)",
+      "item": [
+        {
+          "name": "warmup 1/5 — DELETE /oauth/telegram/unlink → 204 (slot 1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// RL user has Telegram 99887744 linked from rl-link. Unlink succeeds, slot 1 consumed.",
+                  "pm.test('not rate-limited yet (tgunlk:usr: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/5 — DELETE /oauth/telegram/unlink → 404 not_linked (slot 2)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Already unlinked; 404 still charges slot 2.",
+                  "pm.test('not rate-limited yet (tgunlk:usr: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/5 — DELETE /oauth/telegram/unlink → 404 not_linked (slot 3)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgunlk:usr: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/5 — DELETE /oauth/telegram/unlink → 404 not_linked (slot 4)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgunlk:usr: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/5 — DELETE /oauth/telegram/unlink → 404 not_linked (slot 5, last allowed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgunlk:usr: slot 5 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+            }
+          }
+        },
+        {
+          "name": "6th request → 429 (tgunlk:usr: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// burst=5 exhausted. Retry-After = 900 s (tgunlk:usr: window = 15 min).",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
+                  "pm.test('Retry-After header is 900 s', () => {",
+                  "    const retryAfter = pm.response.headers.get('Retry-After');",
+                  "    pm.expect(retryAfter).to.be.a('string').and.not.empty;",
+                  "    pm.expect(retryAfter).to.eql('900');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_rl_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-cb",
+      "description": "Verifies the tgcb:ip: IP rate limiter for POST /oauth/telegram/callback (burst=10, rate=10/1 min, Retry-After=60 s).\n\nAll requests pin _xff to 127.0.0.1 (folder prerequest override) so all hits land on the same IP bucket.\nRun in a SEPARATE Newman invocation after Redis flush so the tgcb:ip: bucket is empty.\nWarmup requests use an invalid HMAC (→ 401) but the rate limiter fires before the handler, consuming slots regardless.\n\nRetry-After = 60 s (tgcb:ip: window = 1 min).",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Override _xff to 127.0.0.1 so all requests hit the same IP bucket.",
+              "pm.collectionVariables.set('_xff', '127.0.0.1');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "warmup 1/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// tgcb:ip: IP-keyed, 127.0.0.1. Invalid HMAC → 401 but slot 1 consumed.",
+                  "pm.test('not rate-limited yet (tgcb:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgcb:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgcb:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgcb:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgcb:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "warmup 6/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgcb:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "warmup 7/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgcb:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "warmup 8/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgcb:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "warmup 9/10 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgcb:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "warmup 10/10 — consume slot (→ not 429, last allowed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (tgcb:ip: slot 10 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        },
+        {
+          "name": "11th request → 429 (tgcb:ip: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// burst=10 exhausted. Retry-After = 6 s = ceil(1 / (10/60)): time to earn one token at rate=10/60 t/s.",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
+                  "pm.test('Retry-After header is 6 s', () => {",
+                  "    const retryAfter = pm.response.headers.get('Retry-After');",
+                  "    pm.expect(retryAfter).to.be.a('string').and.not.empty;",
+                  "    pm.expect(retryAfter).to.eql('6');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "telegram", "callback"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter used by the collection prerequest to generate unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current X-Forwarded-For value. Set to a unique 10.x.x.x IP by the collection prerequest. Overridden to 127.0.0.1 by rate-limiting-cb folder prerequest."
+    },
+    {
+      "key": "_large_body_pad",
+      "value": "",
+      "description": "~1 MiB padding string set in validation folder prerequest. Used to build oversized request bodies."
+    },
+    {
+      "key": "tg_email",
+      "value": "",
+      "description": "Set from gmail_test_email in setup/register prerequest."
+    },
+    {
+      "key": "tg_password",
+      "value": "",
+      "description": "Setup user password (TgS3tupP@ss1!)."
+    },
+    {
+      "key": "tg_vfy_code",
+      "value": "",
+      "description": "Verification OTP for tg_email fetched from Gmail."
+    },
+    {
+      "key": "tg_access_token",
+      "value": "",
+      "description": "JWT for tg_email from setup/login. Used by link/unlink folders."
+    },
+    {
+      "key": "tg_cb_access_token",
+      "value": "",
+      "description": "JWT for the Telegram-only user (ID 99887766) created by callback-happy-path. Used by unlink-failures/last_auth_method."
+    },
+    {
+      "key": "tg_callback_id",
+      "value": "99887766",
+      "description": "Telegram user ID for callback-happy-path. New user on first call, returning user on second."
+    },
+    {
+      "key": "tg_link_id",
+      "value": "99887700",
+      "description": "Telegram user ID for link-happy-path and link-failures. Distinct from tg_callback_id."
+    },
+    {
+      "key": "tg_rl_id",
+      "value": "99887744",
+      "description": "Telegram user ID for the rate-limiting-lnk RL user. Distinct from both other IDs."
+    },
+    {
+      "key": "tg_auth_date",
+      "value": "",
+      "description": "Computed Unix timestamp (seconds) for callback requests."
+    },
+    {
+      "key": "tg_hash",
+      "value": "",
+      "description": "Computed HMAC for callback-happy-path requests."
+    },
+    {
+      "key": "tg_stale_date",
+      "value": "",
+      "description": "Stale auth_date (90 000 s old) for auth_date_expired tests."
+    },
+    {
+      "key": "tg_stale_hash",
+      "value": "",
+      "description": "Valid HMAC for tg_stale_date."
+    },
+    {
+      "key": "tg_future_date",
+      "value": "",
+      "description": "Future auth_date (120 s ahead) for the future-timestamp expired test."
+    },
+    {
+      "key": "tg_future_hash",
+      "value": "",
+      "description": "Valid HMAC for tg_future_date."
+    },
+    {
+      "key": "tg_link_auth_date",
+      "value": "",
+      "description": "Computed in link-happy-path and link-failures prerequest scripts."
+    },
+    {
+      "key": "tg_link_hash",
+      "value": "",
+      "description": "Computed HMAC for link requests."
+    },
+    {
+      "key": "tg_link_stale_date",
+      "value": "",
+      "description": "Stale auth_date for auth_date_expired test in link-failures."
+    },
+    {
+      "key": "tg_link_stale_hash",
+      "value": "",
+      "description": "Valid HMAC for tg_link_stale_date."
+    },
+    {
+      "key": "tg_rl_email",
+      "value": "",
+      "description": "gmail_test_email+tgrl alias. Set in rate-limiting-lnk rl-setup 1/3."
+    },
+    {
+      "key": "tg_rl_password",
+      "value": "",
+      "description": "Password for tg_rl_email (TgRlP@ss1!)."
+    },
+    {
+      "key": "tg_rl_vfy_code",
+      "value": "",
+      "description": "Verification OTP for tg_rl_email fetched from Gmail."
+    },
+    {
+      "key": "tg_rl_access_token",
+      "value": "",
+      "description": "JWT for tg_rl_email. Used by rate-limiting-lnk warmups and rate-limiting-unlk."
+    },
+    {
+      "key": "tg_rl_auth_date",
+      "value": "",
+      "description": "Computed in rate-limiting-lnk prerequest scripts."
+    },
+    {
+      "key": "tg_rl_hash",
+      "value": "",
+      "description": "Computed HMAC for rate-limiting-lnk requests."
+    }
+  ]
+}

@@ -175,15 +175,15 @@
       "description": "All input-validation cases for POST /login. Validation fires before any DB lookup or service call, so no pre-existing user is required. Each case expects 422 validation_error (or 413 for oversized body). Validation rules from validators.go: identifier is required and must be ≤254 bytes after trimming; password is required. Password strength is intentionally NOT re-validated on login to avoid leaking enumeration info.",
       "item": [
         {
-          "name": "malformed JSON → 422",
+          "name": "malformed JSON → 400",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.eql('bad_request'));"
                 ]
               }
             }

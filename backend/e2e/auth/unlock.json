@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "auth-unlock-e2e",
-    "name": "Auth \u2013 Unlock (POST /api/v1/auth/request-unlock + POST /api/v1/auth/confirm-unlock)",
-    "description": "E2E tests for POST /api/v1/auth/request-unlock and POST /api/v1/auth/confirm-unlock.\n\nFolder execution order (orchestrated by make e2e-unlock):\n  1. happy-path        \u2014 setup (register, verify-email, trigger time-lock, request-unlock + Gmail OTP fetch)\n                          then: wrong OTP\u2192422, correct OTP\u2192200, login-after-unlock\u2192200, replay\u2192422, no-token\u2192422\n  2. validation        \u2014 all 422/413 input-error cases for both /request-unlock and /confirm-unlock\n  3. anti-enumeration  \u2014 not-locked\u2192202, unknown\u2192202 for /request-unlock; unknown\u2192422 for /confirm-unlock\n  4. rate-limiting     \u2014 shared unlk:ip: bucket (burst=3): 2\u00d7/request-unlock + 1\u00d7/confirm-unlock \u2192 4th \u2192 429\n\nAll test users use @e2e.test emails (or gmail_test_email) so `make _e2e-db-clean` can wipe them.\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\n\nNotes on what is NOT covered here and why:\n  - Admin-locked account (AdminLocked=true) \u2192 silent no-op: three distinct cases covered by service_test.go; HTTP surface is always 202.\n  - Both admin-locked and time-locked simultaneously: same reasoning \u2014 service_test.go covers it; API surface is identical.\n  - Token row created in account_unlock_tokens: covered by store_test.go TestRequestUnlockTx_Integration.\n  - unlock_requested audit row written: covered by same store integration test.\n  - Active token cooldown (no new OTP when one already exists): covered by service_test.go \u201cactive token exists \u2014 returns zero result nil error (cooldown)\u201d.\n  - Mail delivery failure \u2192 202: covered by handler_test.go \u201cnon-empty RawCode with failing mailer still returns 202\u201d.\n  - Service-level error \u2192 202: covered by handler_test.go \u201cservice error still returns 202 (anti-enumeration)\u201d.\n  - Wrong OTP reaching max-attempts \u2192 429: covered by service_test.go + handler_test.go \u201cErrTooManyAttempts returns 429\u201d.\n  - Expired OTP \u2192 422: requires time manipulation; covered by service_test.go \u201cexpired token returns ErrTokenExpired\u201d.\n  - Account becomes admin-locked after OTP issued \u2192 423: regression-tested in handler_test.go; requires post-issuance state mutation not practical in E2E.\n  - is_locked=false and failed_login_attempts=0 in DB after success: covered by store_test.go TestUnlockAccountTx_Integration (\u201cclears lock\u201d); indirectly confirmed by login-after-unlock step.\n  - account_unlocked audit row written: covered by same store integration test.\n  - Timing invariant (\u00b1100 ms): not reliably assertable in any CI environment; covered by unit-level \u201cno panic\u201d assertions on GetDummyOTPHash.",
+    "name": "Auth – Unlock (POST /api/v1/auth/request-unlock + POST /api/v1/auth/confirm-unlock)",
+    "description": "E2E tests for POST /api/v1/auth/request-unlock and POST /api/v1/auth/confirm-unlock.\n\nFolder execution order (orchestrated by make e2e-unlock):\n  1. happy-path        — setup (register, verify-email, trigger time-lock, request-unlock + Gmail OTP fetch)\n                          then: wrong OTP→422, correct OTP→200, login-after-unlock→200, replay→422, no-token→422\n  2. validation        — all 422/413 input-error cases for both /request-unlock and /confirm-unlock\n  3. anti-enumeration  — not-locked→202, unknown→202 for /request-unlock; unknown→422 for /confirm-unlock\n  4. rate-limiting     — shared unlk:ip: bucket (burst=3): 2×/request-unlock + 1×/confirm-unlock → 4th → 429\n\nAll test users use @e2e.test emails (or gmail_test_email) so `make _e2e-db-clean` can wipe them.\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\n\nNotes on what is NOT covered here and why:\n  - Admin-locked account (AdminLocked=true) → silent no-op: three distinct cases covered by service_test.go; HTTP surface is always 202.\n  - Both admin-locked and time-locked simultaneously: same reasoning — service_test.go covers it; API surface is identical.\n  - Token row created in account_unlock_tokens: covered by store_test.go TestRequestUnlockTx_Integration.\n  - unlock_requested audit row written: covered by same store integration test.\n  - Active token cooldown (no new OTP when one already exists): covered by service_test.go “active token exists — returns zero result nil error (cooldown)”.\n  - Mail delivery failure → 202: covered by handler_test.go “non-empty RawCode with failing mailer still returns 202”.\n  - Service-level error → 202: covered by handler_test.go “service error still returns 202 (anti-enumeration)”.\n  - Wrong OTP reaching max-attempts → 429: covered by service_test.go + handler_test.go “ErrTooManyAttempts returns 429”.\n  - Expired OTP → 422: requires time manipulation; covered by service_test.go “expired token returns ErrTokenExpired”.\n  - Account becomes admin-locked after OTP issued → 423: regression-tested in handler_test.go; requires post-issuance state mutation not practical in E2E.\n  - is_locked=false and failed_login_attempts=0 in DB after success: covered by store_test.go TestUnlockAccountTx_Integration (“clears lock”); indirectly confirmed by login-after-unlock step.\n  - account_unlocked audit row written: covered by same store integration test.\n  - Timing invariant (±100 ms): not reliably assertable in any CI environment; covered by unit-level “no panic” assertions on GetDummyOTPHash.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -26,10 +26,10 @@
   "item": [
     {
       "name": "happy-path",
-      "description": "Registers the gmail_test_email user, fetches the verification OTP from Gmail, verifies the email, triggers a time-lock via 10 consecutive wrong-password logins, calls POST /request-unlock and fetches the unlock OTP from Gmail.\n\nFollowed immediately by the confirm-unlock scenario sequence (order is critical):\n  1. wrong OTP (1 attempt, below max-attempts) \u2192 422\n  2. correct OTP \u2192 200\n  3. login after unlock \u2192 200 (indirectly confirms login_locked_until=NULL in DB)\n  4. OTP replay (consumed code) \u2192 422 (ErrTokenAlreadyUsed)\n  5. no active token (account unlocked) \u2192 422 (ErrTokenNotFound)",
+      "description": "Registers the gmail_test_email user, fetches the verification OTP from Gmail, verifies the email, triggers a time-lock via 10 consecutive wrong-password logins, calls POST /request-unlock and fetches the unlock OTP from Gmail.\n\nFollowed immediately by the confirm-unlock scenario sequence (order is critical):\n  1. wrong OTP (1 attempt, below max-attempts) → 422\n  2. correct OTP → 200\n  3. login after unlock → 200 (indirectly confirms login_locked_until=NULL in DB)\n  4. OTP replay (consumed code) → 422 (ErrTokenAlreadyUsed)\n  5. no active token (account unlocked) → 422 (ErrTokenNotFound)",
       "item": [
         {
-          "name": "POST /register \u2192 201 (setup account)",
+          "name": "POST /register → 201 (setup account)",
           "event": [
             {
               "listen": "prerequest",
@@ -41,7 +41,7 @@
                   "// The address is cleaned by _e2e-db-clean before each run.",
                   "const email = pm.environment.get('gmail_test_email');",
                   "if (!email) {",
-                  "    console.error('[ERROR] gmail_test_email not set in environment \u2014 add it to environment.json.');",
+                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
                   "}",
                   "pm.collectionVariables.set('unlk_email', email);",
                   "pm.collectionVariables.set('unlk_password', 'P@ssw0rd1!');"
@@ -61,7 +61,7 @@
                   "// The callback executes during the --delay-request idle window so",
                   "// unlk_vfy_code is set in time for the next request.",
                   "const token = pm.variables.get('gmail_access_token');",
-                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
                   "",
                   "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
                   "const start = Date.now();",
@@ -75,7 +75,7 @@
                   "    header: { Authorization: 'Bearer ' + token }",
                   "}, (err, res) => {",
                   "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
-                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired \u2014 refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
                   "    const msgs = res.json().messages;",
                   "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching verification email found in Gmail.'); return; }",
                   "    pm.sendRequest({",
@@ -107,13 +107,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"UnlkHappy\", \"email\": \"{{unlk_email}}\", \"password\": \"{{unlk_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -123,7 +133,7 @@
           }
         },
         {
-          "name": "POST /verify-email \u2192 200 (consume verification OTP)",
+          "name": "POST /verify-email → 200 (consume verification OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -133,7 +143,7 @@
                   "// Validate that the Gmail fetch in the register step completed successfully.",
                   "const code = pm.collectionVariables.get('unlk_vfy_code');",
                   "if (!code) {",
-                  "    console.error('[ERROR] unlk_vfy_code is empty \u2014 Gmail fetch in register did not complete.');",
+                  "    console.error('[ERROR] unlk_vfy_code is empty — Gmail fetch in register did not complete.');",
                   "    console.error('        Check: gmail_access_token is set, token not expired, --delay-request >= 8000.');",
                   "}"
                 ]
@@ -153,13 +163,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{unlk_email}}\", \"code\": \"{{unlk_vfy_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
@@ -169,7 +189,7 @@
           }
         },
         {
-          "name": "POST /login (wrong password \u00d710 \u2014 trigger time-lock)",
+          "name": "POST /login (wrong password ×10 — trigger time-lock)",
           "event": [
             {
               "listen": "prerequest",
@@ -177,7 +197,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "// This request is wrong-login attempt #1 (X-Forwarded-For: 10.20.0.1).",
-                  "// The test script fires attempts #2\u201310 via chained pm.sendRequest calls,",
+                  "// The test script fires attempts #2–10 via chained pm.sendRequest calls,",
                   "// each on a distinct IP so the lgn:ip: rate limiter (burst=5) is never",
                   "// exhausted while the per-account failed_login_attempts counter climbs to 10.",
                   "// After 10 failures IncrementLoginFailures sets login_locked_until in the DB.",
@@ -191,9 +211,9 @@
                 "type": "text/javascript",
                 "exec": [
                   "// Attempt #1 should return 401 invalid_credentials (account is not yet locked).",
-                  "pm.test('wrong-login #1 \u2192 401 (not yet locked)', () => pm.response.to.have.status(401));",
+                  "pm.test('wrong-login #1 → 401 (not yet locked)', () => pm.response.to.have.status(401));",
                   "",
-                  "// Fire attempts #2\u201310 sequentially via chained pm.sendRequest callbacks.",
+                  "// Fire attempts #2–10 sequentially via chained pm.sendRequest callbacks.",
                   "// Each uses a distinct IP (10.20.0.N) to avoid exhausting the lgn:ip: bucket.",
                   "// The callbacks execute during the --delay-request window (>= 8000 ms recommended).",
                   "const email    = pm.collectionVariables.get('unlk_email');",
@@ -209,9 +229,9 @@
                   "        body: { mode: 'raw', raw: JSON.stringify({ identifier: email, password: wrongPwd }) }",
                   "    }, function(err, res) {",
                   "        if (err) { console.error('[ERROR] wrong-login #' + n + ' failed:', err); return; }",
-                  "        console.log('[INFO] wrong-login #' + n + '/10 \u2192 HTTP ' + res.code);",
+                  "        console.log('[INFO] wrong-login #' + n + '/10 → HTTP ' + res.code);",
                   "        if (n < 10) wrongLogin(n + 1);",
-                  "        else console.log('[INFO] Lockout loop complete \u2014 account should now be time-locked.');",
+                  "        else console.log('[INFO] Lockout loop complete — account should now be time-locked.');",
                   "    });",
                   "}",
                   "wrongLogin(2);"
@@ -222,13 +242,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{unlk_email}}\", \"password\": \"WrongPass1!\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -238,7 +268,7 @@
           }
         },
         {
-          "name": "POST /request-unlock \u2192 202 (issue unlock OTP, fetch from Gmail)",
+          "name": "POST /request-unlock → 202 (issue unlock OTP, fetch from Gmail)",
           "event": [
             {
               "listen": "prerequest",
@@ -266,7 +296,7 @@
                   "// Placed in the test script so the async callback has time to complete",
                   "// during the --delay-request window before the next request fires.",
                   "const token = pm.variables.get('gmail_access_token');",
-                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
                   "",
                   "console.log('[INFO] Waiting 8 s for unlock email to arrive in Gmail...');",
                   "const start = Date.now();",
@@ -280,7 +310,7 @@
                   "    header: { Authorization: 'Bearer ' + token }",
                   "}, (err, res) => {",
                   "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
-                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired \u2014 refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
                   "    const msgs = res.json().messages;",
                   "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching unlock email found in Gmail.'); return; }",
                   "    pm.sendRequest({",
@@ -312,13 +342,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{unlk_email}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -328,7 +368,7 @@
           }
         },
         {
-          "name": "POST /confirm-unlock \u2192 422 (wrong OTP, 1 attempt, below max-attempts threshold)",
+          "name": "POST /confirm-unlock → 422 (wrong OTP, 1 attempt, below max-attempts threshold)",
           "event": [
             {
               "listen": "prerequest",
@@ -338,7 +378,7 @@
                   "// Validate that unlk_otp was fetched by the request-unlock step above.",
                   "const otp = pm.collectionVariables.get('unlk_otp');",
                   "if (!otp) {",
-                  "    console.error('[ERROR] unlk_otp is empty \u2014 Gmail fetch in request-unlock did not complete.');",
+                  "    console.error('[ERROR] unlk_otp is empty — Gmail fetch in request-unlock did not complete.');",
                   "    console.error('        Check: gmail_access_token is set, token not expired, --delay-request >= 8000.');",
                   "}"
                 ]
@@ -362,13 +402,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{unlk_email}}\", \"code\": \"000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -378,7 +428,7 @@
           }
         },
         {
-          "name": "POST /confirm-unlock \u2192 200 OK (correct OTP)",
+          "name": "POST /confirm-unlock → 200 OK (correct OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -387,7 +437,7 @@
                 "exec": [
                   "const otp = pm.collectionVariables.get('unlk_otp');",
                   "if (!otp) {",
-                  "    console.error('[ERROR] unlk_otp is empty \u2014 confirm-unlock will fail with a validation error.');",
+                  "    console.error('[ERROR] unlk_otp is empty — confirm-unlock will fail with a validation error.');",
                   "}"
                 ]
               }
@@ -408,13 +458,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{unlk_email}}\", \"code\": \"{{unlk_otp}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -424,7 +484,7 @@
           }
         },
         {
-          "name": "POST /login \u2192 200 (account usable after unlock \u2014 indirectly confirms login_locked_until=NULL in DB)",
+          "name": "POST /login → 200 (account usable after unlock — indirectly confirms login_locked_until=NULL in DB)",
           "event": [
             {
               "listen": "test",
@@ -444,13 +504,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{unlk_email}}\", \"password\": \"{{unlk_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -460,7 +530,7 @@
           }
         },
         {
-          "name": "POST /confirm-unlock \u2192 422 (OTP replay \u2014 ErrTokenAlreadyUsed)",
+          "name": "POST /confirm-unlock → 422 (OTP replay — ErrTokenAlreadyUsed)",
           "event": [
             {
               "listen": "test",
@@ -479,13 +549,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{unlk_email}}\", \"code\": \"{{unlk_otp}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -495,7 +575,7 @@
           }
         },
         {
-          "name": "POST /confirm-unlock \u2192 422 (no active token after unlock \u2014 ErrTokenNotFound)",
+          "name": "POST /confirm-unlock → 422 (no active token after unlock — ErrTokenNotFound)",
           "event": [
             {
               "listen": "test",
@@ -513,13 +593,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{unlk_email}}\", \"code\": \"123456\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -535,7 +625,7 @@
       "description": "All input-validation cases for both POST /request-unlock and POST /confirm-unlock. Validation fires before any DB lookup so non-existent emails are safe to use throughout.",
       "item": [
         {
-          "name": "[request-unlock] missing email \u2192 422",
+          "name": "[request-unlock] missing email → 422",
           "event": [
             {
               "listen": "test",
@@ -551,13 +641,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -567,7 +667,7 @@
           }
         },
         {
-          "name": "[request-unlock] empty email \u2192 422",
+          "name": "[request-unlock] empty email → 422",
           "event": [
             {
               "listen": "test",
@@ -583,13 +683,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -599,7 +709,7 @@
           }
         },
         {
-          "name": "[request-unlock] email invalid format (no @) \u2192 422",
+          "name": "[request-unlock] email invalid format (no @) → 422",
           "event": [
             {
               "listen": "test",
@@ -615,13 +725,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"notanemail\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -631,7 +751,7 @@
           }
         },
         {
-          "name": "[request-unlock] email invalid format (missing TLD) \u2192 422",
+          "name": "[request-unlock] email invalid format (missing TLD) → 422",
           "event": [
             {
               "listen": "test",
@@ -647,13 +767,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"user@localhost\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -663,14 +793,14 @@
           }
         },
         {
-          "name": "[request-unlock] email > 254 bytes \u2192 422",
+          "name": "[request-unlock] email > 254 bytes → 422",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// 246 'a's + '@e2e.test' (9 bytes) = 255 bytes \u2014 one over the 254-byte limit.",
+                  "// 246 'a's + '@e2e.test' (9 bytes) = 255 bytes — one over the 254-byte limit.",
                   "pm.variables.set('unlk_email_too_long', 'a'.repeat(246) + '@e2e.test');"
                 ]
               }
@@ -689,13 +819,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{unlk_email_too_long}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -705,7 +845,7 @@
           }
         },
         {
-          "name": "[request-unlock] body > 1 MiB \u2192 413",
+          "name": "[request-unlock] body > 1 MiB → 413",
           "event": [
             {
               "listen": "prerequest",
@@ -734,13 +874,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -750,15 +900,15 @@
           }
         },
         {
-          "name": "[request-unlock] malformed JSON \u2192 422",
+          "name": "[request-unlock] malformed JSON → 400",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.eql('bad_request'));"
                 ]
               }
             }
@@ -766,13 +916,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{bad json",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -782,7 +942,7 @@
           }
         },
         {
-          "name": "[confirm-unlock] missing email \u2192 422",
+          "name": "[confirm-unlock] missing email → 422",
           "event": [
             {
               "listen": "test",
@@ -798,13 +958,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"code\": \"123456\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -814,7 +984,7 @@
           }
         },
         {
-          "name": "[confirm-unlock] empty email \u2192 422",
+          "name": "[confirm-unlock] empty email → 422",
           "event": [
             {
               "listen": "test",
@@ -830,13 +1000,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"\", \"code\": \"123456\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -846,7 +1026,7 @@
           }
         },
         {
-          "name": "[confirm-unlock] email invalid format (no @) \u2192 422",
+          "name": "[confirm-unlock] email invalid format (no @) → 422",
           "event": [
             {
               "listen": "test",
@@ -862,13 +1042,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"notanemail\", \"code\": \"123456\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -878,14 +1068,14 @@
           }
         },
         {
-          "name": "[confirm-unlock] email > 254 bytes \u2192 422",
+          "name": "[confirm-unlock] email > 254 bytes → 422",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// 246 'a's + '@e2e.test' (9 bytes) = 255 bytes \u2014 one over the 254-byte limit.",
+                  "// 246 'a's + '@e2e.test' (9 bytes) = 255 bytes — one over the 254-byte limit.",
                   "pm.variables.set('cnf_email_too_long', 'a'.repeat(246) + '@e2e.test');"
                 ]
               }
@@ -904,13 +1094,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{cnf_email_too_long}}\", \"code\": \"123456\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -920,7 +1120,7 @@
           }
         },
         {
-          "name": "[confirm-unlock] missing code \u2192 422",
+          "name": "[confirm-unlock] missing code → 422",
           "event": [
             {
               "listen": "test",
@@ -936,13 +1136,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"cnf-val@e2e.test\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -952,7 +1162,7 @@
           }
         },
         {
-          "name": "[confirm-unlock] empty code \u2192 422",
+          "name": "[confirm-unlock] empty code → 422",
           "event": [
             {
               "listen": "test",
@@ -968,13 +1178,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"cnf-val@e2e.test\", \"code\": \"\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -984,7 +1204,7 @@
           }
         },
         {
-          "name": "[confirm-unlock] code shorter than 6 digits (5 digits) \u2192 422",
+          "name": "[confirm-unlock] code shorter than 6 digits (5 digits) → 422",
           "event": [
             {
               "listen": "test",
@@ -1000,13 +1220,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"cnf-val@e2e.test\", \"code\": \"12345\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -1016,7 +1246,7 @@
           }
         },
         {
-          "name": "[confirm-unlock] code longer than 6 digits (7 digits) \u2192 422",
+          "name": "[confirm-unlock] code longer than 6 digits (7 digits) → 422",
           "event": [
             {
               "listen": "test",
@@ -1032,13 +1262,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"cnf-val@e2e.test\", \"code\": \"1234567\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -1048,7 +1288,7 @@
           }
         },
         {
-          "name": "[confirm-unlock] code contains non-digit characters \u2192 422",
+          "name": "[confirm-unlock] code contains non-digit characters → 422",
           "event": [
             {
               "listen": "test",
@@ -1064,13 +1304,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"cnf-val@e2e.test\", \"code\": \"12345a\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -1080,7 +1330,7 @@
           }
         },
         {
-          "name": "[confirm-unlock] body > 1 MiB \u2192 413",
+          "name": "[confirm-unlock] body > 1 MiB → 413",
           "event": [
             {
               "listen": "prerequest",
@@ -1109,13 +1359,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -1125,15 +1385,15 @@
           }
         },
         {
-          "name": "[confirm-unlock] malformed JSON \u2192 422",
+          "name": "[confirm-unlock] malformed JSON → 400",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.eql('bad_request'));"
                 ]
               }
             }
@@ -1141,13 +1401,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{bad json",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -1160,10 +1430,10 @@
     },
     {
       "name": "anti-enumeration",
-      "description": "Anti-enumeration contract:\n  /request-unlock: every path returns 202 + identical body regardless of account state.\n  /confirm-unlock: unknown email returns same 422 validation_error as the no-token case \u2014 no 404 ever returned.",
+      "description": "Anti-enumeration contract:\n  /request-unlock: every path returns 202 + identical body regardless of account state.\n  /confirm-unlock: unknown email returns same 422 validation_error as the no-token case — no 404 ever returned.",
       "item": [
         {
-          "name": "[request-unlock] email exists, account not locked \u2192 202 (anti-enumeration)",
+          "name": "[request-unlock] email exists, account not locked → 202 (anti-enumeration)",
           "event": [
             {
               "listen": "prerequest",
@@ -1171,7 +1441,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "// Register a fresh @e2e.test account inline. It will be unverified, which",
-                  "// causes the service to short-circuit at the email_verified guard \u2014 the same",
+                  "// causes the service to short-circuit at the email_verified guard — the same",
                   "// silent no-op that fires for a verified-but-not-locked account.",
                   "// The HTTP response is always 202 regardless of which suppression path fires.",
                   "const email = 'unlk-notlocked-' + Date.now() + '@e2e.test';",
@@ -1206,13 +1476,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{unlk_notlocked_email}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -1222,7 +1502,7 @@
           }
         },
         {
-          "name": "[request-unlock] unknown email \u2192 202 (anti-enumeration)",
+          "name": "[request-unlock] unknown email → 202 (anti-enumeration)",
           "event": [
             {
               "listen": "prerequest",
@@ -1250,13 +1530,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{unlk_ghost_email}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -1266,14 +1556,14 @@
           }
         },
         {
-          "name": "[confirm-unlock] unknown email (no token row) \u2192 422 validation_error (ErrTokenNotFound)",
+          "name": "[confirm-unlock] unknown email (no token row) → 422 validation_error (ErrTokenNotFound)",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// No account row for this email. ErrTokenNotFound is returned \u2014 the",
+                  "// No account row for this email. ErrTokenNotFound is returned — the",
                   "// response is identical to the no-active-token case: no enumeration possible.",
                   "pm.variables.set('cnf_ghost_email', 'cnf-ghost-' + Date.now() + '@e2e.test');"
                 ]
@@ -1293,13 +1583,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{cnf_ghost_email}}\", \"code\": \"000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -1312,7 +1612,7 @@
     },
     {
       "name": "rate-limiting",
-      "description": "Verifies the shared unlk:ip: rate limiter (burst=3, rate=3/10 min) that covers both /request-unlock and /confirm-unlock.\n\nThe folder prerequest overrides _xff to 127.0.0.1 so all requests share one bucket.\n\nSequence:\n  1. warmup 1/3 \u2014 POST /request-unlock  (slot 1)\n  2. warmup 2/3 \u2014 POST /request-unlock  (slot 2)\n  3. warmup 3/3 \u2014 POST /confirm-unlock  (slot 3, cross-endpoint consumption)\n  4. 4th request \u2014 POST /request-unlock \u2192 429 (bucket exhausted)\n\nCovers both checklist items:\n  \u2022 4th request from same IP within 10 min \u2192 429 (unlk:ip: limit)\n  \u2022 2\u00d7 /request-unlock + 1\u00d7 /confirm-unlock \u2192 4th request (either endpoint) \u2192 429",
+      "description": "Verifies the shared unlk:ip: rate limiter (burst=3, rate=3/10 min) that covers both /request-unlock and /confirm-unlock.\n\nThe folder prerequest overrides _xff to 127.0.0.1 so all requests share one bucket.\n\nSequence:\n  1. warmup 1/3 — POST /request-unlock  (slot 1)\n  2. warmup 2/3 — POST /request-unlock  (slot 2)\n  3. warmup 3/3 — POST /confirm-unlock  (slot 3, cross-endpoint consumption)\n  4. 4th request — POST /request-unlock → 429 (bucket exhausted)\n\nCovers both checklist items:\n  • 4th request from same IP within 10 min → 429 (unlk:ip: limit)\n  • 2× /request-unlock + 1× /confirm-unlock → 4th request (either endpoint) → 429",
       "event": [
         {
           "listen": "prerequest",
@@ -1329,7 +1629,7 @@
       ],
       "item": [
         {
-          "name": "warmup 1/3 \u2014 POST /request-unlock (consume slot 1)",
+          "name": "warmup 1/3 — POST /request-unlock (consume slot 1)",
           "event": [
             {
               "listen": "test",
@@ -1344,13 +1644,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"rl-unlk@e2e.test\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -1360,7 +1670,7 @@
           }
         },
         {
-          "name": "warmup 2/3 \u2014 POST /request-unlock (consume slot 2)",
+          "name": "warmup 2/3 — POST /request-unlock (consume slot 2)",
           "event": [
             {
               "listen": "test",
@@ -1375,13 +1685,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"rl-unlk@e2e.test\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",
@@ -1391,14 +1711,14 @@
           }
         },
         {
-          "name": "warmup 3/3 \u2014 POST /confirm-unlock (consume slot 3, cross-endpoint)",
+          "name": "warmup 3/3 — POST /confirm-unlock (consume slot 3, cross-endpoint)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// This request uses /confirm-unlock \u2014 a different endpoint from the",
+                  "// This request uses /confirm-unlock — a different endpoint from the",
                   "// previous two warmups. Because both endpoints share the unlk:ip: key,",
                   "// this cross-endpoint request still consumes a slot from the same bucket.",
                   "pm.test('not rate-limited yet (unlk:ip: slot 3, cross-endpoint confirm-unlock)', () => pm.expect(pm.response.code).to.not.eql(429));"
@@ -1409,13 +1729,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"rl-unlk@e2e.test\", \"code\": \"000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
@@ -1425,7 +1755,7 @@
           }
         },
         {
-          "name": "4th request \u2192 429 (unlk:ip: bucket exhausted)",
+          "name": "4th request → 429 (unlk:ip: bucket exhausted)",
           "event": [
             {
               "listen": "test",
@@ -1444,13 +1774,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"rl-unlk@e2e.test\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/request-unlock",

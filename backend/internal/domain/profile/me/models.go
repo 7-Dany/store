@@ -29,3 +29,15 @@ type UpdateProfileInput struct {
 	IPAddress   string
 	UserAgent   string
 }
+
+// LinkedIdentity is the service-layer representation of a single linked OAuth
+// identity. access_token and refresh_token_provider are intentionally absent —
+// they are provider secrets and must never be returned to API clients.
+type LinkedIdentity struct {
+	Provider      string
+	ProviderUID   string
+	ProviderEmail *string
+	DisplayName   *string
+	AvatarURL     *string
+	CreatedAt     time.Time
+}

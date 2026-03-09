@@ -75,3 +75,18 @@ SELECT id, is_active, is_locked, admin_locked
 FROM users
 WHERE id = @user_id::uuid
   AND deleted_at IS NULL;
+
+-- name: GetUserIdentities :many
+-- Returns all linked OAuth identities for the given user, oldest first.
+-- access_token and refresh_token_provider are intentionally excluded —
+-- they are provider secrets and must never be returned to clients.
+SELECT
+    provider,
+    provider_uid,
+    provider_email,
+    display_name,
+    avatar_url,
+    created_at
+FROM user_identities
+WHERE user_id = @user_id::uuid
+ORDER BY created_at ASC;

@@ -12,6 +12,7 @@ import (
 type Storer interface {
 	GetUserProfile(ctx context.Context, userID [16]byte) (UserProfile, error)
 	UpdateProfileTx(ctx context.Context, in UpdateProfileInput) error
+	GetUserIdentities(ctx context.Context, userID [16]byte) ([]LinkedIdentity, error) // §E-1
 }
 
 // Service holds pure business logic for the me sub-package.
@@ -47,4 +48,19 @@ func (s *Service) UpdateProfile(ctx context.Context, in UpdateProfileInput) erro
 		return fmt.Errorf("profile.UpdateProfile: update profile: %w", err)
 	}
 	return nil
+}
+
+// GetUserIdentities returns all linked OAuth identities for the authenticated
+// user. Returns an empty (non-nil) slice when the user has no linked
+// identities. userID is the standard UUID string form.
+func (s *Service) GetUserIdentities(ctx context.Context, userID string) ([]LinkedIdentity, error) {
+	uid, err := authshared.ParseUserID("profile.GetUserIdentities", userID)
+	if err != nil {
+		return nil, err
+	}
+	identities, err := s.store.GetUserIdentities(ctx, uid)
+	if err != nil {
+		return nil, fmt.Errorf("profile.GetUserIdentities: get identities: %w", err)
+	}
+	return identities, nil
 }

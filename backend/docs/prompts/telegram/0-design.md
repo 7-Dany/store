@@ -377,3 +377,19 @@ Metadata shape:
 - `EventOAuthLogin`: `{"provider": "telegram", "new_user": true/false}`
 - `EventOAuthLinked`: `{"provider": "telegram"}`
 - `audit.EventOAuthUnlinked`: `{"provider": "telegram"}`
+
+---
+
+## Stage Progress
+
+| Stage | Status |
+|---|---|
+| 0 — Design | ✅ Complete |
+| 1 — Foundations | ✅ Complete |
+| 2 — Data Layer | ✅ Complete |
+| 3 — Logic Layer | ✅ Complete |
+| 4 — HTTP Layer | ⏳ Prompt saved |
+| 5 — Audit | ⏳ Not started |
+| 6 — Unit Tests | ⏳ Manual — run when ready |
+| 7 — E2E | ⏳ Not started |
+| 8 — Docs | ⏳ Not started |

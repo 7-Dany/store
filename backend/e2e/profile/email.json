@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "profile-email-change-e2e",
     "name": "Profile \u2013 Email Change (POST /email/request-change + POST /email/verify-current + POST /email/confirm-change)",
-    "description": "E2E tests for the three-step email change flow.\n\nFolder execution order (single invocation via make e2e-email):\n  1. setup              \u2014 register gmail_test_email, fetch OTP, verify email, login \u2192 echg_access_token\n  2. happy-path         \u2014 step1 (request-change) \u2192 fetch step1 OTP \u2192 step2 (verify-current) \u2192 fetch step2 OTP \u2192 step3 (confirm-change) \u2192 re-login \u2192 GET /me confirm DB write\n  3. failures           \u2014 cooldown_active, same_email, email_taken, wrong-code, invalid_grant_token\n  4. auth-failures      \u2014 missing Authorization \u2192 401 on all 3 endpoints\n  5. validation         \u2014 body > 1 MiB \u2192 413; malformed JSON \u2192 422\n  6. rate-limiting-req  \u2014 echg:usr: burst=3; dedicated +echgrlreq alias user\n  7. rate-limiting-vfy  \u2014 echg:usr:vfy: burst=5; dedicated +echgrlvfy alias user + one step1 seed\n  8. rate-limiting-cnf  \u2014 echg:usr:cnf: burst=5; dedicated +echgrlcnf alias user, bad grant_token warmup\n\nAll rate-limiters are user-keyed (JWT available at every endpoint). Running all folders in a single\nNewman invocation preserves collection variables (echg_access_token, etc.) across folders.\nRedis is flushed once before the run (_e2e-clean); no mid-run flush is needed.\n\nVariable prefix: echg_\n\nNotes on what is NOT covered here and why:\n  - T-02\u2013T-04: individual new_email validation variants \u2192 handler_test.go\n  - T-03: code format variants \u2192 handler_test.go\n  - T-08: ErrUserNotFound \u2192 500 \u2192 handler_test.go\n  - T-09, T-20, T-21, T-38, T-39: context.WithoutCancel \u2192 service_test.go\n  - T-10: store error prefix wrapping \u2192 service_test.go\n  - T-11, T-12: DB-level token state \u2192 store_test.go\n  - T-19, T-33: wrong-code increment call count \u2192 service_test.go\n  - T-29: grant_token user_id mismatch \u2192 service_test.go\n  - T-34: ErrEmailTaken inside tx (race) \u2192 store_test.go T-41\n  - T-36, T-37: RevokeAllRefreshTokens + Blocklist called \u2192 confirmed indirectly by re-login test\n  - T-41: SetUserEmailZero \u2192 ErrUserNotFound \u2192 store_test.go\n\nAll test users use gmail_test_email or @e2e.test addresses so `make _e2e-db-clean` can wipe them.",
+    "description": "E2E tests for the three-step email change flow.\n\nFolder execution order (single invocation via make e2e-email):\n  1. setup              \u2014 register gmail_test_email, fetch OTP, verify email, login \u2192 echg_access_token\n  2. happy-path         \u2014 step1 (request-change) \u2192 fetch step1 OTP \u2192 step2 (verify-current) \u2192 fetch step2 OTP \u2192 step3 (confirm-change) \u2192 re-login \u2192 GET /me confirm DB write\n  3. failures           \u2014 cooldown_active, same_email, email_taken, wrong-code, invalid_grant_token\n  4. auth-failures      \u2014 missing Authorization \u2192 401 on all 3 endpoints\n  5. validation         \u2014 body > 1 MiB \u2192 413; malformed JSON \u2192 400\n  6. rate-limiting-req  \u2014 echg:usr: burst=3; dedicated +echgrlreq alias user\n  7. rate-limiting-vfy  \u2014 echg:usr:vfy: burst=5; dedicated +echgrlvfy alias user + one step1 seed\n  8. rate-limiting-cnf  \u2014 echg:usr:cnf: burst=5; dedicated +echgrlcnf alias user, bad grant_token warmup\n\nAll rate-limiters are user-keyed (JWT available at every endpoint). Running all folders in a single\nNewman invocation preserves collection variables (echg_access_token, etc.) across folders.\nRedis is flushed once before the run (_e2e-clean); no mid-run flush is needed.\n\nVariable prefix: echg_\n\nNotes on what is NOT covered here and why:\n  - T-02\u2013T-04: individual new_email validation variants \u2192 handler_test.go\n  - T-03: code format variants \u2192 handler_test.go\n  - T-08: ErrUserNotFound \u2192 500 \u2192 handler_test.go\n  - T-09, T-20, T-21, T-38, T-39: context.WithoutCancel \u2192 service_test.go\n  - T-10: store error prefix wrapping \u2192 service_test.go\n  - T-11, T-12: DB-level token state \u2192 store_test.go\n  - T-19, T-33: wrong-code increment call count \u2192 service_test.go\n  - T-29: grant_token user_id mismatch \u2192 service_test.go\n  - T-34: ErrEmailTaken inside tx (race) \u2192 store_test.go T-41\n  - T-36, T-37: RevokeAllRefreshTokens + Blocklist called \u2192 confirmed indirectly by re-login test\n  - T-41: SetUserEmailZero \u2192 ErrUserNotFound \u2192 store_test.go\n\nAll test users use gmail_test_email or @e2e.test addresses so `make _e2e-db-clean` can wipe them.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -1336,18 +1336,18 @@
           }
         },
         {
-          "name": "POST /email/request-change \u2192 422 malformed JSON",
+          "name": "POST /email/request-change \u2192 400 malformed JSON",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Rate limiter fires first, then decoder fails \u2192 422 validation_error.",
+                  "// Rate limiter fires first, then decoder fails \u2192 400 bad_request.",
                   "// If rate limiter is exhausted, returns 429 (also acceptable \u2014 RL wiring confirmed).",
-                  "pm.test('status is 422 or 429', () => pm.expect(pm.response.code).to.be.oneOf([422, 429]));",
-                  "if (pm.response.code === 422) {",
-                  "    pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.equal('validation_error'));",
+                  "pm.test('status is 400 or 429', () => pm.expect(pm.response.code).to.be.oneOf([400, 429]));",
+                  "if (pm.response.code === 400) {",
+                  "    pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.equal('bad_request'));",
                   "}"
                 ]
               }

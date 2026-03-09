@@ -142,3 +142,37 @@ func (s *Store) UpdateProfileTx(ctx context.Context, in UpdateProfileInput) erro
 	}
 	return nil
 }
+
+// GetUserIdentities returns all linked OAuth identities for the given user,
+// ordered by created_at ASC. Returns an empty (non-nil) slice when the user
+// has no linked identities. access_token and refresh_token_provider are
+// excluded by the SQL query and never appear in the returned slice.
+func (s *Store) GetUserIdentities(ctx context.Context, userID [16]byte) ([]LinkedIdentity, error) {
+	rows, err := s.Queries.GetUserIdentities(ctx, s.ToPgtypeUUID(userID))
+	if err != nil {
+		return nil, fmt.Errorf("store.GetUserIdentities: query: %w", err)
+	}
+
+	out := make([]LinkedIdentity, 0, len(rows))
+	for _, r := range rows {
+		id := LinkedIdentity{
+			Provider:    string(r.Provider),
+			ProviderUID: r.ProviderUid,
+			CreatedAt:   r.CreatedAt.UTC(),
+		}
+		if r.ProviderEmail.Valid {
+			v := r.ProviderEmail.String
+			id.ProviderEmail = &v
+		}
+		if r.DisplayName.Valid {
+			v := r.DisplayName.String
+			id.DisplayName = &v
+		}
+		if r.AvatarURL.Valid {
+			v := r.AvatarURL.String
+			id.AvatarURL = &v
+		}
+		out = append(out, id)
+	}
+	return out, nil
+}

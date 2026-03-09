@@ -1,0 +1,935 @@
+{
+  "info": {
+    "_postman_id": "profile-identities-e2e",
+    "name": "Profile – GET /me/identities",
+    "description": "E2E tests for GET /api/v1/profile/me/identities.\n\nFolders:\n  1. setup          — register → verify-email → login (stores idents_access_token)\n  2. happy-path     — assert response shape; empty array for a fresh user (no OAuth links)\n  3. auth-guard     — no token / tampered token → 401\n  4. rate-limiting  — exhaust ident:ip: (20 slots) → 21st → 429\n\nNotes:\n  • T-01 / T-03 (≥1 identity, order ASC) require a linked OAuth account.\n    These are verified at the store-integration level (store_test.go) and will be\n    confirmed end-to-end once the Google / Telegram OAuth E2E collections (Group D)\n    run before this collection and seed identity rows for idents_email.\n  • T-04 / T-05 (access_token / refresh_token_provider absent) are structural\n    properties of the SQL query and response type; their absence is also checked\n    in the happy-path request below.\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.'+((n>>16)&0xff)+'.'+((n>>8)&0xff)+'.'+(n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Register, verify email (via Gmail API), and log in to obtain an access token for identities tests.",
+      "item": [
+        {
+          "name": "POST /register → 201",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "pm.collectionVariables.set('idents_email', email);",
+                  "pm.collectionVariables.set('idents_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "// Gmail OTP fetch",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set'); return; }",
+                  "console.log('[INFO] Waiting 8 s for verification email...');",
+                  "const start = Date.now(); while (Date.now() - start < 8000) {}",
+                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "pm.sendRequest({url:'https://gmail.googleapis.com/gmail/v1/users/me/messages?q='+query+'&maxResults=3',method:'GET',header:{Authorization:'Bearer '+token}},(err,res)=>{",
+                  "    if(err||res.code===401){console.error('[ERROR] Gmail list failed');return;}",
+                  "    const msgs=res.json().messages;",
+                  "    if(!msgs||!msgs.length){console.warn('[WARN] No email found');return;}",
+                  "    pm.sendRequest({url:'https://gmail.googleapis.com/gmail/v1/users/me/messages/'+msgs[0].id+'?format=full',method:'GET',header:{Authorization:'Bearer '+token}},(e2,r2)=>{",
+                  "        if(e2){console.error('[ERROR] Gmail fetch failed');return;}",
+                  "        const msg=r2.json(); let body='';",
+                  "        const parts=msg.payload&&msg.payload.parts;",
+                  "        if(parts&&parts.length){const p=parts.find(x=>x.mimeType==='text/plain')||parts.find(x=>x.mimeType==='text/html');if(p&&p.body&&p.body.data)body=atob(p.body.data.replace(/-/g,'+').replace(/_/g,'/'))}",
+                  "        else if(msg.payload&&msg.payload.body&&msg.payload.body.data)body=atob(msg.payload.body.data.replace(/-/g,'+').replace(/_/g,'/'));",
+                  "        if(!body){console.warn('[WARN] Could not decode body');return;}",
+                  "        const match=body.match(/\\b(\\d{6})\\b/);",
+                  "        if(!match){console.warn('[WARN] No OTP found');return;}",
+                  "        pm.collectionVariables.set('idents_code', match[1]);",
+                  "        console.log('[INFO] OTP stored:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\":\"IdentsUser\",\"email\":\"{{idents_email}}\",\"password\":\"{{idents_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('idents_code');",
+                  "if (!code) { console.error('[ERROR] OTP not set — Gmail fetch did not complete. Check gmail_access_token and --delay-request >= 8000.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\":\"{{idents_email}}\",\"code\":\"{{idents_code}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (store access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('idents_access_token', body.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\":\"{{idents_email}}\",\"password\":\"{{idents_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path",
+      "description": "Exercises GET /me/identities for a freshly registered user who has no linked OAuth accounts.\n\nWhy E2E:\n  • D-01 (empty list → 200 with array, never null) — requires a real DB round-trip; sqlc\n    :many returns nil for empty result sets and the store must coerce that to a non-nil slice.\n  • D-03 (access_token absent) / D-05 (no audit row) — structural checks on the live response.\n\nNot covered here (unit / integration tests):\n  • T-01 (≥1 identity) / T-03 (order ASC) — require a seeded OAuth identity row;\n    covered by store_test.go and will be exercised after OAuth E2E flows (Group D) run.\n  • T-06 (nullable fields omit)  — handler_test.go TestHandler_Identities/nullable_fields_omitted_when_nil\n  • T-08 (service error → 500)   — handler_test.go TestHandler_Identities/service_error_returns_500",
+      "item": [
+        {
+          "name": "GET /me/identities → 200 (empty array, sensitive fields absent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-02: fresh user has no linked identities — must return 200 with empty array (D-01)",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Content-Type is application/json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json'));",
+                  "const body = pm.response.json();",
+                  "",
+                  "// D-01: identities key must be present and be an array, never null or absent",
+                  "pm.test('identities key is present', () => pm.expect(body).to.have.property('identities'));",
+                  "pm.test('identities is an array', () => pm.expect(body.identities).to.be.an('array'));",
+                  "pm.test('identities is empty for a fresh user (D-04)', () => pm.expect(body.identities).to.have.lengthOf(0));",
+                  "",
+                  "// D-03: provider credential columns must never appear in any response",
+                  "pm.test('access_token absent from response body (D-03)', () => {",
+                  "    pm.expect(JSON.stringify(body)).to.not.include('access_token');",
+                  "});",
+                  "pm.test('refresh_token_provider absent from response body (D-03)', () => {",
+                  "    pm.expect(JSON.stringify(body)).to.not.include('refresh_token_provider');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth-guard",
+      "description": "T-07: Verifies that the JWT middleware rejects requests with no token or a tampered token.\nThese checks exercise the real chi middleware stack end-to-end.",
+      "item": [
+        {
+          "name": "GET /me/identities (no Authorization header) → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is unauthorized', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "GET /me/identities (tampered Bearer token) → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is unauthorized', () => pm.expect(pm.response.json().code).to.eql('invalid_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer not.a.real.jwt" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting",
+      "description": "ident:ip: limiter — burst=20, rate=20/1min (0.333 t/s).\nAll 20 warmup requests use the valid access_token from setup (JWT auth fires before the\nlimiter inside the JWT middleware group). 21st request → 429 too_many_requests.\n\nRetry-After = ceil(1 / (20/60)) = ceil(3.0) = 3 seconds.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": ["pm.collectionVariables.set('_xff', '127.0.0.1');"]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "warmup 1/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 1/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 2/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 3/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 4/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 5/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 6/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 6/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 7/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 7/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 8/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 8/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 9/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 9/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 10/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 10/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 11/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 11/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 12/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 12/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 13/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 13/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 14/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 14/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 15/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 15/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 16/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 16/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 17/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 17/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 18/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 18/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 19/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 19/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "warmup 20/20 — consume ident:ip: slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (ident:ip: slot 20/20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/profile/me/identities: 21st request → 429 (ident:ip: exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
+                  "pm.test('Retry-After is 3 (ceil(1/(20/60))=3 s)', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('3');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter for unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current XFF. Set per-request by collection prerequest; overridden to 127.0.0.1 by rate-limiting folder."
+    },
+    {
+      "key": "idents_email",
+      "value": "",
+      "description": "Set by setup from gmail_test_email."
+    },
+    { "key": "idents_password", "value": "", "description": "Set by setup." },
+    {
+      "key": "idents_code",
+      "value": "",
+      "description": "6-digit OTP from Gmail."
+    },
+    {
+      "key": "idents_access_token",
+      "value": "",
+      "description": "Access token from setup /login. Also used by rate-limiting warmup."
+    }
+  ]
+}

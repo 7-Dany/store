@@ -9,6 +9,7 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/domain/oauth/google"
+	"github.com/7-Dany/store/backend/internal/domain/oauth/telegram"
 )
 
 // Routes returns a self-contained chi sub-router for all /oauth endpoints.
@@ -21,5 +22,6 @@ import (
 func Routes(ctx context.Context, deps *app.Deps) *chi.Mux {
 	r := chi.NewRouter()
 	google.Routes(ctx, r, deps)
+	telegram.Routes(ctx, r, deps)
 	return r
 }

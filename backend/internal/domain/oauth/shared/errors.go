@@ -20,3 +20,7 @@ var ErrLastAuthMethod = errors.New("cannot remove the last authentication method
 // ErrAccountLocked is returned when the matched user is locked (is_locked or
 // admin_locked) during an OAuth callback or link operation.
 var ErrAccountLocked = errors.New("account is locked")
+
+// ErrAccountInactive is returned when the matched user has is_active=false
+// during an OAuth callback or link operation.
+var ErrAccountInactive = errors.New("account is inactive")

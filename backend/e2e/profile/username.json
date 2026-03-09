@@ -617,17 +617,17 @@
           }
         },
         {
-          "name": "PATCH /me/username → 422 malformed JSON (T-32)",
+          "name": "PATCH /me/username → 400 malformed JSON (T-32)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-32 — malformed JSON body → 422.",
-                  "// Rate limiter fires first (consuming one uchg:usr: slot), then decoder fails → 422.",
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.equal('validation_error'));"
+                  "// T-32 — malformed JSON body → 400 bad_request.",
+                  "// Rate limiter fires first (consuming one uchg:usr: slot), then decoder fails → 400.",
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.equal('bad_request'));"
                 ]
               }
             }

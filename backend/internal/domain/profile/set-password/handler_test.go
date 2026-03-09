@@ -187,11 +187,11 @@ func TestHandler_SetPassword(t *testing.T) {
 
 	// ── T-14: Malformed JSON ───────────────────────────────────────────────────
 
-	t.Run("malformed JSON — returns 422", func(t *testing.T) {
+	t.Run("malformed JSON — returns 400", func(t *testing.T) {
 		t.Parallel()
 		svc := &authsharedtest.SetPasswordFakeServicer{}
 		w := postJSONWithUserID(newTestHandler(svc).SetPassword, validUID, `{"new_password":`)
-		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+		require.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	// ── T-16: Store error on GetUserForSetPassword ─────────────────────────────

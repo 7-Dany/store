@@ -193,8 +193,9 @@ func (f *PasswordFakeStorer) WritePasswordChangeFailedAuditTx(ctx context.Contex
 // the zero value and nil error so tests only need to configure the fields they
 // care about.
 type MeFakeStorer struct {
-	GetUserProfileFn  func(ctx context.Context, userID [16]byte) (me.UserProfile, error)
-	UpdateProfileTxFn func(ctx context.Context, in me.UpdateProfileInput) error
+	GetUserProfileFn     func(ctx context.Context, userID [16]byte) (me.UserProfile, error)
+	UpdateProfileTxFn    func(ctx context.Context, in me.UpdateProfileInput) error
+	GetUserIdentitiesFn  func(ctx context.Context, userID [16]byte) ([]me.LinkedIdentity, error) // §E-1
 }
 
 // compile-time interface check.
@@ -214,6 +215,16 @@ func (f *MeFakeStorer) UpdateProfileTx(ctx context.Context, in me.UpdateProfileI
 		return f.UpdateProfileTxFn(ctx, in)
 	}
 	return nil
+}
+
+// GetUserIdentities delegates to GetUserIdentitiesFn if set.
+// Default: returns ([]me.LinkedIdentity{}, nil) — empty slice (never nil) so tests
+// that don’t configure it always receive a valid empty collection.
+func (f *MeFakeStorer) GetUserIdentities(ctx context.Context, userID [16]byte) ([]me.LinkedIdentity, error) {
+	if f.GetUserIdentitiesFn != nil {
+		return f.GetUserIdentitiesFn(ctx, userID)
+	}
+	return []me.LinkedIdentity{}, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

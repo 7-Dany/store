@@ -140,6 +140,7 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 			GoogleRedirectURI:  cfg.GoogleRedirectURI,
 			SuccessURL:         cfg.OAuthSuccessURL,
 			ErrorURL:           cfg.OAuthErrorURL,
+			TelegramBotToken:   cfg.TelegramBotToken,
 		},
 	}
 

@@ -25,6 +25,13 @@
       "description": "The Gmail address that receives SMTP verification emails from the test server. Must match SMTP_USERNAME in .env. Used by the verify-email setup folder to register the test account so the OTP actually lands in the inbox."
     },
     {
+      "key": "telegram_bot_token",
+      "value": "",
+      "type": "secret",
+      "enabled": true,
+      "description": "Telegram bot token issued by @BotFather. Used by e2e pre-request scripts to compute HMAC-SHA256 signatures for all Telegram OAuth test requests. Must match TELEGRAM_BOT_TOKEN in .env."
+    },
+    {
       "key": "gmail_access_token",
       "value": "",
       "type": "secret",

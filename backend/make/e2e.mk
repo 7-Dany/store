@@ -14,12 +14,14 @@
 #   e2e/profile/revoke-session.json     → DELETE /sessions/{id} (requires JWT)
 #   e2e/profile/update-profile.json     → PATCH /me (requires JWT)
 #   e2e/profile/set-password.json       → POST /set-password (requires JWT)
-#   e2e/profile/username.json             → GET /username/available + PATCH /me/username (requires JWT for PATCH)
-#   e2e/oauth/google.json               --> GET /oauth/google + GET /oauth/google/callback + DELETE /oauth/google/unlink
+#   e2e/profile/username.json           → GET /username/available + PATCH /me/username (requires JWT for PATCH)
+#   e2e/oauth/google.json               → GET /oauth/google + GET /oauth/google/callback + DELETE /oauth/google/unlink
+#   e2e/oauth/telegram.json             → POST /oauth/telegram/callback + POST /oauth/telegram/link + DELETE /oauth/telegram/unlink
 #   e2e/profile/email.json              → POST /email/request-change + POST /email/verify-current + POST /email/confirm-change (requires JWT)
+#   e2e/profile/identities.json         → GET /me/identities (requires JWT)
 #
 # e2e-password runs both password collections (forgot/reset + change) in order.
-# e2e-profile runs the five profile collections (me + sessions + revoke-session + update-profile + set-password) in order.
+# e2e-profile runs the profile collections (me + sessions + revoke-session + update-profile + set-password + identities) in order.
 # e2e-auth runs all auth collections including e2e-password and e2e-profile.
 #
 # Each collection has a "rate-limiting" folder that is run in a SEPARATE newman
@@ -46,7 +48,7 @@ E2E_AUTH     := $(E2E_DIR)/auth
 E2E_PROFILE  := $(E2E_DIR)/profile
 E2E_DELAY    ?= 150
 
-.PHONY: e2e-install e2e e2e-health e2e-register e2e-unlock e2e-password e2e-profile e2e-auth e2e-username e2e-email e2e-oauth-google _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
+.PHONY: e2e-install e2e e2e-health e2e-register e2e-unlock e2e-password e2e-profile e2e-auth e2e-username e2e-email e2e-identities e2e-oauth-google e2e-oauth-telegram _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
 
 # ── Tooling ───────────────────────────────────────────────────────────────────
 
@@ -68,7 +70,7 @@ endif
 # auth_audit_log.user_id is ON DELETE CASCADE so audit rows are cleaned automatically.
 # Uses TEST_DATABASE_URL so e2e tests never touch the dev database.
 _e2e-db-clean:
-	@psql "$(TEST_DATABASE_URL)" -c "DELETE FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%';"
+	@psql "$(TEST_DATABASE_URL)" -c "DELETE FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%' OR email LIKE '%+tgrl@%' OR id IN (SELECT user_id FROM user_identities WHERE provider = 'telegram' AND provider_uid IN ('99887766', '99887700', '99887744'));"
 	@echo "[e2e] DB cleaned (e2e users removed from test DB)"
 
 # Flush Redis DB 1 (the test server's rate-limiter and blocklist store).
@@ -363,6 +365,7 @@ ifeq ($(DETECTED_OS),Windows)
 	@$(MAKE) e2e-set-password
 	@$(MAKE) e2e-username
 	@$(MAKE) e2e-email
+	@$(MAKE) e2e-identities
 	@Write-Host "[e2e] profile suite passed" -ForegroundColor Green
 else
 	@echo "[e2e] --- GET /me ---"
@@ -387,6 +390,7 @@ else
 	@$(MAKE) e2e-set-password
 	@$(MAKE) e2e-username
 	@$(MAKE) e2e-email
+	@$(MAKE) e2e-identities
 	@echo "[e2e] profile suite passed"
 endif
 
@@ -428,6 +432,7 @@ ifeq ($(DETECTED_OS),Windows)
 	@$(MAKE) e2e-password
 	@$(MAKE) e2e-profile
 	@$(MAKE) e2e-oauth-google
+	@$(MAKE) e2e-oauth-telegram
 	@Write-Host "[e2e] All auth suites passed" -ForegroundColor Green
 else
 	@echo "[e2e] --- POST /register ---"
@@ -491,7 +496,26 @@ else
 	@$(MAKE) e2e-password
 	@$(MAKE) e2e-profile
 	@$(MAKE) e2e-oauth-google
+	@$(MAKE) e2e-oauth-telegram
 	@echo "[e2e] All auth suites passed"
+endif
+
+e2e-identities: _e2e-check-env ## Run GET /me/identities E2E (requires JWT — all folders in one invocation)
+ifeq ($(DETECTED_OS),Windows)
+	@Write-Host "[e2e] --- GET /me/identities ---" -ForegroundColor Cyan
+	@$(MAKE) _e2e-clean
+	@Write-Host "[e2e] Running: setup + happy-path + auth-guard + rate-limiting (single invocation)" -ForegroundColor DarkGray
+	@newman run "$(E2E_PROFILE)/identities.json" --environment "$(E2E_ENV)" --folder "setup" --folder "happy-path" --folder "auth-guard" --folder "rate-limiting" --delay-request 1 --reporters cli
+	@Write-Host "[e2e] identities suite passed" -ForegroundColor Green
+else
+	@echo "[e2e] --- GET /me/identities ---"
+	@$(MAKE) _e2e-clean
+	@echo "[e2e] Running: setup + happy-path + auth-guard + rate-limiting (single invocation)"
+	@newman run "$(E2E_PROFILE)/identities.json" --environment "$(E2E_ENV)" \
+		--folder "setup" --folder "happy-path" \
+		--folder "auth-guard" --folder "rate-limiting" \
+		--delay-request 1 --reporters cli
+	@echo "[e2e] identities suite passed"
 endif
 
 e2e-oauth-google: _e2e-check-env ## Run Google OAuth E2E (GET /oauth/google + callback guards + DELETE /oauth/google/unlink)
@@ -531,4 +555,36 @@ else
 		--folder "rate-limiting-cb" \
 		--delay-request 1 --reporters cli
 	@echo "[e2e] oauth-google suite passed"
+endif
+
+e2e-oauth-telegram: _e2e-check-env ## Run Telegram OAuth E2E (POST /callback + POST /link + DELETE /unlink)
+ifeq ($(DETECTED_OS),Windows)
+	@Write-Host "[e2e] --- POST /oauth/telegram/callback + POST /oauth/telegram/link + DELETE /oauth/telegram/unlink ---" -ForegroundColor Cyan
+	@$(MAKE) _e2e-clean
+	@Write-Host "[e2e] Running: setup + callback-happy-path + callback-failures + validation + link-happy-path + link-failures + unlink-happy-path + unlink-failures + auth-failures + rate-limiting-lnk + rate-limiting-unlk (single invocation)" -ForegroundColor DarkGray
+	@newman run "$(E2E_DIR)/oauth/telegram.json" --environment "$(E2E_ENV)" --folder "setup" --folder "callback-happy-path" --folder "callback-failures" --folder "validation" --folder "link-happy-path" --folder "link-failures" --folder "unlink-happy-path" --folder "unlink-failures" --folder "auth-failures" --folder "rate-limiting-lnk" --folder "rate-limiting-unlk" --delay-request 1 --reporters cli
+	@Write-Host "[e2e] Flushing Redis before rate-limiting-cb folder..." -ForegroundColor DarkGray
+	@$(MAKE) _e2e-kv-clean
+	@Write-Host "[e2e] Running: rate-limiting-cb" -ForegroundColor DarkGray
+	@newman run "$(E2E_DIR)/oauth/telegram.json" --environment "$(E2E_ENV)" --folder "rate-limiting-cb" --delay-request 1 --reporters cli
+	@Write-Host "[e2e] oauth-telegram suite passed" -ForegroundColor Green
+else
+	@echo "[e2e] --- POST /oauth/telegram/callback + POST /oauth/telegram/link + DELETE /oauth/telegram/unlink ---"
+	@$(MAKE) _e2e-clean
+	@echo "[e2e] Running: setup + callback-happy-path + callback-failures + validation + link-happy-path + link-failures + unlink-happy-path + unlink-failures + auth-failures + rate-limiting-lnk + rate-limiting-unlk (single invocation)"
+	@newman run "$(E2E_DIR)/oauth/telegram.json" --environment "$(E2E_ENV)" \
+		--folder "setup" --folder "callback-happy-path" \
+		--folder "callback-failures" --folder "validation" \
+		--folder "link-happy-path" --folder "link-failures" \
+		--folder "unlink-happy-path" --folder "unlink-failures" \
+		--folder "auth-failures" \
+		--folder "rate-limiting-lnk" --folder "rate-limiting-unlk" \
+		--delay-request 1 --reporters cli
+	@echo "[e2e] Flushing Redis before rate-limiting-cb folder..."
+	@$(MAKE) _e2e-kv-clean
+	@echo "[e2e] Running: rate-limiting-cb"
+	@newman run "$(E2E_DIR)/oauth/telegram.json" --environment "$(E2E_ENV)" \
+		--folder "rate-limiting-cb" \
+		--delay-request 1 --reporters cli
+	@echo "[e2e] oauth-telegram suite passed"
 endif

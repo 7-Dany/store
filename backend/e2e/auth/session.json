@@ -44,7 +44,10 @@
                   "    console.error('[ERROR] gmail_test_email not set in environment \u2014 add it to environment.json.');",
                   "}",
                   "pm.collectionVariables.set('sss_email', email);",
-                  "pm.collectionVariables.set('sss_password', 'P@ssw0rd1!');"
+                  "pm.collectionVariables.set('sss_password', 'P@ssw0rd1!');",
+                  "// Record the timestamp just before the register request fires so the",
+                  "// Gmail query can use after:<ts> to exclude older emails from prior runs.",
+                  "pm.collectionVariables.set('sss_reg_ts', Math.floor(Date.now() / 1000));"
                 ]
               }
             },
@@ -68,7 +71,10 @@
                   "while (Date.now() - start < 8000) {}",
                   "console.log('[INFO] Done waiting. Querying Gmail API (async)...');",
                   "",
-                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "// Use after:<unix-ts> so only emails received during THIS run are matched.",
+                  "// newer_than:1h would also match OTPs from previous runs within the same hour.",
+                  "const regTs = pm.collectionVariables.get('sss_reg_ts') || Math.floor((Date.now() - 60000) / 1000);",
+                  "const query = encodeURIComponent('subject:\"Verify your\" after:' + regTs);",
                   "pm.sendRequest({",
                   "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
                   "    method: 'GET',",
@@ -1072,6 +1078,11 @@
       "key": "sss_password",
       "value": "",
       "description": "Set by happy-path setup. Used for all /login calls in this collection."
+    },
+    {
+      "key": "sss_reg_ts",
+      "value": "",
+      "description": "Unix timestamp (seconds) recorded in the register prerequest. Used by the Gmail query as after:<ts> to exclude emails from prior runs within the same hour."
     },
     {
       "key": "sss_code",

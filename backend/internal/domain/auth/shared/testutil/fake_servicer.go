@@ -95,8 +95,9 @@ func (f *PasswordFakeServicer) UpdatePasswordHash(ctx context.Context, in passwo
 // unit tests. Each method delegates to its Fn field if non-nil, otherwise
 // returns the zero value and nil error.
 type MeFakeServicer struct {
-	GetUserProfileFn func(ctx context.Context, userID string) (me.UserProfile, error)
-	UpdateProfileFn  func(ctx context.Context, in me.UpdateProfileInput) error
+	GetUserProfileFn     func(ctx context.Context, userID string) (me.UserProfile, error)
+	UpdateProfileFn      func(ctx context.Context, in me.UpdateProfileInput) error
+	GetUserIdentitiesFn  func(ctx context.Context, userID string) ([]me.LinkedIdentity, error) // §E-1
 }
 
 // compile-time interface check.
@@ -116,6 +117,15 @@ func (f *MeFakeServicer) UpdateProfile(ctx context.Context, in me.UpdateProfileI
 		return f.UpdateProfileFn(ctx, in)
 	}
 	return nil
+}
+
+// GetUserIdentities delegates to GetUserIdentitiesFn if set.
+// Default: returns ([]me.LinkedIdentity{}, nil) — empty slice (never nil).
+func (f *MeFakeServicer) GetUserIdentities(ctx context.Context, userID string) ([]me.LinkedIdentity, error) {
+	if f.GetUserIdentitiesFn != nil {
+		return f.GetUserIdentitiesFn(ctx, userID)
+	}
+	return []me.LinkedIdentity{}, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

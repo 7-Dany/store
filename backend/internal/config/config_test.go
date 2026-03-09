@@ -38,6 +38,7 @@ func validBaseConfig() *Config {
 		GoogleRedirectURI:  "http://localhost:8080/api/v1/oauth/google/callback",
 		OAuthSuccessURL:    "http://localhost:3000/dashboard",
 		OAuthErrorURL:      "http://localhost:3000/login",
+		TelegramBotToken:   "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ-fake-token",
 	}
 }
 
@@ -878,6 +879,7 @@ func setLoadEnv(t *testing.T) func() {
 		"GOOGLE_REDIRECT_URI":  "http://localhost:8080/api/v1/oauth/google/callback",
 		"OAUTH_SUCCESS_URL":    "http://localhost:3000/dashboard",
 		"OAUTH_ERROR_URL":      "http://localhost:3000/login",
+		"TELEGRAM_BOT_TOKEN":   "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ-fake-token",
 	}
 	keys := make([]string, 0, len(vars))
 	for k, v := range vars {

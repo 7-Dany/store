@@ -1,0 +1,205 @@
+---
+title: "Link Telegram Account"
+description: "Connects a Telegram identity to the currently signed-in user's account."
+api: "POST http://localhost:8080/api/v1/oauth/telegram/link"
+authMethod: "bearer"
+---
+
+<ParamField body="id" type="integer" required>
+  The Telegram user ID from the Login Widget payload.
+</ParamField>
+
+<ParamField body="first_name" type="string">
+  The user's first name as returned by Telegram.
+</ParamField>
+
+<ParamField body="last_name" type="string">
+  The user's last name. Optional.
+</ParamField>
+
+<ParamField body="username" type="string">
+  The user's Telegram username (without the `@`). Optional.
+</ParamField>
+
+<ParamField body="photo_url" type="string">
+  URL of the user's Telegram profile photo. Optional.
+</ParamField>
+
+<ParamField body="auth_date" type="integer" required>
+  Unix timestamp when the user authorized with Telegram. Must be within 5 minutes of the current time.
+</ParamField>
+
+<ParamField body="hash" type="string" required>
+  HMAC-SHA256 signature computed by Telegram. The server recomputes and verifies this before linking.
+</ParamField>
+
+## Behaviour
+
+**Links, does not sign in** — This endpoint attaches a Telegram identity to an existing authenticated account. No new tokens or cookies are issued; the caller's session continues unchanged.
+
+**Duplicate guard** — If the authenticated user already has a Telegram identity linked, `409 provider_already_linked` is returned. Each account supports at most one linked Telegram identity.
+
+**Uniqueness guard** — If the Telegram user ID belongs to a different account, `409 provider_uid_taken` is returned. A single Telegram account cannot be linked to more than one user.
+
+**HMAC and auth date** — The same HMAC and freshness checks as [`POST /oauth/telegram/callback`](/api-reference/oauth/telegram/callback) apply here. Pass the raw widget payload without modification.
+
+## Rate Limiting
+
+**5 requests per 15 minutes per authenticated user**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "id": 123456789,
+  "first_name": "Alex",
+  "last_name": "Smith",
+  "username": "alexsmith",
+  "photo_url": "https://t.me/i/userpic/320/alexsmith.jpg",
+  "auth_date": 1717000000,
+  "hash": "a1b2c3d4e5f6..."
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+// 204 No Content — empty body
+```
+
+```json 401
+{
+  "code": "missing_token",
+  "message": "Authorization: Bearer <token> header is required"
+}
+```
+
+```json 409
+{
+  "code": "provider_already_linked",
+  "message": "telegram account already linked to this user"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The Telegram identity was successfully linked to the account. No response body is returned.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request did not include a valid access token, or signature/freshness checks failed.
+
+    **Missing token** — No `Authorization: Bearer` header was provided.
+
+    ```json
+    {
+      "code": "missing_token",
+      "message": "Authorization: Bearer <token> header is required"
+    }
+    ```
+
+    **Invalid token** — The token is malformed, has an invalid signature, or has expired.
+
+    ```json
+    {
+      "code": "invalid_token",
+      "message": "invalid or expired access token"
+    }
+    ```
+
+    **Invalid Telegram signature** — The `hash` field failed HMAC verification.
+
+    ```json
+    {
+      "code": "invalid_signature",
+      "message": "invalid telegram signature"
+    }
+    ```
+
+    **Expired auth date** — The `auth_date` is older than 5 minutes. Prompt the user to re-open the Telegram widget.
+
+    ```json
+    {
+      "code": "auth_date_expired",
+      "message": "telegram auth_date is expired or invalid"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The account has been deactivated by an administrator.
+
+    ```json
+    {
+      "code": "account_inactive",
+      "message": "account is inactive"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    The link could not be completed due to a duplicate. Check the `code` field to distinguish the cause.
+
+    **Already linked to this account** — This user already has a Telegram identity connected.
+
+    ```json
+    {
+      "code": "provider_already_linked",
+      "message": "telegram account already linked to this user"
+    }
+    ```
+
+    **Claimed by another account** — The Telegram user ID is already linked to a different user profile.
+
+    ```json
+    {
+      "code": "provider_uid_taken",
+      "message": "telegram account already linked to another user"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    The `id` field was missing or zero.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "id is required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="423 — Account Locked">
+    The account has been temporarily locked. Direct the user to the unlock flow.
+
+    ```json
+    {
+      "code": "account_locked",
+      "message": "account is locked"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The user has exceeded 5 link requests per 15 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

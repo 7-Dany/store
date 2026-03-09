@@ -1,0 +1,124 @@
+---
+title: "Unlink Telegram Account"
+description: "Removes the Telegram sign-in connection from the caller's account."
+api: "DELETE http://localhost:8080/api/v1/oauth/telegram/unlink"
+authMethod: "bearer"
+---
+
+## Behaviour
+
+**Requires at least one other sign-in method** — Telegram cannot be unlinked if it is the only way to access the account. The account must have either a password set or another OAuth provider linked before Telegram can be removed. Attempting to unlink when it is the last method returns `409 last_auth_method`.
+
+**Immediate effect** — Once unlinked, the Telegram account can no longer be used to sign in. Using [`POST /oauth/telegram/callback`](/api-reference/oauth/telegram/callback) with the same Telegram ID afterward will create a fresh account.
+
+## Rate Limiting
+
+**5 requests per 15 minutes per authenticated user**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<ResponseExample>
+```json 204
+// 204 No Content — empty body
+```
+
+```json 401
+{
+  "code": "missing_token",
+  "message": "Authorization: Bearer <token> header is required"
+}
+```
+
+```json 404
+{
+  "code": "provider_not_linked",
+  "message": "no telegram identity linked to this account"
+}
+```
+
+```json 409
+{
+  "code": "last_auth_method",
+  "message": "cannot remove the last authentication method"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The Telegram identity was successfully removed. No response body is returned.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request did not include a valid access token, or the token has been revoked.
+
+    **Missing token** — No `Authorization: Bearer` header was provided.
+
+    ```json
+    {
+      "code": "missing_token",
+      "message": "Authorization: Bearer <token> header is required"
+    }
+    ```
+
+    **Invalid token** — The token is malformed, has an invalid signature, or has expired.
+
+    ```json
+    {
+      "code": "invalid_token",
+      "message": "invalid or expired access token"
+    }
+    ```
+
+    **Token revoked** — The token has been explicitly invalidated.
+
+    ```json
+    {
+      "code": "token_revoked",
+      "message": "access token has been revoked"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    No Telegram account is linked to this user. There is nothing to remove.
+
+    ```json
+    {
+      "code": "provider_not_linked",
+      "message": "no telegram identity linked to this account"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    Telegram is the only way to access this account. Add a password via [`POST /set-password`](/api-reference/profile/set-password/set-password) or link another provider before unlinking.
+
+    ```json
+    {
+      "code": "last_auth_method",
+      "message": "cannot remove the last authentication method"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The user has exceeded 5 unlink requests per 15 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

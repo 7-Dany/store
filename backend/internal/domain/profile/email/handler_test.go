@@ -222,11 +222,11 @@ func TestHandler_RequestChange(t *testing.T) {
 
 	// ── Malformed JSON → 422 ──────────────────────────────────────────────────
 
-	t.Run("malformed JSON returns 422", func(t *testing.T) {
+	t.Run("malformed JSON returns 400", func(t *testing.T) {
 		t.Parallel()
 		svc := &authsharedtest.EmailChangeFakeServicer{}
 		w := postWithUserID(newTestHandler(t, svc).RequestChange, handlerTestUID, `{"new_email":`)
-		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+		require.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	// ── Body > 1 MiB → 413 ───────────────────────────────────────────────────
@@ -394,11 +394,11 @@ func TestHandler_VerifyCurrent(t *testing.T) {
 
 	// ── Malformed JSON → 422 ──────────────────────────────────────────────────
 
-	t.Run("malformed JSON returns 422", func(t *testing.T) {
+	t.Run("malformed JSON returns 400", func(t *testing.T) {
 		t.Parallel()
 		svc := &authsharedtest.EmailChangeFakeServicer{}
 		w := postWithUserID(newTestHandler(t, svc).VerifyCurrent, handlerTestUID, `{"code":`)
-		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+		require.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	// ── Body > 1 MiB → 413 ───────────────────────────────────────────────────
@@ -616,11 +616,11 @@ func TestHandler_ConfirmChange(t *testing.T) {
 
 	// ── Malformed JSON → 422 ──────────────────────────────────────────────────
 
-	t.Run("malformed JSON returns 422", func(t *testing.T) {
+	t.Run("malformed JSON returns 400", func(t *testing.T) {
 		t.Parallel()
 		svc := &authsharedtest.EmailChangeFakeServicer{}
 		w := postWithUserIDAndJTI(newTestHandler(t, svc).ConfirmChange, handlerTestUID, handlerTestJTI, `{"grant_token":`)
-		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+		require.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	// ── Body > 1 MiB → 413 ───────────────────────────────────────────────────

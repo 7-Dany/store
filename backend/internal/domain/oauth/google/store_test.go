@@ -25,7 +25,7 @@ func TestMain(m *testing.M) {
 // T-36: OAuthRegisterTx → new user row has email_verified=TRUE, is_active=TRUE,
 // password_hash=NULL (D-10, D-11).
 func TestStore_OAuthRegisterTx_NewUserRow(t *testing.T) {
-	tx, q := authsharedtest.MustBeginTx(t, testPool)
+	_, q := authsharedtest.MustBeginTx(t, testPool)
 
 	store := google.NewStore(testPool).WithQuerier(q)
 	session, err := store.OAuthRegisterTx(context.Background(), google.OAuthRegisterTxInput{
@@ -41,23 +41,17 @@ func TestStore_OAuthRegisterTx_NewUserRow(t *testing.T) {
 	require.NoError(t, err)
 	require.NotZero(t, session.UserID)
 
-	var emailVerified bool
-	var passwordHash *string
-	var isActive bool
-	err = tx.QueryRow(context.Background(),
-		`SELECT email_verified, password_hash, is_active FROM users WHERE id = $1`,
-		authsharedtest.ToPgtypeUUID(session.UserID),
-	).Scan(&emailVerified, &passwordHash, &isActive)
+	row, err := q.TestGetUserFlags(context.Background(), authsharedtest.ToPgtypeUUID(session.UserID))
 	require.NoError(t, err)
 
-	assert.True(t, emailVerified, "email_verified must be TRUE for OAuth-registered users (D-10)")
-	assert.True(t, isActive, "is_active must be TRUE for OAuth-registered users (D-10)")
-	assert.Nil(t, passwordHash, "password_hash must be NULL for Google-only users (D-11)")
+	assert.True(t, row.EmailVerified, "email_verified must be TRUE for OAuth-registered users (D-10)")
+	assert.True(t, row.IsActive, "is_active must be TRUE for OAuth-registered users (D-10)")
+	assert.False(t, row.PasswordHash.Valid, "password_hash must be NULL for Google-only users (D-11)")
 }
 
 // T-37: UpsertUserIdentity called twice with a different display_name → DB row updated, not duplicated.
 func TestStore_UpsertUserIdentity_UpdatesExistingRow(t *testing.T) {
-	tx, q := authsharedtest.MustBeginTx(t, testPool)
+	_, q := authsharedtest.MustBeginTx(t, testPool)
 
 	userID, err := q.CreateOAuthUser(context.Background(), db.CreateOAuthUserParams{})
 	require.NoError(t, err)
@@ -83,27 +77,19 @@ func TestStore_UpsertUserIdentity_UpdatesExistingRow(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var displayName string
-	err = tx.QueryRow(context.Background(),
-		`SELECT display_name FROM user_identities WHERE user_id = $1 AND provider = 'google'`,
-		authsharedtest.ToPgtypeUUID(uid),
-	).Scan(&displayName)
+	displayRow, err := q.TestGetGoogleIdentityDisplayName(context.Background(), authsharedtest.ToPgtypeUUID(uid))
 	require.NoError(t, err)
-	assert.Equal(t, "Updated Name", displayName)
+	assert.Equal(t, "Updated Name", displayRow.String)
 
-	var count int
-	err = tx.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM user_identities WHERE user_id = $1 AND provider = 'google'`,
-		authsharedtest.ToPgtypeUUID(uid),
-	).Scan(&count)
+	count, err := q.TestCountGoogleIdentities(context.Background(), authsharedtest.ToPgtypeUUID(uid))
 	require.NoError(t, err)
-	assert.Equal(t, 1, count, "upsert must not create duplicate rows")
+	assert.Equal(t, int64(1), count, "upsert must not create duplicate rows")
 }
 
 // T-38: Email-match path — seed user with email; UpsertUserIdentity to link
 // the identity; call OAuthLoginTx → user_identities row linked to seeded user.
 func TestStore_OAuthLoginTx_EmailMatchPath(t *testing.T) {
-	tx, q := authsharedtest.MustBeginTx(t, testPool)
+	_, q := authsharedtest.MustBeginTx(t, testPool)
 
 	seededID, err := q.CreateOAuthUser(context.Background(), db.CreateOAuthUserParams{
 		Email: pgtype.Text{String: "email-match-t38@example.com", Valid: true},
@@ -131,13 +117,9 @@ func TestStore_OAuthLoginTx_EmailMatchPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, uid, session.UserID)
 
-	var linkedUserID pgtype.UUID
-	err = tx.QueryRow(context.Background(),
-		`SELECT user_id FROM user_identities WHERE provider_uid = $1`,
-		"google-uid-t38",
-	).Scan(&linkedUserID)
+	identityRow, err := q.TestGetIdentityUserIDByProviderUID(context.Background(), "google-uid-t38")
 	require.NoError(t, err)
-	assert.Equal(t, uid, linkedUserID.Bytes, "identity must be linked to the seeded user")
+	assert.Equal(t, uid, identityRow.Bytes, "identity must be linked to the seeded user")
 }
 
 // T-50: GetUserAuthMethods → correct HasPassword / IdentityCount for seeded user.
@@ -169,7 +151,7 @@ func TestStore_GetUserAuthMethods(t *testing.T) {
 
 // T-51: DeleteUserIdentity → row gone from user_identities.
 func TestStore_DeleteUserIdentity(t *testing.T) {
-	tx, q := authsharedtest.MustBeginTx(t, testPool)
+	_, q := authsharedtest.MustBeginTx(t, testPool)
 
 	userID, err := q.CreateOAuthUser(context.Background(), db.CreateOAuthUserParams{})
 	require.NoError(t, err)
@@ -189,11 +171,7 @@ func TestStore_DeleteUserIdentity(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), rowsAffected)
 
-	var count int
-	err = tx.QueryRow(context.Background(),
-		`SELECT COUNT(*) FROM user_identities WHERE user_id = $1 AND provider = 'google'`,
-		authsharedtest.ToPgtypeUUID(uid),
-	).Scan(&count)
+	count, err := q.TestCountGoogleIdentities(context.Background(), authsharedtest.ToPgtypeUUID(uid))
 	require.NoError(t, err)
-	assert.Equal(t, 0, count)
+	assert.Equal(t, int64(0), count)
 }

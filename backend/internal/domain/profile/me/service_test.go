@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	authsharedtest "github.com/7-Dany/store/backend/internal/domain/auth/shared/testutil"
 	"github.com/7-Dany/store/backend/internal/domain/profile/me"
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -190,4 +192,64 @@ func TestService_UpdateProfile(t *testing.T) {
 		require.Equal(t, &displayName, gotIn.DisplayName)
 		require.Equal(t, &avatarURL, gotIn.AvatarURL)
 	})
+}
+
+// ── GetUserIdentities S-layer tests ───────────────────────────────────────────
+
+// TestService_GetUserIdentities_HappyPath — T-01: user has one linked identity.
+func TestService_GetUserIdentities_HappyPath(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Truncate(time.Second)
+	email := "alice@gmail.com"
+	name := "Alice Smith"
+	avatar := "https://example.com/avatar.png"
+
+	fake := &authsharedtest.MeFakeStorer{
+		GetUserIdentitiesFn: func(_ context.Context, _ [16]byte) ([]me.LinkedIdentity, error) {
+			return []me.LinkedIdentity{
+				{
+					Provider:      "google",
+					ProviderEmail: &email,
+					DisplayName:   &name,
+					AvatarURL:     &avatar,
+					CreatedAt:     now,
+				},
+			}, nil
+		},
+	}
+	svc := me.NewService(fake)
+	got, err := svc.GetUserIdentities(context.Background(), "00000000-0000-0000-0000-000000000001")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "google", got[0].Provider)
+	assert.Equal(t, &email, got[0].ProviderEmail)
+	assert.Equal(t, &name, got[0].DisplayName)
+	assert.Equal(t, &avatar, got[0].AvatarURL)
+	assert.Equal(t, now, got[0].CreatedAt)
+}
+
+// TestService_GetUserIdentities_Empty — T-02: user has no identities → empty slice (non-nil).
+func TestService_GetUserIdentities_Empty(t *testing.T) {
+	t.Parallel()
+	fake := &authsharedtest.MeFakeStorer{} // default returns []me.LinkedIdentity{}
+	svc := me.NewService(fake)
+	got, err := svc.GetUserIdentities(context.Background(), "00000000-0000-0000-0000-000000000001")
+	require.NoError(t, err)
+	assert.NotNil(t, got)
+	assert.Empty(t, got)
+}
+
+// TestService_GetUserIdentities_StoreError — T-08: store error → service wraps and returns error.
+func TestService_GetUserIdentities_StoreError(t *testing.T) {
+	t.Parallel()
+	storeErr := errors.New("db failure")
+	fake := &authsharedtest.MeFakeStorer{
+		GetUserIdentitiesFn: func(_ context.Context, _ [16]byte) ([]me.LinkedIdentity, error) {
+			return nil, storeErr
+		},
+	}
+	svc := me.NewService(fake)
+	_, err := svc.GetUserIdentities(context.Background(), "00000000-0000-0000-0000-000000000001")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, storeErr)
 }

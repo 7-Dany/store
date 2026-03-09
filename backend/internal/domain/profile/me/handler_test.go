@@ -424,11 +424,11 @@ func TestHandler_UpdateProfile(t *testing.T) {
 	})
 
 	// T-15: malformed JSON.
-	t.Run("malformed JSON returns 422", func(t *testing.T) {
+	t.Run("malformed JSON returns 400", func(t *testing.T) {
 		t.Parallel()
 		h := newPH(&authsharedtest.MeFakeServicer{})
 		w := doDirectUpdateProfile(h, uid, []byte(`{bad json`))
-		assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+		assert.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	// T-16: missing Authorization header.
@@ -476,5 +476,126 @@ func TestHandler_UpdateProfile(t *testing.T) {
 		assert.Equal(t, au, *capturedIn.AvatarURL)
 		_ = capturedIn.IPAddress
 		_ = capturedIn.UserAgent
+	})
+}
+
+// ── TestHandler_Identities ────────────────────────────────────────────────────
+
+// doDirectIdentities calls h.Identities directly, optionally injecting userID.
+func doDirectIdentities(h *me.Handler, userID string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodGet, "/me/identities", nil)
+	if userID != "" {
+		ctx := token.InjectUserIDForTest(req.Context(), userID)
+		req = req.WithContext(ctx)
+	}
+	w := httptest.NewRecorder()
+	h.Identities(w, req)
+	return w
+}
+
+func TestHandler_Identities(t *testing.T) {
+	t.Parallel()
+
+	uid := "00000000-0000-0000-0000-000000000001"
+
+	// T-07: Missing auth → 401
+	t.Run("missing auth returns 401", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.MeFakeServicer{})
+		w := doDirectIdentities(h, "" /* no userID */)
+		assert.Equal(t, http.StatusUnauthorized, w.Code)
+	})
+
+	// T-02: Empty identities → "identities":[] (never null)
+	t.Run("empty identities returns array not null", func(t *testing.T) {
+		t.Parallel()
+		h := newPH(&authsharedtest.MeFakeServicer{}) // default returns empty slice
+		w := doDirectIdentities(h, uid)
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), `"identities":[]`)
+	})
+
+	// T-04 / T-05: access_token and refresh_token_provider never present in response
+	t.Run("sensitive fields absent from response", func(t *testing.T) {
+		t.Parallel()
+		email := "alice@gmail.com"
+		svc := &authsharedtest.MeFakeServicer{
+			GetUserIdentitiesFn: func(_ context.Context, _ string) ([]me.LinkedIdentity, error) {
+				return []me.LinkedIdentity{
+					{Provider: "google", ProviderEmail: &email, CreatedAt: time.Now()},
+				}, nil
+			},
+		}
+		h := newPH(svc)
+		w := doDirectIdentities(h, uid)
+		assert.Equal(t, http.StatusOK, w.Code)
+		body := w.Body.String()
+		assert.NotContains(t, body, "access_token")
+		assert.NotContains(t, body, "refresh_token_provider")
+	})
+
+	// T-06: Nullable fields omitted when nil
+	t.Run("nullable fields omitted when nil", func(t *testing.T) {
+		t.Parallel()
+		svc := &authsharedtest.MeFakeServicer{
+			GetUserIdentitiesFn: func(_ context.Context, _ string) ([]me.LinkedIdentity, error) {
+				return []me.LinkedIdentity{
+					{Provider: "telegram", CreatedAt: time.Now()},
+					// ProviderEmail, DisplayName, AvatarURL all nil
+				}, nil
+			},
+		}
+		h := newPH(svc)
+		w := doDirectIdentities(h, uid)
+		assert.Equal(t, http.StatusOK, w.Code)
+		body := w.Body.String()
+		assert.NotContains(t, body, "provider_email")
+		assert.NotContains(t, body, "display_name")
+		assert.NotContains(t, body, "avatar_url")
+	})
+
+	// T-08: Service error → 500
+	t.Run("service error returns 500", func(t *testing.T) {
+		t.Parallel()
+		svc := &authsharedtest.MeFakeServicer{
+			GetUserIdentitiesFn: func(_ context.Context, _ string) ([]me.LinkedIdentity, error) {
+				return nil, errors.New("db failure")
+			},
+		}
+		h := newPH(svc)
+		w := doDirectIdentities(h, uid)
+		assert.Equal(t, http.StatusInternalServerError, w.Code)
+	})
+
+	// Happy path: multiple identities returned correctly
+	t.Run("multiple identities returned with correct fields", func(t *testing.T) {
+		t.Parallel()
+		gEmail := "alice@gmail.com"
+		gName := "Alice G"
+		svc := &authsharedtest.MeFakeServicer{
+			GetUserIdentitiesFn: func(_ context.Context, _ string) ([]me.LinkedIdentity, error) {
+				return []me.LinkedIdentity{
+					{Provider: "google", ProviderEmail: &gEmail, DisplayName: &gName, CreatedAt: time.Now()},
+					{Provider: "telegram", CreatedAt: time.Now()},
+				}, nil
+			},
+		}
+		h := newPH(svc)
+		w := doDirectIdentities(h, uid)
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp struct {
+			Identities []map[string]any `json:"identities"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		require.Len(t, resp.Identities, 2)
+		assert.Equal(t, "google", resp.Identities[0]["provider"])
+		assert.Equal(t, gEmail, resp.Identities[0]["provider_email"])
+		assert.Equal(t, gName, resp.Identities[0]["display_name"])
+		assert.Equal(t, "telegram", resp.Identities[1]["provider"])
+		// Order returned by the service must be preserved end-to-end (D-02).
+		assert.Equal(t, []string{"google", "telegram"}, []string{
+			resp.Identities[0]["provider"].(string),
+			resp.Identities[1]["provider"].(string),
+		})
 	})
 }

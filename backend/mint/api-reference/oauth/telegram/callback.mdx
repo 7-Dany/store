@@ -1,0 +1,214 @@
+---
+title: "Telegram Callback"
+description: "Verifies and processes the payload from the Telegram Login Widget. Signs in a returning user or registers a new one."
+api: "POST http://localhost:8080/api/v1/oauth/telegram/callback"
+authMethod: "none"
+---
+
+<Callout icon="circle-info" iconType="regular">
+  This endpoint is called by your frontend after the Telegram Login Widget fires its `onTelegramAuth` callback — not by the browser automatically. Send the exact object Telegram provides as the JSON body.
+</Callout>
+
+<ParamField body="id" type="integer" required>
+  The Telegram user ID. Must be a non-zero integer.
+</ParamField>
+
+<ParamField body="first_name" type="string">
+  The user's first name as returned by Telegram. Used to build the display name for new accounts.
+</ParamField>
+
+<ParamField body="last_name" type="string">
+  The user's last name. Optional — Telegram does not guarantee its presence.
+</ParamField>
+
+<ParamField body="username" type="string">
+  The user's Telegram username (without the `@`). Optional.
+</ParamField>
+
+<ParamField body="photo_url" type="string">
+  URL of the user's Telegram profile photo. Optional — stored as the avatar for new accounts.
+</ParamField>
+
+<ParamField body="auth_date" type="integer" required>
+  Unix timestamp of when the user authorized with Telegram. The server rejects payloads older than 5 minutes to prevent replay attacks.
+</ParamField>
+
+<ParamField body="hash" type="string" required>
+  HMAC-SHA256 signature computed by Telegram over the other fields. The server recomputes and verifies this before processing the request.
+</ParamField>
+
+## Behaviour
+
+**Sign-in or registration in one call** — There is no separate "register with Telegram" step. If the Telegram user ID matches an existing linked account the user is signed in; if no match is found a new account is created automatically using `first_name` + `last_name` as the display name.
+
+**HMAC verification** — The server recomputes the Telegram HMAC from the bot token and rejects any payload with a mismatched or missing `hash`. Never construct or modify the widget payload on your frontend.
+
+**Auth date freshness** — The `auth_date` must be within 5 minutes of the current server time. Stale payloads are rejected with `401 auth_date_expired`. Re-open the widget to get a fresh payload.
+
+**Token response** — On success, the server returns an `access_token` in the JSON body and sets an HttpOnly `refresh_token` cookie. The access token is valid for 15 minutes; use [`POST /refresh`](/api-reference/auth/session/refresh) to renew it silently using the cookie.
+
+**New vs. returning user** — A new account returns `201 Created`; a returning sign-in returns `200 OK`. Use the status code to show a welcome screen for first-time users.
+
+## Rate Limiting
+
+**10 requests per 1 minute per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "id": 123456789,
+  "first_name": "Alex",
+  "last_name": "Smith",
+  "username": "alexsmith",
+  "photo_url": "https://t.me/i/userpic/320/alexsmith.jpg",
+  "auth_date": 1717000000,
+  "hash": "a1b2c3d4e5f6..."
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 900
+}
+```
+
+```json 201
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "Bearer",
+  "expires_in": 900
+}
+```
+
+```json 401
+{
+  "code": "invalid_signature",
+  "message": "invalid telegram signature"
+}
+```
+
+```json 409
+{
+  "code": "provider_uid_taken",
+  "message": "telegram account already linked to another user"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    Existing user signed in successfully. The `refresh_token` HttpOnly cookie is set alongside the JSON response.
+
+    ```json
+    {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "token_type": "Bearer",
+      "expires_in": 900
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="201 — Created">
+    New account registered via Telegram. The response body is identical to `200`; the status code is the only signal that this is a first-time user.
+
+    ```json
+    {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "token_type": "Bearer",
+      "expires_in": 900
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request could not be authenticated. Check the `code` field to distinguish the cause.
+
+    **Invalid signature** — The `hash` field failed HMAC verification. Do not modify the widget payload.
+
+    ```json
+    {
+      "code": "invalid_signature",
+      "message": "invalid telegram signature"
+    }
+    ```
+
+    **Expired auth date** — The `auth_date` is older than 5 minutes. Prompt the user to re-open the Telegram widget to get a fresh payload.
+
+    ```json
+    {
+      "code": "auth_date_expired",
+      "message": "telegram auth_date is expired or invalid"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The matched account has been deactivated by an administrator.
+
+    ```json
+    {
+      "code": "account_inactive",
+      "message": "account is inactive"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    The Telegram user ID in the payload is already linked to a **different** user account. This can happen if the same Telegram account was previously connected to another profile.
+
+    ```json
+    {
+      "code": "provider_uid_taken",
+      "message": "telegram account already linked to another user"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    The `id` field was missing or zero.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "id is required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="423 — Account Locked">
+    The matched account has been temporarily locked after too many failed OTP attempts. Direct the user to the unlock flow.
+
+    ```json
+    {
+      "code": "account_locked",
+      "message": "account is locked"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 10 requests per minute. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

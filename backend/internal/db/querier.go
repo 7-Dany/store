@@ -221,6 +221,10 @@ type Querier interface {
 	// rename from racing past the same-username guard or producing stale audit
 	// metadata (i.e. old_username in the audit log).
 	GetUserForUsernameUpdate(ctx context.Context, userID pgtype.UUID) (GetUserForUsernameUpdateRow, error)
+	// Returns all linked OAuth identities for the given user, oldest first.
+	// access_token and refresh_token_provider are intentionally excluded —
+	// they are provider secrets and must never be returned to clients.
+	GetUserIdentities(ctx context.Context, userID pgtype.UUID) ([]GetUserIdentitiesRow, error)
 	// ── Change password ───────────────────────────────────────────────────────────
 	// Fetches the current bcrypt hash for credential re-verification before a password change.
 	GetUserPasswordHash(ctx context.Context, userID pgtype.UUID) (GetUserPasswordHashRow, error)

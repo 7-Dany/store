@@ -51,6 +51,13 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 }
 ```
 
+```json 400
+{
+  "code": "bad_request",
+  "message": "malformed JSON body"
+}
+```
+
 ```json 401
 {
   "code": "invalid_credentials",
@@ -85,6 +92,17 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
       "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
       "refresh_expiry": "2026-04-04T19:15:35Z",
       "expires_in": 900
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    The request body is not valid JSON (syntax error or unexpected end of input). Fix the JSON before retrying.
+
+    ```json
+    {
+      "code": "bad_request",
+      "message": "malformed JSON body"
     }
     ```
   </Accordion>

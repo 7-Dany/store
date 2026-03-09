@@ -67,7 +67,7 @@ func TestHandler_Register_InvalidJSON(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/register", bytes.NewBufferString("{bad json"))
 	r.Header.Set("Content-Type", "application/json")
 	h.Register(w, r)
-	require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandler_Register_ValidationError(t *testing.T) {

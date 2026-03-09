@@ -35,3 +35,33 @@ All error responses share the same shape:
 | 415    | Wrong Content-Type                           |
 | 422    | Validation error                             |
 | 429    | Rate limited — check `Retry-After` header    |
+
+---
+
+## Guides
+
+Looking for end-to-end flow walkthroughs instead of individual endpoints?
+
+<CardGroup cols={2}>
+  <Card title="Registration Flow" icon="user-plus" href="/guides/auth/registration-flow">
+    Register, verify email, and handle resend and cooldown paths.
+  </Card>
+  <Card title="Session Lifecycle" icon="arrows-rotate" href="/guides/auth/session-lifecycle">
+    Sign in, rotate tokens, and sign out — including reuse detection.
+  </Card>
+  <Card title="Password Reset Flow" icon="key" href="/guides/auth/password-reset-flow">
+    Forgot password, OTP verification, grant token, and new password in three screens.
+  </Card>
+  <Card title="Account Unlock Flow" icon="lock-open" href="/guides/auth/account-unlock-flow">
+    Clear a login lockout with the two-step OTP unlock flow.
+  </Card>
+  <Card title="Google Sign-In Flow" icon="google" href="/guides/auth/google-oauth-flow">
+    Sign in, register, and link a Google account — including redirect handling.
+  </Card>
+  <Card title="Telegram Sign-In Flow" icon="telegram" href="/guides/auth/telegram-oauth-flow">
+    Sign in, register, and link a Telegram account via the Login Widget.
+  </Card>
+  <Card title="Email Change Flow" icon="envelope" href="/guides/profile/email-change-flow">
+    Prove ownership of the current and new address in three steps.
+  </Card>
+</CardGroup>

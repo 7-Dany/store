@@ -157,7 +157,7 @@ func TestHandler_Login_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	svc := &authsharedtest.LoginFakeServicer{}
 	w := postLogin(makeHandler(svc), `not json`)
-	require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestHandler_Login_InternalError(t *testing.T) {

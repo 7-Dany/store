@@ -1,7 +1,7 @@
 # Context Snapshot — §D-2 Telegram OAuth
 
 **Package:** `internal/domain/auth/oauth/telegram/`  
-**Status:** Stage 0 complete
+**Status:** Stage 4 complete
 
 ---
 
@@ -78,10 +78,10 @@
 ## Stage checklist
 
 - [x] Stage 0 — Design
-- [ ] Stage 1 — Foundations (SQL + types + models + errors + validators skeleton)
-- [ ] Stage 2 — Data layer (store)
-- [ ] Stage 3 — Logic layer (service)
-- [ ] Stage 4 — HTTP layer (handler + routes)
+- [x] Stage 1 — Foundations (SQL + types + models + errors + validators skeleton)
+- [x] Stage 2 — Data layer (store)
+- [x] Stage 3 — Logic layer (service)
+- [x] Stage 4 — HTTP layer (handler + routes)
 - [ ] Stage 5 — Audit review
 - [ ] Stage 6 — Unit tests (manual)
 - [ ] Stage 7 — E2E (manual)

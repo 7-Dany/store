@@ -147,6 +147,10 @@ type Config struct {
 	// Example: http://localhost:3000/login
 	// Required.
 	OAuthErrorURL string
+	// TelegramBotToken is the Telegram Bot API token used to verify HMAC-SHA256
+	// signatures on Login Widget payloads. Required when Telegram OAuth is enabled.
+	// Generate at https://t.me/BotFather. Keep out of version control.
+	TelegramBotToken string
 }
 
 // Load reads every environment variable, applies defaults, validates required
@@ -199,6 +203,7 @@ func Load() (*Config, error) {
 		GoogleRedirectURI:  os.Getenv("GOOGLE_REDIRECT_URI"),
 		OAuthSuccessURL:    os.Getenv("OAUTH_SUCCESS_URL"),
 		OAuthErrorURL:      os.Getenv("OAUTH_ERROR_URL"),
+		TelegramBotToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
 	}
 
 	// Parse ALLOWED_ORIGINS before validation so the required-field check
@@ -265,6 +270,7 @@ func (c *Config) validate() error {
 		{"GOOGLE_REDIRECT_URI", c.GoogleRedirectURI},
 		{"OAUTH_SUCCESS_URL", c.OAuthSuccessURL},
 		{"OAUTH_ERROR_URL", c.OAuthErrorURL},
+		{"TELEGRAM_BOT_TOKEN", c.TelegramBotToken},
 	}
 
 	var missing []string

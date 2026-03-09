@@ -1,0 +1,212 @@
+---
+title: "Telegram Sign-In Flow"
+icon: "telegram"
+description: "How to sign in, register, and link a Telegram account using the Telegram Login Widget."
+---
+
+Telegram sign-in uses the [Telegram Login Widget](https://core.telegram.org/widgets/login) — a small script Telegram provides that handles the popup, user consent, and cryptographic signing entirely on their side. Your frontend receives a signed payload that it forwards to the API.
+
+Unlike Google OAuth, there are no browser redirects. The entire sign-in happens inline: the user clicks your button, Telegram's popup opens, they approve, and your callback fires.
+
+---
+
+## Overview
+
+```
+User clicks "Continue with Telegram"   →  Telegram popup opens
+User approves in Telegram              →  onTelegramAuth(user) callback fires
+Your frontend POSTs payload to API     →  POST /oauth/telegram/callback
+API verifies HMAC + registers/signs in →  returns access_token + sets cookie
+```
+
+---
+
+## Sign-in and registration
+
+There is no separate "register with Telegram" step — both use the same flow. If the Telegram user ID matches an existing linked account the user is signed in; otherwise a new account is created automatically.
+
+<Steps>
+  <Step title="Embed the Telegram Login Widget">
+    Load the Telegram widget script and register a global `onTelegramAuth` handler **before** the script is appended. Set `data-telegram-login` to your bot's username (without the `@`).
+
+    ```html
+    <script>
+      window.onTelegramAuth = function(user) {
+        // user = { id, first_name, last_name?, username?, photo_url?, auth_date, hash }
+        signInWithTelegram(user);
+      };
+    </script>
+    <script
+      src="https://telegram.org/js/telegram-widget.js?22"
+      data-telegram-login="YourBotUsername"
+      data-size="large"
+      data-onauth="onTelegramAuth(user)"
+      data-request-access="write"
+      async
+    ></script>
+    ```
+
+    <Note>
+      The widget renders an iframe with a Telegram-branded button. Set `NEXT_PUBLIC_TELEGRAM_BOT_USERNAME` (or equivalent) in your environment — do not hard-code the bot username.
+    </Note>
+  </Step>
+
+  <Step title="Forward the payload to the API">
+    When `onTelegramAuth` fires, POST the exact object Telegram provides to the callback endpoint. Do not modify or add any fields — the server recomputes the HMAC from scratch.
+
+    ```typescript
+    async function signInWithTelegram(user: TelegramUser) {
+      const res = await fetch("/api/v1/oauth/telegram/callback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(user),
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        // handle error — see error handling section below
+        return;
+      }
+
+      const { access_token } = await res.json();
+      // store access_token in memory and proceed
+    }
+    ```
+
+    <Warning>
+      The `auth_date` in the Telegram payload is only valid for **5 minutes**. If the user completes the widget interaction but your POST is delayed (e.g. a slow network), the server will return `401 auth_date_expired`. The user must re-open the widget to get a fresh payload.
+    </Warning>
+  </Step>
+
+  <Step title="Store the session">
+    On success, the server returns:
+
+    ```json
+    {
+      "access_token": "eyJ...",
+      "token_type": "Bearer",
+      "expires_in": 900
+    }
+    ```
+
+    It also sets an HttpOnly `refresh_token` cookie (30 days) used for silent renewal.
+
+    | What | Where to store | Lifetime |
+    |---|---|---|
+    | `access_token` | Memory (JavaScript variable) | 15 minutes |
+    | `refresh_token` | HttpOnly cookie (set automatically) | 30 days |
+
+    Use the access token as `Authorization: Bearer <token>` for all subsequent API calls. Schedule a proactive refresh before the 15-minute TTL expires via [`POST /refresh`](/api-reference/auth/session/refresh).
+  </Step>
+
+  <Step title="Detect new users">
+    The callback returns `201 Created` when a brand-new account is registered, and `200 OK` for returning sign-ins. Use the HTTP status code to decide whether to show an onboarding flow.
+
+    ```typescript
+    const status = res.status; // 201 = new user, 200 = returning user
+    if (status === 201) {
+      router.push("/welcome");
+    } else {
+      router.push("/dashboard");
+    }
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Linking a Telegram account
+
+An already signed-in user can connect their Telegram account to their profile. Once linked, they can sign in with either their existing method or Telegram.
+
+<Steps>
+  <Step title="Open the widget while authenticated">
+    The link flow uses the same Telegram Login Widget. When `onTelegramAuth` fires, POST the payload to the link endpoint with the user's current access token.
+
+    ```typescript
+    async function linkTelegram(user: TelegramUser) {
+      const res = await fetch("/api/v1/oauth/telegram/link", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify(user),
+      });
+
+      if (res.status === 204) {
+        // success — show confirmation
+        return;
+      }
+
+      const err = await res.json();
+      // handle error
+    }
+    ```
+  </Step>
+
+  <Step title="Handle the result">
+    A `204 No Content` response means the identity was successfully linked. No new tokens are issued — the user's existing session continues unchanged.
+
+    <Warning>
+      If the Telegram account the user signs in with is already connected to a **different** profile, the API returns `409 provider_uid_taken`. Show a message like "This Telegram account is already connected to another profile."
+    </Warning>
+  </Step>
+</Steps>
+
+---
+
+## Removing Telegram sign-in
+
+A signed-in user can disconnect their Telegram account via [`DELETE /oauth/telegram/unlink`](/api-reference/oauth/telegram/unlink).
+
+```bash
+curl --request DELETE \
+  --url http://localhost:8080/api/v1/oauth/telegram/unlink \
+  --header "Authorization: Bearer <access_token>"
+```
+
+A `204 No Content` response confirms the identity was removed.
+
+<Warning>
+  Telegram cannot be removed if it is the **only** sign-in method on the account. Direct the user to [set a password](/api-reference/profile/set-password/set-password) or link another provider first. The API returns `409 last_auth_method` in this case.
+</Warning>
+
+---
+
+## Checking linked providers
+
+Use [`GET /me/identities`](/api-reference/profile/me/identities) to list all connected OAuth providers for the authenticated user. Use this to show or hide the link/unlink buttons in your settings UI.
+
+```typescript
+const res = await fetch("/api/v1/me/identities", {
+  headers: { "Authorization": `Bearer ${accessToken}` },
+});
+const { identities } = await res.json();
+
+const hasTelegram = identities.some(i => i.provider === "telegram");
+```
+
+---
+
+## Error handling
+
+### Callback and link errors (JSON)
+
+| Code | Status | When it appears | Suggested message |
+|---|---|---|---|
+| `validation_error` | 422 | `id` field is missing or zero | "Invalid Telegram response. Please try again." |
+| `invalid_signature` | 401 | HMAC verification failed | "Invalid Telegram response. Please try again." |
+| `auth_date_expired` | 401 | Payload is older than 5 minutes | "Your sign-in session expired. Please try again." |
+| `provider_uid_taken` | 409 | Telegram ID belongs to another account | "This Telegram account is already connected to another profile." |
+| `provider_already_linked` | 409 | User already has a Telegram identity (link only) | "Your Telegram account is already connected." |
+| `account_locked` | 423 | Account is temporarily locked | "Your account has been locked. Please contact support." |
+| `account_inactive` | 403 | Account has been deactivated | "Your account is inactive. Please contact support." |
+
+### Unlink errors (JSON)
+
+| Code | Status | Suggested action |
+|---|---|---|
+| `provider_not_linked` | 404 | No Telegram identity found — hide the unlink button |
+| `last_auth_method` | 409 | Prompt user to set a password first |
+| `too_many_requests` | 429 | Show `Retry-After` countdown |

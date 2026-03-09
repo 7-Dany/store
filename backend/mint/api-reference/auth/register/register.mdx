@@ -73,6 +73,13 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 }
 ```
 
+```json 400
+{
+  "code": "bad_request",
+  "message": "malformed JSON body"
+}
+```
+
 ```json 409
 {
   "code": "email_taken",
@@ -122,6 +129,17 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
     ```
   </Accordion>
 
+ <Accordion title="400 — Bad Request">
+    The request body is not valid JSON (syntax error or unexpected end of input). Fix the JSON before retrying.
+
+    ```json
+    {
+      "code": "bad_request",
+      "message": "malformed JSON body"
+    }
+    ```
+  </Accordion>
+  
   <Accordion title="409 — Conflict">
     Either the email or the username is already registered.
 
@@ -134,6 +152,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
     Email comparison is case-insensitive — `Alice@example.com` and `alice@example.com` are treated as the same address.
   </Accordion>
+
+ 
 
   <Accordion title="422 — Validation Error">
     One or more fields failed validation. The `message` field describes the specific rule that was violated.

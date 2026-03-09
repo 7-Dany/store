@@ -28,3 +28,20 @@ type meResponse struct {
 	LastLoginAt   *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 }
+
+// identityItem is a single entry in the GET /me/identities response.
+// Nullable fields use omitempty — they are omitted entirely when nil.
+type identityItem struct {
+	Provider      string     `json:"provider"`
+	ProviderUID   string     `json:"provider_uid"`
+	ProviderEmail *string    `json:"provider_email,omitempty"`
+	DisplayName   *string    `json:"display_name,omitempty"`
+	AvatarURL     *string    `json:"avatar_url,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+}
+
+// identitiesResponse is the JSON body for GET /me/identities.
+// Identities is always an array — never null; empty array when none linked.
+type identitiesResponse struct {
+	Identities []identityItem `json:"identities"`
+}

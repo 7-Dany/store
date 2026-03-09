@@ -351,11 +351,11 @@ func TestHandler_UpdateUsername(t *testing.T) {
 
 	// ── T-32: malformed JSON → 422 ────────────────────────────────────────────
 
-	t.Run("malformed JSON returns 422", func(t *testing.T) {
+	t.Run("malformed JSON returns 400", func(t *testing.T) {
 		t.Parallel()
 		svc := &authsharedtest.UsernameFakeServicer{}
 		w := patchWithUserID(newTestHandler(svc).UpdateUsername, testUID, `{"username":`)
-		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
+		require.Equal(t, http.StatusBadRequest, w.Code)
 	})
 
 	// ── Unexpected service error → 500 ───────────────────────────────────────

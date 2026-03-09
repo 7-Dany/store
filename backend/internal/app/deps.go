@@ -113,4 +113,8 @@ type OAuthConfig struct {
 	GoogleRedirectURI  string
 	SuccessURL         string
 	ErrorURL           string
+	// TelegramBotToken is the raw Telegram Bot API token used to derive the HMAC
+	// secret key for Login Widget signature verification. Sourced from
+	// TELEGRAM_BOT_TOKEN in config.Config and validated as non-empty at startup.
+	TelegramBotToken string
 }

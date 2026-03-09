@@ -41,7 +41,8 @@
               "guides/auth/session-lifecycle",
               "guides/auth/account-unlock-flow",
               "guides/auth/password-reset-flow",
-              "guides/auth/google-oauth-flow"
+              "guides/auth/google-oauth-flow",
+              "guides/auth/telegram-oauth-flow"
             ]
           },
           {
@@ -83,7 +84,7 @@
             ]
           },
           {
-            "group": "OAuth",
+            "group": "Google OAuth",
             "icon": "google",
             "pages": [
               "api-reference/oauth/google/initiate",
@@ -92,19 +93,29 @@
             ]
           },
           {
+            "group": "Telegram OAuth",
+            "icon": "telegram",
+            "pages": [
+              "api-reference/oauth/telegram/callback",
+              "api-reference/oauth/telegram/link",
+              "api-reference/oauth/telegram/unlink"
+            ]
+          },
+          {
             "group": "Profile",
-            "icon": "user",
+            "icon": "circle-user",
             "pages": [
               "api-reference/profile/me/me",
               "api-reference/profile/me/update-profile",
+              "api-reference/profile/me/identities",
               "api-reference/profile/session/sessions",
               "api-reference/profile/session/revoke-session",
-              "api-reference/profile/set-password/set-password",
               "api-reference/profile/username/update-username",
               "api-reference/profile/username/username-available",
               "api-reference/profile/email/request-change",
               "api-reference/profile/email/verify-current",
-              "api-reference/profile/email/confirm-change"
+              "api-reference/profile/email/confirm-change",
+              "api-reference/profile/set-password/set-password"
             ]
           }
         ]

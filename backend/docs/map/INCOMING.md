@@ -92,22 +92,22 @@ sub-package structure.
 New package: `internal/domain/auth/oauth/telegram/`
 
 `POST /api/v1/auth/oauth/telegram/callback`
-- [ ] Verifies HMAC-SHA256: `HMAC_SHA256(SHA256(BOT_TOKEN), data_check_string)`
-- [ ] Rejects if `auth_date` > 86400 seconds old (replay protection)
-- [ ] Same new-user / existing-user paths as Google callback
-- [ ] `provider_email` will be NULL (Telegram does not provide email)
-- [ ] Audit row: `oauth_login` with `provider = 'telegram'`
+- [~] Verifies HMAC-SHA256: `HMAC_SHA256(SHA256(BOT_TOKEN), data_check_string)`
+- [~] Rejects if `auth_date` > 86400 seconds old (replay protection)
+- [~] Same new-user / existing-user paths as Google callback
+- [~] `provider_email` will be NULL (Telegram does not provide email)
+- [~] Audit row: `oauth_login` with `provider = 'telegram'`
 
 `POST /api/v1/auth/oauth/telegram/link`
-- [ ] Requires valid JWT
-- [ ] Same HMAC + `auth_date` checks as callback
-- [ ] Same duplicate-provider guard as Google link (409)
-- [ ] Audit row: `oauth_linked` with `provider = 'telegram'`
+- [~] Requires valid JWT
+- [~] Same HMAC + `auth_date` checks as callback
+- [~] Same duplicate-provider guard as Google link (409)
+- [~] Audit row: `oauth_linked` with `provider = 'telegram'`
 
 `DELETE /api/v1/auth/oauth/telegram/unlink`
-- [ ] Requires valid JWT
-- [ ] Same last-auth-method guard
-- [ ] Audit row: `oauth_unlinked` with `provider = 'telegram'`
+- [~] Requires valid JWT
+- [~] Same last-auth-method guard
+- [~] Audit row: `oauth_unlinked` with `provider = 'telegram'`
 
 ---
 

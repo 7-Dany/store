@@ -533,14 +533,14 @@
           }
         },
         {
-          "name": "display_name contains ASCII control char → 422 validation_error",
+          "name": "display_name contains ASCII control char → 400 bad_request",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error (ErrDisplayNameInvalid)', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                  "pm.test('status is 400', () => pm.response.to.have.status(400)); pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.eql('bad_request'));"
                 ]
               }
             }
@@ -839,14 +839,14 @@
           }
         },
         {
-          "name": "malformed JSON → 422",
+          "name": "malformed JSON → 400",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status is 422', () => pm.response.to.have.status(422)); pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                  "pm.test('status is 400', () => pm.response.to.have.status(400)); pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.eql('bad_request'));"
                 ]
               }
             }

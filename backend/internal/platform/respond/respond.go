@@ -137,6 +137,13 @@ func DecodeJSON[T any](w http.ResponseWriter, r *http.Request) (T, bool) {
 			Error(w, http.StatusRequestEntityTooLarge, "validation_error", "request body exceeds maximum allowed size")
 			return v, false
 		}
+		// Syntax errors and truncated bodies are client mistakes → 400 Bad Request.
+		// Type-mismatch / unknown-field errors remain → 422 Unprocessable Entity.
+		var syntaxErr *json.SyntaxError
+		if errors.As(err, &syntaxErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+			Error(w, http.StatusBadRequest, "bad_request", "malformed JSON body")
+			return v, false
+		}
 		Error(w, http.StatusUnprocessableEntity, "validation_error", "invalid JSON body")
 		return v, false
 	}

@@ -47,6 +47,13 @@ This limit is keyed on the user ID from the access token, not the IP address. Cl
 }
 ```
 
+```json 400
+{
+  "code": "bad_request",
+  "message": "malformed JSON body"
+}
+```
+
 ```json 409
 {
   "code": "username_taken",
@@ -85,6 +92,17 @@ This limit is keyed on the user ID from the access token, not the IP address. Cl
     ```json
     {
       "message": "username updated successfully"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    The request body could not be parsed as valid JSON.
+
+    ```json
+    {
+      "code": "bad_request",
+      "message": "malformed JSON body"
     }
     ```
   </Accordion>

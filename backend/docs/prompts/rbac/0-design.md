@@ -6,6 +6,7 @@
 |---------|--------|
 | v1 | Initial design |
 | v2 | Added `access_type` (direct/conditional/request/denied) and `scope` (own/all) to `role_permissions` and `user_permissions`; split `job_queue:manage` into `job_queue:manage` + `job_queue:configure`; replaced `user:ban` with `user:lock` backed by existing `admin_locked` field; added `user:lock` metadata columns to `users`; added `permission_request_approvers` table; updated `CheckUserAccess` to return access_type + scope + conditions; updated middleware to act on access_type; permission count 10 → 13; updated all seeds, gates, and file maps |
+| v3 | Schema (Phase 0) and queries (Phase 1) complete. `CheckUserAccess` rewritten to single-pass CTE with `MATERIALIZED` hints; `fn_prevent_owner_role_escalation` collapsed to single query; `idx_roles_owner_active` partial index added; `idx_user_roles_lookup` removed (redundant with PK); `idx_ur_audit_change_type` added; colon-guard `CHECK` constraints added to `permissions`; `Issue 4` (access_type dead column) retracted — column is correct and intentional. Three operational TODOs carried forward to Phase 1 gate. |
 
 ---
 
@@ -13,13 +14,16 @@
 
 | Already done | Still needed |
 |---|---|
-| `roles`, `permissions`, `permission_groups` tables | SQL queries (`sql/queries/rbac.sql`) |
-| `role_permissions`, `user_roles`, `user_permissions` tables | Permission seeds (`sql/seeds/002_permissions.sql`) |
-| `permission_condition_templates`, all audit tables | Role seeds (`sql/seeds/003_roles.sql`) |
-| `permission_group_members` | `internal/platform/rbac/` — checker + middleware |
-| All triggers (audit, privilege escalation, orphaned owner, expiry) | `internal/domain/rbac/` — admin API |
-| `001_roles.sql` seed — owner role row | Schema additions in `003_rbac.sql` (access_type, scope, permission_request_approvers) |
-| `users.admin_locked` + `users.is_locked` fields | `001_core.sql` additions (admin_locked metadata columns) |
+| `roles`, `permissions`, `permission_groups` tables | Permission seeds (`sql/seeds/002_permissions.sql`) |
+| `role_permissions`, `user_roles`, `user_permissions` tables | Role seeds (`sql/seeds/003_roles.sql`) |
+| `permission_condition_templates`, all audit tables | `internal/platform/rbac/` — checker + middleware |
+| `permission_group_members` | `internal/domain/rbac/` — admin API |
+| All triggers (audit, privilege escalation, orphaned owner, expiry) | ~~Schema additions in `003_rbac.sql`~~ ✅ done |
+| `001_roles.sql` seed — owner role row | ~~`001_core.sql` additions (admin_locked metadata columns)~~ ✅ done |
+| `users.admin_locked` + `users.is_locked` fields | |
+| ✅ `sql/queries/rbac.sql` — all 25 queries | |
+| ✅ `003_rbac.sql` — access_type/scope ENUMs, role_permissions/user_permissions columns, permission_request_approvers, all indexes | |
+| ✅ `004_rbac_functions.sql` — all trigger functions updated | |
 
 The only seed that exists is the `owner` role row. Every permission and every other
 role needs to be seeded by this design.
@@ -1171,24 +1175,63 @@ internal/server/routes.go                    MODIFY — mount /owner and /admin/
 
 ## 14. Implementation Phases
 
-| Phase | What | Needs | Gate |
-|-------|------|-------|------|
-| 0 | Schema additions to `001_core.sql`, `003_rbac.sql`, `004_rbac_functions.sql` | nothing | `make sqlc` compiles; new columns present in DB |
-| 1 | `sql/queries/rbac.sql` + `sqlc generate` | Phase 0 | `db` package compiles with all 25 new generated methods |
-| 2 | `sql/seeds/002_permissions.sql` + `003_roles.sql` | Phase 1 | `SELECT COUNT(*) FROM permissions` = 13; roles + role-permission rows present |
-| 3 | `internal/platform/rbac/` — checker + middleware | Phase 1 | T-R01 through T-R17 green; `go build ./...` passes |
-| 4 | Bootstrap route (`/owner/bootstrap`) | Phase 3 | T-R18 through T-R22 green |
-| 5 | Permissions read API (routes 10–11) | Phase 3 | T-R32, T-R33 green |
-| 6 | Roles API (routes 2–9) | Phase 3 | T-R23 through T-R31 green |
-| 7 | User role management (routes 12–14) | Phase 6 | T-R34 through T-R38 green |
-| 8 | User permission management (routes 15–17) | Phase 7 | T-R39 through T-R44 green |
-| 9 | User lock management (routes 18–20) | Phase 7 | T-R45 through T-R52 green |
-| 10 | Wire into server; update login/oauth/unlock/token middleware | Phases 4–9 | Server boots; `go test ./...` green |
+| Phase | What | Needs | Gate | Status |
+|-------|------|-------|------|--------|
+| 0 | Schema additions to `001_core.sql`, `003_rbac.sql`, `004_rbac_functions.sql` | nothing | `make sqlc` compiles; new columns present in DB | ✅ Done |
+| 1 | `sql/queries/rbac.sql` + `sqlc generate` | Phase 0 | `db` package compiles with all 25 new generated methods; **operational TODOs below closed** | ✅ Done |
+| 2 | `sql/seeds/002_permissions.sql` + `003_roles.sql` | Phase 1 | `SELECT COUNT(*) FROM permissions` = 13; roles + role-permission rows present | ✅ Done|
+| 3 | `internal/platform/rbac/` — checker + middleware | Phase 1 | T-R01 through T-R17 green; `go build ./...` passes | ⬜ Todo |
+| 4 | Bootstrap route (`/owner/bootstrap`) | Phase 3 | T-R18 through T-R22 green | ⬜ Todo |
+| 5 | Permissions read API (routes 10–11) | Phase 3 | T-R32, T-R33 green | ⬜ Todo |
+| 6 | Roles API (routes 2–9) | Phase 3 | T-R23 through T-R31 green | ⬜ Todo |
+| 7 | User role management (routes 12–14) | Phase 6 | T-R34 through T-R38 green | ⬜ Todo |
+| 8 | User permission management (routes 15–17) | Phase 7 | T-R39 through T-R44 green | ⬜ Todo |
+| 9 | User lock management (routes 18–20) | Phase 7 | T-R45 through T-R52 green | ⬜ Todo |
+| 10 | Wire into server; update login/oauth/unlock/token middleware | Phases 4–9 | Server boots; `go test ./...` green | ⬜ Todo |
 
 **Phase 0 is the new prerequisite** — schema additions land before Stage 1.
 **Phase 3 is the unlock** — once `Require` exists every other domain can add guards immediately.
 Phases 4–9 can run in parallel once Phase 3 is green.
 Phase 10 is the only phase that modifies existing files outside the rbac domain.
+
+---
+
+## 16. Operational TODOs (from Phase 1 audit — required before go-live)
+
+These are not schema or query changes. They must be implemented as part of Phase 2 / Phase 3 work or as standalone infra tasks before the system takes real traffic.
+
+### TODO-1 · Expired grant cleanup job ⚠️ Reliability blocker
+
+**Implemented in the job queue design** — see `internal/worker/purge_expired_permissions.go` and the `KindPurgeExpiredPermissions` schedule entry in `jobqueue/0-design.md §7`.
+
+Summary: `uq_up_one_active_grant_per_user_perm` is a full unique index (not partial — `NOW()` cannot appear in an index predicate). An expired `user_permissions` row that has not been deleted will cause `GrantUserPermission` to return `23505 → ErrPermissionAlreadyGranted → 409`. The cleanup job runs every 5 minutes via the job queue scheduler and deletes rows where `expires_at <= NOW()` using `idx_user_permissions_expires`.
+
+### TODO-2 · Re-grant idempotency in `GrantUserPermission` service
+
+Belt-and-suspenders on top of TODO-1. If the cleanup job has lag and a caller tries to re-grant an expired permission, the service will receive a `23505`. Rather than surfacing that as a 409, the service should:
+
+1. On receipt of `23505` from `GrantUserPermission`, attempt:
+   ```sql
+   DELETE FROM user_permissions
+   WHERE user_id = $1 AND permission_id = $2 AND expires_at <= NOW();
+   ```
+2. If that deletes 1 row, retry the `GrantUserPermission` insert.
+3. If it deletes 0 rows (the existing grant is still active), surface `ErrPermissionAlreadyGranted → 409` as today.
+
+This makes re-grants self-healing without depending solely on cleanup cadence. Implement in `userpermissions/service.go`.
+
+### TODO-3 · Static catalog caching (post-launch, not a blocker)
+
+These queries return data that changes at most a few times a year and are called on admin UI page loads:
+
+| Query | Table | Typical rows |
+|---|---|---|
+| `GetRoles` | `roles` | < 20 |
+| `GetPermissions` | `permissions` | < 200 |
+| `GetPermissionGroups` | `permission_groups` | < 30 |
+| `GetOwnerRoleID` | `roles` | 1 |
+
+Add a 5-minute in-process TTL cache in the relevant service layer, invalidated on any mutation (create/update/deactivate role, permission seed reload). `GetOwnerRoleID` in particular can be a process-lifetime singleton after first load. Implement after launch when DB query latency appears in profiling.
 
 ---
 

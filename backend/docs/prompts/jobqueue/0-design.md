@@ -1195,6 +1195,7 @@ used by domain code are all permanently insulated from the storage backend choic
 | `internal/worker/execute_request.go` | **NEW** | Replaces `request_executions` inline execution |
 | `internal/worker/send_notification.go` | **NEW** | Replaces notification delivery retry loop |
 | `internal/worker/purge_completed.go` | **NEW** | Deletes `succeeded`/`cancelled` jobs older than `RetentionDays` |
+| `internal/worker/purge_expired_permissions.go` | **NEW** | Deletes `user_permissions` rows where `expires_at <= NOW()`; 5-min schedule (RBAC re-grant reliability — see rbac/0-design.md §16 TODO-1) |
 | `internal/app/deps.go` | CHANGED | Add `Jobs jobqueue.Submitter`, `JobMgr *jobqueue.Manager` |
 | `internal/server/server.go` | CHANGED | Wire `Manager`; mount `/admin/jobqueue`; updated cleanup order |
 | `internal/config/config.go` | CHANGED | `JobWorkers`, `JobRetentionDays`; remove `JobQueueSize` |

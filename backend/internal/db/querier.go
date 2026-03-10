@@ -14,6 +14,16 @@ import (
 )
 
 type Querier interface {
+	// ON CONFLICT DO NOTHING: idempotent — adding a permission the role already has is a no-op.
+	// To update access_type/scope on an existing grant, remove + re-add from the service layer.
+	AddRolePermission(ctx context.Context, arg AddRolePermissionParams) error
+	// Inserts or replaces a user's role assignment. ON CONFLICT targets the user_id
+	// PRIMARY KEY (one-role-per-user invariant). fn_prevent_owner_role_escalation fires
+	// as a DB backstop before each INSERT/UPDATE OF role_id.
+	//
+	// The bootstrap handler calls this with granted_by = user_id (self-grant; only valid
+	// because bootstrap is the chicken-and-egg path before any owner exists).
+	AssignUserRole(ctx context.Context, arg AssignUserRoleParams) (AssignUserRoleRow, error)
 	// Clears deleted_at for a pending-deletion user.
 	// Returns rows-affected: 0 means the user was not pending deletion → 409 not_pending_deletion.
 	CancelUserDeletion(ctx context.Context, userID pgtype.UUID) (int64, error)
@@ -23,6 +33,21 @@ type Querier interface {
 	// is not rejected here — the same-email guard in the service handles that case.
 	// SetUserEmail catches concurrent races via 23505 on idx_users_email_active.
 	CheckEmailAvailableForChange(ctx context.Context, arg CheckEmailAvailableForChangeParams) (bool, error)
+	// ── Permission check (hot path) ────────────────────────────────────────────
+	// Returns the full access context for (user_id, permission) in one round-trip.
+	// is_owner short-circuits in Go — all other fields are ignored when is_owner = true.
+	//
+	// Single-pass rewrite: resolves user_role_ctx and perm_id exactly once each,
+	// then derives all output columns from those two materialized CTEs. Eliminates the
+	// previous triple traversal of user_roles and the duplicate 4-table join chain.
+	//
+	// Index usage:
+	//   user_role_ctx: user_roles PK (user_id) — at most 1 row
+	//   perm_id:       idx_permissions_canonical — O(1) index-only seek
+	//   role_grant:    idx_role_perms_covering(role_id, permission_id) INCLUDE(conditions,access_type,scope)
+	//   direct_grant:  uq_up_one_active_grant_per_user_perm(user_id, permission_id) — point lookup,
+	//                  replaces previous (user_id, expires_at) range scan
+	CheckUserAccess(ctx context.Context, arg CheckUserAccessParams) (CheckUserAccessRow, error)
 	// ── Username ───────────────────────────────────────────────────────────────────
 	// Returns true when no active (non-deleted) row with username = @username exists.
 	// Scoped to deleted_at IS NULL (via active_users view) so deleted accounts release
@@ -46,6 +71,9 @@ type Querier interface {
 	// Marks an account_unlock token as used. AND used_at IS NULL ensures idempotency:
 	// a race between two concurrent correct submissions cannot consume the same token twice.
 	ConsumeUnlockToken(ctx context.Context, id pgtype.UUID) (int64, error)
+	// ── Bootstrap ───────────────────────────────────────────────────────────────
+	// Used by /owner/bootstrap to gate on whether an active owner already exists.
+	CountActiveOwners(ctx context.Context) (int64, error)
 	// Issues a new account_deletion OTP token. max_attempts = 3. TTL supplied as @ttl_seconds.
 	//
 	// On 23505 (unique_violation) on idx_ott_account_deletion_active:
@@ -91,6 +119,8 @@ type Querier interface {
 	// login starts an independent token family with no shared revocation surface.
 	// The caller embeds jti in a signed JWT — never expose the raw UUID directly.
 	CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) (CreateRefreshTokenRow, error)
+	// is_system_role and is_owner_role are always FALSE for end-user-created roles.
+	CreateRole(ctx context.Context, arg CreateRoleParams) (Role, error)
 	// Issues a child refresh token linked to the presented (now-revoked) parent_jti.
 	// Inherits family_id and session_id from the caller. TTL resets to 30 days from NOW()
 	// rather than inheriting the parent's remaining TTL, consistent with initial login issuance.
@@ -110,6 +140,8 @@ type Querier interface {
 	// Opens a new login session row. The returned id is embedded in JWT claims and
 	// stored on the refresh_token row so tokens can be tied back to a specific device session.
 	CreateUserSession(ctx context.Context, arg CreateUserSessionParams) (CreateUserSessionRow, error)
+	// Soft-deletes a non-system role. Zero rows → ErrSystemRoleImmutable → 409.
+	DeactivateRole(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Removes the linked identity for the given (user, provider) pair.
 	// Returns rows affected: 0 means the identity did not exist (idempotent).
 	// trg_prevent_orphan_on_identity_delete (002_core_functions.sql) will raise an
@@ -138,6 +170,9 @@ type Querier interface {
 	// Returns all open sessions for the user, most recently active first.
 	// Limited to 50 rows — enough for any realistic number of concurrent devices.
 	GetActiveSessions(ctx context.Context, userID pgtype.UUID) ([]GetActiveSessionsRow, error)
+	// Verifies a target user exists, is active, and has confirmed their email.
+	// Used by bootstrap to reject unknown or unverified user_ids.
+	GetActiveUserByID(ctx context.Context, userID pgtype.UUID) (GetActiveUserByIDRow, error)
 	// Fetches the active email_change_confirm token for the given authenticated user.
 	// The email column holds new_email for use in step 3.
 	// FOR UPDATE prevents concurrent double-consumption.
@@ -174,6 +209,8 @@ type Querier interface {
 	// idx_ott_active covers the filter (user_id, token_type, used_at IS NULL);
 	// the ORDER BY created_at DESC sorts a tiny in-memory result set.
 	GetLatestVerificationTokenCreatedAt(ctx context.Context, userID pgtype.UUID) (time.Time, error)
+	// Looks up the owner role seeded by 001_roles.sql.
+	GetOwnerRoleID(ctx context.Context) (uuid.UUID, error)
 	// Fetches the most recent active (unused) password_reset token for the email.
 	// FOR UPDATE prevents concurrent double-consumption (same pattern as
 	// GetEmailVerificationToken and GetUnlockToken).
@@ -187,11 +224,22 @@ type Querier interface {
 	// Used by VerifyResetCode: no FOR UPDATE because the token is not consumed here.
 	// The consuming query (GetPasswordResetToken) uses FOR UPDATE separately.
 	GetPasswordResetTokenForVerify(ctx context.Context, email string) (GetPasswordResetTokenForVerifyRow, error)
+	GetPermissionByCanonicalName(ctx context.Context, canonicalName pgtype.Text) (GetPermissionByCanonicalNameRow, error)
+	GetPermissionGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]GetPermissionGroupMembersRow, error)
+	GetPermissionGroups(ctx context.Context) ([]GetPermissionGroupsRow, error)
+	// ── Permissions ─────────────────────────────────────────────────────────────
+	GetPermissions(ctx context.Context) ([]GetPermissionsRow, error)
 	// ── Refresh token lifecycle ──────────────────────────────────────────────────
 	// Fetches a refresh_tokens row by jti (primary key).
 	// Used by the /refresh endpoint to validate the presented token before rotation.
 	// Returns pgx.ErrNoRows when the jti does not exist in the table.
 	GetRefreshTokenByJTI(ctx context.Context, jti pgtype.UUID) (GetRefreshTokenByJTIRow, error)
+	GetRoleByID(ctx context.Context, id pgtype.UUID) (Role, error)
+	GetRoleByName(ctx context.Context, name string) (Role, error)
+	// ── Role permissions ────────────────────────────────────────────────────────
+	GetRolePermissions(ctx context.Context, roleID pgtype.UUID) ([]GetRolePermissionsRow, error)
+	// ── Roles ───────────────────────────────────────────────────────────────────
+	GetRoles(ctx context.Context) ([]Role, error)
 	// Used by DELETE /sessions/:id to verify the session belongs to the calling user
 	// before revoking it.
 	GetSessionByID(ctx context.Context, id pgtype.UUID) (GetSessionByIDRow, error)
@@ -277,20 +325,37 @@ type Querier interface {
 	// they are provider secrets stored in user_identity_tokens and must never
 	// be returned to clients.
 	GetUserIdentities(ctx context.Context, userID pgtype.UUID) ([]GetUserIdentitiesRow, error)
+	// Returns the full lock state: both OTP lock (is_locked, login_locked_until)
+	// and admin lock (admin_locked + metadata). JOIN to users guards deleted_at.
+	GetUserLockStatus(ctx context.Context, userID pgtype.UUID) (GetUserLockStatusRow, error)
 	// ── Change password ───────────────────────────────────────────────────────────
 	// Fetches the current bcrypt hash for credential re-verification before a password change.
 	// password_hash lives in user_secrets; a JOIN on users is not needed here.
 	GetUserPasswordHash(ctx context.Context, userID pgtype.UUID) (GetUserPasswordHashRow, error)
+	// ── User permissions (direct grants) ───────────────────────────────────────
+	// Returns only active (non-expired) grants for the given user.
+	GetUserPermissions(ctx context.Context, userID pgtype.UUID) ([]GetUserPermissionsRow, error)
 	// ── Profile ───────────────────────────────────────────────────────────────────
 	// Returns the full profile for the authenticated user.
 	// is_locked and admin_locked come from user_secrets; all other fields from users.
 	GetUserProfile(ctx context.Context, userID pgtype.UUID) (GetUserProfileRow, error)
+	// ── User role ───────────────────────────────────────────────────────────────
+	// Returns nil (no rows) when the user has no active role assignment.
+	GetUserRole(ctx context.Context, userID pgtype.UUID) (GetUserRoleRow, error)
 	// Returns email_verified, is_locked, admin_locked, and is_active in a single round-trip.
 	// Called when MarkEmailVerified returns 0 rows to distinguish:
 	//   is_locked = TRUE or admin_locked = TRUE → ErrAccountLocked
 	//   email_verified = TRUE                   → already verified (no-op, not an error)
 	// Avoids a second query race window compared to checking each column separately.
 	GetUserVerifiedAndLocked(ctx context.Context, userID pgtype.UUID) (GetUserVerifiedAndLockedRow, error)
+	// Privilege escalation is blocked by fn_prevent_privilege_escalation trigger.
+	// uq_up_one_active_grant_per_user_perm is a full UNIQUE index on (user_id, permission_id),
+	// so re-granting the same permission requires revoking the previous grant first.
+	// The service layer should call RevokeUserPermission before this when re-granting.
+	//
+	// On 23505 (unique_violation) on uq_up_one_active_grant_per_user_perm:
+	// service maps → ErrPermissionAlreadyGranted → 409.
+	GrantUserPermission(ctx context.Context, arg GrantUserPermissionParams) (GrantUserPermissionRow, error)
 	// Permanently deletes the user row. All child rows are removed via ON DELETE CASCADE:
 	// refresh_tokens, user_sessions, one_time_tokens, user_identities, user_secrets,
 	// auth_audit_log (user_id SET NULL — row is kept), user_roles.
@@ -355,6 +420,13 @@ type Querier interface {
 	// caller whether the lock actually changed state.
 	// Clearing requires admin action or the account-unlock OTP flow.
 	LockAccount(ctx context.Context, userID pgtype.UUID) (int64, error)
+	// ── User lock ───────────────────────────────────────────────────────────────
+	// NOTE: admin_locked, admin_locked_by, admin_locked_reason, admin_locked_at,
+	// is_locked, and login_locked_until are all in user_secrets, not users.
+	// Sets admin_locked = TRUE with actor, reason, and timestamp in user_secrets.
+	// chk_us_admin_lock_coherent: reason + at required when locked = TRUE.
+	// chk_us_no_self_lock: admin_locked_by must differ from user_id.
+	LockUser(ctx context.Context, arg LockUserParams) error
 	// Activates the account and marks email_verified = TRUE in one statement.
 	// Guards:
 	//   email_verified = FALSE  → prevents double-activation (idempotency guard)
@@ -365,6 +437,10 @@ type Querier interface {
 	// Returns rows affected so callers can detect a no-op and investigate the cause
 	// with GetUserVerifiedAndLocked.
 	MarkEmailVerified(ctx context.Context, userID pgtype.UUID) (int64, error)
+	RemoveRolePermission(ctx context.Context, arg RemoveRolePermissionParams) (int64, error)
+	// Hard-deletes a user's role assignment. Returns rows affected (0 = no assignment found).
+	// fn_prevent_orphaned_owner fires as a DB backstop before DELETE.
+	RemoveUserRole(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// Resets failed_change_password_attempts to 0 after a successful password change.
 	// AND failed_change_password_attempts > 0 makes the update a no-op when already zero,
 	// avoiding a write on the happy path for users who never had a failed attempt.
@@ -397,6 +473,8 @@ type Querier interface {
 	// Revokes all non-revoked refresh tokens for a specific session.
 	// Called by RevokeSessionTx when a user explicitly ends a single device session.
 	RevokeSessionRefreshTokens(ctx context.Context, sessionID pgtype.UUID) error
+	// Hard-deletes by surrogate id scoped to user_id (prevents cross-user deletion).
+	RevokeUserPermission(ctx context.Context, arg RevokeUserPermissionParams) (int64, error)
 	// Stamps deleted_at = NOW() for the given active user.
 	// Returns deleted_at so the handler can compute scheduled_deletion_at = deleted_at + 30d.
 	ScheduleUserDeletion(ctx context.Context, userID pgtype.UUID) (*time.Time, error)
@@ -418,6 +496,10 @@ type Querier interface {
 	// Clears is_locked, failed_login_attempts, and login_locked_until atomically.
 	// Called after a successful account-unlock OTP confirmation.
 	UnlockAccount(ctx context.Context, userID pgtype.UUID) error
+	// Clears admin_locked and all metadata fields in user_secrets.
+	// chk_us_admin_lock_coherent requires all three metadata fields to be NULL
+	// when admin_locked = FALSE, so all four must be cleared atomically.
+	UnlockUser(ctx context.Context, userID pgtype.UUID) error
 	// Stamps last_login_at after a successful authentication.
 	// updated_at is omitted: trg_users_updated_at (BEFORE UPDATE trigger) already
 	// sets updated_at = NOW() on every UPDATE, making an explicit assignment a dead no-op.
@@ -428,6 +510,9 @@ type Querier interface {
 	// Called after successful OTP validation in a transaction that also revokes all
 	// existing sessions — a password change must invalidate every active device.
 	UpdatePasswordHash(ctx context.Context, arg UpdatePasswordHashParams) error
+	// WHERE is_system_role = FALSE prevents renaming system roles at the DB level.
+	// Zero rows affected → service returns ErrSystemRoleImmutable → 409.
+	UpdateRole(ctx context.Context, arg UpdateRoleParams) (Role, error)
 	// Stamps last_active_at = NOW() for a session that is still open.
 	// Called by the /refresh endpoint after successful token rotation so the
 	// device session shows real activity, not just creation time.

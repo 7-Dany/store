@@ -124,6 +124,9 @@ COMMENT ON COLUMN roles.is_system_role IS
 COMMENT ON COLUMN roles.is_owner_role IS
  'TRUE = unrestricted access. chk_roles_owner_must_be_system requires is_system_role = TRUE simultaneously.';
 
+-- Partial index: active-only listing ordered by name, used by GetRoles.
+CREATE INDEX idx_roles_active_name ON roles(name) WHERE is_active = TRUE;
+
 
 /* ─────────────────────────────────────────────────────────────
  PERMISSIONS
@@ -156,10 +159,7 @@ CREATE TABLE permissions (
  is_active BOOLEAN NOT NULL DEFAULT TRUE,
 
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
- updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
- -- (name, resource_type) must be unique so the same action cannot be registered twice per resource.
- CONSTRAINT uq_permissions_name_resource UNIQUE (name, resource_type)
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Speeds up canonical-name lookups (the most common permission check pattern).
@@ -167,6 +167,9 @@ CREATE UNIQUE INDEX idx_permissions_canonical ON permissions(canonical_name);
 
 -- Supports listing all permissions for a given resource type (admin UI, permission browser).
 CREATE INDEX idx_permissions_resource_name ON permissions(resource_type, name);
+
+-- Partial index: active-only listing ordered by canonical_name, used by GetPermissions.
+CREATE INDEX idx_permissions_active_canonical ON permissions(canonical_name) WHERE is_active = TRUE;
 
 COMMENT ON TABLE permissions IS
  'Permission definitions. Canonical form: resource_type:name (e.g. product:create). Soft-delete via is_active.';
@@ -225,7 +228,7 @@ CREATE TABLE permission_groups (
 
 -- Used by the admin UI to render groups in display_order sequence.
 -- Partial index: excludes inactive groups from the hot-path sort.
-CREATE INDEX idx_permission_groups_order ON permission_groups(display_order) WHERE is_active = TRUE;
+CREATE INDEX idx_permission_groups_order ON permission_groups(display_order, name) WHERE is_active = TRUE;
 
 COMMENT ON TABLE permission_groups IS
  'Groups permissions for UI organisation and bulk role assignment. A permission may belong to multiple groups.';
@@ -375,9 +378,15 @@ CREATE INDEX idx_role_permissions_perm ON role_permissions(permission_id);
 -- to find grants that match a specific ABAC condition set.
 CREATE INDEX idx_role_permissions_conditions ON role_permissions USING GIN(conditions jsonb_ops);
 
--- Covering index avoids a heap fetch on the hot permission-check JOIN path;
--- includes the three columns most frequently needed after the join.
+-- Covering index avoids a heap fetch on the role-first permission-check JOIN path
+-- (user_id → role_id → role_permissions). Includes the three payload columns so no
+-- heap fetch is needed when the planner approaches via role_id.
 CREATE INDEX idx_role_perms_covering ON role_permissions(role_id, permission_id) INCLUDE (conditions, access_type, scope);
+
+-- Covering index for the permission-first lookup path used by CheckUserAccess after
+-- the perm_id CTE resolves permission_id up-front. Enables a fully index-only scan
+-- from (permission_id, role_id) without visiting the heap.
+CREATE INDEX idx_rp_perm_role_covering ON role_permissions(permission_id, role_id) INCLUDE (access_type, scope, conditions);
 
 COMMENT ON TABLE role_permissions IS
  'Maps roles → permissions with optional ABAC conditions, access_type, and scope. Every grant requires a named accountable human. All mutations logged to role_permissions_audit.';
@@ -445,14 +454,11 @@ CREATE INDEX idx_rp_audit_changer ON role_permissions_audit(changed_by, changed_
 -- Supports filtering by mutation kind (e.g. "all deletions in the last month").
 CREATE INDEX idx_rp_audit_change_type ON role_permissions_audit(change_type, changed_at DESC);
 
--- ASC index for the retention sweep job to efficiently range-delete old rows.
-CREATE INDEX idx_rp_audit_cleanup ON role_permissions_audit(changed_at ASC);
-
 COMMENT ON TABLE role_permissions_audit IS
  'Immutable audit log for role_permissions. Populated by trg_audit_role_permissions.
  RESTRICT FKs on role/permission prevent deletion while history exists.
  changed_by is nullable: SET NULL when actor is hard-purged so audit rows are preserved.
- Retention: rows older than 90 days swept by retention job using idx_rp_audit_cleanup (ASC).';
+ Retention: rows older than 90 days swept by retention job using idx_rp_audit_recent (DESC scan).';
 COMMENT ON COLUMN role_permissions_audit.previous_conditions IS
  'Snapshot of conditions before the mutation.';
 COMMENT ON COLUMN role_permissions_audit.previous_access_type IS
@@ -528,6 +534,9 @@ CREATE TABLE user_roles_audit (
  -- Role held before the change. NULL on the first (INSERT) grant for a user.
  previous_role_id UUID,
 
+ expires_at          TIMESTAMPTZ,
+ previous_expires_at TIMESTAMPTZ,
+
  change_type audit_change_type_enum NOT NULL,
  changed_by UUID, -- nullable: SET NULL when the actor is hard-purged
  changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -542,14 +551,12 @@ CREATE INDEX idx_ur_audit_time_bucket ON user_roles_audit(changed_at, user_id);
 CREATE INDEX idx_ur_audit_recent ON user_roles_audit(changed_at DESC);
 CREATE INDEX idx_ur_audit_changer ON user_roles_audit(changed_by, changed_at DESC)
  WHERE changed_by IS NOT NULL;
--- ASC index for the retention sweep job.
-CREATE INDEX idx_ur_audit_cleanup ON user_roles_audit(changed_at ASC);
 
 COMMENT ON TABLE user_roles_audit IS
  'Immutable audit log for user_roles. Populated by trg_audit_user_roles.
  RESTRICT FKs on user/role prevent deletion while history exists.
  changed_by is nullable: SET NULL when actor is hard-purged so audit rows are preserved.
- Retention: rows older than 90 days swept by retention job using idx_ur_audit_cleanup (ASC).';
+ Retention: rows older than 90 days swept by retention job using idx_ur_audit_recent (DESC scan).';
 COMMENT ON COLUMN user_roles_audit.previous_role_id IS
  'Snapshot of role_id before the change.';
 
@@ -569,9 +576,12 @@ COMMENT ON COLUMN user_roles_audit.previous_role_id IS
  * Revocation = hard DELETE; history is preserved in user_permissions_audit.
  * The granter must hold the permission themselves (fn_prevent_privilege_escalation).
  *
- * A partial unique index (uq_up_one_active_grant_per_user_perm) enforces at most
- * one active grant per (user, permission) pair. Full UNIQUE was replaced
- * because it blocked re-granting after a previous grant expired.
+ * uq_up_one_active_grant_per_user_perm is a FULL unique index on (user_id, permission_id)
+ * — not a partial index. NOW() is STABLE (not IMMUTABLE) so it cannot be used in an
+ * index predicate. This means re-granting the same permission requires the previous
+ * grant to be hard-deleted first (call RevokeUserPermission before GrantUserPermission).
+ * Attempting to re-grant an expired but not-yet-cleaned-up grant will return 23505
+ * (unique_violation), which the service maps to ErrPermissionAlreadyGranted → 409.
  */
 CREATE TABLE user_permissions (
  -- Surrogate PK decouples identity from (user_id, permission_id), allowing clean
@@ -611,8 +621,11 @@ CREATE TABLE user_permissions (
  CHECK (access_type = 'direct')
 );
 
--- Unique index on (user_id, permission_id). Re-granting requires the previous grant to be
--- deleted first (revocation = DELETE). NOW() cannot be used in index predicates (must be IMMUTABLE).
+-- Full unique index on (user_id, permission_id). One active grant per user per permission.
+-- A partial index predicate (e.g. WHERE expires_at > NOW()) is not possible because NOW()
+-- is STABLE, not IMMUTABLE. Re-granting after expiry therefore requires an explicit
+-- RevokeUserPermission (DELETE) before calling GrantUserPermission. The cleanup job
+-- must also run regularly to prevent 409s on re-grants of naturally expired rows.
 CREATE UNIQUE INDEX uq_up_one_active_grant_per_user_perm
  ON user_permissions (user_id, permission_id);
 
@@ -623,13 +636,15 @@ CREATE INDEX idx_user_permissions_perm ON user_permissions(permission_id);
 CREATE INDEX idx_user_permissions_expires ON user_permissions(expires_at);
 
 -- Hot path for "what active grants does user X have?" — filters on both user_id and expiry.
-CREATE INDEX idx_user_permissions_user_expires ON user_permissions(user_id, expires_at);
+-- INCLUDE avoids heap fetches for permission_id, scope, and conditions on the CheckUserAccess path.
+CREATE INDEX idx_user_permissions_user_expires ON user_permissions(user_id, expires_at) INCLUDE (permission_id, scope, conditions);
 
 COMMENT ON TABLE user_permissions IS
  'Temporary direct permission grants — exceptions to the role model. Revocation = DELETE; history preserved in user_permissions_audit.
  Granter must hold the permission themselves (trg_prevent_privilege_escalation).
- UNIQUE(user_id, permission_id) enforced by uq_up_one_active_grant_per_user_perm;
- re-granting requires the previous grant to be deleted first.';
+ UNIQUE(user_id, permission_id) enforced by uq_up_one_active_grant_per_user_perm (full index, not partial —
+ NOW() cannot be used in index predicates). Re-granting requires the previous grant to be
+ hard-deleted first; the cleanup job must run regularly to avoid stale-grant 409s.';
 COMMENT ON COLUMN user_permissions.expires_at IS
  'REQUIRED. Bounded by trg_validate_user_permission_expiry: min 5 min, max 90 days from now.';
 COMMENT ON COLUMN user_permissions.access_type IS
@@ -660,6 +675,9 @@ CREATE TABLE user_permissions_audit (
  previous_conditions JSONB,
  previous_scope permission_scope,
 
+ expires_at          TIMESTAMPTZ,
+ previous_expires_at TIMESTAMPTZ,
+
  change_type audit_change_type_enum NOT NULL,
  changed_by UUID, -- nullable: SET NULL when actor is hard-purged
  changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -674,13 +692,11 @@ CREATE INDEX idx_up_audit_time_bucket ON user_permissions_audit(changed_at, user
 CREATE INDEX idx_up_audit_recent ON user_permissions_audit(changed_at DESC);
 CREATE INDEX idx_up_audit_changer ON user_permissions_audit(changed_by, changed_at DESC)
  WHERE changed_by IS NOT NULL;
--- ASC index for the retention sweep job.
-CREATE INDEX idx_up_audit_cleanup ON user_permissions_audit(changed_at ASC);
 
 COMMENT ON TABLE user_permissions_audit IS
  'Immutable audit log for user_permissions — highest-risk RBAC table; every mutation is tracked unconditionally. Populated by trg_audit_user_permissions.
  changed_by is nullable: SET NULL when actor is hard-purged so audit rows are preserved.
- Retention: rows older than 90 days swept by retention job using idx_up_audit_cleanup (ASC).';
+ Retention: rows older than 90 days swept by retention job using idx_up_audit_recent (DESC scan).';
 COMMENT ON COLUMN user_permissions_audit.previous_conditions IS
  'Snapshot of conditions before the mutation.';
 COMMENT ON COLUMN user_permissions_audit.previous_scope IS
@@ -785,13 +801,12 @@ COMMENT ON TABLE permission_request_approvers_audit IS
 DROP INDEX IF EXISTS idx_pra_audit_permission;
 DROP INDEX IF EXISTS idx_pra_audit_recent;
 DROP TABLE IF EXISTS permission_request_approvers_audit CASCADE;
-DROP INDEX IF EXISTS idx_up_audit_cleanup;
-DROP INDEX IF EXISTS idx_ur_audit_cleanup;
-DROP INDEX IF EXISTS idx_rp_audit_cleanup;
 DROP INDEX IF EXISTS uq_up_one_active_grant_per_user_perm;
+DROP INDEX IF EXISTS idx_rp_perm_role_covering;
 DROP TABLE IF EXISTS permission_request_approvers CASCADE;
 DROP TABLE IF EXISTS user_permissions_audit CASCADE;
 DROP TABLE IF EXISTS user_permissions CASCADE;
+DROP INDEX IF EXISTS idx_ur_audit_change_type;
 DROP TABLE IF EXISTS user_roles_audit CASCADE;
 DROP TABLE IF EXISTS user_roles CASCADE;
 DROP TABLE IF EXISTS role_permissions_audit CASCADE;
@@ -800,6 +815,7 @@ DROP TABLE IF EXISTS permission_group_members CASCADE;
 DROP TABLE IF EXISTS permission_condition_templates CASCADE;
 DROP TABLE IF EXISTS permission_groups CASCADE;
 DROP TABLE IF EXISTS permissions CASCADE;
+DROP INDEX IF EXISTS idx_roles_owner_active;
 DROP TABLE IF EXISTS roles CASCADE;
 
 DROP TYPE IF EXISTS permission_scope CASCADE;

@@ -1215,7 +1215,7 @@ type RolePermission struct {
 //
 //	RESTRICT FKs on role/permission prevent deletion while history exists.
 //	changed_by is nullable: SET NULL when actor is hard-purged so audit rows are preserved.
-//	Retention: rows older than 90 days swept by retention job using idx_rp_audit_cleanup (ASC).
+//	Retention: rows older than 90 days swept by retention job using idx_rp_audit_recent (DESC scan).
 type RolePermissionsAudit struct {
 	ID           uuid.UUID                `db:"id" json:"id"`
 	RoleID       pgtype.UUID              `db:"role_id" json:"role_id"`
@@ -1296,8 +1296,9 @@ type UserIdentityToken struct {
 // Temporary direct permission grants — exceptions to the role model. Revocation = DELETE; history preserved in user_permissions_audit.
 //
 //	Granter must hold the permission themselves (trg_prevent_privilege_escalation).
-//	UNIQUE(user_id, permission_id) enforced by uq_up_one_active_grant_per_user_perm;
-//	re-granting requires the previous grant to be deleted first.
+//	UNIQUE(user_id, permission_id) enforced by uq_up_one_active_grant_per_user_perm (full index, not partial —
+//	NOW() cannot be used in index predicates). Re-granting requires the previous grant to be
+//	hard-deleted first; the cleanup job must run regularly to avoid stale-grant 409s.
 type UserPermission struct {
 	ID           uuid.UUID   `db:"id" json:"id"`
 	UserID       pgtype.UUID `db:"user_id" json:"user_id"`
@@ -1320,7 +1321,7 @@ type UserPermission struct {
 // Immutable audit log for user_permissions — highest-risk RBAC table; every mutation is tracked unconditionally. Populated by trg_audit_user_permissions.
 //
 //	changed_by is nullable: SET NULL when actor is hard-purged so audit rows are preserved.
-//	Retention: rows older than 90 days swept by retention job using idx_up_audit_cleanup (ASC).
+//	Retention: rows older than 90 days swept by retention job using idx_up_audit_recent (DESC scan).
 type UserPermissionsAudit struct {
 	ID           uuid.UUID           `db:"id" json:"id"`
 	UserID       pgtype.UUID         `db:"user_id" json:"user_id"`
@@ -1330,11 +1331,13 @@ type UserPermissionsAudit struct {
 	// Snapshot of conditions before the mutation.
 	PreviousConditions []byte `db:"previous_conditions" json:"previous_conditions"`
 	// Snapshot of scope before the mutation.
-	PreviousScope NullPermissionScope `db:"previous_scope" json:"previous_scope"`
-	ChangeType    AuditChangeTypeEnum `db:"change_type" json:"change_type"`
-	ChangedBy     pgtype.UUID         `db:"changed_by" json:"changed_by"`
-	ChangedAt     pgtype.Timestamptz  `db:"changed_at" json:"changed_at"`
-	ChangeReason  pgtype.Text         `db:"change_reason" json:"change_reason"`
+	PreviousScope     NullPermissionScope `db:"previous_scope" json:"previous_scope"`
+	ExpiresAt         pgtype.Timestamptz  `db:"expires_at" json:"expires_at"`
+	PreviousExpiresAt pgtype.Timestamptz  `db:"previous_expires_at" json:"previous_expires_at"`
+	ChangeType        AuditChangeTypeEnum `db:"change_type" json:"change_type"`
+	ChangedBy         pgtype.UUID         `db:"changed_by" json:"changed_by"`
+	ChangedAt         pgtype.Timestamptz  `db:"changed_at" json:"changed_at"`
+	ChangeReason      pgtype.Text         `db:"change_reason" json:"change_reason"`
 }
 
 // Assigns exactly one role per user. user_id PK enforces this at the DB level. Deletion of the last active owner is blocked by trg_prevent_orphaned_owner.
@@ -1354,17 +1357,19 @@ type UserRole struct {
 //
 //	RESTRICT FKs on user/role prevent deletion while history exists.
 //	changed_by is nullable: SET NULL when actor is hard-purged so audit rows are preserved.
-//	Retention: rows older than 90 days swept by retention job using idx_ur_audit_cleanup (ASC).
+//	Retention: rows older than 90 days swept by retention job using idx_ur_audit_recent (DESC scan).
 type UserRolesAudit struct {
 	ID     uuid.UUID   `db:"id" json:"id"`
 	UserID pgtype.UUID `db:"user_id" json:"user_id"`
 	RoleID pgtype.UUID `db:"role_id" json:"role_id"`
 	// Snapshot of role_id before the change.
-	PreviousRoleID pgtype.UUID         `db:"previous_role_id" json:"previous_role_id"`
-	ChangeType     AuditChangeTypeEnum `db:"change_type" json:"change_type"`
-	ChangedBy      pgtype.UUID         `db:"changed_by" json:"changed_by"`
-	ChangedAt      pgtype.Timestamptz  `db:"changed_at" json:"changed_at"`
-	ChangeReason   pgtype.Text         `db:"change_reason" json:"change_reason"`
+	PreviousRoleID    pgtype.UUID         `db:"previous_role_id" json:"previous_role_id"`
+	ExpiresAt         pgtype.Timestamptz  `db:"expires_at" json:"expires_at"`
+	PreviousExpiresAt pgtype.Timestamptz  `db:"previous_expires_at" json:"previous_expires_at"`
+	ChangeType        AuditChangeTypeEnum `db:"change_type" json:"change_type"`
+	ChangedBy         pgtype.UUID         `db:"changed_by" json:"changed_by"`
+	ChangedAt         pgtype.Timestamptz  `db:"changed_at" json:"changed_at"`
+	ChangeReason      pgtype.Text         `db:"change_reason" json:"change_reason"`
 }
 
 // Security-sensitive fields for users. 1:1 with users (user_id PK).

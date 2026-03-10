@@ -173,10 +173,12 @@ BEGIN
  );
  INSERT INTO user_roles_audit (
  user_id, role_id, previous_role_id,
+ expires_at, previous_expires_at,
  change_type, changed_by, change_reason
  ) VALUES (
  OLD.user_id, OLD.role_id,
  OLD.role_id, -- preserve which role was revoked, not NULL
+ NULL, OLD.expires_at,
  'deleted', v_changed_by, v_change_reason
  );
  RETURN OLD;
@@ -189,9 +191,11 @@ BEGIN
  );
  INSERT INTO user_roles_audit (
  user_id, role_id, previous_role_id,
+ expires_at, previous_expires_at,
  change_type, changed_by, change_reason
  ) VALUES (
  NEW.user_id, NEW.role_id, OLD.role_id,
+ NEW.expires_at, OLD.expires_at,
  'updated', v_changed_by, v_change_reason
  );
  RETURN NEW;
@@ -199,9 +203,11 @@ BEGIN
  ELSE -- INSERT
  INSERT INTO user_roles_audit (
  user_id, role_id, previous_role_id,
+ expires_at, previous_expires_at,
  change_type, changed_by, change_reason
  ) VALUES (
  NEW.user_id, NEW.role_id, NULL,
+ NEW.expires_at, NULL,
  'created', NEW.granted_by, v_change_reason
  );
  RETURN NEW;
@@ -237,11 +243,13 @@ BEGIN
  user_id, permission_id,
  conditions, scope,
  previous_conditions, previous_scope,
+ expires_at, previous_expires_at,
  change_type, changed_by, change_reason
  ) VALUES (
  OLD.user_id, OLD.permission_id,
  NULL, NULL,
  OLD.conditions, OLD.scope,
+ NULL, OLD.expires_at,
  'deleted', v_changed_by, v_change_reason
  );
  RETURN OLD;
@@ -256,11 +264,13 @@ BEGIN
  user_id, permission_id,
  conditions, scope,
  previous_conditions, previous_scope,
+ expires_at, previous_expires_at,
  change_type, changed_by, change_reason
  ) VALUES (
  NEW.user_id, NEW.permission_id,
  NEW.conditions, NEW.scope,
  OLD.conditions, OLD.scope,
+ NEW.expires_at, OLD.expires_at,
  'updated', v_changed_by, v_change_reason
  );
  RETURN NEW;
@@ -270,11 +280,13 @@ BEGIN
  user_id, permission_id,
  conditions, scope,
  previous_conditions, previous_scope,
+ expires_at, previous_expires_at,
  change_type, changed_by, change_reason
  ) VALUES (
  NEW.user_id, NEW.permission_id,
  NEW.conditions, NEW.scope,
  NULL, NULL,
+ NEW.expires_at, NULL,
  'created', NEW.granted_by, v_change_reason
  );
  RETURN NEW;
@@ -318,37 +330,46 @@ RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
 DECLARE
  v_granter_is_owner BOOLEAN;
+ v_granter_has_perm  BOOLEAN;
 BEGIN
  -- Escape hatch for test fixtures and seeding scripts only.
  IF current_setting('rbac.skip_escalation_check', TRUE) = '1' THEN
  RETURN NEW;
  END IF;
 
- -- Check whether the granter holds an active owner role (unrestricted).
- SELECT r.is_owner_role
- INTO v_granter_is_owner
+ -- Single pass: fetch is_owner_role and check permission existence in one query.
+ -- Previously two separate queries traversed user_roles for the same granted_by user;
+ -- this collapses them to one index seek on the user_id PK.
+ SELECT
+ r.is_owner_role,
+ EXISTS (
+ SELECT 1
+ FROM role_permissions rp
+ WHERE rp.role_id       = ur.role_id
+ AND rp.permission_id = NEW.permission_id
+ )
+ INTO v_granter_is_owner, v_granter_has_perm
  FROM user_roles ur
  JOIN roles r ON r.id = ur.role_id
- WHERE ur.user_id = NEW.granted_by
- AND r.is_active = TRUE -- ignore deactivated roles
+ WHERE ur.user_id   = NEW.granted_by
+ AND r.is_active  = TRUE
  AND (ur.expires_at IS NULL OR ur.expires_at > NOW());
 
+ -- No row found → granter has no active role → escalation denied.
+ IF NOT FOUND THEN
+ RAISE EXCEPTION
+ 'Privilege escalation denied: granter (user_id=%) has no active role.',
+ NEW.granted_by
+ USING ERRCODE = 'insufficient_privilege';
+ END IF;
+
  -- Owner-role granters are unrestricted; skip the permission check.
- IF FOUND AND v_granter_is_owner = TRUE THEN
+ IF v_granter_is_owner THEN
  RETURN NEW;
  END IF;
 
- -- Verify the granter holds the target permission via an active role.
- IF NOT EXISTS (
- SELECT 1
- FROM user_roles ur
- JOIN roles r ON r.id = ur.role_id
- JOIN role_permissions rp ON rp.role_id = ur.role_id
- WHERE ur.user_id = NEW.granted_by
- AND r.is_active = TRUE -- deactivated roles do not confer grant rights
- AND rp.permission_id = NEW.permission_id
- AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
- ) THEN
+ -- Verify the granter holds the target permission via their active role.
+ IF NOT v_granter_has_perm THEN
  RAISE EXCEPTION
  'Privilege escalation denied: granter (user_id=%) does not hold permission_id=% on an active role.',
  NEW.granted_by, NEW.permission_id
@@ -361,10 +382,11 @@ $$;
 
 COMMENT ON FUNCTION fn_prevent_privilege_escalation() IS
  'Prevents a granter from assigning a permission they do not hold via an active role. '
- 'Checks r.is_active = TRUE to prevent deactivated roles from conferring grant rights. '
+ 'Rewritten to a single query (was two sequential user_roles traversals): resolves '
+ 'is_owner_role and permission existence in one index seek on the user_id PK. '
  'Owner-role users are exempt. Middleware should check first; this is the DB backstop. '
- 'note that receiving a direct user_permissions grant does NOT confer the right '
- 'to re-grant that permission to others; only role-based grants count for escalation checks.';
+ 'Receiving a direct user_permissions grant does NOT confer re-grant rights; '
+ 'only role-based grants count for escalation checks.';
 
 CREATE TRIGGER trg_prevent_privilege_escalation
  BEFORE INSERT OR UPDATE ON user_permissions
@@ -459,31 +481,29 @@ CREATE TRIGGER trg_validate_user_permission_expiry
 CREATE OR REPLACE FUNCTION fn_prevent_orphaned_owner()
 RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
-DECLARE
- v_remaining_owners INTEGER;
 BEGIN
  -- PG forbids subqueries in WHEN clauses; early-exit for non-owner rows.
  IF NOT EXISTS (
- SELECT 1 FROM roles WHERE id = OLD.role_id AND is_owner_role = TRUE
+ SELECT 1 FROM roles WHERE id = OLD.role_id AND is_owner_role = TRUE AND is_active = TRUE
  ) THEN
  RETURN OLD;
  END IF;
 
- -- Lock remaining owner rows to serialise concurrent removal attempts.
- -- Without FOR UPDATE two concurrent transactions can both see COUNT(*) > 0
- -- and both proceed to remove their owner assignment, leaving zero owners.
- SELECT COUNT(*)
- INTO v_remaining_owners
+ -- Lock ALL remaining owner rows to serialise concurrent removal attempts.
+ -- PERFORM acquires the FOR UPDATE locks without COUNT aggregation overhead,
+ -- and stops only after visiting every qualifying row (no LIMIT) so that all
+ -- concurrent owner-removal transactions are fully serialised.
+ -- NOT FOUND → no remaining owners → reject the removal.
+ PERFORM 1
  FROM user_roles ur
  JOIN roles r ON r.id = ur.role_id
- JOIN users u ON u.id = ur.user_id
  WHERE r.is_owner_role = TRUE
- AND u.is_active = TRUE
- AND ur.user_id != OLD.user_id
+ AND r.is_active     = TRUE
+ AND ur.user_id     != OLD.user_id
  AND (ur.expires_at IS NULL OR ur.expires_at > NOW())
  FOR UPDATE OF ur;
 
- IF v_remaining_owners = 0 THEN
+ IF NOT FOUND THEN
  RAISE EXCEPTION
  'Cannot remove last active owner (user_id=%). At least one active owner must remain.',
  OLD.user_id
@@ -496,8 +516,9 @@ $$;
 
 COMMENT ON FUNCTION fn_prevent_orphaned_owner() IS
  'Prevents deletion or reassignment of the last active owner-role assignment. '
- 'Uses FOR UPDATE OF ur to serialise concurrent removal attempts that would otherwise '
- 'both pass the COUNT(*) check independently (race condition fix).';
+ 'Uses PERFORM ... FOR UPDATE OF ur to lock all remaining owner rows, serialising '
+ 'concurrent removal attempts without COUNT aggregation overhead. '
+ 'NOT FOUND after PERFORM means no remaining owners → raise exception.';
 
 -- Fires before a user_roles row is deleted.
 CREATE TRIGGER trg_prevent_orphaned_owner_on_delete
@@ -526,30 +547,38 @@ CREATE OR REPLACE FUNCTION fn_prevent_owner_role_escalation()
 RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
 DECLARE
- v_role_is_owner BOOLEAN;
+ v_role_is_owner    BOOLEAN;
  v_granter_is_owner BOOLEAN;
 BEGIN
- -- Only enforce when the target role is the owner role; skip all other assignments.
- SELECT is_owner_role INTO v_role_is_owner
- FROM roles WHERE id = NEW.role_id;
+ -- Single pass: resolve whether the target role is the owner role AND whether
+ -- the granter holds an active owner role in one index seek.
+ -- idx_roles_owner_active (partial: is_owner_role=TRUE AND is_active=TRUE) makes
+ -- the inner correlated subquery an O(1) seek for the common non-owner case.
+ SELECT
+  r_target.is_owner_role,
+  COALESCE((
+   SELECT r_granter.is_owner_role
+   FROM   user_roles ur
+   JOIN   roles r_granter ON r_granter.id = ur.role_id
+   WHERE  ur.user_id          = NEW.granted_by
+     AND  r_granter.is_active = TRUE
+     AND  (ur.expires_at IS NULL OR ur.expires_at > NOW())
+  ), FALSE)
+ INTO v_role_is_owner, v_granter_is_owner
+ FROM roles r_target
+ WHERE r_target.id = NEW.role_id;
 
+ -- Not the owner role (or role not found) — nothing to enforce.
  IF NOT FOUND OR NOT v_role_is_owner THEN
- RETURN NEW;
+  RETURN NEW;
  END IF;
 
  -- Granting the owner role requires the granter to hold an active owner role themselves.
- SELECT r.is_owner_role INTO v_granter_is_owner
- FROM user_roles ur
- JOIN roles r ON r.id = ur.role_id
- WHERE ur.user_id = NEW.granted_by
- AND r.is_active = TRUE
- AND (ur.expires_at IS NULL OR ur.expires_at > NOW());
-
- IF NOT FOUND OR NOT v_granter_is_owner THEN
- RAISE EXCEPTION
- 'Owner-role escalation denied: granter (user_id=%) does not hold an active owner role.',
- NEW.granted_by
- USING ERRCODE = 'insufficient_privilege';
+ IF NOT v_granter_is_owner THEN
+  RAISE EXCEPTION
+   'Owner-role escalation denied: granter (user_id=%) does not hold an active owner role.',
+   NEW.granted_by
+  USING ERRCODE = 'insufficient_privilege';
  END IF;
 
  RETURN NEW;
@@ -559,7 +588,11 @@ $$;
 COMMENT ON FUNCTION fn_prevent_owner_role_escalation() IS
  'Blocks assignment of the owner role unless the granter holds an active owner role. '
  'Fires on INSERT and on UPDATE OF role_id. Middleware should enforce this first; '
- 'this trigger is the DB backstop.';
+ 'this trigger is the DB backstop. '
+ 'Rewritten to a single SELECT that resolves both role identity and granter ownership '
+ 'in one index seek, down from two sequential queries. '
+ 'COALESCE(v_granter_is_owner, FALSE) guards against NULL so the check stays correct '
+ 'even if NOT FOUND handling is ever refactored.';
 
 CREATE TRIGGER trg_prevent_owner_role_escalation
  BEFORE INSERT OR UPDATE OF role_id ON user_roles

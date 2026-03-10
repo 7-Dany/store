@@ -17,27 +17,28 @@ type updateProfileResponse struct {
 
 // meResponse is the JSON response body for GET /me.
 type meResponse struct {
-	ID            string     `json:"id"`
-	Email         string     `json:"email"`
-	DisplayName   string     `json:"display_name"`
-	Username      string     `json:"username,omitempty"`
-	AvatarURL     string     `json:"avatar_url,omitempty"`
-	EmailVerified bool       `json:"email_verified"`
-	IsActive      bool       `json:"is_active"`
-	IsLocked      bool       `json:"is_locked"`
-	LastLoginAt   *time.Time `json:"last_login_at,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	ID                  string     `json:"id"`
+	Email               string     `json:"email"`
+	DisplayName         string     `json:"display_name"`
+	Username            string     `json:"username,omitempty"`
+	AvatarURL           string     `json:"avatar_url,omitempty"`
+	EmailVerified       bool       `json:"email_verified"`
+	IsActive            bool       `json:"is_active"`
+	IsLocked            bool       `json:"is_locked"`
+	LastLoginAt         *time.Time `json:"last_login_at,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	ScheduledDeletionAt *time.Time `json:"scheduled_deletion_at,omitempty"`
 }
 
 // identityItem is a single entry in the GET /me/identities response.
 // Nullable fields use omitempty — they are omitted entirely when nil.
 type identityItem struct {
-	Provider      string     `json:"provider"`
-	ProviderUID   string     `json:"provider_uid"`
-	ProviderEmail *string    `json:"provider_email,omitempty"`
-	DisplayName   *string    `json:"display_name,omitempty"`
-	AvatarURL     *string    `json:"avatar_url,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
+	Provider      string    `json:"provider"`
+	ProviderUID   string    `json:"provider_uid"`
+	ProviderEmail *string   `json:"provider_email,omitempty"`
+	DisplayName   *string   `json:"display_name,omitempty"`
+	AvatarURL     *string   `json:"avatar_url,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
 }
 
 // identitiesResponse is the JSON body for GET /me/identities.

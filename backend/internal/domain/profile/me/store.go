@@ -84,7 +84,7 @@ func (s *Store) GetUserProfile(ctx context.Context, userID [16]byte) (UserProfil
 		lastLoginAt = &t
 	}
 
-	return UserProfile{
+	profile := UserProfile{
 		ID:            s.UUIDToBytes(row.ID),
 		Email:         row.Email.String,
 		DisplayName:   row.DisplayName.String,
@@ -96,7 +96,14 @@ func (s *Store) GetUserProfile(ctx context.Context, userID [16]byte) (UserProfil
 		AdminLocked:   row.AdminLocked,
 		LastLoginAt:   lastLoginAt,
 		CreatedAt:     row.CreatedAt,
-	}, nil
+	}
+
+	if row.DeletedAt != nil {
+		t := row.DeletedAt.Add(profileshared.AccountDeletionWindow)
+		profile.ScheduledDeletionAt = &t
+	}
+
+	return profile, nil
 }
 
 // UpdateProfileTx updates the user's display_name and/or avatar_url in a

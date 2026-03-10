@@ -15,9 +15,10 @@ type UserProfile struct {
 	IsActive      bool
 	IsLocked      bool // OTP brute-force lock; cleared by the self-service unlock flow
 	// AdminLocked is an admin-action lock. Currently populated but not exposed via GET /me; reserved for a future admin endpoint.
-	AdminLocked bool
-	LastLoginAt   *time.Time
-	CreatedAt     time.Time
+	AdminLocked         bool
+	LastLoginAt         *time.Time
+	CreatedAt           time.Time
+	ScheduledDeletionAt *time.Time // non-nil when the account is pending soft-deletion (deleted_at + 30 days)
 }
 
 // UpdateProfileInput is the service-layer input for PATCH /me/profile.

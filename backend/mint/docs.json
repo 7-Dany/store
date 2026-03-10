@@ -48,7 +48,10 @@
           {
             "group": "Profile",
             "icon": "user",
-            "pages": ["guides/profile/email-change-flow"]
+            "pages": [
+              "guides/profile/email-change-flow",
+              "guides/profile/delete-account-flow"
+            ]
           }
         ]
       },
@@ -115,7 +118,10 @@
               "api-reference/profile/email/request-change",
               "api-reference/profile/email/verify-current",
               "api-reference/profile/email/confirm-change",
-              "api-reference/profile/set-password/set-password"
+              "api-reference/profile/set-password/set-password",
+              "api-reference/profile/delete-account/deletion-method",
+              "api-reference/profile/delete-account/delete-account",
+              "api-reference/profile/delete-account/cancel-deletion"
             ]
           }
         ]

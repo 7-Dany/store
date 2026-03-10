@@ -75,6 +75,23 @@ func CheckAuthDate(authDate int64) error {
 	return nil
 }
 
+// VerifyHMACFields verifies the HMAC-SHA256 signature for callers outside this
+// package that hold individual payload fields rather than a
+// telegramCallbackRequest. lastName may be empty.
+//
+// Returns ErrInvalidTelegramSignature on any mismatch or hex decode error.
+func VerifyHMACFields(id, authDate int64, firstName, lastName, username, photoURL, hash, botToken string) error {
+	return VerifyHMAC(telegramCallbackRequest{
+		ID:        id,
+		FirstName: firstName,
+		LastName:  lastName,
+		Username:  username,
+		PhotoURL:  photoURL,
+		AuthDate:  authDate,
+		Hash:      hash,
+	}, botToken)
+}
+
 // buildDataCheckFields returns the sorted "key=value" pairs for the
 // data_check_string, excluding the "hash" field and any fields with a zero /
 // empty value that would not have been transmitted by the widget.

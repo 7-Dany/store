@@ -156,6 +156,23 @@ const (
 	// EventOAuthUnlinked is emitted when an OAuth identity is removed from a user
 	// account via DELETE /oauth/{provider}/unlink.
 	EventOAuthUnlinked EventType = "oauth_unlinked"
+
+	// EventAccountDeletionRequested is emitted inside ScheduleDeletionTx after
+	// deleted_at is stamped. Written with context.WithoutCancel so a client
+	// disconnect cannot abort the write.
+	EventAccountDeletionRequested EventType = "account_deletion_requested"
+
+	// EventAccountDeletionOTPRequested is emitted inside SendDeletionOTPTx after
+	// the account_deletion OTP token is created and before the email is dispatched.
+	EventAccountDeletionOTPRequested EventType = "account_deletion_otp_requested"
+
+	// EventAccountDeletionCancelled is emitted inside CancelDeletionTx after
+	// deleted_at is cleared. Written with context.WithoutCancel.
+	EventAccountDeletionCancelled EventType = "account_deletion_cancelled"
+
+	// EventAccountDeletionOTPFailed is emitted by IncrementAttemptsTx when the
+	// user submits an incorrect OTP code during the email-deletion flow (Path B-2).
+	EventAccountDeletionOTPFailed EventType = "account_deletion_otp_failed"
 )
 
 // AllEvents returns a slice of every audit event constant defined in this package.
@@ -197,5 +214,9 @@ func AllEvents() []EventType {
 		EventOAuthLogin,
 		EventOAuthLinked,
 		EventOAuthUnlinked,
+		EventAccountDeletionRequested,
+		EventAccountDeletionOTPRequested,
+		EventAccountDeletionCancelled,
+		EventAccountDeletionOTPFailed,
 	}
 }

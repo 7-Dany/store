@@ -96,7 +96,7 @@ func (q *Queries) GetIdentityByProviderUID(ctx context.Context, arg GetIdentityB
 }
 
 const GetIdentityByUserAndProvider = `-- name: GetIdentityByUserAndProvider :one
-SELECT id, user_id
+SELECT id, user_id, provider_uid
 FROM user_identities
 WHERE user_id = $1::uuid
   AND provider = $2
@@ -108,14 +108,15 @@ type GetIdentityByUserAndProviderParams struct {
 }
 
 type GetIdentityByUserAndProviderRow struct {
-	ID     uuid.UUID   `db:"id" json:"id"`
-	UserID pgtype.UUID `db:"user_id" json:"user_id"`
+	ID          uuid.UUID   `db:"id" json:"id"`
+	UserID      pgtype.UUID `db:"user_id" json:"user_id"`
+	ProviderUid string      `db:"provider_uid" json:"provider_uid"`
 }
 
 func (q *Queries) GetIdentityByUserAndProvider(ctx context.Context, arg GetIdentityByUserAndProviderParams) (GetIdentityByUserAndProviderRow, error) {
 	row := q.db.QueryRow(ctx, GetIdentityByUserAndProvider, arg.UserID, arg.Provider)
 	var i GetIdentityByUserAndProviderRow
-	err := row.Scan(&i.ID, &i.UserID)
+	err := row.Scan(&i.ID, &i.UserID, &i.ProviderUid)
 	return i, err
 }
 

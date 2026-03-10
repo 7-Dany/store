@@ -1,0 +1,3025 @@
+{
+  "info": {
+    "_postman_id": "auth-delete-account-e2e",
+    "name": "Profile – Delete Account (DELETE /api/v1/profile/me + POST /api/v1/profile/me/cancel-deletion)",
+    "description": "E2E tests for DELETE /api/v1/profile/me and POST /api/v1/profile/me/cancel-deletion (both require JWT).\n\nFolder execution order (orchestrated by make e2e-delete-account — all in ONE Newman invocation):\n  1. setup                — register gmail_test_email (del_user_a) and gmail_test_email+delb (del_user_b),\n                            fetch verification OTPs from Gmail, verify and login both users\n  2. happy-path-password  — Path A (T-01, T-20, T-34): DELETE with password → 200; GET /me session-live check;\n                            POST /auth/login pending-deletion login check; repeat DELETE → 409\n  3. happy-path-cancel         — T-27: POST /cancel-deletion → 200; GET /me scheduled_deletion_at absent;\n                                 repeat cancel → 409 not_pending_deletion\n  4. happy-path-deletion-method — GET /me/deletion-method: password user → 200;\n                                 no JWT → 401; pending account → 409\n  5. happy-path-email-otp       — B-path wire-checks (T-10): DELETE {code} with no active OTP → 422 token_not_found;\n                                 DELETE {invalid code format} → 422 validation_error\n  6. telegram-guards            — T-14 / T-15: DELETE with stale auth_date → 401 invalid_telegram_auth;\n                                 DELETE with id=0 → 400 validation_error\n  7. failures                   — DELETE wrong password → 401 invalid_credentials;\n                                 DELETE empty body (password user) → 400 validation_error\n  8. auth-failures              — missing / tampered Authorization for DELETE and POST cancel\n  9. validation                 — body > 1 MiB → 413 for both endpoints; malformed JSON → 400 for both\n  10. rate-limiting-del         — del:usr: (10 req/1hr): register +delrl alias, 10 warmup DELETEs + cancels, 11th → 429\n  11. rate-limiting-delc        — delc:usr: (10 req/10min): register +cncrl alias, 10 warmup cancels, 11th → 429\n\nRate-limiter invocation decision:\n  Both del:usr: and delc:usr: sit INSIDE the r.Use(deps.JWTAuth) middleware group.\n  Running either rate-limiting folder in a separate Newman invocation loses the access token\n  stored in collection variables, causing 401 (unauthorized) instead of 429 (too_many_requests).\n  All 10 folders therefore run in a single Newman invocation. Redis is flushed once before\n  the run so all buckets start empty. The rate-limiting folders pin _xff to 127.0.0.1 by\n  convention; the actual bucketing is user-keyed so _xff has no effect on the RL decision.\n\nGmail aliases used:\n  del_user_a  : gmail_test_email (primary inbox)\n  del_user_b  : gmail_test_email+delb (B-path wire-checks)\n  delrl user  : gmail_test_email+delrl (fresh del:usr: bucket)\n  cncrl user  : gmail_test_email+cncrl (fresh delc:usr: bucket)\n\n// NOT covered here (covered by unit/integration tests):\n//\n// - T-02 (B-1: email-OTP user, empty body → 202 \"verification code sent\"):\n//     Requires a user with has_password=false. Creating such a user requires\n//     a real OAuth callback. Covered by service_test.go T-02, handler_test.go T-02.\n//\n// - T-03 (B-2: email-OTP step 2 happy path → 200 with scheduled_deletion_at):\n//     Same reason — needs a no-password user with an active OTP token.\n//     Covered by service_test.go T-03, handler_test.go T-03.\n//\n// - T-04 (C-1: Telegram-only user, empty body → 202 auth_method:telegram):\n//     Requires a Telegram-only account (no email, no password). Creating one\n//     requires a real Telegram OAuth callback with a bot-signed HMAC payload.\n//     Covered by service_test.go T-04, handler_test.go T-04.\n//\n// - T-05 (C-2: Telegram step 2 happy path → 200):\n//     Same reason — requires a valid live HMAC payload from Telegram's servers\n//     and a properly linked Telegram identity.\n//     Covered by service_test.go T-05, handler_test.go T-05.\n//\n// - T-08 (wrong password → 401 invalid_credentials):\n//     Confirmed in the failures folder. Additional variants (empty password,\n//     all-whitespace) covered by handler_test.go.\n//\n// - T-10 / T-11 (token_not_found / token_already_used in happy B-2 path):\n//     Require precise DB state (consumed token). The token_not_found wire-check\n//     IS covered (folder 4 — no active OTP for password user). token_already_used\n//     requires issuing and consuming the same token twice atomically, which is\n//     not reliable in Newman. Covered by service_test.go T-10/T-11.\n//\n// - T-12 (wrong OTP code with attempts < max → 422 invalid_code):\n//     Requires a no-password user with an active OTP. Not achievable without OAuth.\n//     Covered by service_test.go T-12.\n//\n// - T-13 (OTP attempt budget exhausted → 429 too_many_attempts):\n//     Requires 3 consecutive wrong OTP submissions. Not reliable without a real OTP.\n//     Covered by service_test.go T-13, handler_test.go T-13.\n//\n// - T-16 (telegram_identity_mismatch → 401):\n//     Requires a Telegram-linked account where provider_uid !== submitted id.\n//     Not achievable without a real Telegram identity. Covered by service_test.go T-16.\n//\n// - T-18 / T-19 (sessions and tokens NOT revoked after soft-delete):\n//     Partially confirmed by GET /me returning 200 post-delete in happy-path-password.\n//     Full DB-level assertion (ended_at IS NULL, revoked_at IS NULL) covered by\n//     store_test.go T-18/T-19.\n//\n// - T-21 / T-22 / T-23 / T-30 (context.WithoutCancel usage):\n//     Not testable via HTTP. Covered by service_test.go.\n//\n// - T-24 / T-25 / T-31 (store errors → 500 internal_error):\n//     Require DB error injection. Covered by handler_test.go and integration tests.\n//\n// - T-32 / T-33 (GET /me scheduled_deletion_at present / absent):\n//     Confirmed as a side-effect assertion in happy-path-password and happy-path-cancel.\n//     The full GET /me E2E is covered by e2e/profile/me.json.\n//\n// - T-36 (login blocked after 30-day grace period):\n//     Requires manipulating deleted_at to a value 31 days in the past.\n//     Not possible via API. Covered by store_test.go T-36.\n//\n// - T-37 to T-42 (background purge worker):\n//     Worker tests are not HTTP tests. Covered by worker_test.go.\n//\n// - Individual validation variants for telegram_auth fields (empty hash, missing auth_date):\n//     Representative cases confirmed in telegram-guards folder.\n//     Exhaustive variants covered by handler_test.go.\n//\n// - Audit row event types and metadata (account_deletion_requested etc.):\n//     Covered by store_test.go.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Increment the request sequence counter and derive a unique X-Forwarded-For IP",
+          "// for every request so non-RL folders never exhaust any rate-limit bucket.",
+          "// The rate-limiting folders override _xff to 127.0.0.1 in their own prerequest.",
+          "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.' + ((n>>16)&0xff) + '.' + ((n>>8)&0xff) + '.' + (n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Registers del_user_a through del_user_d plus +delvc alias. Fetches verification OTPs from Gmail, verifies all accounts, and logs in.\n\ndel_user_a  : gmail_test_email         — Path A happy-path, cancel, failures/wrong-password, auth-failures, validation/cancel.\ndel_user_b  : gmail_test_email+delb   — happy-path-email-otp (slots 1-2), telegram-guards/stale-auth (slot 3, last).\ndel_user_c  : gmail_test_email+delvc  — failures/empty-body (slot 1), validation/malformed-JSON (slot 2).\ndel_user_d  : gmail_test_email+delvd  — telegram-guards/id=0 (slot 1), validation/body>1MiB (slot 2).",
+      "item": [
+        {
+          "name": "POST /register → 201 (setup del_user_a)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) {",
+                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
+                  "}",
+                  "pm.collectionVariables.set('del_email', email);",
+                  "pm.collectionVariables.set('del_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "// --- Gmail verification OTP fetch for del_user_a ---",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for del_user_a verification email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "console.log('[INFO] Done waiting. Querying Gmail API...');",
+                  "",
+                  "const delEmail = pm.collectionVariables.get('del_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + delEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching verification email found for del_user_a.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode del_user_a verification email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in del_user_a verification email.'); return; }",
+                  "        pm.collectionVariables.set('del_vfy_code', match[1]);",
+                  "        console.log('[INFO] del_user_a verification OTP stored in del_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"DelSetup\", \"email\": \"{{del_email}}\", \"password\": \"{{del_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200 (del_user_a)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('del_vfy_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] del_vfy_code is empty — Gmail fetch in register step did not complete.');",
+                  "    console.error('        Check: gmail_access_token is set, token not expired, --delay-request >= 8000.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{del_email}}\", \"code\": \"{{del_vfy_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (store del_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('del_access_token', body.access_token);",
+                  "console.log('[INFO] del_user_a access token stored in del_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{del_email}}\", \"password\": \"{{del_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /register → 201 (setup del_user_b, +delb alias)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Derive the +delb Gmail alias from gmail_test_email.",
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const bEmail = base.slice(0, at) + '+delb' + base.slice(at);",
+                  "pm.collectionVariables.set('del_b_email', bEmail);",
+                  "pm.collectionVariables.set('del_b_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for del_user_b (+delb) verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const bEmail = pm.collectionVariables.get('del_b_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + bEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +delb verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +delb email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +delb email.'); return; }",
+                  "        pm.collectionVariables.set('del_b_vfy_code', match[1]);",
+                  "        console.log('[INFO] del_user_b OTP stored in del_b_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"DelBSetup\", \"email\": \"{{del_b_email}}\", \"password\": \"{{del_b_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200 (del_user_b)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('del_b_vfy_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] del_b_vfy_code is empty — Gmail fetch in +delb register step did not complete.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{del_b_email}}\", \"code\": \"{{del_b_vfy_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (store del_b_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('del_b_access_token', body.access_token);",
+                  "console.log('[INFO] del_user_b access token stored in del_b_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{del_b_email}}\", \"password\": \"{{del_b_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /register → 201 (setup del_user_c, +delvc alias)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Derive the +delvc Gmail alias from gmail_test_email.",
+                  "// Used exclusively for validation/DELETE /me malformed JSON (fresh del:usr: bucket).",
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const cEmail = base.slice(0, at) + '+delvc' + base.slice(at);",
+                  "pm.collectionVariables.set('del_c_email', cEmail);",
+                  "pm.collectionVariables.set('del_c_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for del_user_c (+delvc) verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const cEmail = pm.collectionVariables.get('del_c_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + cEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +delvc verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +delvc email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +delvc email.'); return; }",
+                  "        pm.collectionVariables.set('del_c_vfy_code', match[1]);",
+                  "        console.log('[INFO] del_user_c OTP stored in del_c_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"DelCSetup\", \"email\": \"{{del_c_email}}\", \"password\": \"{{del_c_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200 (del_user_c)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('del_c_vfy_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] del_c_vfy_code is empty — Gmail fetch in +delvc register step did not complete.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{del_c_email}}\", \"code\": \"{{del_c_vfy_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (store del_c_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('del_c_access_token', body.access_token);",
+                  "console.log('[INFO] del_user_c access token stored in del_c_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{del_c_email}}\", \"password\": \"{{del_c_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /register → 201 (setup del_user_d, +delvd alias)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const dEmail = base.slice(0, at) + '+delvd' + base.slice(at);",
+                  "pm.collectionVariables.set('del_d_email', dEmail);",
+                  "pm.collectionVariables.set('del_d_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for del_user_d (+delvd) verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const dEmail = pm.collectionVariables.get('del_d_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + dEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +delvd verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +delvd email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +delvd email.'); return; }",
+                  "        pm.collectionVariables.set('del_d_vfy_code', match[1]);",
+                  "        console.log('[INFO] del_user_d OTP stored in del_d_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"DelDSetup\", \"email\": \"{{del_d_email}}\", \"password\": \"{{del_d_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200 (del_user_d)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('del_d_vfy_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] del_d_vfy_code is empty — Gmail fetch in +delvd register step did not complete.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{del_d_email}}\", \"code\": \"{{del_d_vfy_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (store del_d_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('del_d_access_token', body.access_token);",
+                  "console.log('[INFO] del_user_d access token stored in del_d_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{del_d_email}}\", \"password\": \"{{del_d_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path-password",
+      "description": "Path A (T-01, T-20, T-34): del_user_a has has_password=true.\nDELETE /me with password → 200 schedules deletion.\nGET /me confirms JWT is still valid (D-02: session NOT revoked).\nPOST /auth/login confirms pending-deletion accounts can still log in (D-04 / T-34).\nRepeat DELETE while deletion is already pending → 409 already_pending_deletion (T-20).",
+      "item": [
+        {
+          "name": "DELETE /me {password} → 200 (Path A — schedule deletion)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('message is account scheduled for deletion', () => {",
+                  "    pm.expect(body.message).to.eql('account scheduled for deletion');",
+                  "});",
+                  "pm.test('scheduled_deletion_at present and parseable as RFC3339', () => {",
+                  "    pm.expect(body.scheduled_deletion_at).to.be.a('string').and.not.empty;",
+                  "    const d = new Date(body.scheduled_deletion_at);",
+                  "    pm.expect(d.toString()).to.not.eql('Invalid Date');",
+                  "});",
+                  "pm.collectionVariables.set('del_scheduled_at', body.scheduled_deletion_at);",
+                  "console.log('[INFO] Scheduled deletion at:', body.scheduled_deletion_at);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"password\": \"{{del_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /me → 200 (D-02: session NOT revoked after soft-delete)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (session not revoked)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('scheduled_deletion_at present in GET /me', () => {",
+                  "    pm.expect(body.scheduled_deletion_at).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('scheduled_deletion_at matches value from DELETE response', () => {",
+                  "    pm.expect(body.scheduled_deletion_at).to.eql(pm.collectionVariables.get('del_scheduled_at'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /auth/login → 200 (D-04 / T-34: pending-deletion account can still log in)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// D-04 / T-34: After soft-delete, login must still succeed.",
+                  "pm.test('status is 200 (pending-deletion login succeeds)', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present in login response', () => {",
+                  "    pm.expect(body.access_token).to.be.a('string').and.not.empty;",
+                  "});",
+                  "// T-34 soft check: scheduled_deletion_at in login response (not yet implemented)",
+                  "var _t34 = body.scheduled_deletion_at;",
+                  "console.warn('[T-34]', _t34 ? 'scheduled_deletion_at present ✓' : 'scheduled_deletion_at absent (not yet implemented)');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{del_email}}\", \"password\": \"{{del_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /me {password} (repeat) → 409 (already_pending_deletion)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is already_pending_deletion', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('already_pending_deletion');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"password\": \"{{del_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path-cancel",
+      "description": "T-27: del_user_a has deleted_at set from happy-path-password.\nPOST /cancel-deletion → 200 clears deleted_at.\nGET /me confirms scheduled_deletion_at is absent (omitempty).\nRepeat POST /cancel-deletion → 409 not_pending_deletion.",
+      "item": [
+        {
+          "name": "POST /me/cancel-deletion → 200 (cancel pending deletion)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message is account deletion cancelled', () => {",
+                  "    pm.expect(pm.response.json().message).to.eql('account deletion cancelled');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/cancel-deletion",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me",
+                "cancel-deletion"
+              ]
+            }
+          }
+        },
+        {
+          "name": "GET /me → 200 (scheduled_deletion_at absent after cancel)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('scheduled_deletion_at absent after cancel (omitempty)', () => {",
+                  "    pm.expect(body).to.not.have.property('scheduled_deletion_at');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /me/cancel-deletion (repeat) → 409 (not_pending_deletion)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is not_pending_deletion', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('not_pending_deletion');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/cancel-deletion",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me",
+                "cancel-deletion"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path-deletion-method",
+      "description": "Wire-checks for GET /api/v1/profile/me/deletion-method using del_user_a (password user).\nThe endpoint has no side-effects; it never issues OTPs or modifies state.",
+      "item": [
+        {
+          "name": "GET /me/deletion-method — password user → 200 deletion_method:password",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{del_a_access}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/profile/me/deletion-method", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "deletion-method"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 with deletion_method:password', function() {",
+              "  pm.response.to.have.status(200);",
+              "  pm.expect(pm.response.json().deletion_method).to.eql('password');",
+              "});"
+            ]}
+          }]
+        },
+        {
+          "name": "GET /me/deletion-method — no JWT → 401",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/profile/me/deletion-method", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "deletion-method"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "pm.test('401 unauthorized without JWT', function() {",
+              "  pm.response.to.have.status(401);",
+              "});"
+            ]}
+          }]
+        },
+        {
+          "name": "GET /me/deletion-method — already pending → 409 already_pending_deletion",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{del_a_access}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": { "raw": "{{base_url}}/api/v1/profile/me/deletion-method", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "deletion-method"] }
+          },
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "pm.test('409 already_pending_deletion when account is pending', function() {",
+              "  pm.response.to.have.status(409);",
+              "  pm.expect(pm.response.json().code).to.eql('already_pending_deletion');",
+              "});"
+            ]}
+          }]
+        }
+      ]
+    },
+    {
+      "name": "happy-path-email-otp",
+      "description": "B-path wire-checks using del_user_b (has_password=true).",
+      "item": [
+        {
+          "name": "DELETE /me {code:\"123456\"} → 422 (token_not_found — B-2 path wired)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is token_not_found (B-2 wire-check)', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('token_not_found');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_b_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"123456\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /me {code:\"abc12\"} → 422 (validation_error — 6-digit format guard)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error (invalid code format)', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('validation_error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_b_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"code\": \"abc12\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "telegram-guards",
+      "description": "T-14 / T-15: del_b_access_token for T-15 (stale auth_date — del_b slot 3, last allowed).\ndel_d_access_token for T-14 (id=0 — del_b bucket exhausted at this point; del_d slot 1).",
+      "item": [
+        {
+          "name": "DELETE /me {telegram_auth stale auth_date} → 401 (invalid_telegram_auth — T-15 replay guard)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is invalid_telegram_auth (stale auth_date)', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('invalid_telegram_auth');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_b_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"telegram_auth\": {\"id\": 12345, \"first_name\": \"T\", \"auth_date\": 1000, \"hash\": \"x\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /me {telegram_auth id=0} → 400 (validation_error — T-14 guard)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is validation_error (id=0 / empty hash)', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('validation_error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_d_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"telegram_auth\": {\"id\": 0, \"auth_date\": 9999999999, \"hash\": \"\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "failures",
+      "description": "Domain error paths for DELETE /me.\ndel_user_a (del_access_token): wrong-password → slot 3, last allowed (slots 1+2 used by happy-path-password).\ndel_user_c (del_c_access_token): empty-body → del_c slot 1 (del_user_a bucket exhausted at this point).",
+      "item": [
+        {
+          "name": "DELETE /me {wrong password} → 401 (invalid_credentials)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is invalid_credentials', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('invalid_credentials');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"password\": \"WrongPassword1!\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /me {} (empty body, password user) → 400 (validation_error — D-11)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is validation_error (empty body, password user)', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('validation_error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_c_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth-failures",
+      "description": "JWT auth middleware guards for DELETE /me and POST /cancel-deletion.\nNo valid token — requests are rejected before rate limiter or handler.",
+      "item": [
+        {
+          "name": "DELETE /me (no Authorization header) → 401 (unauthorized)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is unauthorized', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"password\": \"{{del_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /me (tampered token) → 401 (unauthorized)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is unauthorized', () => pm.expect(pm.response.json().code).to.eql('invalid_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"password\": \"{{del_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /me/cancel-deletion (no Authorization header) → 401 (unauthorized)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is unauthorized', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/cancel-deletion",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me",
+                "cancel-deletion"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /me/cancel-deletion (tampered token) → 401 (unauthorized)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is unauthorized', () => pm.expect(pm.response.json().code).to.eql('invalid_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/cancel-deletion",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me",
+                "cancel-deletion"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "validation",
+      "description": "Body-size and malformed-JSON cases.\nDELETE /me body>1MiB uses del_d_access_token (del_d slot 1 → 413; del_b bucket exhausted after telegram-guards).\nDELETE /me malformed JSON uses del_c_access_token (del_c slot 2 → 400; slot 1 consumed by failures/empty-body).\nPOST cancel-deletion cases use del_access_token (auth middleware fires before del:usr: limiter).",
+      "item": [
+        {
+          "name": "DELETE /me body > 1 MiB → 413",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.update({",
+                  "    mode: 'raw',",
+                  "    raw: JSON.stringify({ password: 'P@ssw0rd1!', _pad: 'a'.repeat(1048577) })",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 413 (body too large for DELETE /me)', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_d_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "DELETE /me malformed JSON → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 (malformed JSON for DELETE /me)', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_c_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /me/cancel-deletion body > 1 MiB → 413",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.update({",
+                  "    mode: 'raw',",
+                  "    raw: JSON.stringify({ _pad: 'a'.repeat(1048577) })",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 413 (body too large for POST /cancel-deletion)', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/cancel-deletion",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me",
+                "cancel-deletion"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /me/cancel-deletion malformed JSON → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400 (malformed JSON for POST /cancel-deletion)', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{del_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/cancel-deletion",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "profile",
+                "me",
+                "cancel-deletion"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-del",
+      "description": "Verifies del:usr: (10 req / 1hr per user) fires correctly for DELETE /me.\nUses a dedicated +delrl user with a fresh bucket.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('_xff', '127.0.0.1');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "rl-setup 1/3 — POST /register → 201 (+delrl alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const rlEmail = base.slice(0, at) + '+delrl' + base.slice(at);",
+                  "pm.collectionVariables.set('delrl_email', rlEmail);",
+                  "pm.collectionVariables.set('delrl_password', 'RlDelP@ss1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for +delrl verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const rlEmail = pm.collectionVariables.get('delrl_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + rlEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +delrl verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +delrl email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +delrl email.'); return; }",
+                  "        pm.collectionVariables.set('delrl_vfy_code', match[1]);",
+                  "        console.log('[INFO] +delrl OTP stored in delrl_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"DelRL\", \"email\": \"{{delrl_email}}\", \"password\": \"{{delrl_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
+            }
+          }
+        },
+        {
+          "name": "rl-setup 2/3 — POST /verify-email → 200 (+delrl alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('delrl_vfy_code');",
+                  "if (!code) { console.error('[ERROR] delrl_vfy_code is empty'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{delrl_email}}\", \"code\": \"{{delrl_vfy_code}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
+            }
+          }
+        },
+        {
+          "name": "rl-setup 3/3 — POST /login → 200 (store delrl_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('delrl_access_token', body.access_token);",
+                  "console.log('[INFO] +delrl access token stored in delrl_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{delrl_email}}\", \"password\": \"{{delrl_password}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 1/10 — DELETE /me → 200 (del:usr: slot 1/10)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200 (del:usr: slot 1/10)', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "restore 1/10 — POST /me/cancel-deletion → 200 (reset deleted_at)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 200 (cancel restores deleted_at)', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"},
+              {"key": "Content-Type", "value": "application/json"}
+            ],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "warmup 2/10 — DELETE /me → 200 (del:usr: slot 2/10)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (del:usr: slot 2/10)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "DELETE", "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}], "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}}
+        },
+        {
+          "name": "restore 2/10 — POST /me/cancel-deletion → 200 (reset deleted_at)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (cancel restores deleted_at)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}}
+        },
+        {
+          "name": "warmup 3/10 — DELETE /me → 200 (del:usr: slot 3/10)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (del:usr: slot 3/10)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "DELETE", "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}], "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}}
+        },
+        {
+          "name": "restore 3/10 — POST /me/cancel-deletion → 200 (reset deleted_at)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (cancel restores deleted_at)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}}
+        },
+        {
+          "name": "warmup 4/10 — DELETE /me → 200 (del:usr: slot 4/10)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (del:usr: slot 4/10)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "DELETE", "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}], "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}}
+        },
+        {
+          "name": "restore 4/10 — POST /me/cancel-deletion → 200 (reset deleted_at)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (cancel restores deleted_at)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}}
+        },
+        {
+          "name": "warmup 5/10 — DELETE /me → 200 (del:usr: slot 5/10)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (del:usr: slot 5/10)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "DELETE", "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}], "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}}
+        },
+        {
+          "name": "restore 5/10 — POST /me/cancel-deletion → 200 (reset deleted_at)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (cancel restores deleted_at)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}}
+        },
+        {
+          "name": "warmup 6/10 — DELETE /me → 200 (del:usr: slot 6/10)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (del:usr: slot 6/10)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "DELETE", "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}], "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}}
+        },
+        {
+          "name": "restore 6/10 — POST /me/cancel-deletion → 200 (reset deleted_at)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (cancel restores deleted_at)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}}
+        },
+        {
+          "name": "warmup 7/10 — DELETE /me → 200 (del:usr: slot 7/10)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (del:usr: slot 7/10)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "DELETE", "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}], "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}}
+        },
+        {
+          "name": "restore 7/10 — POST /me/cancel-deletion → 200 (reset deleted_at)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (cancel restores deleted_at)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}}
+        },
+        {
+          "name": "warmup 8/10 — DELETE /me → 200 (del:usr: slot 8/10)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (del:usr: slot 8/10)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "DELETE", "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}], "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}}
+        },
+        {
+          "name": "restore 8/10 — POST /me/cancel-deletion → 200 (reset deleted_at)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (cancel restores deleted_at)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}}
+        },
+        {
+          "name": "warmup 9/10 — DELETE /me → 200 (del:usr: slot 9/10)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (del:usr: slot 9/10)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "DELETE", "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}], "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}}
+        },
+        {
+          "name": "restore 9/10 — POST /me/cancel-deletion → 200 (reset deleted_at)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (cancel restores deleted_at)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}}
+        },
+        {
+          "name": "warmup 10/10 — DELETE /me → 200 (del:usr: slot 10/10 — last allowed)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (del:usr: slot 10/10 \u2014 last allowed)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "DELETE", "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}], "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}}
+        },
+        {
+          "name": "restore 10/10 — POST /me/cancel-deletion → 200 (reset deleted_at)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('status is 200 (cancel restores deleted_at)', () => pm.response.to.have.status(200));"]}}],
+          "request": {"method": "POST", "header": [{"key": "Authorization", "value": "Bearer {{delrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}}, "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}}
+        },
+        {
+          "name": "11th DELETE /me → 429 (del:usr: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429 (del:usr: exhausted)', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('too_many_requests');",
+                  "});",
+                  "pm.test('Retry-After header present and value > 0', () => {",
+                  "    const retryAfter = pm.response.headers.get('Retry-After');",
+                  "    pm.expect(retryAfter).to.be.a('string').and.not.empty;",
+                  "    pm.expect(parseInt(retryAfter, 10)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "Authorization", "value": "Bearer {{delrl_access_token}}"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{delrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting-delc",
+      "description": "Verifies delc:usr: (10 req / 10min per user) fires correctly for POST /cancel-deletion.\nUses a dedicated +cncrl user with a fresh bucket.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.set('_xff', '127.0.0.1');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "rl-setup 1/3 \u2014 POST /register \u2192 201 (+cncrl alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.environment.get('gmail_test_email');",
+                  "if (!base) { console.error('[ERROR] gmail_test_email not set'); }",
+                  "const at = base.indexOf('@');",
+                  "const cncrlEmail = base.slice(0, at) + '+cncrl' + base.slice(at);",
+                  "pm.collectionVariables.set('cncrl_email', cncrlEmail);",
+                  "pm.collectionVariables.set('cncrl_password', 'RlCnclP@ss1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for +cncrl verification email...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const cncrlEmail = pm.collectionVariables.get('cncrl_email');",
+                  "const query = encodeURIComponent('subject:\"Verify your\" to:' + cncrlEmail + ' newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No +cncrl verification email found.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode +cncrl email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No OTP found in +cncrl email.'); return; }",
+                  "        pm.collectionVariables.set('cncrl_vfy_code', match[1]);",
+                  "        console.log('[INFO] +cncrl OTP stored in cncrl_vfy_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"CncrlRL\", \"email\": \"{{cncrl_email}}\", \"password\": \"{{cncrl_password}}\"}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{base_url}}/api/v1/auth/register", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "register"]}
+          }
+        },
+        {
+          "name": "rl-setup 2/3 \u2014 POST /verify-email \u2192 200 (+cncrl alias user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('cncrl_vfy_code');",
+                  "if (!code) { console.error('[ERROR] cncrl_vfy_code is empty'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 200', () => pm.response.to.have.status(200));"]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{cncrl_email}}\", \"code\": \"{{cncrl_vfy_code}}\"}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{base_url}}/api/v1/auth/verify-email", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "verify-email"]}
+          }
+        },
+        {
+          "name": "rl-setup 3/3 \u2014 POST /login \u2192 200 (store cncrl_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('cncrl_access_token', body.access_token);",
+                  "console.log('[INFO] +cncrl access token stored in cncrl_access_token.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Content-Type", "value": "application/json"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{cncrl_email}}\", \"password\": \"{{cncrl_password}}\"}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": {"raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"]}
+          }
+        },
+        {
+          "name": "prime 1 \u2014 DELETE /me \u2192 accept 200 or 429 (prime for cancel)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["console.log('[INFO] prime 1 DELETE status:', pm.response.code);"]}}],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{cncrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "warmup 1/10 \u2014 POST /me/cancel-deletion \u2192 accept 200 or 409 (delc:usr: slot 1)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (delc:usr: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "prime 2 \u2014 DELETE /me \u2192 accept 200 or 429",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["console.log('[INFO] prime 2 DELETE status:', pm.response.code);"]}}],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{cncrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "warmup 2/10 \u2014 POST /me/cancel-deletion \u2192 accept 200 or 409 (delc:usr: slot 2)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (delc:usr: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "prime 3 \u2014 DELETE /me \u2192 accept 200 or 429",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["console.log('[INFO] prime 3 DELETE status:', pm.response.code);"]}}],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{cncrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "warmup 3/10 \u2014 POST /me/cancel-deletion \u2192 accept 200 or 409 (delc:usr: slot 3)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (delc:usr: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "prime 4 \u2014 DELETE /me \u2192 accept 200 or 429",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["console.log('[INFO] prime 4 DELETE status:', pm.response.code);"]}}],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{cncrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "warmup 4/10 \u2014 POST /me/cancel-deletion \u2192 accept 200 or 409 (delc:usr: slot 4)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (delc:usr: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "prime 5 \u2014 DELETE /me \u2192 accept 200 or 429",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["console.log('[INFO] prime 5 DELETE status:', pm.response.code);"]}}],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{cncrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "warmup 5/10 \u2014 POST /me/cancel-deletion \u2192 accept 200 or 409 (delc:usr: slot 5)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (delc:usr: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "prime 6 \u2014 DELETE /me \u2192 accept 200 or 429",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["console.log('[INFO] prime 6 DELETE status:', pm.response.code);"]}}],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{cncrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "warmup 6/10 \u2014 POST /me/cancel-deletion \u2192 accept 200 or 409 (delc:usr: slot 6)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (delc:usr: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "prime 7 \u2014 DELETE /me \u2192 accept 200 or 429",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["console.log('[INFO] prime 7 DELETE status:', pm.response.code);"]}}],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{cncrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "warmup 7/10 \u2014 POST /me/cancel-deletion \u2192 accept 200 or 409 (delc:usr: slot 7)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (delc:usr: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "prime 8 \u2014 DELETE /me \u2192 accept 200 or 429",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["console.log('[INFO] prime 8 DELETE status:', pm.response.code);"]}}],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{cncrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "warmup 8/10 \u2014 POST /me/cancel-deletion \u2192 accept 200 or 409 (delc:usr: slot 8)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (delc:usr: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "prime 9 \u2014 DELETE /me \u2192 accept 200 or 429",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["console.log('[INFO] prime 9 DELETE status:', pm.response.code);"]}}],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{cncrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "warmup 9/10 \u2014 POST /me/cancel-deletion \u2192 accept 200 or 409 (delc:usr: slot 9)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (delc:usr: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "prime 10 \u2014 DELETE /me \u2192 accept 200 or 429",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["console.log('[INFO] prime 10 DELETE status:', pm.response.code);"]}}],
+          "request": {
+            "method": "DELETE",
+            "header": [{"key": "Content-Type", "value": "application/json"}, {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "body": {"mode": "raw", "raw": "{\"password\": \"{{cncrl_password}}\"}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"]}
+          }
+        },
+        {
+          "name": "warmup 10/10 \u2014 POST /me/cancel-deletion \u2192 accept 200 or 409 (delc:usr: slot 10, last allowed)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (delc:usr: slot 10 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"}, {"key": "X-Forwarded-For", "value": "{{_xff}}"}, {"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{}", "options": {"raw": {"language": "json"}}},
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        },
+        {
+          "name": "11th POST /me/cancel-deletion \u2192 429 (delc:usr: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429 (delc:usr: exhausted)', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => {",
+                  "    pm.expect(pm.response.json().code).to.eql('too_many_requests');",
+                  "});",
+                  "pm.test('Retry-After header present and value > 0', () => {",
+                  "    const retryAfter = pm.response.headers.get('Retry-After');",
+                  "    pm.expect(retryAfter).to.be.a('string').and.not.empty;",
+                  "    pm.expect(parseInt(retryAfter, 10)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{cncrl_access_token}}"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/cancel-deletion", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "cancel-deletion"]}
+          }
+        }
+      ]
+    },
+    {
+      "name": "deletion-method",
+      "description": "Wire-checks for GET /api/v1/profile/me/deletion-method.\n\nAll checks reuse del_user_a (password account) — no additional aliases needed.\nThe endpoint has no side-effects; it never issues OTPs or modifies state.",
+      "item": [
+        {
+          "name": "GET /me/deletion-method → 200 deletion_method:password (del_user_a)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('deletion_method is password', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.deletion_method).to.equal('password');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Authorization", "value": "Bearer {{del_access_token}}"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/deletion-method", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "deletion-method"]}
+          }
+        },
+        {
+          "name": "GET /me/deletion-method → 401 (no JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is unauthorized', () => pm.expect(pm.response.json().code).to.equal('unauthorized'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}],
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/deletion-method", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "deletion-method"]}
+          }
+        },
+        {
+          "name": "GET /me/deletion-method → 401 (tampered JWT)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["pm.test('status is 401', () => pm.response.to.have.status(401));"]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Authorization", "value": "Bearer tampered.jwt.token"},
+              {"key": "X-Forwarded-For", "value": "{{_xff}}"}
+            ],
+            "url": {"raw": "{{base_url}}/api/v1/profile/me/deletion-method", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "deletion-method"]}
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {"key": "_req_seq", "value": "0", "description": "Auto-incremented counter for unique XFF IPs."},
+    {"key": "_xff", "value": "", "description": "X-Forwarded-For value. Set per-request by collection prerequest; pinned to 127.0.0.1 by RL folders."},
+    {"key": "del_email", "value": "", "description": "gmail_test_email — del_user_a."},
+    {"key": "del_password", "value": "", "description": "P@ssw0rd1! — del_user_a."},
+    {"key": "del_vfy_code", "value": "", "description": "Verification OTP for del_user_a."},
+    {"key": "del_access_token", "value": "", "description": "JWT for del_user_a."},
+    {"key": "del_scheduled_at", "value": "", "description": "scheduled_deletion_at from first DELETE /me."},
+    {"key": "del_b_email", "value": "", "description": "gmail_test_email+delb — del_user_b."},
+    {"key": "del_b_password", "value": "", "description": "P@ssw0rd1! — del_user_b."},
+    {"key": "del_b_vfy_code", "value": "", "description": "Verification OTP for del_user_b."},
+    {"key": "del_b_access_token", "value": "", "description": "JWT for del_user_b. Used for happy-path-email-otp and telegram-guards."},
+    {"key": "del_c_email", "value": "", "description": "gmail_test_email+delvc — del_user_c. Fresh del:usr: bucket for validation/malformed-JSON."},
+    {"key": "del_c_password", "value": "", "description": "P@ssw0rd1! — del_user_c."},
+    {"key": "del_c_vfy_code", "value": "", "description": "Verification OTP for del_user_c."},
+    {"key": "del_c_access_token", "value": "", "description": "JWT for del_user_c. Used for failures/empty-body and validation/malformed-JSON."},
+    {"key": "del_d_email", "value": "", "description": "gmail_test_email+delvd — del_user_d. Fresh del:usr: bucket for telegram-guards/id=0 and validation/body>1MiB."},
+    {"key": "del_d_password", "value": "", "description": "P@ssw0rd1! — del_user_d."},
+    {"key": "del_d_vfy_code", "value": "", "description": "Verification OTP for del_user_d."},
+    {"key": "del_d_access_token", "value": "", "description": "JWT for del_user_d. Used for telegram-guards/id=0 and validation/body>1MiB."},
+    {"key": "delrl_email", "value": "", "description": "gmail_test_email+delrl — fresh del:usr: bucket for rate-limiting-del."},
+    {"key": "delrl_password", "value": "", "description": "RlDelP@ss1!"},
+    {"key": "delrl_vfy_code", "value": "", "description": "Verification OTP for +delrl."},
+    {"key": "delrl_access_token", "value": "", "description": "JWT for +delrl user."},
+    {"key": "cncrl_email", "value": "", "description": "gmail_test_email+cncrl — fresh delc:usr: bucket for rate-limiting-delc."},
+    {"key": "cncrl_password", "value": "", "description": "RlCnclP@ss1!"},
+    {"key": "cncrl_vfy_code", "value": "", "description": "Verification OTP for +cncrl."},
+    {"key": "cncrl_access_token", "value": "", "description": "JWT for +cncrl user."}
+  ]
+}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/7-Dany/store/backend/internal/db"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -138,6 +139,20 @@ type QuerierProxy struct {
 	FailGetUserForResend                    bool
 	FailGetLatestVerificationTokenCreatedAt bool
 	FailInvalidateAllUserTokens             bool
+
+	// ── delete account ────────────────────────────────────────────────────────
+	FailGetUserForDeletion                bool
+	FailGetUserAuthMethods                bool
+	FailGetIdentityByUserAndProvider      bool
+	FailScheduleUserDeletion              bool
+	ScheduleUserDeletionZero         bool // returns (nil, pgx.ErrNoRows) simulating not-found / already-pending race
+	FailCancelUserDeletion           bool
+	CancelUserDeletionZero           bool // returns (0, nil) simulating not-pending
+	FailInvalidateUserDeletionTokens bool
+	FailCreateAccountDeletionToken   bool
+	FailGetAccountDeletionToken      bool
+	FailConsumeAccountDeletionToken  bool
+	ConsumeAccountDeletionTokenZero  bool // returns (0, nil) simulating already-used
 }
 
 // NewQuerierProxy constructs a QuerierProxy backed by base.
@@ -732,4 +747,78 @@ func (b *QuerierProxy) SetUserEmail(ctx context.Context, arg db.SetUserEmailPara
 		return 0, ErrProxy
 	}
 	return b.Querier.SetUserEmail(ctx, arg)
+}
+
+// ── delete account ────────────────────────────────────────────────────────────
+
+func (b *QuerierProxy) GetUserForDeletion(ctx context.Context, userID pgtype.UUID) (db.GetUserForDeletionRow, error) {
+	if b.FailGetUserForDeletion {
+		return db.GetUserForDeletionRow{}, ErrProxy
+	}
+	return b.Querier.GetUserForDeletion(ctx, userID)
+}
+
+func (b *QuerierProxy) GetUserAuthMethods(ctx context.Context, userID pgtype.UUID) (db.GetUserAuthMethodsRow, error) {
+	if b.FailGetUserAuthMethods {
+		return db.GetUserAuthMethodsRow{}, ErrProxy
+	}
+	return b.Querier.GetUserAuthMethods(ctx, userID)
+}
+
+func (b *QuerierProxy) GetIdentityByUserAndProvider(ctx context.Context, arg db.GetIdentityByUserAndProviderParams) (db.GetIdentityByUserAndProviderRow, error) {
+	if b.FailGetIdentityByUserAndProvider {
+		return db.GetIdentityByUserAndProviderRow{}, ErrProxy
+	}
+	return b.Querier.GetIdentityByUserAndProvider(ctx, arg)
+}
+
+func (b *QuerierProxy) ScheduleUserDeletion(ctx context.Context, userID pgtype.UUID) (*time.Time, error) {
+	if b.ScheduleUserDeletionZero {
+		return nil, pgx.ErrNoRows
+	}
+	if b.FailScheduleUserDeletion {
+		return nil, ErrProxy
+	}
+	return b.Querier.ScheduleUserDeletion(ctx, userID)
+}
+
+func (b *QuerierProxy) CancelUserDeletion(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	if b.CancelUserDeletionZero {
+		return 0, nil
+	}
+	if b.FailCancelUserDeletion {
+		return 0, ErrProxy
+	}
+	return b.Querier.CancelUserDeletion(ctx, userID)
+}
+
+func (b *QuerierProxy) InvalidateUserDeletionTokens(ctx context.Context, userID pgtype.UUID) error {
+	if b.FailInvalidateUserDeletionTokens {
+		return ErrProxy
+	}
+	return b.Querier.InvalidateUserDeletionTokens(ctx, userID)
+}
+
+func (b *QuerierProxy) CreateAccountDeletionToken(ctx context.Context, arg db.CreateAccountDeletionTokenParams) (db.CreateAccountDeletionTokenRow, error) {
+	if b.FailCreateAccountDeletionToken {
+		return db.CreateAccountDeletionTokenRow{}, ErrProxy
+	}
+	return b.Querier.CreateAccountDeletionToken(ctx, arg)
+}
+
+func (b *QuerierProxy) GetAccountDeletionToken(ctx context.Context, userID pgtype.UUID) (db.GetAccountDeletionTokenRow, error) {
+	if b.FailGetAccountDeletionToken {
+		return db.GetAccountDeletionTokenRow{}, ErrProxy
+	}
+	return b.Querier.GetAccountDeletionToken(ctx, userID)
+}
+
+func (b *QuerierProxy) ConsumeAccountDeletionToken(ctx context.Context, id pgtype.UUID) (int64, error) {
+	if b.ConsumeAccountDeletionTokenZero {
+		return 0, nil
+	}
+	if b.FailConsumeAccountDeletionToken {
+		return 0, ErrProxy
+	}
+	return b.Querier.ConsumeAccountDeletionToken(ctx, id)
 }

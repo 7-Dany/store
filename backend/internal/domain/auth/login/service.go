@@ -151,5 +151,12 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 		slog.ErrorContext(ctx, "login.Login: ResetLoginFailuresTx", "error", resetErr)
 	}
 
+	// 9. Propagate pending-deletion timestamp so the handler can include
+	// scheduled_deletion_at in the login response (D-04).
+	if user.DeletedAt != nil {
+		t := user.DeletedAt.Add(30 * 24 * time.Hour)
+		session.ScheduledDeletionAt = &t
+	}
+
 	return session, nil
 }

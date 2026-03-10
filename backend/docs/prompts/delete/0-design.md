@@ -179,11 +179,12 @@ prevent the user from reaching the cancel flow.
 | D-13 | What if a user has a linked Google account (email provided by Google) and no `users.email`? | `users.email` is always populated for Google OAuth users (Google guarantees an email). Telegram is the only provider where `users.email` can be NULL. So the email-OTP path covers Google users. | |
 | D-14 | Hard-delete scope? | `DELETE FROM users WHERE id = $1` — all child tables (refresh_tokens, user_sessions, one_time_tokens, user_identities, auth_audit_log, user_roles) CASCADE. `account_purge_log` row written **before** the DELETE. | |
 | D-15 | Why a separate `account_purge_log` table? | `auth_audit_log.user_id` is a FK to `users`. Once the user row is deleted, inserting an audit row would violate the FK. `account_purge_log` stores a bare UUID with no FK so it survives the hard-delete. | |
-| D-16 | Hard-delete worker trigger? | Background goroutine in `internal/worker/purge.go`, started at app boot, runs every 1 hour. Processes up to 100 accounts per scan; loops immediately if batch was full. | Simple, no external deps. |
+| D-16 | Hard-delete worker trigger? | `PurgeHandler` in `internal/worker/purge.go` implements `jobqueue.Handler` from the start. Core purge logic lives in `Handle(ctx context.Context, job jobqueue.Job) error`, which loops internally until the full batch drains (< 100 returned). A thin `PurgeWorker` goroutine calls `Handle` on a 1-hour ticker until the job queue is wired (Phase 7 of the job queue implementation). At that point, the goroutine is deleted and a `purge_accounts_hourly` schedule in `job_schedules` drives it instead — zero refactoring of the handler logic required. | Implements `jobqueue.Handler` contract from day one; the goroutine is only the temporary trigger. |
 | D-17 | Rate limits? | `DELETE /me`: 3 req / 1 hr per user (`del:usr:`). `POST /me/cancel-deletion`: 5 req / 10 min per user (`delc:usr:`). Both user-keyed, inside JWT middleware. | Per INCOMING.md for DELETE; cancel is more permissive. |
 | D-18 | Already-pending 409 check — where in the guard ordering? | **First guard after mustUserID**, before any DB auth-method lookup. | Avoids unnecessary DB work and returns a clear signal. |
 | D-19 | OTP TTL and max attempts? | 15 min TTL (`config.OTPValidMinutes`), max 3 attempts. | Consistent with all other OTP flows. |
 | D-20 | Package name? | Folder: `delete-account/`. Package: `deleteaccount`. | `delete` is a Go keyword; follows the `set-password` → `setpassword` convention already in this domain. |
+| D-21 | Why implement `PurgeHandler` as `jobqueue.Handler` before the job queue exists? | Implement `Handle(ctx context.Context, job jobqueue.Job) error` from the start so Phase 6 of the job queue requires no handler refactoring — only the `PurgeWorker` goroutine trigger is swapped for a scheduled job. `KindPurgeAccounts` constant is defined in `internal/worker/kinds.go` alongside this feature, even though it is unused until Phase 7. | Prevents a refactor-later trap; the goroutine is throwaway, the handler logic is not. |
 
 ---
 
@@ -379,21 +380,41 @@ No DB writes in step 1 for the Telegram path — no OTP token needed.
 
 ### Background purge worker (`internal/worker/purge.go`)
 
-Not an HTTP handler. Started at app boot alongside other background goroutines.
+Not an HTTP handler. Implements `jobqueue.Handler` from day one (D-21).
 
+**`PurgeHandler.Handle` — the permanent logic:**
 ```
-Loop forever:
-  1. GetAccountsDueForPurge() → up to 100 user IDs (deleted_at < NOW()-30d)
-  2. For each user_id:
-     a. Begin transaction
-     b. InsertPurgeLog(user_id, metadata={"deleted_at": <value>})  ← write FIRST
-     c. DELETE FROM users WHERE id = user_id                        ← cascades all children
-     d. Commit
-     e. slog.Info("purged account", "user_id", userID)
-     f. On any error: slog.Error(...); continue to next user (never abort batch)
-  3. If len(results) == 100: loop immediately (batch may have been full)
-  4. Else: sleep 1 hour
+Handle(ctx, job):
+  Loop:
+    1. GetAccountsDueForPurge() → up to 100 user IDs (deleted_at < NOW()-30d)
+    2. For each user_id:
+       a. Begin transaction
+       b. InsertPurgeLog(user_id, metadata={"deleted_at": <value>})  ← write FIRST
+       c. DELETE FROM users WHERE id = user_id                        ← cascades all children
+       d. Commit
+       e. slog.Info("purged account", "user_id", userID)
+       f. On any error: slog.Error(...); continue to next user (never abort batch)
+    3. If len(results) < 100: break   ← batch exhausted, stop
+  Return nil
 ```
+
+**`PurgeWorker` — the temporary goroutine wrapper (removed in job queue Phase 7):**
+```
+Start(ctx):
+  Loop forever:
+    handler.Handle(ctx, jobqueue.Job{Kind: KindPurgeAccounts})   ← synthetic job
+    sleep 1 hour
+```
+
+When the job queue is wired, `PurgeWorker.Start()` is deleted from `server.go` and replaced by:
+```go
+mgr.Register(worker.KindPurgeAccounts, worker.NewPurgeHandler(pool))
+mgr.EnsureSchedule(ctx, jobqueue.ScheduleInput{
+    Name: "purge_accounts_hourly", Kind: worker.KindPurgeAccounts,
+    IntervalSeconds: 3600, SkipIfRunning: true,
+})
+```
+`PurgeHandler.Handle` is unchanged — it is already the correct shape.
 
 ---
 
@@ -443,7 +464,7 @@ Add `deleteaccount.Routes(ctx, r, deps)` call and the corresponding import.
 | Feature service | `internal/domain/profile/delete-account/service.go` |
 | Feature handler | `internal/domain/profile/delete-account/handler.go` |
 | Feature routes | `internal/domain/profile/delete-account/routes.go` |
-| Purge worker | `internal/worker/purge.go` |
+| Purge worker | `internal/worker/purge.go` — `PurgeHandler` (implements `jobqueue.Handler`) + thin `PurgeWorker` goroutine wrapper |
 | Worker SQL | `sql/queries/worker.sql` (new file) |
 | FakeStorer | `internal/domain/auth/shared/testutil/fake_storer.go` — add `DeleteAccountFakeStorer` |
 | FakeServicer | `internal/domain/auth/shared/testutil/fake_servicer.go` — add `DeleteAccountFakeServicer` |
@@ -451,6 +472,7 @@ Add `deleteaccount.Routes(ctx, r, deps)` call and the corresponding import.
 | Service tests | `internal/domain/profile/delete-account/service_test.go` |
 | Store tests | `internal/domain/profile/delete-account/store_test.go` |
 | Worker tests | `internal/worker/purge_test.go` |
+| Worker kind constant | `internal/worker/kinds.go` — add `KindPurgeAccounts` (used by job queue Phase 7; defined here to avoid adding it later) |
 | Production SQL | `sql/queries/auth.sql` (new queries + GetUserForLogin modification) |
 | New migration | `sql/schema/00N_account_deletion.sql` |
 
@@ -519,7 +541,8 @@ Add `deleteaccount.Routes(ctx, r, deps)` call and the corresponding import.
 | T-38 | Worker skips account within grace period | W, I | User with deleted_at 10 days ago | User row untouched; no purge_log row |
 | T-39 | Purge log written before user row deleted | I | Verify order inside transaction | purge_log INSERT committed; user row gone |
 | T-40 | Worker handles per-user error and continues | W | First user causes DB error; second user valid | Error logged; second user purged |
-| T-41 | Worker loops immediately when batch is full | W | GetAccountsDueForPurgeFn returns 100 rows | Second scan triggered without sleep |
+| T-41 | Handle drains multiple batches until exhausted | W | GetAccountsDueForPurgeFn returns 100 rows on first call, 0 on second | Handle calls store twice; returns nil after second call |
+| T-42 | PurgeWorker passes synthetic job to Handle | W | PurgeWorker.Start ticks; verify Handle called with KindPurgeAccounts | Handle invoked once per tick |
 
 ---
 
@@ -537,10 +560,11 @@ None. All design points resolved.
 - [x] Telegram path uses HMAC re-auth; ownership proven by provider_uid comparison (D-08, D-09)
 - [x] Cross-cutting changes to `auth/login` and `profile/me` documented (§7)
 - [x] Full file map in §8
-- [x] Test inventory (§9) covers all paths including Telegram, worker, and cross-cutting changes — 41 cases
+- [x] Test inventory (§9) covers all paths including Telegram, worker, and cross-cutting changes — 42 cases
 - [x] Rate-limit prefixes `del:usr:` and `delc:usr:` confirmed unique
 - [x] context.WithoutCancel usage documented for every write
 - [x] Package naming: folder `delete-account/`, package `deleteaccount` — follows `set-password` convention
+- [x] `PurgeHandler` implements `jobqueue.Handler` from day one (D-21); `KindPurgeAccounts` defined in `kinds.go`
 - [x] No open questions
 
 **Stage 0 approved. Stage 1 may begin.**

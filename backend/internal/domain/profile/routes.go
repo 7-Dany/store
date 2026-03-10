@@ -10,6 +10,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/7-Dany/store/backend/internal/app"
+	deleteaccount "github.com/7-Dany/store/backend/internal/domain/profile/delete-account"
 	"github.com/7-Dany/store/backend/internal/domain/profile/email"
 	"github.com/7-Dany/store/backend/internal/domain/profile/me"
 	"github.com/7-Dany/store/backend/internal/domain/profile/session"
@@ -39,5 +40,6 @@ func Routes(ctx context.Context, deps *app.Deps) *chi.Mux {
 	session.Routes(ctx, r, deps)
 	username.Routes(ctx, r, deps)
 	email.Routes(ctx, r, deps)
+	deleteaccount.Routes(ctx, r, deps)
 	return r
 }

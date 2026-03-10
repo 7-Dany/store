@@ -26,7 +26,8 @@ CREATE TYPE one_time_token_type AS ENUM (
     'magic_link',
     'account_unlock',
     'email_change_verify',   -- step 1: OTP sent to current address to prove ownership
-    'email_change_confirm'  -- step 2: OTP sent to new address to prove destination
+    'email_change_confirm',  -- step 2: OTP sent to new address to prove destination
+    'account_deletion'       -- OTP used to confirm hard-delete intent (§B-3)
 );
 
 COMMENT ON TYPE one_time_token_type IS
@@ -224,11 +225,11 @@ CREATE TABLE one_time_tokens (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- magic_link is the only type that requires token_hash.
-    -- OTP-only types (including the email_change_* pair) are exempted because they use code_hash.
+    -- OTP-only types (including the email_change_* pair and account_deletion) are exempted.
     CONSTRAINT chk_ott_magic_link_requires_token_hash
         CHECK (token_type IN (
             'email_verification', 'account_unlock', 'password_reset',
-            'email_change_verify', 'email_change_confirm'
+            'email_change_verify', 'email_change_confirm', 'account_deletion'
         ) OR token_hash IS NOT NULL),
 
     -- email_verification can be delivered via OTP (code_hash) or magic link (token_hash);
@@ -240,7 +241,7 @@ CREATE TABLE one_time_tokens (
     CONSTRAINT chk_ott_otp_fields_scoped
         CHECK (code_hash IS NULL OR token_type IN (
             'email_verification', 'account_unlock', 'password_reset',
-            'email_change_verify', 'email_change_confirm'
+            'email_change_verify', 'email_change_confirm', 'account_deletion'
         )),
 
     -- max_attempts is meaningless without a code_hash to count against.
@@ -276,6 +277,10 @@ CREATE TABLE one_time_tokens (
 
     CONSTRAINT chk_ott_ecc_ttl_max
         CHECK (token_type != 'email_change_confirm'
+               OR expires_at <= created_at + INTERVAL '15 minutes'),
+
+    CONSTRAINT chk_ott_ad_ttl_max
+        CHECK (token_type != 'account_deletion'
                OR expires_at <= created_at + INTERVAL '15 minutes'),
 
     CONSTRAINT chk_ott_attempts_non_negative
@@ -454,11 +459,30 @@ CREATE INDEX idx_aal_event_recent ON auth_audit_log(event_type, created_at DESC)
 COMMENT ON TABLE auth_audit_log IS
     'Security event log. Rows are deleted when the owning user is deleted (ON DELETE CASCADE) or by periodic retention sweeps. trg_deny_audit_update enforces immutability — existing rows may not be edited.';
 
+
+-- ------------------------------------------------------------
+-- ACCOUNT PURGE LOG
+-- ------------------------------------------------------------
+
+-- account_purge_log records permanently purged accounts.
+-- user_id intentionally has NO FK to users — the user row is deleted first (D-15).
+CREATE TABLE account_purge_log (
+    id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id    UUID        NOT NULL,
+    purged_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    metadata   JSONB       NOT NULL DEFAULT '{}'
+);
+
+COMMENT ON TABLE account_purge_log IS
+    'Permanent record of hard-purged accounts. user_id has no FK constraint '
+    'because the users row is deleted before this record is written.';
+
 -- +goose StatementEnd
 
 -- +goose Down
 -- +goose StatementBegin
 
+DROP TABLE IF EXISTS account_purge_log CASCADE;
 DROP TABLE IF EXISTS auth_audit_log    CASCADE;
 DROP TABLE IF EXISTS refresh_tokens    CASCADE;
 DROP TABLE IF EXISTS user_sessions     CASCADE;

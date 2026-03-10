@@ -53,16 +53,17 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 	// AdminLocked is intentionally excluded from the response — admin-initiated locks
 	// require a support contact and must not be surfaced as user-visible state.
 	respond.JSON(w, http.StatusOK, meResponse{
-		ID:            uuid.UUID(profile.ID).String(),
-		Email:         profile.Email,
-		DisplayName:   profile.DisplayName,
-		Username:      profile.Username,
-		AvatarURL:     profile.AvatarURL,
-		EmailVerified: profile.EmailVerified,
-		IsActive:      profile.IsActive,
-		IsLocked:      profile.IsLocked,
-		LastLoginAt:   profile.LastLoginAt,
-		CreatedAt:     profile.CreatedAt,
+		ID:                  uuid.UUID(profile.ID).String(),
+		Email:               profile.Email,
+		DisplayName:         profile.DisplayName,
+		Username:            profile.Username,
+		AvatarURL:           profile.AvatarURL,
+		EmailVerified:       profile.EmailVerified,
+		IsActive:            profile.IsActive,
+		IsLocked:            profile.IsLocked,
+		LastLoginAt:         profile.LastLoginAt,
+		CreatedAt:           profile.CreatedAt,
+		ScheduledDeletionAt: profile.ScheduledDeletionAt,
 	})
 }
 

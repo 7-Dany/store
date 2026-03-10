@@ -536,6 +536,126 @@ Package: `internal/domain/auth/oauth/google/`
 
 ---
 
+## §D-2 — OAuth — Telegram
+
+Package: `internal/domain/auth/oauth/telegram/`
+
+### POST /api/v1/oauth/telegram/callback
+- [x] Verifies HMAC-SHA256: `HMAC_SHA256(SHA256(BOT_TOKEN), data_check_string)`
+- [x] Rejects if `auth_date` > 86400 seconds old (replay protection)
+- [x] **New user**: creates `users` row (`email_verified = TRUE`), creates `user_identities` row, issues session + token pair
+- [x] **Existing user**: refreshes identity data, issues new session
+- [x] `provider_email` is NULL (Telegram does not provide email)
+- [x] Audit row: `oauth_login` with `provider = 'telegram'`
+- [x] Failure (invalid HMAC / expired `auth_date`): redirect to frontend error page
+- [x] Sets `oauth_access_token` cookie (`SameSite=Lax`, non-HttpOnly, 30s TTL, `path=/`) for frontend pickup
+- [x] Sets `refresh_token` cookie (`HttpOnly`, `SameSite=Strict`, `path=/api/v1/auth`)
+- [x] Redirects to frontend success URL with `?provider=telegram&new_user=<bool>`
+
+### POST /api/v1/oauth/telegram/link
+- [x] Requires valid JWT
+- [x] Same HMAC + `auth_date` checks as callback
+- [x] Guard: 409 `provider_already_linked` if Telegram already linked to this account
+- [x] Guard: 409 `provider_taken` if the Telegram identity is linked to a different account
+- [x] Audit row: `oauth_linked` with `provider = 'telegram'`
+- [x] Rate-limit: 5 req / 15 min per user (key `lnk:usr:`)
+
+### DELETE /api/v1/oauth/telegram/unlink
+- [x] Requires valid JWT
+- [x] Guard: 422 `last_auth_method` if Telegram is the only auth method
+- [x] Deletes `user_identities` row for `(user_id, 'telegram')`
+- [x] Audit row: `oauth_unlinked` with `provider = 'telegram'`
+- [x] Rate-limit: 5 req / 15 min per user (key `unl:usr:`)
+
+### Failures
+- [x] Invalid HMAC or `auth_date` older than 24 h → redirect to frontend error page
+- [x] Link with Telegram already linked to this account → 409 `provider_already_linked`
+- [x] Link when identity is linked to a different account → 409 `provider_taken`
+- [x] Unlink with no other auth method → 422 `last_auth_method`
+- [x] Unlink when Telegram not linked → 401 `unauthorized`
+- [x] Unauthenticated link/unlink attempt → 401
+
+---
+
+## §E-1 — Linked Accounts
+
+Package: `internal/domain/profile/me/` (extended)
+
+### GET /api/v1/profile/me/identities
+- [x] Requires valid JWT
+- [x] Returns all rows in `user_identities` for the authenticated user
+- [x] Response shape per identity: `provider`, `provider_email`, `display_name`, `avatar_url`, `created_at`
+- [x] `access_token` and `refresh_token_provider` are never returned
+- [x] Empty array (not null) when no identities are linked
+- [x] Rate-limit: 20 req / 1 min per IP (key `ident:ip:`)
+
+### Auth failures
+- [x] Missing `Authorization` header → 401
+- [x] Tampered token signature → 401
+
+---
+
+## §B-3 — Delete Account
+
+Package: `internal/domain/profile/delete-account/`
+
+Soft-delete: `deleted_at TIMESTAMPTZ` on `users`; 30-day grace period before permanent removal.
+
+### GET /api/v1/profile/me/deletion-method
+- [x] Requires valid JWT
+- [x] Returns `{ "deletion_method": "password" | "email_otp" | "telegram" }` — no side effects
+- [x] Priority: password → email_otp → telegram
+- [x] 409 `already_pending_deletion` when account is already scheduled for deletion
+- [x] Rate-limit: 10 req / 1 min per user
+
+### DELETE /api/v1/profile/me — Path A (password)
+- [x] Requires valid JWT + `{ "password": "..." }` body
+- [x] Verifies password before proceeding; 401 `invalid_credentials` on mismatch
+- [x] Stamps `deleted_at = NOW()`; responds 200 `{ "message": "account scheduled for deletion", "scheduled_deletion_at": "..." }`
+- [x] `GET /me` includes `scheduled_deletion_at` from this point until cancelled or expired
+- [x] Audit row: `account_deletion_requested` with `provider = 'email'`
+- [x] Rate-limit: 10 req / 1 hr per user
+
+### DELETE /api/v1/profile/me — Path B (email OTP, step 1)
+- [x] Requires valid JWT + empty body `{}`
+- [x] Applies to accounts with no password hash and an email address
+- [x] Issues 6-digit OTP to account email; 202 response with `expires_in`
+- [x] Audit row: `account_deletion_otp_requested`
+
+### DELETE /api/v1/profile/me — Path B (email OTP, step 2)
+- [x] Body: `{ "code": "123456" }`
+- [x] Validates OTP; 422 `invalid_code` on mismatch, `token_not_found` if expired
+- [x] Stamps `deleted_at`; 200 with `scheduled_deletion_at`
+- [x] Audit row: `account_deletion_requested` with `provider = 'email'`
+
+### DELETE /api/v1/profile/me — Path C (Telegram, step 1)
+- [x] Requires valid JWT + empty body `{}`
+- [x] Applies to Telegram-only accounts (no password, no email)
+- [x] 202 response prompting client to render Telegram Login Widget
+
+### DELETE /api/v1/profile/me — Path C (Telegram, step 2)
+- [x] Body: `{ "telegram_auth": { ... } }`
+- [x] Verifies HMAC + `auth_date` freshness; 401 `invalid_telegram_auth` on failure
+- [x] Ownership check: `telegram_auth.id` must match linked identity; 401 `telegram_identity_mismatch` on mismatch
+- [x] Stamps `deleted_at`; 200 with `scheduled_deletion_at`
+- [x] Audit row: `account_deletion_requested` with `provider = 'telegram'`
+
+### POST /api/v1/profile/me/cancel-deletion
+- [x] Requires valid JWT
+- [x] Clears `deleted_at`; account immediately restored to full active status
+- [x] `GET /me` no longer returns `scheduled_deletion_at` after cancellation
+- [x] 409 `not_pending_deletion` when no deletion is pending
+- [x] Audit row: `account_deletion_cancelled`
+- [x] Rate-limit: 5 req / 10 min per user
+
+### Common failures
+- [x] Any path: 409 `already_pending_deletion` when deletion is already scheduled
+- [x] Any path: 400 `validation_error` empty body on a password account
+- [x] Any path: 413 body > 1 MiB
+- [x] Any path: 401 missing/invalid JWT
+
+---
+
 ## Cross-cutting / flow scenarios
 
 Items in this section require multiple endpoints, real HTTP cookies, or live infrastructure

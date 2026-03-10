@@ -13,8 +13,9 @@ import (
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
 	"github.com/7-Dany/store/backend/internal/domain/auth/verification"
-	me "github.com/7-Dany/store/backend/internal/domain/profile/me"
+	deleteaccount "github.com/7-Dany/store/backend/internal/domain/profile/delete-account"
 	email "github.com/7-Dany/store/backend/internal/domain/profile/email"
+	me "github.com/7-Dany/store/backend/internal/domain/profile/me"
 	profilesession "github.com/7-Dany/store/backend/internal/domain/profile/session"
 	setpassword "github.com/7-Dany/store/backend/internal/domain/profile/set-password"
 	username "github.com/7-Dany/store/backend/internal/domain/profile/username"
@@ -193,9 +194,9 @@ func (f *PasswordFakeStorer) WritePasswordChangeFailedAuditTx(ctx context.Contex
 // the zero value and nil error so tests only need to configure the fields they
 // care about.
 type MeFakeStorer struct {
-	GetUserProfileFn     func(ctx context.Context, userID [16]byte) (me.UserProfile, error)
-	UpdateProfileTxFn    func(ctx context.Context, in me.UpdateProfileInput) error
-	GetUserIdentitiesFn  func(ctx context.Context, userID [16]byte) ([]me.LinkedIdentity, error) // §E-1
+	GetUserProfileFn    func(ctx context.Context, userID [16]byte) (me.UserProfile, error)
+	UpdateProfileTxFn   func(ctx context.Context, in me.UpdateProfileInput) error
+	GetUserIdentitiesFn func(ctx context.Context, userID [16]byte) ([]me.LinkedIdentity, error) // §E-1
 }
 
 // compile-time interface check.
@@ -616,6 +617,104 @@ func (f *EmailChangeFakeStorer) IncrementAttemptsTx(ctx context.Context, in auth
 func (f *EmailChangeFakeStorer) ConfirmEmailChangeTx(ctx context.Context, in email.ConfirmEmailChangeTxInput, checkFn func(authshared.VerificationToken) error) error {
 	if f.ConfirmEmailChangeTxFn != nil {
 		return f.ConfirmEmailChangeTxFn(ctx, in, checkFn)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DeleteAccountFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DeleteAccountFakeStorer is a hand-written implementation of deleteaccount.Storer
+// for service unit tests. Each method delegates to its Fn field if non-nil,
+// otherwise returns the zero value and nil error so tests only need to
+// configure the fields they care about.
+type DeleteAccountFakeStorer struct {
+	GetUserForDeletionFn           func(ctx context.Context, userID [16]byte) (deleteaccount.DeletionUser, error)
+	GetUserAuthMethodsFn           func(ctx context.Context, userID [16]byte) (deleteaccount.UserAuthMethods, error)
+	GetIdentityByUserAndProviderFn func(ctx context.Context, userID [16]byte, provider string) (string, error)
+	ScheduleDeletionTxFn           func(ctx context.Context, in deleteaccount.ScheduleDeletionInput) (deleteaccount.DeletionScheduled, error)
+	SendDeletionOTPTxFn            func(ctx context.Context, in deleteaccount.SendDeletionOTPInput) (deleteaccount.SendDeletionOTPResult, error)
+	GetAccountDeletionTokenFn      func(ctx context.Context, userID [16]byte) (authshared.VerificationToken, error)
+	IncrementAttemptsTxFn          func(ctx context.Context, in authshared.IncrementInput) error
+	ConfirmOTPDeletionTxFn         func(ctx context.Context, in deleteaccount.ScheduleDeletionInput, tokenID [16]byte) (deleteaccount.DeletionScheduled, error)
+	CancelDeletionTxFn             func(ctx context.Context, in deleteaccount.CancelDeletionInput) error
+}
+
+// compile-time interface check.
+var _ deleteaccount.Storer = (*DeleteAccountFakeStorer)(nil)
+
+// GetUserForDeletion delegates to GetUserForDeletionFn if set.
+func (f *DeleteAccountFakeStorer) GetUserForDeletion(ctx context.Context, userID [16]byte) (deleteaccount.DeletionUser, error) {
+	if f.GetUserForDeletionFn != nil {
+		return f.GetUserForDeletionFn(ctx, userID)
+	}
+	return deleteaccount.DeletionUser{}, nil
+}
+
+// GetUserAuthMethods delegates to GetUserAuthMethodsFn if set.
+func (f *DeleteAccountFakeStorer) GetUserAuthMethods(ctx context.Context, userID [16]byte) (deleteaccount.UserAuthMethods, error) {
+	if f.GetUserAuthMethodsFn != nil {
+		return f.GetUserAuthMethodsFn(ctx, userID)
+	}
+	return deleteaccount.UserAuthMethods{}, nil
+}
+
+// GetIdentityByUserAndProvider delegates to GetIdentityByUserAndProviderFn if set.
+// Default: returns ("", nil) — identity exists with empty provider_uid placeholder.
+func (f *DeleteAccountFakeStorer) GetIdentityByUserAndProvider(ctx context.Context, userID [16]byte, provider string) (string, error) {
+	if f.GetIdentityByUserAndProviderFn != nil {
+		return f.GetIdentityByUserAndProviderFn(ctx, userID, provider)
+	}
+	return "", nil
+}
+
+// ScheduleDeletionTx delegates to ScheduleDeletionTxFn if set.
+func (f *DeleteAccountFakeStorer) ScheduleDeletionTx(ctx context.Context, in deleteaccount.ScheduleDeletionInput) (deleteaccount.DeletionScheduled, error) {
+	if f.ScheduleDeletionTxFn != nil {
+		return f.ScheduleDeletionTxFn(ctx, in)
+	}
+	return deleteaccount.DeletionScheduled{}, nil
+}
+
+// SendDeletionOTPTx delegates to SendDeletionOTPTxFn if set.
+func (f *DeleteAccountFakeStorer) SendDeletionOTPTx(ctx context.Context, in deleteaccount.SendDeletionOTPInput) (deleteaccount.SendDeletionOTPResult, error) {
+	if f.SendDeletionOTPTxFn != nil {
+		return f.SendDeletionOTPTxFn(ctx, in)
+	}
+	return deleteaccount.SendDeletionOTPResult{}, nil
+}
+
+// GetAccountDeletionToken delegates to GetAccountDeletionTokenFn if set.
+// Default: returns (authshared.VerificationToken{}, authshared.ErrTokenNotFound)
+// so tests that do not configure it never produce a spurious valid-token result.
+func (f *DeleteAccountFakeStorer) GetAccountDeletionToken(ctx context.Context, userID [16]byte) (authshared.VerificationToken, error) {
+	if f.GetAccountDeletionTokenFn != nil {
+		return f.GetAccountDeletionTokenFn(ctx, userID)
+	}
+	return authshared.VerificationToken{}, authshared.ErrTokenNotFound
+}
+
+// IncrementAttemptsTx delegates to IncrementAttemptsTxFn if set.
+func (f *DeleteAccountFakeStorer) IncrementAttemptsTx(ctx context.Context, in authshared.IncrementInput) error {
+	if f.IncrementAttemptsTxFn != nil {
+		return f.IncrementAttemptsTxFn(ctx, in)
+	}
+	return nil
+}
+
+// ConfirmOTPDeletionTx delegates to ConfirmOTPDeletionTxFn if set.
+func (f *DeleteAccountFakeStorer) ConfirmOTPDeletionTx(ctx context.Context, in deleteaccount.ScheduleDeletionInput, tokenID [16]byte) (deleteaccount.DeletionScheduled, error) {
+	if f.ConfirmOTPDeletionTxFn != nil {
+		return f.ConfirmOTPDeletionTxFn(ctx, in, tokenID)
+	}
+	return deleteaccount.DeletionScheduled{}, nil
+}
+
+// CancelDeletionTx delegates to CancelDeletionTxFn if set.
+func (f *DeleteAccountFakeStorer) CancelDeletionTx(ctx context.Context, in deleteaccount.CancelDeletionInput) error {
+	if f.CancelDeletionTxFn != nil {
+		return f.CancelDeletionTxFn(ctx, in)
 	}
 	return nil
 }

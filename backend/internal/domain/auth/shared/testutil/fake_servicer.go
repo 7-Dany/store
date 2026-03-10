@@ -12,6 +12,7 @@ import (
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	"github.com/7-Dany/store/backend/internal/domain/auth/unlock"
 	"github.com/7-Dany/store/backend/internal/domain/auth/verification"
+	deleteaccount "github.com/7-Dany/store/backend/internal/domain/profile/delete-account"
 	me "github.com/7-Dany/store/backend/internal/domain/profile/me"
 	email "github.com/7-Dany/store/backend/internal/domain/profile/email"
 	profilesession "github.com/7-Dany/store/backend/internal/domain/profile/session"
@@ -95,9 +96,9 @@ func (f *PasswordFakeServicer) UpdatePasswordHash(ctx context.Context, in passwo
 // unit tests. Each method delegates to its Fn field if non-nil, otherwise
 // returns the zero value and nil error.
 type MeFakeServicer struct {
-	GetUserProfileFn     func(ctx context.Context, userID string) (me.UserProfile, error)
-	UpdateProfileFn      func(ctx context.Context, in me.UpdateProfileInput) error
-	GetUserIdentitiesFn  func(ctx context.Context, userID string) ([]me.LinkedIdentity, error) // §E-1
+	GetUserProfileFn    func(ctx context.Context, userID string) (me.UserProfile, error)
+	UpdateProfileFn     func(ctx context.Context, in me.UpdateProfileInput) error
+	GetUserIdentitiesFn func(ctx context.Context, userID string) ([]me.LinkedIdentity, error) // §E-1
 }
 
 // compile-time interface check.
@@ -371,4 +372,83 @@ func (f *EmailChangeFakeServicer) ConfirmEmailChange(ctx context.Context, in ema
 		return f.ConfirmEmailChangeFn(ctx, in)
 	}
 	return email.ConfirmEmailChangeResult{}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DeleteAccountFakeServicer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// DeleteAccountFakeServicer is a hand-written implementation of deleteaccount.Servicer
+// for handler unit tests. Each method delegates to its Fn field if non-nil,
+// otherwise returns the zero value and nil error so tests only configure the fields
+// they care about.
+type DeleteAccountFakeServicer struct {
+	ResolveUserForDeletionFn  func(ctx context.Context, userID string) (deleteaccount.DeletionUser, deleteaccount.UserAuthMethods, error)
+	DeleteWithPasswordFn      func(ctx context.Context, in deleteaccount.DeleteWithPasswordInput) (deleteaccount.DeletionScheduled, error)
+	InitiateEmailDeletionFn   func(ctx context.Context, in deleteaccount.ScheduleDeletionInput) (authshared.OTPIssuanceResult, error)
+	ConfirmEmailDeletionFn    func(ctx context.Context, in deleteaccount.ConfirmOTPDeletionInput) (deleteaccount.DeletionScheduled, error)
+	ConfirmTelegramDeletionFn func(ctx context.Context, in deleteaccount.ConfirmTelegramDeletionInput) (deleteaccount.DeletionScheduled, error)
+	CancelDeletionFn          func(ctx context.Context, in deleteaccount.CancelDeletionInput) error
+	GetDeletionMethodFn       func(ctx context.Context, userID string) (deleteaccount.DeletionMethodResult, error)
+}
+
+// compile-time interface check.
+var _ deleteaccount.Servicer = (*DeleteAccountFakeServicer)(nil)
+
+// ResolveUserForDeletion delegates to ResolveUserForDeletionFn if set.
+func (f *DeleteAccountFakeServicer) ResolveUserForDeletion(ctx context.Context, userID string) (deleteaccount.DeletionUser, deleteaccount.UserAuthMethods, error) {
+	if f.ResolveUserForDeletionFn != nil {
+		return f.ResolveUserForDeletionFn(ctx, userID)
+	}
+	return deleteaccount.DeletionUser{}, deleteaccount.UserAuthMethods{}, nil
+}
+
+// DeleteWithPassword delegates to DeleteWithPasswordFn if set.
+func (f *DeleteAccountFakeServicer) DeleteWithPassword(ctx context.Context, in deleteaccount.DeleteWithPasswordInput) (deleteaccount.DeletionScheduled, error) {
+	if f.DeleteWithPasswordFn != nil {
+		return f.DeleteWithPasswordFn(ctx, in)
+	}
+	return deleteaccount.DeletionScheduled{}, nil
+}
+
+// InitiateEmailDeletion delegates to InitiateEmailDeletionFn if set.
+func (f *DeleteAccountFakeServicer) InitiateEmailDeletion(ctx context.Context, in deleteaccount.ScheduleDeletionInput) (authshared.OTPIssuanceResult, error) {
+	if f.InitiateEmailDeletionFn != nil {
+		return f.InitiateEmailDeletionFn(ctx, in)
+	}
+	return authshared.OTPIssuanceResult{}, nil
+}
+
+// ConfirmEmailDeletion delegates to ConfirmEmailDeletionFn if set.
+func (f *DeleteAccountFakeServicer) ConfirmEmailDeletion(ctx context.Context, in deleteaccount.ConfirmOTPDeletionInput) (deleteaccount.DeletionScheduled, error) {
+	if f.ConfirmEmailDeletionFn != nil {
+		return f.ConfirmEmailDeletionFn(ctx, in)
+	}
+	return deleteaccount.DeletionScheduled{}, nil
+}
+
+// ConfirmTelegramDeletion delegates to ConfirmTelegramDeletionFn if set.
+func (f *DeleteAccountFakeServicer) ConfirmTelegramDeletion(ctx context.Context, in deleteaccount.ConfirmTelegramDeletionInput) (deleteaccount.DeletionScheduled, error) {
+	if f.ConfirmTelegramDeletionFn != nil {
+		return f.ConfirmTelegramDeletionFn(ctx, in)
+	}
+	return deleteaccount.DeletionScheduled{}, nil
+}
+
+// CancelDeletion delegates to CancelDeletionFn if set.
+func (f *DeleteAccountFakeServicer) CancelDeletion(ctx context.Context, in deleteaccount.CancelDeletionInput) error {
+	if f.CancelDeletionFn != nil {
+		return f.CancelDeletionFn(ctx, in)
+	}
+	return nil
+}
+
+// GetDeletionMethod delegates to GetDeletionMethodFn if set.
+// Default: returns {Method: "password"} so tests that don’t configure the Fn
+// still get a valid non-empty response.
+func (f *DeleteAccountFakeServicer) GetDeletionMethod(ctx context.Context, userID string) (deleteaccount.DeletionMethodResult, error) {
+	if f.GetDeletionMethodFn != nil {
+		return f.GetDeletionMethodFn(ctx, userID)
+	}
+	return deleteaccount.DeletionMethodResult{Method: "password"}, nil
 }

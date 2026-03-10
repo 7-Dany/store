@@ -354,10 +354,12 @@ SELECT
     email_verified,
     is_locked,
     admin_locked,
-    login_locked_until
+    login_locked_until,
+    deleted_at
 FROM users
 WHERE (email = @identifier OR username = @identifier)
   AND password_hash IS NOT NULL
+  AND (deleted_at IS NULL OR deleted_at > NOW() - INTERVAL '30 days')
 LIMIT 1;
 
 
@@ -905,7 +907,8 @@ SELECT
     is_locked,
     admin_locked,
     last_login_at,
-    created_at
+    created_at,
+    deleted_at
 FROM users
 WHERE id = @user_id::uuid
 LIMIT 1;
@@ -1214,3 +1217,106 @@ UPDATE users
 SET email = @new_email
 WHERE id         = @user_id::uuid
   AND deleted_at IS NULL;
+
+
+/* ── Delete Account ── */
+
+-- name: GetUserForDeletion :one
+-- Returns id, email, password_hash, and deleted_at for the authenticated user.
+-- password_hash is needed by DeleteWithPassword to verify credentials (Path A).
+-- Returns no-rows for expired-grace-period accounts (deleted_at older than 30 days),
+-- consistent with the login gate (D-05). The handler treats no-rows as a 500
+-- (JWT user must always exist within the active window).
+SELECT
+    id,
+    email,
+    password_hash,
+    deleted_at
+FROM users
+WHERE id = @user_id::uuid
+  AND (deleted_at IS NULL OR deleted_at > NOW() - INTERVAL '30 days');
+
+
+-- name: ScheduleUserDeletion :one
+-- Stamps deleted_at = NOW() for the given active user.
+-- Returns deleted_at so the handler can compute scheduled_deletion_at = deleted_at + 30d.
+UPDATE users
+SET deleted_at = NOW()
+WHERE id         = @user_id::uuid
+  AND deleted_at IS NULL
+RETURNING deleted_at;
+
+
+-- name: CancelUserDeletion :execrows
+-- Clears deleted_at for a pending-deletion user.
+-- Returns rows-affected: 0 means the user was not pending deletion → 409 not_pending_deletion.
+UPDATE users
+SET deleted_at = NULL
+WHERE id         = @user_id::uuid
+  AND deleted_at IS NOT NULL;
+
+
+-- name: InvalidateUserDeletionTokens :exec
+-- Voids all unused account_deletion OTP tokens for this user before issuing a new one.
+-- Prevents token accumulation from repeated step-1 calls.
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE user_id    = @user_id::uuid
+  AND token_type = 'account_deletion'
+  AND used_at    IS NULL;
+
+
+-- name: CreateAccountDeletionToken :one
+-- Issues a new account_deletion OTP token.
+-- max_attempts = 3 (D-19). TTL is supplied by the service as @ttl_seconds.
+INSERT INTO one_time_tokens (
+    token_type,
+    user_id,
+    email,
+    code_hash,
+    expires_at,
+    ip_address,
+    max_attempts
+)
+VALUES (
+    'account_deletion',
+    @user_id::uuid,
+    @email,
+    @code_hash,
+    NOW() + make_interval(secs => @ttl_seconds::float8),
+    sqlc.narg('ip_address')::inet,
+    3
+)
+RETURNING
+    id,
+    expires_at;
+
+
+-- name: GetAccountDeletionToken :one
+-- Fetches the active account_deletion token for the given user.
+-- FOR UPDATE prevents concurrent double-consumption.
+SELECT
+    id,
+    user_id,
+    email,
+    code_hash,
+    attempts,
+    max_attempts,
+    expires_at,
+    used_at
+FROM one_time_tokens
+WHERE user_id    = @user_id::uuid
+  AND token_type = 'account_deletion'
+  AND code_hash  IS NOT NULL
+  AND used_at    IS NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+FOR UPDATE;
+
+
+-- name: ConsumeAccountDeletionToken :execrows
+-- Marks the token as used. Returns rows-affected: 0 means already consumed.
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE id      = @id::uuid
+  AND used_at IS NULL;

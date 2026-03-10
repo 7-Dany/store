@@ -15,6 +15,23 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const CancelUserDeletion = `-- name: CancelUserDeletion :execrows
+UPDATE users
+SET deleted_at = NULL
+WHERE id         = $1::uuid
+  AND deleted_at IS NOT NULL
+`
+
+// Clears deleted_at for a pending-deletion user.
+// Returns rows-affected: 0 means the user was not pending deletion → 409 not_pending_deletion.
+func (q *Queries) CancelUserDeletion(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, CancelUserDeletion, userID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const CheckEmailAvailableForChange = `-- name: CheckEmailAvailableForChange :one
 
 /*
@@ -99,6 +116,22 @@ func (q *Queries) CheckUsernameAvailable(ctx context.Context, username pgtype.Te
 	return exists, err
 }
 
+const ConsumeAccountDeletionToken = `-- name: ConsumeAccountDeletionToken :execrows
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE id      = $1::uuid
+  AND used_at IS NULL
+`
+
+// Marks the token as used. Returns rows-affected: 0 means already consumed.
+func (q *Queries) ConsumeAccountDeletionToken(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, ConsumeAccountDeletionToken, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const ConsumeEmailChangeToken = `-- name: ConsumeEmailChangeToken :execrows
 UPDATE one_time_tokens
 SET used_at = NOW()
@@ -168,6 +201,58 @@ func (q *Queries) ConsumeUnlockToken(ctx context.Context, id pgtype.UUID) (int64
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const CreateAccountDeletionToken = `-- name: CreateAccountDeletionToken :one
+INSERT INTO one_time_tokens (
+    token_type,
+    user_id,
+    email,
+    code_hash,
+    expires_at,
+    ip_address,
+    max_attempts
+)
+VALUES (
+    'account_deletion',
+    $1::uuid,
+    $2,
+    $3,
+    NOW() + make_interval(secs => $4::float8),
+    $5::inet,
+    3
+)
+RETURNING
+    id,
+    expires_at
+`
+
+type CreateAccountDeletionTokenParams struct {
+	UserID     pgtype.UUID `db:"user_id" json:"user_id"`
+	Email      string      `db:"email" json:"email"`
+	CodeHash   pgtype.Text `db:"code_hash" json:"code_hash"`
+	TtlSeconds float64     `db:"ttl_seconds" json:"ttl_seconds"`
+	IpAddress  *netip.Addr `db:"ip_address" json:"ip_address"`
+}
+
+type CreateAccountDeletionTokenRow struct {
+	ID        uuid.UUID          `db:"id" json:"id"`
+	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+}
+
+// Issues a new account_deletion OTP token.
+// max_attempts = 3 (D-19). TTL is supplied by the service as @ttl_seconds.
+func (q *Queries) CreateAccountDeletionToken(ctx context.Context, arg CreateAccountDeletionTokenParams) (CreateAccountDeletionTokenRow, error) {
+	row := q.db.QueryRow(ctx, CreateAccountDeletionToken,
+		arg.UserID,
+		arg.Email,
+		arg.CodeHash,
+		arg.TtlSeconds,
+		arg.IpAddress,
+	)
+	var i CreateAccountDeletionTokenRow
+	err := row.Scan(&i.ID, &i.ExpiresAt)
+	return i, err
 }
 
 const CreateEmailChangeConfirmToken = `-- name: CreateEmailChangeConfirmToken :one
@@ -715,6 +800,55 @@ func (q *Queries) EndUserSession(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const GetAccountDeletionToken = `-- name: GetAccountDeletionToken :one
+SELECT
+    id,
+    user_id,
+    email,
+    code_hash,
+    attempts,
+    max_attempts,
+    expires_at,
+    used_at
+FROM one_time_tokens
+WHERE user_id    = $1::uuid
+  AND token_type = 'account_deletion'
+  AND code_hash  IS NOT NULL
+  AND used_at    IS NULL
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+FOR UPDATE
+`
+
+type GetAccountDeletionTokenRow struct {
+	ID          uuid.UUID          `db:"id" json:"id"`
+	UserID      pgtype.UUID        `db:"user_id" json:"user_id"`
+	Email       string             `db:"email" json:"email"`
+	CodeHash    pgtype.Text        `db:"code_hash" json:"code_hash"`
+	Attempts    int16              `db:"attempts" json:"attempts"`
+	MaxAttempts int16              `db:"max_attempts" json:"max_attempts"`
+	ExpiresAt   pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	UsedAt      pgtype.Timestamptz `db:"used_at" json:"used_at"`
+}
+
+// Fetches the active account_deletion token for the given user.
+// FOR UPDATE prevents concurrent double-consumption.
+func (q *Queries) GetAccountDeletionToken(ctx context.Context, userID pgtype.UUID) (GetAccountDeletionTokenRow, error) {
+	row := q.db.QueryRow(ctx, GetAccountDeletionToken, userID)
+	var i GetAccountDeletionTokenRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Email,
+		&i.CodeHash,
+		&i.Attempts,
+		&i.MaxAttempts,
+		&i.ExpiresAt,
+		&i.UsedAt,
+	)
+	return i, err
+}
+
 const GetActiveSessions = `-- name: GetActiveSessions :many
 
 SELECT
@@ -1255,6 +1389,43 @@ func (q *Queries) GetUserEmailVerified(ctx context.Context, email pgtype.Text) (
 	return email_verified, err
 }
 
+const GetUserForDeletion = `-- name: GetUserForDeletion :one
+
+SELECT
+    id,
+    email,
+    password_hash,
+    deleted_at
+FROM users
+WHERE id = $1::uuid
+  AND (deleted_at IS NULL OR deleted_at > NOW() - INTERVAL '30 days')
+`
+
+type GetUserForDeletionRow struct {
+	ID           uuid.UUID   `db:"id" json:"id"`
+	Email        pgtype.Text `db:"email" json:"email"`
+	PasswordHash pgtype.Text `db:"password_hash" json:"password_hash"`
+	DeletedAt    *time.Time  `db:"deleted_at" json:"deleted_at"`
+}
+
+// ── Delete Account ──
+// Returns id, email, password_hash, and deleted_at for the authenticated user.
+// password_hash is needed by DeleteWithPassword to verify credentials (Path A).
+// Returns no-rows for expired-grace-period accounts (deleted_at older than 30 days),
+// consistent with the login gate (D-05). The handler treats no-rows as a 500
+// (JWT user must always exist within the active window).
+func (q *Queries) GetUserForDeletion(ctx context.Context, userID pgtype.UUID) (GetUserForDeletionRow, error) {
+	row := q.db.QueryRow(ctx, GetUserForDeletion, userID)
+	var i GetUserForDeletionRow
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.DeletedAt,
+	)
+	return i, err
+}
+
 const GetUserForEmailChangeTx = `-- name: GetUserForEmailChangeTx :one
 SELECT id, email
 FROM users
@@ -1312,10 +1483,12 @@ SELECT
     email_verified,
     is_locked,
     admin_locked,
-    login_locked_until
+    login_locked_until,
+    deleted_at
 FROM users
 WHERE (email = $1 OR username = $1)
   AND password_hash IS NOT NULL
+  AND (deleted_at IS NULL OR deleted_at > NOW() - INTERVAL '30 days')
 LIMIT 1
 `
 
@@ -1329,6 +1502,7 @@ type GetUserForLoginRow struct {
 	IsLocked         bool               `db:"is_locked" json:"is_locked"`
 	AdminLocked      bool               `db:"admin_locked" json:"admin_locked"`
 	LoginLockedUntil pgtype.Timestamptz `db:"login_locked_until" json:"login_locked_until"`
+	DeletedAt        *time.Time         `db:"deleted_at" json:"deleted_at"`
 }
 
 // ── Login ────────────────────────────────────────────────────────────────────
@@ -1361,6 +1535,7 @@ func (q *Queries) GetUserForLogin(ctx context.Context, identifier pgtype.Text) (
 		&i.IsLocked,
 		&i.AdminLocked,
 		&i.LoginLockedUntil,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -1566,7 +1741,8 @@ SELECT
     is_locked,
     admin_locked,
     last_login_at,
-    created_at
+    created_at,
+    deleted_at
 FROM users
 WHERE id = $1::uuid
 LIMIT 1
@@ -1584,6 +1760,7 @@ type GetUserProfileRow struct {
 	AdminLocked   bool               `db:"admin_locked" json:"admin_locked"`
 	LastLoginAt   pgtype.Timestamptz `db:"last_login_at" json:"last_login_at"`
 	CreatedAt     time.Time          `db:"created_at" json:"created_at"`
+	DeletedAt     *time.Time         `db:"deleted_at" json:"deleted_at"`
 }
 
 // ── Profile ───────────────────────────────────────────────────────────────────
@@ -1602,6 +1779,7 @@ func (q *Queries) GetUserProfile(ctx context.Context, userID pgtype.UUID) (GetUs
 		&i.AdminLocked,
 		&i.LastLoginAt,
 		&i.CreatedAt,
+		&i.DeletedAt,
 	)
 	return i, err
 }
@@ -1819,6 +1997,21 @@ WHERE user_id    = $1::uuid
 // Called inside the same transaction as CreateEmailVerificationToken.
 func (q *Queries) InvalidateAllUserTokens(ctx context.Context, userID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, InvalidateAllUserTokens, userID)
+	return err
+}
+
+const InvalidateUserDeletionTokens = `-- name: InvalidateUserDeletionTokens :exec
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE user_id    = $1::uuid
+  AND token_type = 'account_deletion'
+  AND used_at    IS NULL
+`
+
+// Voids all unused account_deletion OTP tokens for this user before issuing a new one.
+// Prevents token accumulation from repeated step-1 calls.
+func (q *Queries) InvalidateUserDeletionTokens(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, InvalidateUserDeletionTokens, userID)
 	return err
 }
 
@@ -2041,6 +2234,23 @@ WHERE session_id  = $1::uuid
 func (q *Queries) RevokeSessionRefreshTokens(ctx context.Context, sessionID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, RevokeSessionRefreshTokens, sessionID)
 	return err
+}
+
+const ScheduleUserDeletion = `-- name: ScheduleUserDeletion :one
+UPDATE users
+SET deleted_at = NOW()
+WHERE id         = $1::uuid
+  AND deleted_at IS NULL
+RETURNING deleted_at
+`
+
+// Stamps deleted_at = NOW() for the given active user.
+// Returns deleted_at so the handler can compute scheduled_deletion_at = deleted_at + 30d.
+func (q *Queries) ScheduleUserDeletion(ctx context.Context, userID pgtype.UUID) (*time.Time, error) {
+	row := q.db.QueryRow(ctx, ScheduleUserDeletion, userID)
+	var deleted_at *time.Time
+	err := row.Scan(&deleted_at)
+	return deleted_at, err
 }
 
 const SetPasswordHash = `-- name: SetPasswordHash :execrows

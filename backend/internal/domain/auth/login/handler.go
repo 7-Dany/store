@@ -80,7 +80,10 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 			return
 		}
-		respond.JSON(w, http.StatusOK, result)
+		respond.JSON(w, http.StatusOK, loginResponse{
+			TokenResult:         result,
+			ScheduledDeletionAt: session.ScheduledDeletionAt,
+		})
 		return
 	}
 

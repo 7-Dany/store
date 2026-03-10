@@ -1,7 +1,7 @@
 # Project Rules
 
 **Stack:** Go · PostgreSQL 18 · chi · pgx v5 · sqlc · goose  
-**Last updated:** 2026-03
+**Last updated:** 2026-03-10
 
 > **This file contains only conventions that apply globally across all packages.**  
 > Auth-specific patterns, code flow traces, and auth ADRs live in [`docs/rules/auth.md`](rules/auth.md).  
@@ -815,7 +815,7 @@ default:
 Every `fmt.Errorf` call in a service or store uses `%w` and includes the function name as a prefix:
 
 ```go
-return RegisterResult{}, fmt.Errorf("service.Register: hash password: %w", err)
+return RegisterResult{}, fmt.Errorf("register.Register: hash password: %w", err)
 return CreatedUser{}, fmt.Errorf("store.CreateUserTx: create user: %w", err)
 ```
 

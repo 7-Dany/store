@@ -10,7 +10,7 @@ WHERE provider = @provider
   AND provider_uid = @provider_uid;
 
 -- name: GetIdentityByUserAndProvider :one
-SELECT id, user_id
+SELECT id, user_id, provider_uid
 FROM user_identities
 WHERE user_id = @user_id::uuid
   AND provider = @provider;

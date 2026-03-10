@@ -23,6 +23,7 @@ type LoginUser struct {
 	EmailVerified    bool
 	IsLocked         bool
 	LoginLockedUntil *time.Time // nil = not time-locked
+	DeletedAt        *time.Time // non-nil if account is pending deletion (grace period active)
 }
 
 // LoginTxInput carries the data needed by Store.LoginTx to create a session,
@@ -36,11 +37,12 @@ type LoginTxInput struct {
 // LoggedInSession is returned by Store.LoginTx on success.
 // All UUIDs are raw [16]byte; the handler converts them to strings for JWT claims.
 type LoggedInSession struct {
-	UserID        [16]byte
-	SessionID     [16]byte
-	RefreshJTI    [16]byte
-	FamilyID      [16]byte
-	RefreshExpiry time.Time
+	UserID              [16]byte
+	SessionID           [16]byte
+	RefreshJTI          [16]byte
+	FamilyID            [16]byte
+	RefreshExpiry       time.Time
+	ScheduledDeletionAt *time.Time // non-nil when the account is pending deletion (D-04)
 }
 
 

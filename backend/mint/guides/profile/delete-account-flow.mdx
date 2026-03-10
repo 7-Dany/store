@@ -1,0 +1,291 @@
+---
+title: "Account Deletion Flow"
+icon: "user-minus"
+description: "How to guide a user through deleting their account — the right flow depends on how the account was created."
+---
+
+Account deletion is a single endpoint — [`DELETE /me`](/api-reference/profile/delete-account/delete-account) — but the confirmation steps differ based on how the account was registered. There are three paths. Call [`GET /me/deletion-method`](/api-reference/profile/delete-account/deletion-method) to find out which one applies before you render any UI.
+
+---
+
+## Overview
+
+Call [`GET /me/deletion-method`](/api-reference/profile/delete-account/deletion-method) once before rendering any deletion UI. It returns one of three values:
+
+| `deletion_method` | Who it applies to | Requests to complete deletion |
+|---|---|---|
+| `password` | Account has a password set | 1 — send `password` field |
+| `email_otp` | No password, but email is linked | 2 — empty body triggers OTP; then send `code` |
+| `telegram` | No password, no email (Telegram-only) | 2 — empty body triggers prompt; then send `telegram_auth` |
+
+The sections below cover each path in full.
+
+---
+
+## Path A — Password account
+
+The simplest flow. The user confirms deletion by entering their current password. One request, no waiting for a code.
+
+### Screen — Enter password
+
+Show a confirmation dialog asking the user to enter their password. Send it to [`DELETE /me`](/api-reference/profile/delete-account/delete-account):
+
+```json
+{
+  "password": "MySecurePass1!"
+}
+```
+
+On success the account is immediately scheduled for deletion and the server responds:
+
+```json
+{
+  "message": "account scheduled for deletion",
+  "scheduled_deletion_at": "2026-05-09T14:00:00Z"
+}
+```
+
+Show the user the `scheduled_deletion_at` date and offer a link to [`POST /me/cancel-deletion`](/api-reference/profile/delete-account/cancel-deletion) if they change their mind.
+
+**Wrong password** — the server returns `401 invalid_credentials`. Let the user try again.
+
+---
+
+## Path B — Email OTP account
+
+For accounts with an email address but no password (e.g. Google OAuth accounts, or accounts that have never set a password). Two requests: one to trigger the code, one to confirm it.
+
+### Screen 1 — Confirm intent
+
+Show a screen explaining that a confirmation code will be sent to the account's email address. When the user proceeds, send an empty body to [`DELETE /me`](/api-reference/profile/delete-account/delete-account):
+
+```json
+{}
+```
+
+The server emails a 6-digit OTP and responds:
+
+```json
+{
+  "message": "verification code sent to your email",
+  "auth_method": "email_otp",
+  "expires_in": 900
+}
+```
+
+Use `expires_in` (seconds) to render a countdown timer. Tell the user to check their inbox and advance to screen 2.
+
+### Screen 2 — Enter the code
+
+The user enters the 6-digit code from their inbox. Submit it to [`DELETE /me`](/api-reference/profile/delete-account/delete-account):
+
+```json
+{
+  "code": "847213"
+}
+```
+
+On success:
+
+```json
+{
+  "message": "account scheduled for deletion",
+  "scheduled_deletion_at": "2026-05-09T14:00:00Z"
+}
+```
+
+Show the scheduled deletion date and offer a cancellation link.
+
+**Code expired** — if the user waits longer than `expires_in` seconds, the server returns `422 token_not_found`. Send them back to screen 1 for a fresh code.
+
+**Wrong code** — the server returns `422 invalid_code`. Let the user try again. After too many wrong attempts the token locks and the server returns `429 too_many_attempts` — send the user back to screen 1.
+
+---
+
+## Path C — Telegram-only account
+
+For accounts registered exclusively via Telegram — no email, no password. Two requests: one to signal intent, one to submit the widget result.
+
+### Screen 1 — Confirm intent
+
+Show a screen explaining that the user will need to re-authenticate via Telegram. When they proceed, send an empty body to [`DELETE /me`](/api-reference/profile/delete-account/delete-account):
+
+```json
+{}
+```
+
+The server responds:
+
+```json
+{
+  "message": "authenticate via Telegram to confirm deletion",
+  "auth_method": "telegram"
+}
+```
+
+### Screen 2 — Telegram widget
+
+Render the [Telegram Login Widget](https://core.telegram.org/widgets/login). When the user completes it, the widget returns a payload. Submit it to [`DELETE /me`](/api-reference/profile/delete-account/delete-account):
+
+```json
+{
+  "telegram_auth": {
+    "id": 123456789,
+    "first_name": "Alice",
+    "username": "alice_tg",
+    "photo_url": "https://t.me/i/userpic/320/alice.jpg",
+    "auth_date": 1712345678,
+    "hash": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+  }
+}
+```
+
+On success:
+
+```json
+{
+  "message": "account scheduled for deletion",
+  "scheduled_deletion_at": "2026-05-09T14:00:00Z"
+}
+```
+
+**Widget payload too old** — `auth_date` must be within the last 24 hours. If the user leaves the widget open and completes it later, the server returns `401 invalid_telegram_auth`. Prompt them to open the widget again.
+
+**Wrong Telegram account** — if the widget was completed by a different Telegram user than the one linked to this account, the server returns `401 telegram_identity_mismatch`. Ask the user to sign in to the correct Telegram account.
+
+---
+
+## After deletion is scheduled
+
+Regardless of path, once the account is scheduled:
+
+- The user can still sign in and use the API normally during the 30-day grace period.
+- [`GET /me`](/api-reference/profile/me/me) will include a `scheduled_deletion_at` field — surface this in your UI so the user knows their account is pending removal.
+- The user can cancel at any time by calling [`POST /me/cancel-deletion`](/api-reference/profile/delete-account/cancel-deletion).
+- After 30 days the account is permanently erased and cannot be recovered.
+
+---
+
+## Error reference
+
+| Screen | Response | Cause | Action |
+|---|---|---|---|
+| Pre-flight | `409 already_pending_deletion` | Deletion already scheduled | Show cancellation option |
+| A | `401 invalid_credentials` | Wrong password | Let user retry |
+| A | `429 too_many_requests` | Rate limit (10 req / 1 hr) | Show `Retry-After` value |
+| B step 1 | `429 too_many_requests` | Rate limit (10 req / 1 hr) | Show `Retry-After` value |
+| B step 2 | `422 token_not_found` | OTP expired or never requested | Back to screen 1 |
+| B step 2 | `422 invalid_code` | Wrong code | Let user retry |
+| B step 2 | `422 token_already_used` | Code already consumed | Back to screen 1 |
+| B step 2 | `429 too_many_attempts` | Code locked after too many wrong guesses | Back to screen 1 |
+| C step 2 | `401 invalid_telegram_auth` | Widget payload expired or invalid | Re-open widget |
+| C step 2 | `401 telegram_identity_mismatch` | Wrong Telegram account used | Ask user to use the correct account |
+
+---
+
+## Full sequence — Path B
+
+<Steps>
+  <Step title="GET /me/deletion-method — Discover the path">
+    Call this before rendering any deletion UI. If the result is `email_otp`, proceed with Path B.
+
+    ```json Response — 200
+    {
+      "deletion_method": "email_otp"
+    }
+    ```
+  </Step>
+
+  <Step title="DELETE /me — Request the OTP">
+    Send an empty body. The server sends a 6-digit code to the account's email address.
+
+    ```json Request
+    {}
+    ```
+
+    ```json Response — 202
+    {
+      "message": "verification code sent to your email",
+      "auth_method": "email_otp",
+      "expires_in": 900
+    }
+    ```
+
+    <Note>The code expires in `expires_in` seconds. Show a countdown timer and prompt the user to act before it runs out.</Note>
+  </Step>
+
+  <Step title="DELETE /me — Confirm with the code">
+    Submit the 6-digit code the user received.
+
+    ```json Request
+    {
+      "code": "847213"
+    }
+    ```
+
+    ```json Response — 200
+    {
+      "message": "account scheduled for deletion",
+      "scheduled_deletion_at": "2026-05-09T14:00:00Z"
+    }
+    ```
+
+    <Warning>Display the `scheduled_deletion_at` date prominently and offer a clear link to cancel. The user has 30 days.</Warning>
+  </Step>
+</Steps>
+
+---
+
+## Full sequence — Path C
+
+<Steps>
+  <Step title="GET /me/deletion-method — Discover the path">
+    If the result is `telegram`, proceed with Path C.
+
+    ```json Response — 200
+    {
+      "deletion_method": "telegram"
+    }
+    ```
+  </Step>
+
+  <Step title="DELETE /me — Signal intent">
+    Send an empty body to start the flow.
+
+    ```json Request
+    {}
+    ```
+
+    ```json Response — 202
+    {
+      "message": "authenticate via Telegram to confirm deletion",
+      "auth_method": "telegram"
+    }
+    ```
+  </Step>
+
+  <Step title="DELETE /me — Submit the widget result">
+    After the user completes the Telegram Login Widget, forward its payload.
+
+    ```json Request
+    {
+      "telegram_auth": {
+        "id": 123456789,
+        "first_name": "Alice",
+        "username": "alice_tg",
+        "auth_date": 1712345678,
+        "hash": "abcdef…"
+      }
+    }
+    ```
+
+    ```json Response — 200
+    {
+      "message": "account scheduled for deletion",
+      "scheduled_deletion_at": "2026-05-09T14:00:00Z"
+    }
+    ```
+
+    <Warning>Display the `scheduled_deletion_at` date prominently and offer a clear link to cancel. The user has 30 days.</Warning>
+  </Step>
+</Steps>

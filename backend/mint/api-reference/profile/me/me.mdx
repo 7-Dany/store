@@ -12,6 +12,8 @@ api: "GET http://localhost:8080/api/v1/profile/me"
 
 **`avatar_url` and `last_login_at`** — Both fields are omitted from the response when they have not been set.
 
+**`scheduled_deletion_at`** — Present only when the account has a pending soft-delete scheduled via [`DELETE /me`](/api-reference/profile/delete-account/delete-account). Omitted entirely (`omitempty`) when no deletion is pending. Cancel the pending deletion via [`POST /me/cancel-deletion`](/api-reference/profile/delete-account/cancel-deletion) to clear it.
+
 ## Rate Limiting
 
 **10 requests per 1 minute per IP address**.
@@ -54,6 +56,8 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 <AccordionGroup>
   <Accordion title="200 — OK">
     The user's public profile. `username`, `avatar_url`, and `last_login_at` are omitted when not set.
+    `scheduled_deletion_at` is included only when the account has a pending deletion scheduled via
+    [`DELETE /me`](/api-reference/profile/delete-account/delete-account) and is omitted otherwise.
 
     ```json
     {
@@ -82,6 +86,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
     | `is_locked` | bool | Whether the account is OTP-brute-force locked |
     | `last_login_at` | RFC 3339 timestamp | Most recent login time; omitted if never logged in |
     | `created_at` | RFC 3339 timestamp | Account creation time |
+    | `scheduled_deletion_at` | RFC 3339 timestamp | Deadline for permanent removal (deleted\_at + 30 days); **omitted** when no deletion is pending |
   </Accordion>
 
   <Accordion title="401 — Unauthorized">

@@ -218,6 +218,95 @@
       ]
     },
     {
+      "name": "deletion-method",
+      "description": "Happy-path and auth-failure cases for GET /me/deletion-method.\n\nUses me_access_token from setup (del_user registered with email+password).\nExpects deletion_method:\"password\" because del_user has a password hash.\n\nNot covered here (covered by unit tests):\n  \u2022 email_otp / telegram method values \u2014 require an OAuth-registered user\n  \u2022 404 not_found \u2014 not achievable via HTTP for a valid JWT\n  \u2022 Service error \u2192 500 \u2014 handler_test.go TestHandler_DeletionMethod",
+      "item": [
+        {
+          "name": "GET /me/deletion-method \u2192 200 (password user)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Content-Type is application/json', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json'));",
+                  "const body = pm.response.json();",
+                  "pm.test('deletion_method is password (email+password user)', () => {",
+                  "    pm.expect(body.deletion_method).to.eql('password');",
+                  "});",
+                  "pm.collectionVariables.set('me_deletion_method', body.deletion_method);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/deletion-method",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "deletion-method"]
+            }
+          }
+        },
+        {
+          "name": "GET /me/deletion-method (no token) \u2192 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (no token)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/deletion-method",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "deletion-method"]
+            }
+          }
+        },
+        {
+          "name": "GET /me/deletion-method (tampered token) \u2192 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401 (tampered token)', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/deletion-method",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "deletion-method"]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "rate-limiting",
       "description": "pme:ip: limiter \u2014 burst=10, rate=10/1min (0.1667 t/s).\nAll 10 warmup requests use the valid access_token from setup (JWT auth fires before the limiter\ninside the JWT middleware group). 11th request \u2192 429 too_many_requests, Retry-After=6.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
       "event": [
@@ -550,6 +639,11 @@
       "key": "me_refresh_token",
       "value": "",
       "description": "Refresh token from setup /login."
+    },
+    {
+      "key": "me_deletion_method",
+      "value": "",
+      "description": "deletion_method value from GET /me/deletion-method. Set by the deletion-method folder."
     }
   ]
 }

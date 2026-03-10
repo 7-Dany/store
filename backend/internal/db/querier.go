@@ -14,6 +14,9 @@ import (
 )
 
 type Querier interface {
+	// Clears deleted_at for a pending-deletion user.
+	// Returns rows-affected: 0 means the user was not pending deletion → 409 not_pending_deletion.
+	CancelUserDeletion(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// ── Email change ───────────────────────────────────────────────────────────
 	// Returns true when no active (non-deleted) user holds @new_email.
 	// Excludes the calling user (id != @user_id) so a same-address re-request
@@ -26,6 +29,8 @@ type Querier interface {
 	// No FOR UPDATE — this is a point-in-time availability check; the write path
 	// enforces uniqueness via idx_users_username (23505 on conflict).
 	CheckUsernameAvailable(ctx context.Context, username pgtype.Text) (bool, error)
+	// Marks the token as used. Returns rows-affected: 0 means already consumed.
+	ConsumeAccountDeletionToken(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Marks an email_change_verify or email_change_confirm token as used.
 	// AND used_at IS NULL ensures idempotency: a concurrent correct submission
 	// cannot consume the same token twice.
@@ -41,6 +46,9 @@ type Querier interface {
 	// idempotency: a race between two concurrent correct submissions cannot consume
 	// the same token twice.
 	ConsumeUnlockToken(ctx context.Context, id pgtype.UUID) (int64, error)
+	// Issues a new account_deletion OTP token.
+	// max_attempts = 3 (D-19). TTL is supplied by the service as @ttl_seconds.
+	CreateAccountDeletionToken(ctx context.Context, arg CreateAccountDeletionTokenParams) (CreateAccountDeletionTokenRow, error)
 	// Issues a new email_change_confirm OTP token for step 2.
 	// @new_email is stored in the email column (D-09: for audit readability; also
 	// lets step 3 retrieve new_email directly from the token row without a separate query).
@@ -103,6 +111,13 @@ type Querier interface {
 	// Called during logout to mark the device's session as explicitly ended.
 	// For mass session termination (password change, forced logout) use EndAllUserSessions.
 	EndUserSession(ctx context.Context, id pgtype.UUID) error
+	// Fetches the active account_deletion token for the given user.
+	// FOR UPDATE prevents concurrent double-consumption.
+	GetAccountDeletionToken(ctx context.Context, userID pgtype.UUID) (GetAccountDeletionTokenRow, error)
+	// ── Background purge worker ──
+	// Returns up to 100 user IDs whose grace period has expired.
+	// The worker processes these in a loop, purging each in its own transaction.
+	GetAccountsDueForPurge(ctx context.Context) ([]uuid.UUID, error)
 	// ── Sessions ─────────────────────────────────────────────────────────────────
 	// Returns all open sessions for the user, newest-activity first.
 	GetActiveSessions(ctx context.Context, userID pgtype.UUID) ([]GetActiveSessionsRow, error)
@@ -175,6 +190,13 @@ type Querier interface {
 	// Used to assert that VerifyEmailTx actually flipped the flag without
 	// resorting to raw tx.QueryRow calls in tests.
 	GetUserEmailVerified(ctx context.Context, email pgtype.Text) (bool, error)
+	// ── Delete Account ──
+	// Returns id, email, password_hash, and deleted_at for the authenticated user.
+	// password_hash is needed by DeleteWithPassword to verify credentials (Path A).
+	// Returns no-rows for expired-grace-period accounts (deleted_at older than 30 days),
+	// consistent with the login gate (D-05). The handler treats no-rows as a 500
+	// (JWT user must always exist within the active window).
+	GetUserForDeletion(ctx context.Context, userID pgtype.UUID) (GetUserForDeletionRow, error)
 	// Returns id and current email for the authenticated user inside a transaction.
 	// FOR UPDATE locks the row to prevent a concurrent email-change from racing past
 	// the uniqueness re-check (D-05) or producing stale old_email in audit metadata.
@@ -236,6 +258,10 @@ type Querier interface {
 	//   email_verified = TRUE                   → already verified (no-op, not an error)
 	// Avoids a second query race window compared to checking each column separately.
 	GetUserVerifiedAndLocked(ctx context.Context, userID pgtype.UUID) (GetUserVerifiedAndLockedRow, error)
+	// Permanently deletes a user row. All child rows (refresh_tokens, user_sessions,
+	// one_time_tokens, user_identities, auth_audit_log, user_roles) are removed via
+	// CASCADE. Must be called AFTER InsertPurgeLog within the same transaction (D-14).
+	HardDeleteUser(ctx context.Context, userID pgtype.UUID) error
 	// Returns true when a consumed (used_at IS NOT NULL) account_unlock token exists
 	// for the email. Called by ConsumeUnlockTokenTx when GetUnlockToken returns no
 	// active rows, to distinguish ErrTokenAlreadyUsed from ErrTokenNotFound.
@@ -266,6 +292,9 @@ type Querier interface {
 	// requiring pgtype.NullAuthProvider wrapping at every call site. If a future domain
 	// needs to log events without a provider, add a separate InsertAuditLogNoProvider query.
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
+	// Writes a permanent record of the purge before the user row is deleted (D-15).
+	// metadata is a JSONB blob — callers pass {"deleted_at": "<RFC3339>"} at minimum.
+	InsertPurgeLog(ctx context.Context, arg InsertPurgeLogParams) error
 	// Voids all unused password_reset tokens for this user before issuing a new one.
 	// Prevents token accumulation and reduces the concurrent-reset attack window.
 	// Called by RequestPasswordResetTx inside the same transaction, immediately
@@ -276,6 +305,9 @@ type Querier interface {
 	// or magic-link tokens are not silently nuked on a re-registration attempt.
 	// Called inside the same transaction as CreateEmailVerificationToken.
 	InvalidateAllUserTokens(ctx context.Context, userID pgtype.UUID) error
+	// Voids all unused account_deletion OTP tokens for this user before issuing a new one.
+	// Prevents token accumulation from repeated step-1 calls.
+	InvalidateUserDeletionTokens(ctx context.Context, userID pgtype.UUID) error
 	// Voids all unused email_change_confirm tokens for this user before issuing a new one.
 	// Called inside the same transaction as CreateEmailChangeConfirmToken (step 2).
 	InvalidateUserEmailChangeConfirmTokens(ctx context.Context, userID pgtype.UUID) error
@@ -336,6 +368,9 @@ type Querier interface {
 	// Revokes all non-revoked refresh tokens for a specific session.
 	// Called by RevokeSessionTx when a user explicitly ends a single device session.
 	RevokeSessionRefreshTokens(ctx context.Context, sessionID pgtype.UUID) error
+	// Stamps deleted_at = NOW() for the given active user.
+	// Returns deleted_at so the handler can compute scheduled_deletion_at = deleted_at + 30d.
+	ScheduleUserDeletion(ctx context.Context, userID pgtype.UUID) (*time.Time, error)
 	// Sets password_hash for an OAuth-only account.
 	// The WHERE password_hash IS NULL guard is the DB-level concurrency check:
 	// a concurrent set-password call that races past the service guard returns

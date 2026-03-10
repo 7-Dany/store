@@ -49,5 +49,10 @@ func Registry() map[string]Entry {
 			SubjectFmt: "Your %s email address has been changed",
 			HTML:       EmailChangedNotificationTemplate,
 		},
+		AccountDeletionOTPKey: {
+			Key:        AccountDeletionOTPKey,
+			SubjectFmt: "Delete your %s account",
+			HTML:       AccountDeletionOTPTemplate,
+		},
 	}
 }

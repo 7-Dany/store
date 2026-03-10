@@ -414,6 +414,7 @@ const (
 	OneTimeTokenTypeAccountUnlock      OneTimeTokenType = "account_unlock"
 	OneTimeTokenTypeEmailChangeVerify  OneTimeTokenType = "email_change_verify"
 	OneTimeTokenTypeEmailChangeConfirm OneTimeTokenType = "email_change_confirm"
+	OneTimeTokenTypeAccountDeletion    OneTimeTokenType = "account_deletion"
 )
 
 func (e *OneTimeTokenType) Scan(src interface{}) error {
@@ -458,7 +459,8 @@ func (e OneTimeTokenType) Valid() bool {
 		OneTimeTokenTypeMagicLink,
 		OneTimeTokenTypeAccountUnlock,
 		OneTimeTokenTypeEmailChangeVerify,
-		OneTimeTokenTypeEmailChangeConfirm:
+		OneTimeTokenTypeEmailChangeConfirm,
+		OneTimeTokenTypeAccountDeletion:
 		return true
 	}
 	return false
@@ -472,6 +474,7 @@ func AllOneTimeTokenTypeValues() []OneTimeTokenType {
 		OneTimeTokenTypeAccountUnlock,
 		OneTimeTokenTypeEmailChangeVerify,
 		OneTimeTokenTypeEmailChangeConfirm,
+		OneTimeTokenTypeAccountDeletion,
 	}
 }
 
@@ -547,6 +550,14 @@ func AllRequestStatusEnumValues() []RequestStatusEnum {
 		RequestStatusEnumCompleted,
 		RequestStatusEnumFailed,
 	}
+}
+
+// Permanent record of hard-purged accounts. user_id has no FK constraint because the users row is deleted before this record is written.
+type AccountPurgeLog struct {
+	ID       uuid.UUID          `db:"id" json:"id"`
+	UserID   pgtype.UUID        `db:"user_id" json:"user_id"`
+	PurgedAt pgtype.Timestamptz `db:"purged_at" json:"purged_at"`
+	Metadata []byte             `db:"metadata" json:"metadata"`
 }
 
 // Security event log. Rows are deleted when the owning user is deleted (ON DELETE CASCADE) or by periodic retention sweeps. trg_deny_audit_update enforces immutability — existing rows may not be edited.

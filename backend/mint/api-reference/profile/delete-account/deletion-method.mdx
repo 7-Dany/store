@@ -1,0 +1,111 @@
+---
+title: "Get Deletion Method"
+description: "Return the confirmation method required to delete the authenticated user's account."
+api: "GET http://localhost:8080/api/v1/profile/me/deletion-method"
+---
+
+## Behaviour
+
+Returns a `deletion_method` value that tells the client which confirmation
+flow to present before calling
+[`DELETE /me`](/api-reference/profile/delete-account/delete-account).
+
+Call this endpoint first so you can render the correct UI — password prompt,
+email OTP entry, or Telegram widget — without making a speculative delete
+request.
+
+The three possible values are:
+
+- `"password"` — the account has a password set
+- `"email_otp"` — no password, but an email address is linked
+- `"telegram"` — no password and no email (Telegram-only account)
+
+When a user has both an email and Telegram linked but no password,
+`"email_otp"` is returned — email takes priority.
+
+## Rate Limiting
+
+**10 requests per 1 minute per user**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<ResponseExample>
+```json 200
+{
+  "deletion_method": "password"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "missing user id in context"
+}
+```
+
+```json 404
+{
+  "code": "not_found",
+  "message": "user not found"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The deletion method was resolved successfully. The `deletion_method` field
+    will be one of `"password"`, `"email_otp"`, or `"telegram"`.
+
+    ```json
+    {
+      "deletion_method": "password"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    No valid access token was provided.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing user id in context"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    No account was found for the authenticated user.
+
+    ```json
+    {
+      "code": "not_found",
+      "message": "user not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded the rate limit. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected server-side error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

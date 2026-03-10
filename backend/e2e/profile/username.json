@@ -1046,7 +1046,7 @@
     },
     {
       "name": "rate-limiting-unav",
-      "description": "Verifies the unav:ip: per-IP rate limiter for GET /username/available (burst=20, rate=20/1 min).\n\nThis folder runs in a SEPARATE Newman invocation after _e2e-kv-clean so the 127.0.0.1\nIP bucket starts empty. The folder prerequest pins _xff to 127.0.0.1 for all requests\nso they all land in the same bucket.\n\nSequence:\n  warmup 1–20: GET → 200 (slots 1–20 consumed; must not return 429)\n  21st request → 429 too_many_requests (bucket exhausted)\n\nCovers T-14: 21st request from same IP within 1-minute window → 429 (unav:ip:, burst=20).",
+      "description": "Verifies the unav:ip: per-IP rate limiter for GET /username/available (burst=20, rate=20/1 min).\n\nThis folder runs in a SEPARATE Newman invocation after _e2e-kv-clean so the 127.0.0.1\nIP bucket starts empty. The folder prerequest pins _xff to 127.0.0.1 for all requests\nso they all land in the same bucket.\n\nSequence:\n  warmup 1–25: GET → 200 (slots 1–20 consumed + 5 drain requests to absorb token refill; must not return 429)\n  26th request → 429 too_many_requests (bucket exhausted)\n\nWhy 25 warmup requests instead of 20:\n  The unav:ip: limiter is a token bucket (rate=20/60≈0.333 tok/sec). During the warmup\n  phase Redis response latency means the 20 requests can take 2–6 seconds total, refilling\n  up to ~2 tokens. Without extra drain requests the 21st fires into a non-empty bucket and\n  returns 200 instead of 429, causing an intermittent flaky failure. Sending 5 additional\n  drain requests (slots 21–25) absorbs up to ~15 seconds of refill (5/0.333=15s), making\n  the test deterministic on any machine/network speed.\n\nCovers T-14: first request beyond burst+refill from same IP within 1-minute window → 429 (unav:ip:, burst=20).",
       "event": [
         {
           "listen": "prerequest",
@@ -1063,107 +1063,132 @@
       ],
       "item": [
         {
-          "name": "warmup 1/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 1/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 2/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 2/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 3/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 3/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 4/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 4/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 5/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 5/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 6/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 6/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 7/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 7/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 8/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 8/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 9/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 9/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 10/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 10/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 10)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 11/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 11/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 11)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 12/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 12/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 12)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 13/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 13/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 13)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 14/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 14/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 14)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 15/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 15/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 15)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 16/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 16/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 16)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 17/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 17/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 17)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 18/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 18/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 18)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 19/20 — consume unav:ip: slot (→ not 429)",
+          "name": "warmup 19/25 — consume unav:ip: slot (→ not 429)",
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 19)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "warmup 20/20 — consume unav:ip: slot (→ not 429, last allowed)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 20 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
+          "name": "warmup 20/25 — consume unav:ip: slot (→ not 429)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 20)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
           "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
         },
         {
-          "name": "21st request → 429 (unav:ip: bucket exhausted — T-14)",
+          "name": "warmup 21/25 — drain refill tokens (silent)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain request — absorbs any token refilled since burst was exhausted.\n// Bucket is already empty so this will 429; that is expected and ignored.\n// No assertion here — only the 26th request asserts 429."] } }],
+          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
+        },
+        {
+          "name": "warmup 22/25 — drain refill tokens (silent)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion, see slot 21 comment."] } }],
+          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
+        },
+        {
+          "name": "warmup 23/25 — drain refill tokens (silent)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion, see slot 21 comment."] } }],
+          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
+        },
+        {
+          "name": "warmup 24/25 — drain refill tokens (silent)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion, see slot 21 comment."] } }],
+          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
+        },
+        {
+          "name": "warmup 25/25 — drain refill tokens (silent, bucket now reliably empty)",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion. After this the bucket is reliably empty and the 26th request must 429."] } }],
+          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
+        },
+        {
+          "name": "26th request → 429 (unav:ip: bucket exhausted — T-14)",
           "event": [
             {
               "listen": "test",

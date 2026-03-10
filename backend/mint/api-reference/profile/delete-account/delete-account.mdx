@@ -331,7 +331,7 @@ with a `Retry-After` header indicating when they may retry.
   </Accordion>
 
   <Accordion title="429 — Rate Limited">
-    Two separate limits can produce this response.
+    Three separate limits can produce this response.
 
     **User rate limit** — exceeded 10 requests per hour. Check the `Retry-After`
     header for when to retry.
@@ -351,6 +351,17 @@ with a `Retry-After` header indicating when they may retry.
     {
       "code": "too_many_attempts",
       "message": "too many attempts — token locked"
+    }
+    ```
+
+    **Deletion token cooldown (Path B step 1)** — a deletion OTP has already been
+    issued for this account and has not yet expired. Wait for it to expire or
+    submit the code already sent before requesting a new one.
+
+    ```json
+    {
+      "code": "deletion_token_cooldown",
+      "message": "a deletion code has already been sent; please wait before requesting another"
     }
     ```
   </Accordion>

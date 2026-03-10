@@ -87,6 +87,17 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
     ```
   </Accordion>
 
+  <Accordion title="409 — Conflict">
+    A deletion is already pending for this account. The deletion method cannot be resolved while it is in progress. Cancel via [`POST /me/cancel-deletion`](/api-reference/profile/delete-account/cancel-deletion) first.
+
+    ```json
+    {
+      "code": "already_pending_deletion",
+      "message": "account is already scheduled for deletion"
+    }
+    ```
+  </Accordion>
+
   <Accordion title="429 — Rate Limited">
     The IP address has exceeded the rate limit. Check the `Retry-After` response header for how many seconds to wait before retrying.
 

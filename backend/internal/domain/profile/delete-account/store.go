@@ -2,12 +2,14 @@ package deleteaccount
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -201,6 +203,8 @@ func (s *Store) SendDeletionOTPTx(ctx context.Context, in SendDeletionOTPInput) 
 
 	// 3. Persist the token. TTLSeconds comes from config.OTPTokenTTL, passed in
 	//    by the service so the store remains config-agnostic.
+	// idx_ott_account_deletion_active (partial unique on user_id) raises 23505 when
+	// a token is already active; mapped to ErrDeletionTokenCooldown → 429.
 	if _, err := h.Q.CreateAccountDeletionToken(ctx, db.CreateAccountDeletionTokenParams{
 		UserID:     userPgUUID,
 		Email:      in.Email,
@@ -209,6 +213,11 @@ func (s *Store) SendDeletionOTPTx(ctx context.Context, in SendDeletionOTPInput) 
 		IpAddress:  s.IPToNullable(in.IPAddress),
 	}); err != nil {
 		h.Rollback()
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" &&
+			pgErr.ConstraintName == "idx_ott_account_deletion_active" {
+			return SendDeletionOTPResult{}, ErrDeletionTokenCooldown
+		}
 		return SendDeletionOTPResult{}, fmt.Errorf("store.SendDeletionOTPTx: create token: %w", err)
 	}
 

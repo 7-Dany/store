@@ -127,7 +127,6 @@ func (s *Store) InsertUserIdentity(ctx context.Context, in InsertIdentityInput) 
 		ProviderEmail: s.ToText(""),
 		DisplayName:   s.ToText(in.DisplayName),
 		AvatarURL:     s.ToText(in.AvatarURL),
-		AccessToken:   s.ToText(""),
 	})
 	if err != nil {
 		return fmt.Errorf("store.InsertUserIdentity: %w", err)
@@ -245,7 +244,6 @@ func (s *Store) OAuthRegisterTx(ctx context.Context, in OAuthRegisterTxInput) (o
 		ProviderEmail: s.ToText(""),
 		DisplayName:   s.ToText(in.DisplayName),
 		AvatarURL:     s.ToText(in.AvatarURL),
-		AccessToken:   s.ToText(""),
 	}); err != nil {
 		h.Rollback()
 		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: insert identity: %w", err)

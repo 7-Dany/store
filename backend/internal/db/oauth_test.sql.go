@@ -152,10 +152,11 @@ func (q *Queries) TestGetTelegramIdentityDetails(ctx context.Context, userID pgt
 }
 
 const TestGetTelegramIdentityProviderDetails = `-- name: TestGetTelegramIdentityProviderDetails :one
-SELECT provider_uid, access_token, provider_email
-FROM user_identities
-WHERE user_id  = $1::uuid
-  AND provider = 'telegram'
+SELECT ui.provider_uid, uit.access_token, ui.provider_email
+FROM user_identities ui
+LEFT JOIN user_identity_tokens uit ON uit.identity_id = ui.id
+WHERE ui.user_id  = $1::uuid
+  AND ui.provider = 'telegram'
 `
 
 type TestGetTelegramIdentityProviderDetailsRow struct {
@@ -167,6 +168,8 @@ type TestGetTelegramIdentityProviderDetailsRow struct {
 // Returns the provider-specific fields for a user's Telegram identity row.
 // Used in T-S13 to verify that provider_uid is set and access_token /
 // provider_email are empty (Telegram does not use them — D-04).
+// access_token was moved to user_identity_tokens (001_core.sql schema split);
+// LEFT JOIN keeps the result row when no token row exists yet.
 func (q *Queries) TestGetTelegramIdentityProviderDetails(ctx context.Context, userID pgtype.UUID) (TestGetTelegramIdentityProviderDetailsRow, error) {
 	row := q.db.QueryRow(ctx, TestGetTelegramIdentityProviderDetails, userID)
 	var i TestGetTelegramIdentityProviderDetailsRow
@@ -175,9 +178,10 @@ func (q *Queries) TestGetTelegramIdentityProviderDetails(ctx context.Context, us
 }
 
 const TestGetUserFlags = `-- name: TestGetUserFlags :one
-SELECT email_verified, password_hash, is_active, email
-FROM users
-WHERE id = $1::uuid
+SELECT u.email_verified, us.password_hash, u.is_active, u.email
+FROM users u
+LEFT JOIN user_secrets us ON us.user_id = u.id
+WHERE u.id = $1::uuid
 `
 
 type TestGetUserFlagsRow struct {
@@ -191,6 +195,9 @@ type TestGetUserFlagsRow struct {
 // Used in T-S12 to assert new Telegram users have:
 //
 //	email_verified = TRUE, is_active = TRUE, password_hash = NULL, email = NULL/empty.
+//
+// password_hash was moved to user_secrets (001_core.sql schema split); LEFT JOIN
+// keeps the result row even when no user_secrets row exists yet.
 func (q *Queries) TestGetUserFlags(ctx context.Context, userID pgtype.UUID) (TestGetUserFlagsRow, error) {
 	row := q.db.QueryRow(ctx, TestGetUserFlags, userID)
 	var i TestGetUserFlagsRow

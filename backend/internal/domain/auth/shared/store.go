@@ -171,21 +171,21 @@ func (b BaseStore) IsNoRows(err error) bool {
 }
 
 // IsDuplicateEmail reports whether err is a Postgres unique-violation (23505)
-// on the idx_users_email partial unique index (users.email WHERE email IS NOT NULL).
+// on idx_users_email_active (users.email WHERE email IS NOT NULL AND deleted_at IS NULL).
 func (b BaseStore) IsDuplicateEmail(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505" && pgErr.ConstraintName == "idx_users_email"
+		return pgErr.Code == "23505" && pgErr.ConstraintName == "idx_users_email_active"
 	}
 	return false
 }
 
 // IsDuplicateUsername reports whether err is a Postgres unique-violation (23505)
-// on the idx_users_username partial unique index (users.username WHERE username IS NOT NULL).
+// on idx_users_username_active (users.username WHERE username IS NOT NULL AND deleted_at IS NULL).
 func (b BaseStore) IsDuplicateUsername(err error) bool {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return pgErr.Code == "23505" && pgErr.ConstraintName == "idx_users_username"
+		return pgErr.Code == "23505" && pgErr.ConstraintName == "idx_users_username_active"
 	}
 	return false
 }

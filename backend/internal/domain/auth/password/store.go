@@ -14,15 +14,14 @@ import (
 )
 
 // activeResetTokenConstraint is the partial-unique-index name that enforces
-// one active password-reset token per user. Defined in
-// sql/migrations/NNNN_add_password_reset_tokens.sql.
-const activeResetTokenConstraint = "idx_password_reset_tokens_user_active"
+// one active password-reset token per user. Defined in 001_core.sql.
+const activeResetTokenConstraint = "idx_ott_password_reset_active"
 
 // compile-time check that *Store satisfies Storer.
 var _ Storer = (*Store)(nil)
 
 // isDuplicateActiveToken reports whether err is a Postgres unique-violation
-// (23505) on idx_password_reset_tokens_user_active — meaning a valid reset
+// (23505) on idx_ott_password_reset_active — meaning a valid reset
 // token already exists for this user.
 func isDuplicateActiveToken(err error) bool {
 	var pgErr *pgconn.PgError

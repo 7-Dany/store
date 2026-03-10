@@ -124,6 +124,8 @@ func (h *Handler) mapDeleteError(w http.ResponseWriter, r *http.Request, err err
 	switch {
 	case errors.Is(err, ErrAlreadyPendingDeletion):
 		respond.Error(w, http.StatusConflict, "already_pending_deletion", err.Error())
+	case errors.Is(err, ErrDeletionTokenCooldown):
+		respond.Error(w, http.StatusTooManyRequests, "deletion_token_cooldown", err.Error())
 	case errors.Is(err, authshared.ErrInvalidCredentials):
 		respond.Error(w, http.StatusUnauthorized, "invalid_credentials", err.Error())
 	case errors.Is(err, ErrInvalidTelegramAuth):

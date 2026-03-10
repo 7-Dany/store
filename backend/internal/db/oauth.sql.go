@@ -14,14 +14,21 @@ import (
 )
 
 const CreateOAuthUser = `-- name: CreateOAuthUser :one
-INSERT INTO users (email, display_name, email_verified, is_active)
-VALUES (
-    $1::text,
-    $2::text,
-    TRUE,
-    TRUE
+WITH new_user AS (
+    INSERT INTO users (email, display_name, email_verified, is_active)
+    VALUES (
+        $1::text,
+        $2::text,
+        TRUE,
+        TRUE
+    )
+    RETURNING id
+),
+_secrets AS (
+    INSERT INTO user_secrets (user_id)
+    SELECT id FROM new_user
 )
-RETURNING id
+SELECT id FROM new_user
 `
 
 type CreateOAuthUserParams struct {
@@ -29,6 +36,13 @@ type CreateOAuthUserParams struct {
 	DisplayName pgtype.Text `db:"display_name" json:"display_name"`
 }
 
+// Creates a new user account for a first-time OAuth sign-in.
+// Atomically inserts both the users row and its companion user_secrets row (NULL
+// password_hash) using a CTE so trg_require_auth_method (DEFERRABLE INITIALLY
+// DEFERRED) sees both rows. The caller must INSERT into user_identities in the
+// same transaction before commit to satisfy the auth-method requirement.
+// email_verified = TRUE and is_active = TRUE because the provider has already
+// confirmed the email address.
 func (q *Queries) CreateOAuthUser(ctx context.Context, arg CreateOAuthUserParams) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, CreateOAuthUser, arg.Email, arg.DisplayName)
 	var id uuid.UUID
@@ -47,6 +61,10 @@ type DeleteUserIdentityParams struct {
 	Provider AuthProvider `db:"provider" json:"provider"`
 }
 
+// Removes the linked identity for the given (user, provider) pair.
+// Returns rows affected: 0 means the identity did not exist (idempotent).
+// trg_prevent_orphan_on_identity_delete (002_core_functions.sql) will raise an
+// exception if this would leave a password-less user with no remaining identity.
 func (q *Queries) DeleteUserIdentity(ctx context.Context, arg DeleteUserIdentityParams) (int64, error) {
 	result, err := q.db.Exec(ctx, DeleteUserIdentity, arg.UserID, arg.Provider)
 	if err != nil {
@@ -56,9 +74,29 @@ func (q *Queries) DeleteUserIdentity(ctx context.Context, arg DeleteUserIdentity
 }
 
 const GetIdentityByProviderUID = `-- name: GetIdentityByProviderUID :one
+/* ============================================================
+   sql/queries/oauth.sql
+   OAuth identity domain queries for sqlc code generation.
+
+   Covers Google OAuth and is structured to accommodate future providers
+   (e.g. Telegram) without merging into auth.sql.
+
+   Design notes:
+     - Encrypted OAuth tokens (access_token, refresh_token_provider) live in
+       user_identity_tokens, not user_identities. This prevents SELECT * on
+       user_identities from ever returning ciphertext in API responses.
+       UpsertUserIdentity handles metadata only; UpsertUserIdentityTokens
+       handles tokens. Both must be called in the same transaction.
+     - Security-sensitive fields (password_hash, is_locked, admin_locked)
+       live in user_secrets. Queries that need them JOIN user_secrets.
+     - CreateOAuthUser also inserts a user_secrets row (with NULL password_hash)
+       so trg_require_auth_method is satisfied by the identity INSERT that
+       follows in the same deferred transaction.
+   ============================================================ */
 
 
-SELECT id, user_id, provider_email, display_name, avatar_url, access_token
+
+SELECT id, user_id, provider_email, display_name, avatar_url
 FROM user_identities
 WHERE provider = $1
   AND provider_uid = $2
@@ -75,12 +113,15 @@ type GetIdentityByProviderUIDRow struct {
 	ProviderEmail pgtype.Text `db:"provider_email" json:"provider_email"`
 	DisplayName   pgtype.Text `db:"display_name" json:"display_name"`
 	AvatarURL     pgtype.Text `db:"avatar_url" json:"avatar_url"`
-	AccessToken   pgtype.Text `db:"access_token" json:"access_token"`
 }
 
-// oauth.sql — queries for the OAuth domain (Google provider).
-// Appended to by future providers (Telegram). Do not merge into auth.sql.
 // ── OAuth Identity ──
+// Looks up an identity by provider + provider_uid (the external account's stable ID).
+// Used during OAuth callback to determine whether an incoming provider account is
+// already linked to an internal user.
+// access_token is intentionally excluded — it lives in user_identity_tokens and
+// must never be returned in bulk identity lookups (ciphertext in API response risk).
+// Callers that need the token must query user_identity_tokens separately by identity_id.
 func (q *Queries) GetIdentityByProviderUID(ctx context.Context, arg GetIdentityByProviderUIDParams) (GetIdentityByProviderUIDRow, error) {
 	row := q.db.QueryRow(ctx, GetIdentityByProviderUID, arg.Provider, arg.ProviderUid)
 	var i GetIdentityByProviderUIDRow
@@ -90,7 +131,6 @@ func (q *Queries) GetIdentityByProviderUID(ctx context.Context, arg GetIdentityB
 		&i.ProviderEmail,
 		&i.DisplayName,
 		&i.AvatarURL,
-		&i.AccessToken,
 	)
 	return i, err
 }
@@ -113,6 +153,9 @@ type GetIdentityByUserAndProviderRow struct {
 	ProviderUid string      `db:"provider_uid" json:"provider_uid"`
 }
 
+// Returns the identity row for a specific (user, provider) pair.
+// Used to check whether a user already has a linked account for a given provider
+// before attempting to link or unlink.
 func (q *Queries) GetIdentityByUserAndProvider(ctx context.Context, arg GetIdentityByUserAndProviderParams) (GetIdentityByUserAndProviderRow, error) {
 	row := q.db.QueryRow(ctx, GetIdentityByUserAndProvider, arg.UserID, arg.Provider)
 	var i GetIdentityByUserAndProviderRow
@@ -123,13 +166,14 @@ func (q *Queries) GetIdentityByUserAndProvider(ctx context.Context, arg GetIdent
 const GetUserAuthMethods = `-- name: GetUserAuthMethods :one
 
 SELECT
-    (u.password_hash IS NOT NULL) AS has_password,
-    COUNT(ui.id)                   AS identity_count
+    (us.password_hash IS NOT NULL) AS has_password,
+    COUNT(ui.id)                    AS identity_count
 FROM users u
+JOIN user_secrets us ON us.user_id = u.id
 LEFT JOIN user_identities ui ON ui.user_id = u.id
 WHERE u.id = $1::uuid
   AND u.deleted_at IS NULL
-GROUP BY u.password_hash
+GROUP BY us.password_hash
 `
 
 type GetUserAuthMethodsRow struct {
@@ -138,6 +182,10 @@ type GetUserAuthMethodsRow struct {
 }
 
 // ── OAuth User ──
+// Returns whether the user has a password set and how many OAuth identities are linked.
+// Used by the account-settings page to determine which auth methods are available
+// and whether it is safe to unlink an identity or remove a password.
+// password_hash lives in user_secrets; a LEFT JOIN on user_identities counts linked providers.
 func (q *Queries) GetUserAuthMethods(ctx context.Context, userID pgtype.UUID) (GetUserAuthMethodsRow, error) {
 	row := q.db.QueryRow(ctx, GetUserAuthMethods, userID)
 	var i GetUserAuthMethodsRow
@@ -146,10 +194,11 @@ func (q *Queries) GetUserAuthMethods(ctx context.Context, userID pgtype.UUID) (G
 }
 
 const GetUserByEmailForOAuth = `-- name: GetUserByEmailForOAuth :one
-SELECT id, is_active, is_locked, admin_locked
-FROM users
-WHERE email = $1
-  AND deleted_at IS NULL
+SELECT u.id, u.is_active, us.is_locked, us.admin_locked
+FROM users u
+JOIN user_secrets us ON us.user_id = u.id
+WHERE u.email = $1
+  AND u.deleted_at IS NULL
 `
 
 type GetUserByEmailForOAuthRow struct {
@@ -159,6 +208,11 @@ type GetUserByEmailForOAuthRow struct {
 	AdminLocked bool      `db:"admin_locked" json:"admin_locked"`
 }
 
+// Looks up an existing user by email during OAuth callback processing.
+// Used when a provider returns an email that matches an existing account
+// (e.g. signing in with Google using an email already registered via password).
+// Returns is_locked and admin_locked so the OAuth callback handler can gate the
+// flow with the same lockout checks as the password login path.
 func (q *Queries) GetUserByEmailForOAuth(ctx context.Context, email pgtype.Text) (GetUserByEmailForOAuthRow, error) {
 	row := q.db.QueryRow(ctx, GetUserByEmailForOAuth, email)
 	var i GetUserByEmailForOAuthRow
@@ -172,10 +226,11 @@ func (q *Queries) GetUserByEmailForOAuth(ctx context.Context, email pgtype.Text)
 }
 
 const GetUserForOAuthCallback = `-- name: GetUserForOAuthCallback :one
-SELECT id, is_active, is_locked, admin_locked
-FROM users
-WHERE id = $1::uuid
-  AND deleted_at IS NULL
+SELECT u.id, u.is_active, us.is_locked, us.admin_locked
+FROM users u
+JOIN user_secrets us ON us.user_id = u.id
+WHERE u.id = $1::uuid
+  AND u.deleted_at IS NULL
 `
 
 type GetUserForOAuthCallbackRow struct {
@@ -185,6 +240,9 @@ type GetUserForOAuthCallbackRow struct {
 	AdminLocked bool      `db:"admin_locked" json:"admin_locked"`
 }
 
+// Fetches the account state for a user identified by id during OAuth callback processing.
+// Used after GetIdentityByProviderUID returns an existing linked identity to verify the
+// account is still active before issuing tokens.
 func (q *Queries) GetUserForOAuthCallback(ctx context.Context, userID pgtype.UUID) (GetUserForOAuthCallbackRow, error) {
 	row := q.db.QueryRow(ctx, GetUserForOAuthCallback, userID)
 	var i GetUserForOAuthCallbackRow
@@ -220,8 +278,10 @@ type GetUserIdentitiesRow struct {
 }
 
 // Returns all linked OAuth identities for the given user, oldest first.
+// Used by the account-settings page to display connected providers.
 // access_token and refresh_token_provider are intentionally excluded —
-// they are provider secrets and must never be returned to clients.
+// they are provider secrets stored in user_identity_tokens and must never
+// be returned to clients.
 func (q *Queries) GetUserIdentities(ctx context.Context, userID pgtype.UUID) ([]GetUserIdentitiesRow, error) {
 	rows, err := q.db.Query(ctx, GetUserIdentities, userID)
 	if err != nil {
@@ -252,7 +312,7 @@ func (q *Queries) GetUserIdentities(ctx context.Context, userID pgtype.UUID) ([]
 const UpsertUserIdentity = `-- name: UpsertUserIdentity :one
 INSERT INTO user_identities (
     user_id, provider, provider_uid,
-    provider_email, display_name, avatar_url, access_token
+    provider_email, display_name, avatar_url, raw_profile
 )
 VALUES (
     $1::uuid,
@@ -261,15 +321,24 @@ VALUES (
     $4,
     $5,
     $6,
-    $7
+    $7::jsonb
 )
 ON CONFLICT ON CONSTRAINT uq_identity_user_provider DO UPDATE
     SET provider_email = EXCLUDED.provider_email,
         display_name   = EXCLUDED.display_name,
         avatar_url     = EXCLUDED.avatar_url,
-        access_token   = EXCLUDED.access_token,
+        raw_profile    = EXCLUDED.raw_profile,
         updated_at     = NOW()
-RETURNING id, user_id, provider, provider_uid, provider_email, display_name, avatar_url, access_token, access_token_expires_at, refresh_token_provider, raw_profile, created_at, updated_at
+RETURNING
+    id,
+    user_id,
+    provider,
+    provider_uid,
+    provider_email,
+    display_name,
+    avatar_url,
+    created_at,
+    updated_at
 `
 
 type UpsertUserIdentityParams struct {
@@ -279,10 +348,32 @@ type UpsertUserIdentityParams struct {
 	ProviderEmail pgtype.Text  `db:"provider_email" json:"provider_email"`
 	DisplayName   pgtype.Text  `db:"display_name" json:"display_name"`
 	AvatarURL     pgtype.Text  `db:"avatar_url" json:"avatar_url"`
-	AccessToken   pgtype.Text  `db:"access_token" json:"access_token"`
+	RawProfile    []byte       `db:"raw_profile" json:"raw_profile"`
 }
 
-func (q *Queries) UpsertUserIdentity(ctx context.Context, arg UpsertUserIdentityParams) (UserIdentity, error) {
+type UpsertUserIdentityRow struct {
+	ID            uuid.UUID    `db:"id" json:"id"`
+	UserID        pgtype.UUID  `db:"user_id" json:"user_id"`
+	Provider      AuthProvider `db:"provider" json:"provider"`
+	ProviderUid   string       `db:"provider_uid" json:"provider_uid"`
+	ProviderEmail pgtype.Text  `db:"provider_email" json:"provider_email"`
+	DisplayName   pgtype.Text  `db:"display_name" json:"display_name"`
+	AvatarURL     pgtype.Text  `db:"avatar_url" json:"avatar_url"`
+	CreatedAt     time.Time    `db:"created_at" json:"created_at"`
+	UpdatedAt     time.Time    `db:"updated_at" json:"updated_at"`
+}
+
+// Inserts or updates the identity metadata row for an OAuth account.
+// Token columns (access_token, access_token_expires_at, refresh_token_provider)
+// are NOT handled here — call UpsertUserIdentityTokens immediately after in the
+// same transaction to persist encrypted tokens.
+//
+// ON CONFLICT ON CONSTRAINT uq_identity_user_provider refreshes provider-side
+// metadata (display name, avatar, raw profile) on each login without creating duplicate rows.
+//
+// RETURNING uses an explicit column list (not *) so future column additions to
+// user_identities do not silently change the generated Go struct.
+func (q *Queries) UpsertUserIdentity(ctx context.Context, arg UpsertUserIdentityParams) (UpsertUserIdentityRow, error) {
 	row := q.db.QueryRow(ctx, UpsertUserIdentity,
 		arg.UserID,
 		arg.Provider,
@@ -290,9 +381,9 @@ func (q *Queries) UpsertUserIdentity(ctx context.Context, arg UpsertUserIdentity
 		arg.ProviderEmail,
 		arg.DisplayName,
 		arg.AvatarURL,
-		arg.AccessToken,
+		arg.RawProfile,
 	)
-	var i UserIdentity
+	var i UpsertUserIdentityRow
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,
@@ -301,12 +392,50 @@ func (q *Queries) UpsertUserIdentity(ctx context.Context, arg UpsertUserIdentity
 		&i.ProviderEmail,
 		&i.DisplayName,
 		&i.AvatarURL,
-		&i.AccessToken,
-		&i.AccessTokenExpiresAt,
-		&i.RefreshTokenProvider,
-		&i.RawProfile,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const UpsertUserIdentityTokens = `-- name: UpsertUserIdentityTokens :exec
+INSERT INTO user_identity_tokens (
+    identity_id,
+    access_token,
+    access_token_expires_at,
+    refresh_token_provider
+)
+VALUES (
+    $1::uuid,
+    $2,
+    $3::timestamptz,
+    $4
+)
+ON CONFLICT (identity_id) DO UPDATE
+    SET access_token            = EXCLUDED.access_token,
+        access_token_expires_at = EXCLUDED.access_token_expires_at,
+        refresh_token_provider  = EXCLUDED.refresh_token_provider,
+        updated_at              = NOW()
+`
+
+type UpsertUserIdentityTokensParams struct {
+	IdentityID           pgtype.UUID        `db:"identity_id" json:"identity_id"`
+	AccessToken          pgtype.Text        `db:"access_token" json:"access_token"`
+	AccessTokenExpiresAt pgtype.Timestamptz `db:"access_token_expires_at" json:"access_token_expires_at"`
+	RefreshTokenProvider pgtype.Text        `db:"refresh_token_provider" json:"refresh_token_provider"`
+}
+
+// Persists encrypted OAuth tokens for the given identity.
+// access_token MUST be AES-256-GCM encrypted (enc: prefix) before being passed here.
+// refresh_token_provider MUST also be encrypted if non-NULL.
+// chk_uit_access_token_encrypted and chk_uit_refresh_token_encrypted enforce this at the DB layer.
+// Must be called in the same transaction as UpsertUserIdentity, using the returned identity_id.
+func (q *Queries) UpsertUserIdentityTokens(ctx context.Context, arg UpsertUserIdentityTokensParams) error {
+	_, err := q.db.Exec(ctx, UpsertUserIdentityTokens,
+		arg.IdentityID,
+		arg.AccessToken,
+		arg.AccessTokenExpiresAt,
+		arg.RefreshTokenProvider,
+	)
+	return err
 }

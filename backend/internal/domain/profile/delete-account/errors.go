@@ -19,3 +19,8 @@ var ErrInvalidTelegramAuth = errors.New("telegram authentication is invalid or e
 // not match the provider_uid stored in user_identities for this user.
 // Maps to 401 telegram_identity_mismatch.
 var ErrTelegramIdentityMismatch = errors.New("telegram identity does not match linked account")
+
+// ErrDeletionTokenCooldown is returned when a deletion OTP is requested while
+// one is already active for this user (idx_ott_account_deletion_active 23505).
+// Maps to 429 deletion_token_cooldown.
+var ErrDeletionTokenCooldown = errors.New("a deletion code has already been sent; please wait before requesting another")

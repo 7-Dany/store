@@ -265,71 +265,76 @@ func AllDeliveryChannelEnumValues() []DeliveryChannelEnum {
 	}
 }
 
-// Status of a single execution attempt. Terminal: success, failed.
-type ExecutionStatusEnum string
+// Job lifecycle states. Terminal: succeeded, failed, dead, cancelled.
+//
+//	Add values with ALTER TYPE … ADD VALUE; never remove a value referenced by existing rows.
+type JobStatusEnum string
 
 const (
-	ExecutionStatusEnumPending    ExecutionStatusEnum = "pending"
-	ExecutionStatusEnumInProgress ExecutionStatusEnum = "in_progress"
-	ExecutionStatusEnumSuccess    ExecutionStatusEnum = "success"
-	ExecutionStatusEnumFailed     ExecutionStatusEnum = "failed"
-	ExecutionStatusEnumRetrying   ExecutionStatusEnum = "retrying"
+	JobStatusEnumPending   JobStatusEnum = "pending"
+	JobStatusEnumRunning   JobStatusEnum = "running"
+	JobStatusEnumSucceeded JobStatusEnum = "succeeded"
+	JobStatusEnumFailed    JobStatusEnum = "failed"
+	JobStatusEnumCancelled JobStatusEnum = "cancelled"
+	JobStatusEnumDead      JobStatusEnum = "dead"
 )
 
-func (e *ExecutionStatusEnum) Scan(src interface{}) error {
+func (e *JobStatusEnum) Scan(src interface{}) error {
 	switch s := src.(type) {
 	case []byte:
-		*e = ExecutionStatusEnum(s)
+		*e = JobStatusEnum(s)
 	case string:
-		*e = ExecutionStatusEnum(s)
+		*e = JobStatusEnum(s)
 	default:
-		return fmt.Errorf("unsupported scan type for ExecutionStatusEnum: %T", src)
+		return fmt.Errorf("unsupported scan type for JobStatusEnum: %T", src)
 	}
 	return nil
 }
 
-type NullExecutionStatusEnum struct {
-	ExecutionStatusEnum ExecutionStatusEnum `json:"execution_status_enum"`
-	Valid               bool                `json:"valid"` // Valid is true if ExecutionStatusEnum is not NULL
+type NullJobStatusEnum struct {
+	JobStatusEnum JobStatusEnum `json:"job_status_enum"`
+	Valid         bool          `json:"valid"` // Valid is true if JobStatusEnum is not NULL
 }
 
 // Scan implements the Scanner interface.
-func (ns *NullExecutionStatusEnum) Scan(value interface{}) error {
+func (ns *NullJobStatusEnum) Scan(value interface{}) error {
 	if value == nil {
-		ns.ExecutionStatusEnum, ns.Valid = "", false
+		ns.JobStatusEnum, ns.Valid = "", false
 		return nil
 	}
 	ns.Valid = true
-	return ns.ExecutionStatusEnum.Scan(value)
+	return ns.JobStatusEnum.Scan(value)
 }
 
 // Value implements the driver Valuer interface.
-func (ns NullExecutionStatusEnum) Value() (driver.Value, error) {
+func (ns NullJobStatusEnum) Value() (driver.Value, error) {
 	if !ns.Valid {
 		return nil, nil
 	}
-	return string(ns.ExecutionStatusEnum), nil
+	return string(ns.JobStatusEnum), nil
 }
 
-func (e ExecutionStatusEnum) Valid() bool {
+func (e JobStatusEnum) Valid() bool {
 	switch e {
-	case ExecutionStatusEnumPending,
-		ExecutionStatusEnumInProgress,
-		ExecutionStatusEnumSuccess,
-		ExecutionStatusEnumFailed,
-		ExecutionStatusEnumRetrying:
+	case JobStatusEnumPending,
+		JobStatusEnumRunning,
+		JobStatusEnumSucceeded,
+		JobStatusEnumFailed,
+		JobStatusEnumCancelled,
+		JobStatusEnumDead:
 		return true
 	}
 	return false
 }
 
-func AllExecutionStatusEnumValues() []ExecutionStatusEnum {
-	return []ExecutionStatusEnum{
-		ExecutionStatusEnumPending,
-		ExecutionStatusEnumInProgress,
-		ExecutionStatusEnumSuccess,
-		ExecutionStatusEnumFailed,
-		ExecutionStatusEnumRetrying,
+func AllJobStatusEnumValues() []JobStatusEnum {
+	return []JobStatusEnum{
+		JobStatusEnumPending,
+		JobStatusEnumRunning,
+		JobStatusEnumSucceeded,
+		JobStatusEnumFailed,
+		JobStatusEnumCancelled,
+		JobStatusEnumDead,
 	}
 }
 
@@ -478,6 +483,130 @@ func AllOneTimeTokenTypeValues() []OneTimeTokenType {
 	}
 }
 
+// How a role or direct grant surfaces a permission at runtime. Middleware acts on this value.
+type PermissionAccessType string
+
+const (
+	PermissionAccessTypeDirect      PermissionAccessType = "direct"
+	PermissionAccessTypeConditional PermissionAccessType = "conditional"
+	PermissionAccessTypeRequest     PermissionAccessType = "request"
+	PermissionAccessTypeDenied      PermissionAccessType = "denied"
+)
+
+func (e *PermissionAccessType) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = PermissionAccessType(s)
+	case string:
+		*e = PermissionAccessType(s)
+	default:
+		return fmt.Errorf("unsupported scan type for PermissionAccessType: %T", src)
+	}
+	return nil
+}
+
+type NullPermissionAccessType struct {
+	PermissionAccessType PermissionAccessType `json:"permission_access_type"`
+	Valid                bool                 `json:"valid"` // Valid is true if PermissionAccessType is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullPermissionAccessType) Scan(value interface{}) error {
+	if value == nil {
+		ns.PermissionAccessType, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.PermissionAccessType.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullPermissionAccessType) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.PermissionAccessType), nil
+}
+
+func (e PermissionAccessType) Valid() bool {
+	switch e {
+	case PermissionAccessTypeDirect,
+		PermissionAccessTypeConditional,
+		PermissionAccessTypeRequest,
+		PermissionAccessTypeDenied:
+		return true
+	}
+	return false
+}
+
+func AllPermissionAccessTypeValues() []PermissionAccessType {
+	return []PermissionAccessType{
+		PermissionAccessTypeDirect,
+		PermissionAccessTypeConditional,
+		PermissionAccessTypeRequest,
+		PermissionAccessTypeDenied,
+	}
+}
+
+// Resource visibility injected into context by Require middleware for downstream query scoping.
+type PermissionScope string
+
+const (
+	PermissionScopeOwn PermissionScope = "own"
+	PermissionScopeAll PermissionScope = "all"
+)
+
+func (e *PermissionScope) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = PermissionScope(s)
+	case string:
+		*e = PermissionScope(s)
+	default:
+		return fmt.Errorf("unsupported scan type for PermissionScope: %T", src)
+	}
+	return nil
+}
+
+type NullPermissionScope struct {
+	PermissionScope PermissionScope `json:"permission_scope"`
+	Valid           bool            `json:"valid"` // Valid is true if PermissionScope is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullPermissionScope) Scan(value interface{}) error {
+	if value == nil {
+		ns.PermissionScope, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.PermissionScope.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullPermissionScope) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.PermissionScope), nil
+}
+
+func (e PermissionScope) Valid() bool {
+	switch e {
+	case PermissionScopeOwn,
+		PermissionScopeAll:
+		return true
+	}
+	return false
+}
+
+func AllPermissionScopeValues() []PermissionScope {
+	return []PermissionScope{
+		PermissionScopeOwn,
+		PermissionScopeAll,
+	}
+}
+
 // Request lifecycle states. Terminal: rejected, cancelled, completed, failed.
 type RequestStatusEnum string
 
@@ -552,15 +681,168 @@ func AllRequestStatusEnumValues() []RequestStatusEnum {
 	}
 }
 
+// SLA breach categories. Extend with ALTER TYPE … ADD VALUE.
+type SlaViolationTypeEnum string
+
+const (
+	SlaViolationTypeEnumPendingTimeout   SlaViolationTypeEnum = "pending_timeout"
+	SlaViolationTypeEnumExecutionTimeout SlaViolationTypeEnum = "execution_timeout"
+)
+
+func (e *SlaViolationTypeEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = SlaViolationTypeEnum(s)
+	case string:
+		*e = SlaViolationTypeEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for SlaViolationTypeEnum: %T", src)
+	}
+	return nil
+}
+
+type NullSlaViolationTypeEnum struct {
+	SlaViolationTypeEnum SlaViolationTypeEnum `json:"sla_violation_type_enum"`
+	Valid                bool                 `json:"valid"` // Valid is true if SlaViolationTypeEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullSlaViolationTypeEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.SlaViolationTypeEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.SlaViolationTypeEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullSlaViolationTypeEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.SlaViolationTypeEnum), nil
+}
+
+func (e SlaViolationTypeEnum) Valid() bool {
+	switch e {
+	case SlaViolationTypeEnumPendingTimeout,
+		SlaViolationTypeEnumExecutionTimeout:
+		return true
+	}
+	return false
+}
+
+func AllSlaViolationTypeEnumValues() []SlaViolationTypeEnum {
+	return []SlaViolationTypeEnum{
+		SlaViolationTypeEnumPendingTimeout,
+		SlaViolationTypeEnumExecutionTimeout,
+	}
+}
+
+// Dispatcher instance states. offline = heartbeat TTL expired.
+//
+//	Add values with ALTER TYPE … ADD VALUE.
+type WorkerStatusEnum string
+
+const (
+	WorkerStatusEnumIdle     WorkerStatusEnum = "idle"
+	WorkerStatusEnumBusy     WorkerStatusEnum = "busy"
+	WorkerStatusEnumDraining WorkerStatusEnum = "draining"
+	WorkerStatusEnumOffline  WorkerStatusEnum = "offline"
+)
+
+func (e *WorkerStatusEnum) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = WorkerStatusEnum(s)
+	case string:
+		*e = WorkerStatusEnum(s)
+	default:
+		return fmt.Errorf("unsupported scan type for WorkerStatusEnum: %T", src)
+	}
+	return nil
+}
+
+type NullWorkerStatusEnum struct {
+	WorkerStatusEnum WorkerStatusEnum `json:"worker_status_enum"`
+	Valid            bool             `json:"valid"` // Valid is true if WorkerStatusEnum is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullWorkerStatusEnum) Scan(value interface{}) error {
+	if value == nil {
+		ns.WorkerStatusEnum, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.WorkerStatusEnum.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullWorkerStatusEnum) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.WorkerStatusEnum), nil
+}
+
+func (e WorkerStatusEnum) Valid() bool {
+	switch e {
+	case WorkerStatusEnumIdle,
+		WorkerStatusEnumBusy,
+		WorkerStatusEnumDraining,
+		WorkerStatusEnumOffline:
+		return true
+	}
+	return false
+}
+
+func AllWorkerStatusEnumValues() []WorkerStatusEnum {
+	return []WorkerStatusEnum{
+		WorkerStatusEnumIdle,
+		WorkerStatusEnumBusy,
+		WorkerStatusEnumDraining,
+		WorkerStatusEnumOffline,
+	}
+}
+
 // Permanent record of hard-purged accounts. user_id has no FK constraint because the users row is deleted before this record is written.
 type AccountPurgeLog struct {
 	ID       uuid.UUID          `db:"id" json:"id"`
 	UserID   pgtype.UUID        `db:"user_id" json:"user_id"`
 	PurgedAt pgtype.Timestamptz `db:"purged_at" json:"purged_at"`
-	Metadata []byte             `db:"metadata" json:"metadata"`
+	// JSONB audit payload. Expected keys: purged_by (UUID of acting admin or system job),
+	//  reason (string), anonymized_email (one-way hash of purged email for re-registration dedup).
+	//  Minimum required: {"deleted_at": "<RFC3339>"}.
+	Metadata []byte `db:"metadata" json:"metadata"`
 }
 
-// Security event log. Rows are deleted when the owning user is deleted (ON DELETE CASCADE) or by periodic retention sweeps. trg_deny_audit_update enforces immutability — existing rows may not be edited.
+// Pre-filtered view of non-deleted users. Use this in all application read paths
+//
+//	to avoid accidentally returning soft-deleted accounts.
+//	Queries with grace-period or special logic (GetUserForLogin, GetUserForDeletion)
+//	must use the base table directly with their own filter.
+type ActiveUser struct {
+	ID            uuid.UUID          `db:"id" json:"id"`
+	Email         pgtype.Text        `db:"email" json:"email"`
+	Username      pgtype.Text        `db:"username" json:"username"`
+	DisplayName   pgtype.Text        `db:"display_name" json:"display_name"`
+	AvatarURL     pgtype.Text        `db:"avatar_url" json:"avatar_url"`
+	IsActive      bool               `db:"is_active" json:"is_active"`
+	EmailVerified bool               `db:"email_verified" json:"email_verified"`
+	CreatedAt     time.Time          `db:"created_at" json:"created_at"`
+	UpdatedAt     time.Time          `db:"updated_at" json:"updated_at"`
+	LastLoginAt   pgtype.Timestamptz `db:"last_login_at" json:"last_login_at"`
+	DeletedAt     *time.Time         `db:"deleted_at" json:"deleted_at"`
+}
+
+// Security event log. user_id is NULLed (not deleted) when the owning user is purged,
+//
+//	preserving the audit trail post-deletion.
+//	Retention: rows older than 90 days are swept by the retention job.
+//	Sweep uses idx_aal_cleanup (ASC) for efficient range deletion.
+//	trg_deny_audit_update enforces immutability — existing rows may not be edited.
 type AuthAuditLog struct {
 	ID        uuid.UUID        `db:"id" json:"id"`
 	UserID    pgtype.UUID      `db:"user_id" json:"user_id"`
@@ -570,6 +852,87 @@ type AuthAuditLog struct {
 	UserAgent pgtype.Text      `db:"user_agent" json:"user_agent"`
 	Metadata  []byte           `db:"metadata" json:"metadata"`
 	CreatedAt time.Time        `db:"created_at" json:"created_at"`
+}
+
+// Persistent job queue. Workers claim rows using SELECT FOR UPDATE SKIP LOCKED.
+//
+//	Status flow: pending → running → succeeded | failed | dead | cancelled.
+//	Failed jobs with attempt < max_attempts are retried via run_after update (no goroutine sleep).
+//	Claim query uses effective_priority = priority + LEAST(minutes_waited, 50) to prevent
+//	low-priority job starvation under sustained high load.
+type Job struct {
+	ID      uuid.UUID     `db:"id" json:"id"`
+	Kind    string        `db:"kind" json:"kind"`
+	Payload []byte        `db:"payload" json:"payload"`
+	Status  JobStatusEnum `db:"status" json:"status"`
+	// Base priority -100 to 100. Effective priority at claim time adds up to +50 points based on
+	//  how long the job has been waiting (1 point per minute, configurable via ManagerConfig).
+	Priority    int32 `db:"priority" json:"priority"`
+	Attempt     int32 `db:"attempt" json:"attempt"`
+	MaxAttempts int32 `db:"max_attempts" json:"max_attempts"`
+	// Worker will not claim this job before this timestamp. Used for retry backoff and deferred scheduling.
+	RunAfter pgtype.Timestamptz `db:"run_after" json:"run_after"`
+	// If a running job exceeds this many seconds, StallDetector resets it to pending.
+	TimeoutSeconds int32 `db:"timeout_seconds" json:"timeout_seconds"`
+	// Routes this job to the named worker pool. Default = 'default'. Workers poll only their assigned queue(s). Use dedicated queues for priority isolation (e.g. 'critical', 'bulk') or tenant separation.
+	QueueName string `db:"queue_name" json:"queue_name"`
+	// Advisory reference to workers.id. No FK is enforced because workers is defined after jobs. May be stale after worker cleanup.
+	WorkerID  pgtype.UUID `db:"worker_id" json:"worker_id"`
+	CreatedBy pgtype.UUID `db:"created_by" json:"created_by"`
+	// Optional caller-supplied dedup key. INSERT ... ON CONFLICT DO NOTHING returns the existing row. uniqueness is enforced by partial index uq_jobs_idempotency_key on active rows only, so the same key may be reused after a job reaches a terminal state.
+	IdempotencyKey pgtype.Text `db:"idempotency_key" json:"idempotency_key"`
+	// JSON output of the handler. NULL until the job transitions to succeeded.
+	Result []byte `db:"result" json:"result"`
+	// Last error message from a failed attempt. Overwritten on each retry.
+	LastError   pgtype.Text        `db:"last_error" json:"last_error"`
+	CreatedAt   time.Time          `db:"created_at" json:"created_at"`
+	UpdatedAt   time.Time          `db:"updated_at" json:"updated_at"`
+	StartedAt   pgtype.Timestamptz `db:"started_at" json:"started_at"`
+	CompletedAt pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+	// Set when attempt = max_attempts and the job transitions to dead. NULL otherwise.
+	DeadAt pgtype.Timestamptz `db:"dead_at" json:"dead_at"`
+}
+
+// Persistent pause registry for job kinds. Replaces the in-memory pause map —
+//
+//	survives Dispatcher restarts. A row here means all jobs of that kind are paused.
+type JobPausedKind struct {
+	Kind string `db:"kind" json:"kind"`
+	// User who paused this kind. NULL if the user was subsequently deleted.
+	PausedBy pgtype.UUID        `db:"paused_by" json:"paused_by"`
+	PausedAt pgtype.Timestamptz `db:"paused_at" json:"paused_at"`
+	// Human-readable reason for the pause.
+	Reason pgtype.Text `db:"reason" json:"reason"`
+}
+
+// DB-stored cron / interval schedule definitions. ScheduleWatcher polls every 10s,
+//
+//	inserts job rows for due entries, and updates next_run_at. Zero goroutines per schedule.
+//	Multi-instance safe via FOR UPDATE SKIP LOCKED on the due-schedule query.
+//	next_run_at computed by robfig/cron parser for cron_expression, or NOW() + interval_seconds.
+type JobSchedule struct {
+	ID              uuid.UUID   `db:"id" json:"id"`
+	Name            string      `db:"name" json:"name"`
+	Kind            string      `db:"kind" json:"kind"`
+	QueueName       string      `db:"queue_name" json:"queue_name"`
+	CronExpression  pgtype.Text `db:"cron_expression" json:"cron_expression"`
+	IntervalSeconds pgtype.Int4 `db:"interval_seconds" json:"interval_seconds"`
+	PayloadTemplate []byte      `db:"payload_template" json:"payload_template"`
+	Priority        int32       `db:"priority" json:"priority"`
+	MaxAttempts     int32       `db:"max_attempts" json:"max_attempts"`
+	TimeoutSeconds  int32       `db:"timeout_seconds" json:"timeout_seconds"`
+	// TRUE = do not enqueue a new job if a job of this kind is already pending or running. Prevents job pile-up when a schedule fires faster than jobs complete.
+	SkipIfRunning bool `db:"skip_if_running" json:"skip_if_running"`
+	IsActive      bool `db:"is_active" json:"is_active"`
+	// Timestamp of the last successful job enqueue for this schedule. NULL until first enqueue.
+	LastEnqueuedAt pgtype.Timestamptz `db:"last_enqueued_at" json:"last_enqueued_at"`
+	// Next scheduled execution time. Computed by ScheduleWatcher after each successful enqueue. NULL until the first poll after the schedule is created.
+	NextRunAt pgtype.Timestamptz `db:"next_run_at" json:"next_run_at"`
+	// Last error encountered during schedule processing (cron parse failure, enqueue error, etc.). NULL when the most recent poll succeeded. Used for ops alerting and debugging.
+	LastScheduleError pgtype.Text `db:"last_schedule_error" json:"last_schedule_error"`
+	CreatedBy         pgtype.UUID `db:"created_by" json:"created_by"`
+	CreatedAt         time.Time   `db:"created_at" json:"created_at"`
+	UpdatedAt         time.Time   `db:"updated_at" json:"updated_at"`
 }
 
 // Single-table token store for email_verification, password_reset, magic_link, account_unlock, email_change_verify, and email_change_confirm flows.
@@ -585,13 +948,14 @@ type OneTimeToken struct {
 	Attempts int16  `db:"attempts" json:"attempts"`
 	// 0 = no attempt limit (non-OTP types). OTP types use 3.
 	MaxAttempts int16 `db:"max_attempts" json:"max_attempts"`
-	// Timestamp of the most recent failed OTP attempt.
+	// Timestamp of the last failed OTP attempt.
 	LastAttemptAt pgtype.Timestamptz `db:"last_attempt_at" json:"last_attempt_at"`
 	RedirectTo    pgtype.Text        `db:"redirect_to" json:"redirect_to"`
 	ExpiresAt     pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 	UsedAt        pgtype.Timestamptz `db:"used_at" json:"used_at"`
 	IpAddress     *netip.Addr        `db:"ip_address" json:"ip_address"`
 	CreatedAt     time.Time          `db:"created_at" json:"created_at"`
+	UpdatedAt     time.Time          `db:"updated_at" json:"updated_at"`
 }
 
 // Permission definitions. Canonical form: resource_type:name (e.g. product:create). Soft-delete via is_active.
@@ -604,7 +968,7 @@ type Permission struct {
 	Description  pgtype.Text `db:"description" json:"description"`
 	// Generated: resource_type || ':' || name. Used for fast canonical-name lookups.
 	CanonicalName pgtype.Text `db:"canonical_name" json:"canonical_name"`
-	IsActive      pgtype.Bool `db:"is_active" json:"is_active"`
+	IsActive      bool        `db:"is_active" json:"is_active"`
 	CreatedAt     time.Time   `db:"created_at" json:"created_at"`
 	UpdatedAt     time.Time   `db:"updated_at" json:"updated_at"`
 }
@@ -631,12 +995,12 @@ type PermissionGroup struct {
 	Icon         pgtype.Text `db:"icon" json:"icon"`
 	// Hex colour for UI badges. Must be #RRGGBB — enforced by chk_pg_color_hex_format.
 	ColorHex     pgtype.Text `db:"color_hex" json:"color_hex"`
-	DisplayOrder pgtype.Int4 `db:"display_order" json:"display_order"`
+	DisplayOrder int32       `db:"display_order" json:"display_order"`
 	// FALSE = hidden from non-admin interfaces (e.g. internal or system-only groups).
-	IsVisible pgtype.Bool `db:"is_visible" json:"is_visible"`
-	IsActive  pgtype.Bool `db:"is_active" json:"is_active"`
-	CreatedAt time.Time   `db:"created_at" json:"created_at"`
-	UpdatedAt time.Time   `db:"updated_at" json:"updated_at"`
+	IsVisible bool      `db:"is_visible" json:"is_visible"`
+	IsActive  bool      `db:"is_active" json:"is_active"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 }
 
 // Many-to-many join between permission_groups and permissions. CASCADE DELETE on both sides.
@@ -646,12 +1010,44 @@ type PermissionGroupMember struct {
 	CreatedAt    time.Time   `db:"created_at" json:"created_at"`
 }
 
+// Defines which roles must approve a permission-action request when access_type = 'request'. Feeds request_required_approvers at runtime.
+type PermissionRequestApprover struct {
+	PermissionID pgtype.UUID `db:"permission_id" json:"permission_id"`
+	RoleID       pgtype.UUID `db:"role_id" json:"role_id"`
+	// Hierarchical level: 0 = first approver tier, 1 = second, etc.
+	ApprovalLevel int32 `db:"approval_level" json:"approval_level"`
+	// Minimum number of approvals needed from this role at this level.
+	MinRequired int32     `db:"min_required" json:"min_required"`
+	CreatedAt   time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// Immutable audit log for permission_request_approvers. Every mutation is tracked because
+//
+//	changes to approval chains are high-risk RBAC events. changed_by is nullable:
+//	SET NULL when the actor is hard-purged to preserve audit row integrity.
+type PermissionRequestApproversAudit struct {
+	ID                    uuid.UUID           `db:"id" json:"id"`
+	PermissionID          pgtype.UUID         `db:"permission_id" json:"permission_id"`
+	RoleID                pgtype.UUID         `db:"role_id" json:"role_id"`
+	ApprovalLevel         pgtype.Int4         `db:"approval_level" json:"approval_level"`
+	MinRequired           pgtype.Int4         `db:"min_required" json:"min_required"`
+	PreviousApprovalLevel pgtype.Int4         `db:"previous_approval_level" json:"previous_approval_level"`
+	PreviousMinRequired   pgtype.Int4         `db:"previous_min_required" json:"previous_min_required"`
+	ChangeType            AuditChangeTypeEnum `db:"change_type" json:"change_type"`
+	ChangedBy             pgtype.UUID         `db:"changed_by" json:"changed_by"`
+	ChangedAt             pgtype.Timestamptz  `db:"changed_at" json:"changed_at"`
+	ChangeReason          pgtype.Text         `db:"change_reason" json:"change_reason"`
+}
+
 // Server-side refresh token ledger with individual revocation and family-based reuse detection (RFC 6819 §5.2.2.3).
 type RefreshToken struct {
-	Jti       pgtype.UUID        `db:"jti" json:"jti"`
-	UserID    pgtype.UUID        `db:"user_id" json:"user_id"`
-	SessionID pgtype.UUID        `db:"session_id" json:"session_id"`
-	FamilyID  pgtype.UUID        `db:"family_id" json:"family_id"`
+	Jti       pgtype.UUID `db:"jti" json:"jti"`
+	UserID    pgtype.UUID `db:"user_id" json:"user_id"`
+	SessionID pgtype.UUID `db:"session_id" json:"session_id"`
+	// UUID shared by all tokens in a rotation chain. Used by fn_revoke_token_family to cascade revocation on reuse detection (RFC 6819 §5.2.2.3).
+	FamilyID pgtype.UUID `db:"family_id" json:"family_id"`
+	// jti of the token this one was rotated from. NULL for the first token in a rotation family.
 	ParentJti pgtype.UUID        `db:"parent_jti" json:"parent_jti"`
 	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 	RevokedAt pgtype.Timestamptz `db:"revoked_at" json:"revoked_at"`
@@ -664,24 +1060,26 @@ type RefreshToken struct {
 // Approval requests with flexible JSONB payloads and quorum support.
 type Request struct {
 	ID uuid.UUID `db:"id" json:"id"`
-	// Discriminator: product_creation, vendor_withdrawal, etc.
+	// Discriminator: product_creation, vendor_withdrawal, permission_action, etc.
 	RequestType string            `db:"request_type" json:"request_type"`
 	RequesterID pgtype.UUID       `db:"requester_id" json:"requester_id"`
 	Status      RequestStatusEnum `db:"status" json:"status"`
 	// Flexible payload. Structure validated against request_type_schemas.
 	RequestData []byte `db:"request_data" json:"request_data"`
 	// Higher = more urgent. Used to order the approval queue.
-	Priority pgtype.Int4 `db:"priority" json:"priority"`
-	// Number of approvals needed before the request transitions to approved.
-	ApprovalsRequired pgtype.Int4 `db:"approvals_required" json:"approvals_required"`
+	Priority int32 `db:"priority" json:"priority"`
+	// Number of approvals needed before the request transitions to approved. Single source of truth; request_required_approvers.min_required is per-role.
+	ApprovalsRequired int32 `db:"approvals_required" json:"approvals_required"`
 	// Auto-reject if still pending past this time.
-	ExpiresAt  pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
-	CreatedAt  time.Time          `db:"created_at" json:"created_at"`
-	UpdatedAt  time.Time          `db:"updated_at" json:"updated_at"`
+	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	CreatedAt time.Time          `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time          `db:"updated_at" json:"updated_at"`
+	// Timestamp when the request entered a terminal state (rejected, cancelled, completed, failed).
+	//  NULL while still in-flight. Set by the application layer on status transition.
 	ResolvedAt pgtype.Timestamptz `db:"resolved_at" json:"resolved_at"`
 }
 
-// Immutable audit trail of approval/rejection actions.
+// Immutable audit trail of approval/rejection actions. RESTRICT FK prevents hard-deleting a request while approvals exist.
 type RequestApproval struct {
 	ID         uuid.UUID   `db:"id" json:"id"`
 	RequestID  pgtype.UUID `db:"request_id" json:"request_id"`
@@ -693,49 +1091,27 @@ type RequestApproval struct {
 	ApprovedAt pgtype.Timestamptz `db:"approved_at" json:"approved_at"`
 }
 
-// Tracks execution of approved requests with retry support and idempotency.
-type RequestExecution struct {
-	ID        uuid.UUID   `db:"id" json:"id"`
-	RequestID pgtype.UUID `db:"request_id" json:"request_id"`
-	// Prevents duplicate execution attempts for the same request.
-	IdempotencyKey pgtype.UUID `db:"idempotency_key" json:"idempotency_key"`
-	// What action was taken, e.g. product_created, payment_sent.
-	ExecutedAction string `db:"executed_action" json:"executed_action"`
-	// JSONB result data: IDs, hashes, metadata, etc.
-	ExecutionResult []byte              `db:"execution_result" json:"execution_result"`
-	Status          ExecutionStatusEnum `db:"status" json:"status"`
-	ErrorMessage    pgtype.Text         `db:"error_message" json:"error_message"`
-	RetryCount      pgtype.Int4         `db:"retry_count" json:"retry_count"`
-	ExecutedBy      pgtype.UUID         `db:"executed_by" json:"executed_by"`
-	StartedAt       pgtype.Timestamptz  `db:"started_at" json:"started_at"`
-	// Set when status transitions to success or failed.
-	CompletedAt pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
-}
-
-// Notification queue for request status changes with per-channel delivery tracking.
+// Notification queue for request status changes with per-channel delivery tracking. One row per event per delivery channel — delivery_channel is NOT NULL.
 type RequestNotification struct {
-	ID               uuid.UUID               `db:"id" json:"id"`
-	RequestID        pgtype.UUID             `db:"request_id" json:"request_id"`
-	UserID           pgtype.UUID             `db:"user_id" json:"user_id"`
-	NotificationType NotificationTypeEnum    `db:"notification_type" json:"notification_type"`
-	DeliveryChannel  NullDeliveryChannelEnum `db:"delivery_channel" json:"delivery_channel"`
+	ID               uuid.UUID            `db:"id" json:"id"`
+	RequestID        pgtype.UUID          `db:"request_id" json:"request_id"`
+	UserID           pgtype.UUID          `db:"user_id" json:"user_id"`
+	NotificationType NotificationTypeEnum `db:"notification_type" json:"notification_type"`
+	DeliveryChannel  DeliveryChannelEnum  `db:"delivery_channel" json:"delivery_channel"`
 	// NULL = queued, non-NULL = delivered.
 	SentAt pgtype.Timestamptz `db:"sent_at" json:"sent_at"`
 	// NULL = unread. Set when the user views the notification.
-	ReadAt           pgtype.Timestamptz `db:"read_at" json:"read_at"`
-	DeliveryAttempts pgtype.Int4        `db:"delivery_attempts" json:"delivery_attempts"`
-	LastAttemptAt    pgtype.Timestamptz `db:"last_attempt_at" json:"last_attempt_at"`
-	DeliveryError    pgtype.Text        `db:"delivery_error" json:"delivery_error"`
-	Title            pgtype.Text        `db:"title" json:"title"`
-	Message          pgtype.Text        `db:"message" json:"message"`
-	CreatedAt        time.Time          `db:"created_at" json:"created_at"`
+	ReadAt    pgtype.Timestamptz `db:"read_at" json:"read_at"`
+	Title     pgtype.Text        `db:"title" json:"title"`
+	Message   pgtype.Text        `db:"message" json:"message"`
+	CreatedAt time.Time          `db:"created_at" json:"created_at"`
 }
 
-// Per-user, per-type sliding window counters for request creation rate limiting.
+// Per-user, per-type sliding window counters for request creation rate limiting. Stale rows (window_start older than window duration) should be cleaned up periodically.
 type RequestRateLimit struct {
 	UserID               pgtype.UUID `db:"user_id" json:"user_id"`
 	RequestType          string      `db:"request_type" json:"request_type"`
-	RequestsCreatedCount pgtype.Int4 `db:"requests_created_count" json:"requests_created_count"`
+	RequestsCreatedCount int32       `db:"requests_created_count" json:"requests_created_count"`
 	// Start of the current rate-limit window. Reset when the window expires.
 	WindowStart   pgtype.Timestamptz `db:"window_start" json:"window_start"`
 	LastRequestAt pgtype.Timestamptz `db:"last_request_at" json:"last_request_at"`
@@ -746,24 +1122,26 @@ type RequestRequiredApprover struct {
 	RequestID pgtype.UUID `db:"request_id" json:"request_id"`
 	RoleID    pgtype.UUID `db:"role_id" json:"role_id"`
 	// Hierarchical level: 0 = first, 1 = second, etc.
-	ApprovalLevel pgtype.Int4 `db:"approval_level" json:"approval_level"`
-	MinRequired   pgtype.Int4 `db:"min_required" json:"min_required"`
+	ApprovalLevel int32 `db:"approval_level" json:"approval_level"`
+	MinRequired   int32 `db:"min_required" json:"min_required"`
 	// TRUE = all lower levels must be satisfied before this level can act.
-	MustCompletePreviousLevel pgtype.Bool `db:"must_complete_previous_level" json:"must_complete_previous_level"`
-	Conditions                []byte      `db:"conditions" json:"conditions"`
-	CreatedAt                 time.Time   `db:"created_at" json:"created_at"`
+	MustCompletePreviousLevel bool `db:"must_complete_previous_level" json:"must_complete_previous_level"`
+	// JSONB conditions that must be met for this role to satisfy the approval requirement. Same key vocabulary as role_permissions.conditions.
+	Conditions []byte    `db:"conditions" json:"conditions"`
+	CreatedAt  time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt  time.Time `db:"updated_at" json:"updated_at"`
 }
 
 // SLA thresholds per request_type for alerting and violation detection.
 type RequestSlaConfig struct {
-	RequestType          string      `db:"request_type" json:"request_type"`
-	PendingMaxHours      int32       `db:"pending_max_hours" json:"pending_max_hours"`
-	ExecutionMaxMinutes  int32       `db:"execution_max_minutes" json:"execution_max_minutes"`
-	NotifyApproachingSla pgtype.Bool `db:"notify_approaching_sla" json:"notify_approaching_sla"`
+	RequestType          string `db:"request_type" json:"request_type"`
+	PendingMaxHours      int32  `db:"pending_max_hours" json:"pending_max_hours"`
+	ExecutionMaxMinutes  int32  `db:"execution_max_minutes" json:"execution_max_minutes"`
+	NotifyApproachingSla bool   `db:"notify_approaching_sla" json:"notify_approaching_sla"`
 	// Alert is triggered when this percentage of the SLA window has elapsed.
-	ApproachingThresholdPercent pgtype.Int4 `db:"approaching_threshold_percent" json:"approaching_threshold_percent"`
-	CreatedAt                   time.Time   `db:"created_at" json:"created_at"`
-	UpdatedAt                   time.Time   `db:"updated_at" json:"updated_at"`
+	ApproachingThresholdPercent int32     `db:"approaching_threshold_percent" json:"approaching_threshold_percent"`
+	CreatedAt                   time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt                   time.Time `db:"updated_at" json:"updated_at"`
 }
 
 // Records SLA breaches for monitoring, alerting, and reporting.
@@ -771,16 +1149,32 @@ type RequestSlaViolation struct {
 	ID        uuid.UUID   `db:"id" json:"id"`
 	RequestID pgtype.UUID `db:"request_id" json:"request_id"`
 	// pending_timeout = request sat in pending too long; execution_timeout = execution took too long.
-	ViolationType string             `db:"violation_type" json:"violation_type"`
-	DetectedAt    pgtype.Timestamptz `db:"detected_at" json:"detected_at"`
-	ResolvedAt    pgtype.Timestamptz `db:"resolved_at" json:"resolved_at"`
-	Notified      pgtype.Bool        `db:"notified" json:"notified"`
+	ViolationType SlaViolationTypeEnum `db:"violation_type" json:"violation_type"`
+	DetectedAt    pgtype.Timestamptz   `db:"detected_at" json:"detected_at"`
+	ResolvedAt    pgtype.Timestamptz   `db:"resolved_at" json:"resolved_at"`
+	// User who acknowledged or resolved this SLA breach. NULL if resolved by automated process or user was deleted.
+	ResolvedBy pgtype.UUID `db:"resolved_by" json:"resolved_by"`
+	// TRUE once the on-call alert has been dispatched for this violation. Never reset to FALSE — duplicate notifications are suppressed by this flag.
+	Notified  bool      `db:"notified" json:"notified"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// Immutable audit log of every status transition on a request. Populated by trg_record_request_status_history on requests INSERT/UPDATE. RESTRICT FK prevents hard-deleting a request while status history exists.
+type RequestStatusHistory struct {
+	ID        uuid.UUID             `db:"id" json:"id"`
+	RequestID pgtype.UUID           `db:"request_id" json:"request_id"`
+	OldStatus NullRequestStatusEnum `db:"old_status" json:"old_status"`
+	NewStatus RequestStatusEnum     `db:"new_status" json:"new_status"`
+	// Actor who triggered the transition. Read from rbac.acting_user session variable; falls back to NULL when unset (e.g. automated scheduler transitions).
+	ChangedBy pgtype.UUID        `db:"changed_by" json:"changed_by"`
+	ChangedAt pgtype.Timestamptz `db:"changed_at" json:"changed_at"`
+	Note      pgtype.Text        `db:"note" json:"note"`
 }
 
 // JSON Schema validation rules for request_data keyed by request_type.
 type RequestTypeSchema struct {
 	RequestType string `db:"request_type" json:"request_type"`
-	// JSON Schema defining required fields, types, and constraints for this request_type.
+	// JSON Schema for this request_type's request_data payload.
 	JsonSchema []byte    `db:"json_schema" json:"json_schema"`
 	CreatedAt  time.Time `db:"created_at" json:"created_at"`
 	UpdatedAt  time.Time `db:"updated_at" json:"updated_at"`
@@ -791,22 +1185,25 @@ type Role struct {
 	ID          uuid.UUID   `db:"id" json:"id"`
 	Name        string      `db:"name" json:"name"`
 	Description pgtype.Text `db:"description" json:"description"`
-	// TRUE = built-in role managed by ops. Cannot be deleted by end users.
-	IsSystemRole pgtype.Bool `db:"is_system_role" json:"is_system_role"`
+	// TRUE = built-in role managed by ops; cannot be deleted by end users.
+	IsSystemRole bool `db:"is_system_role" json:"is_system_role"`
 	// TRUE = unrestricted access. chk_roles_owner_must_be_system requires is_system_role = TRUE simultaneously.
-	IsOwnerRole pgtype.Bool `db:"is_owner_role" json:"is_owner_role"`
-	// FALSE = soft-deleted. Always filter WHERE is_active = TRUE.
-	IsActive  pgtype.Bool `db:"is_active" json:"is_active"`
-	CreatedAt time.Time   `db:"created_at" json:"created_at"`
-	UpdatedAt time.Time   `db:"updated_at" json:"updated_at"`
+	IsOwnerRole bool      `db:"is_owner_role" json:"is_owner_role"`
+	IsActive    bool      `db:"is_active" json:"is_active"`
+	CreatedAt   time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at" json:"updated_at"`
 }
 
-// Maps roles → permissions with optional ABAC conditions. Every grant requires a named accountable human. All mutations logged to role_permissions_audit.
+// Maps roles → permissions with optional ABAC conditions, access_type, and scope. Every grant requires a named accountable human. All mutations logged to role_permissions_audit.
 type RolePermission struct {
 	RoleID       pgtype.UUID `db:"role_id" json:"role_id"`
 	PermissionID pgtype.UUID `db:"permission_id" json:"permission_id"`
 	// JSONB object narrowing when the permission applies. Validated against permission_condition_templates in the app layer.
 	Conditions []byte `db:"conditions" json:"conditions"`
+	// direct=pass, conditional=pass+enforce conditions, request=202 approval flow, denied=403.
+	AccessType PermissionAccessType `db:"access_type" json:"access_type"`
+	// own=resources user owns, all=any resource of this type.
+	Scope PermissionScope `db:"scope" json:"scope"`
 	// RESTRICT prevents that user being deleted while the grant exists.
 	GrantedBy     pgtype.UUID `db:"granted_by" json:"granted_by"`
 	GrantedReason string      `db:"granted_reason" json:"granted_reason"`
@@ -814,46 +1211,58 @@ type RolePermission struct {
 	UpdatedAt     time.Time   `db:"updated_at" json:"updated_at"`
 }
 
-// Immutable audit log for role_permissions. Populated by trg_audit_role_permissions. RESTRICT FKs prevent deletion of referenced rows while history exists.
+// Immutable audit log for role_permissions. Populated by trg_audit_role_permissions.
+//
+//	RESTRICT FKs on role/permission prevent deletion while history exists.
+//	changed_by is nullable: SET NULL when actor is hard-purged so audit rows are preserved.
+//	Retention: rows older than 90 days swept by retention job using idx_rp_audit_cleanup (ASC).
 type RolePermissionsAudit struct {
-	ID           uuid.UUID   `db:"id" json:"id"`
-	RoleID       pgtype.UUID `db:"role_id" json:"role_id"`
-	PermissionID pgtype.UUID `db:"permission_id" json:"permission_id"`
-	Conditions   []byte      `db:"conditions" json:"conditions"`
-	// Snapshot of conditions before the mutation. NULL on INSERT.
-	PreviousConditions []byte              `db:"previous_conditions" json:"previous_conditions"`
-	ChangeType         AuditChangeTypeEnum `db:"change_type" json:"change_type"`
-	ChangedBy          pgtype.UUID         `db:"changed_by" json:"changed_by"`
-	ChangedAt          pgtype.Timestamptz  `db:"changed_at" json:"changed_at"`
-	ChangeReason       pgtype.Text         `db:"change_reason" json:"change_reason"`
+	ID           uuid.UUID                `db:"id" json:"id"`
+	RoleID       pgtype.UUID              `db:"role_id" json:"role_id"`
+	PermissionID pgtype.UUID              `db:"permission_id" json:"permission_id"`
+	Conditions   []byte                   `db:"conditions" json:"conditions"`
+	AccessType   NullPermissionAccessType `db:"access_type" json:"access_type"`
+	Scope        NullPermissionScope      `db:"scope" json:"scope"`
+	// Snapshot of conditions before the mutation.
+	PreviousConditions []byte `db:"previous_conditions" json:"previous_conditions"`
+	// Snapshot of access_type before the mutation.
+	PreviousAccessType NullPermissionAccessType `db:"previous_access_type" json:"previous_access_type"`
+	// Snapshot of scope before the mutation.
+	PreviousScope NullPermissionScope `db:"previous_scope" json:"previous_scope"`
+	ChangeType    AuditChangeTypeEnum `db:"change_type" json:"change_type"`
+	ChangedBy     pgtype.UUID         `db:"changed_by" json:"changed_by"`
+	ChangedAt     pgtype.Timestamptz  `db:"changed_at" json:"changed_at"`
+	ChangeReason  pgtype.Text         `db:"change_reason" json:"change_reason"`
 }
 
-// Core identity record. trg_require_auth_method enforces at least one auth method per row.
+// Core identity record. Sensitive security fields (password_hash, lock state, attempt counters)
+//
+//	are split into user_secrets so SELECT * on users never returns ciphertext or
+//	brute-force counters. trg_require_auth_method enforces at least one auth method per row.
 type User struct {
 	ID          uuid.UUID   `db:"id" json:"id"`
 	Email       pgtype.Text `db:"email" json:"email"`
 	Username    pgtype.Text `db:"username" json:"username"`
 	DisplayName pgtype.Text `db:"display_name" json:"display_name"`
 	AvatarURL   pgtype.Text `db:"avatar_url" json:"avatar_url"`
-	// bcrypt hash ($2a/$2b, length 60). NULL for OAuth-only users. Never store plaintext.
-	PasswordHash pgtype.Text `db:"password_hash" json:"password_hash"`
 	// FALSE until email verification completes.
-	IsActive      bool `db:"is_active" json:"is_active"`
-	EmailVerified bool `db:"email_verified" json:"email_verified"`
-	// Set by OTP brute-force exhaustion (LockAccount). Cleared by the account-unlock OTP flow or by admin action. Never self-clears.
-	IsLocked bool `db:"is_locked" json:"is_locked"`
-	// Set and cleared exclusively by admin action (RBAC). The user-facing OTP unlock flow must never touch this field. Independent of is_locked.
-	AdminLocked                  bool               `db:"admin_locked" json:"admin_locked"`
-	FailedLoginAttempts          int16              `db:"failed_login_attempts" json:"failed_login_attempts"`
-	LoginLockedUntil             pgtype.Timestamptz `db:"login_locked_until" json:"login_locked_until"`
-	FailedChangePasswordAttempts int16              `db:"failed_change_password_attempts" json:"failed_change_password_attempts"`
-	CreatedAt                    time.Time          `db:"created_at" json:"created_at"`
-	UpdatedAt                    time.Time          `db:"updated_at" json:"updated_at"`
-	LastLoginAt                  pgtype.Timestamptz `db:"last_login_at" json:"last_login_at"`
-	DeletedAt                    *time.Time         `db:"deleted_at" json:"deleted_at"`
+	IsActive      bool      `db:"is_active" json:"is_active"`
+	EmailVerified bool      `db:"email_verified" json:"email_verified"`
+	CreatedAt     time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt     time.Time `db:"updated_at" json:"updated_at"`
+	// Timestamp of the most recent successful login. NULL = never logged in.
+	LastLoginAt pgtype.Timestamptz `db:"last_login_at" json:"last_login_at"`
+	// Soft-delete timestamp. NULL = active account. Cleared by account recovery.
+	//  Hard-purged by background job after 30-day grace period.
+	//  Partial unique indexes (idx_users_email_active, idx_users_username_active) enforce
+	//  uniqueness for active rows only, allowing re-registration after deletion.
+	DeletedAt *time.Time `db:"deleted_at" json:"deleted_at"`
 }
 
 // OAuth / external auth identities. One row per (provider, external account).
+//
+//	Encrypted credentials (access_token, refresh_token_provider) are split into
+//	user_identity_tokens so SELECT * never returns ciphertext.
 type UserIdentity struct {
 	ID            uuid.UUID    `db:"id" json:"id"`
 	UserID        pgtype.UUID  `db:"user_id" json:"user_id"`
@@ -862,24 +1271,46 @@ type UserIdentity struct {
 	ProviderEmail pgtype.Text  `db:"provider_email" json:"provider_email"`
 	DisplayName   pgtype.Text  `db:"display_name" json:"display_name"`
 	AvatarURL     pgtype.Text  `db:"avatar_url" json:"avatar_url"`
-	// AES-256-GCM ciphertext with enc: prefix. chk_ui_access_token_encrypted rejects unencrypted values.
-	AccessToken          pgtype.Text        `db:"access_token" json:"access_token"`
-	AccessTokenExpiresAt pgtype.Timestamptz `db:"access_token_expires_at" json:"access_token_expires_at"`
-	RefreshTokenProvider pgtype.Text        `db:"refresh_token_provider" json:"refresh_token_provider"`
-	RawProfile           []byte             `db:"raw_profile" json:"raw_profile"`
-	CreatedAt            time.Time          `db:"created_at" json:"created_at"`
-	UpdatedAt            time.Time          `db:"updated_at" json:"updated_at"`
+	// Raw JSON blob from the provider's userinfo endpoint. Stored for debugging only — do not treat
+	//  as authoritative profile data. May be NULL if the provider returned no userinfo.
+	RawProfile []byte    `db:"raw_profile" json:"raw_profile"`
+	CreatedAt  time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt  time.Time `db:"updated_at" json:"updated_at"`
 }
 
-// Temporary direct permission grants — exceptions to the role model. Revocation = DELETE; history preserved in user_permissions_audit. Granter must hold the permission themselves (trg_prevent_privilege_escalation).
+// Encrypted OAuth credentials split from user_identities so SELECT * on
+//
+//	user_identities never returns ciphertext. 1:1 with user_identities.
+type UserIdentityToken struct {
+	IdentityID pgtype.UUID `db:"identity_id" json:"identity_id"`
+	// AES-256-GCM ciphertext with enc: prefix. chk_uit_access_token_encrypted rejects unencrypted values.
+	AccessToken pgtype.Text `db:"access_token" json:"access_token"`
+	// NULL if the provider does not return an expiry or the token has not been stored yet.
+	AccessTokenExpiresAt pgtype.Timestamptz `db:"access_token_expires_at" json:"access_token_expires_at"`
+	// AES-256-GCM ciphertext with enc: prefix. NULL if the provider does not issue refresh tokens or the user disconnected.
+	RefreshTokenProvider pgtype.Text `db:"refresh_token_provider" json:"refresh_token_provider"`
+	CreatedAt            time.Time   `db:"created_at" json:"created_at"`
+	UpdatedAt            time.Time   `db:"updated_at" json:"updated_at"`
+}
+
+// Temporary direct permission grants — exceptions to the role model. Revocation = DELETE; history preserved in user_permissions_audit.
+//
+//	Granter must hold the permission themselves (trg_prevent_privilege_escalation).
+//	UNIQUE(user_id, permission_id) enforced by uq_up_one_active_grant_per_user_perm;
+//	re-granting requires the previous grant to be deleted first.
 type UserPermission struct {
 	ID           uuid.UUID   `db:"id" json:"id"`
 	UserID       pgtype.UUID `db:"user_id" json:"user_id"`
 	PermissionID pgtype.UUID `db:"permission_id" json:"permission_id"`
 	// ABAC conditions in the same vocabulary as role_permissions. Validated against permission_condition_templates in the app layer.
-	Conditions    []byte      `db:"conditions" json:"conditions"`
-	GrantedBy     pgtype.UUID `db:"granted_by" json:"granted_by"`
-	GrantedReason string      `db:"granted_reason" json:"granted_reason"`
+	Conditions []byte `db:"conditions" json:"conditions"`
+	// Always 'direct' for per-user grants. Enforced by chk_up_access_type_direct.
+	//  Direct grants to individual users do not confer grant rights to the grantee.
+	AccessType PermissionAccessType `db:"access_type" json:"access_type"`
+	// own=resources user owns, all=any resource of this type. Defaults to own (safe default).
+	Scope         PermissionScope `db:"scope" json:"scope"`
+	GrantedBy     pgtype.UUID     `db:"granted_by" json:"granted_by"`
+	GrantedReason string          `db:"granted_reason" json:"granted_reason"`
 	// REQUIRED. Bounded by trg_validate_user_permission_expiry: min 5 min, max 90 days from now.
 	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 	CreatedAt time.Time          `db:"created_at" json:"created_at"`
@@ -887,17 +1318,23 @@ type UserPermission struct {
 }
 
 // Immutable audit log for user_permissions — highest-risk RBAC table; every mutation is tracked unconditionally. Populated by trg_audit_user_permissions.
+//
+//	changed_by is nullable: SET NULL when actor is hard-purged so audit rows are preserved.
+//	Retention: rows older than 90 days swept by retention job using idx_up_audit_cleanup (ASC).
 type UserPermissionsAudit struct {
-	ID           uuid.UUID   `db:"id" json:"id"`
-	UserID       pgtype.UUID `db:"user_id" json:"user_id"`
-	PermissionID pgtype.UUID `db:"permission_id" json:"permission_id"`
-	Conditions   []byte      `db:"conditions" json:"conditions"`
-	// Snapshot of conditions before the mutation. NULL on INSERT.
-	PreviousConditions []byte              `db:"previous_conditions" json:"previous_conditions"`
-	ChangeType         AuditChangeTypeEnum `db:"change_type" json:"change_type"`
-	ChangedBy          pgtype.UUID         `db:"changed_by" json:"changed_by"`
-	ChangedAt          pgtype.Timestamptz  `db:"changed_at" json:"changed_at"`
-	ChangeReason       pgtype.Text         `db:"change_reason" json:"change_reason"`
+	ID           uuid.UUID           `db:"id" json:"id"`
+	UserID       pgtype.UUID         `db:"user_id" json:"user_id"`
+	PermissionID pgtype.UUID         `db:"permission_id" json:"permission_id"`
+	Conditions   []byte              `db:"conditions" json:"conditions"`
+	Scope        NullPermissionScope `db:"scope" json:"scope"`
+	// Snapshot of conditions before the mutation.
+	PreviousConditions []byte `db:"previous_conditions" json:"previous_conditions"`
+	// Snapshot of scope before the mutation.
+	PreviousScope NullPermissionScope `db:"previous_scope" json:"previous_scope"`
+	ChangeType    AuditChangeTypeEnum `db:"change_type" json:"change_type"`
+	ChangedBy     pgtype.UUID         `db:"changed_by" json:"changed_by"`
+	ChangedAt     pgtype.Timestamptz  `db:"changed_at" json:"changed_at"`
+	ChangeReason  pgtype.Text         `db:"change_reason" json:"change_reason"`
 }
 
 // Assigns exactly one role per user. user_id PK enforces this at the DB level. Deletion of the last active owner is blocked by trg_prevent_orphaned_owner.
@@ -913,12 +1350,16 @@ type UserRole struct {
 	UpdatedAt time.Time          `db:"updated_at" json:"updated_at"`
 }
 
-// Immutable audit log for user_roles. Populated by trg_audit_user_roles. RESTRICT FKs prevent deletion of referenced rows while history exists.
+// Immutable audit log for user_roles. Populated by trg_audit_user_roles.
+//
+//	RESTRICT FKs on user/role prevent deletion while history exists.
+//	changed_by is nullable: SET NULL when actor is hard-purged so audit rows are preserved.
+//	Retention: rows older than 90 days swept by retention job using idx_ur_audit_cleanup (ASC).
 type UserRolesAudit struct {
 	ID     uuid.UUID   `db:"id" json:"id"`
 	UserID pgtype.UUID `db:"user_id" json:"user_id"`
 	RoleID pgtype.UUID `db:"role_id" json:"role_id"`
-	// Snapshot of role_id before the change. NULL on the initial grant.
+	// Snapshot of role_id before the change.
 	PreviousRoleID pgtype.UUID         `db:"previous_role_id" json:"previous_role_id"`
 	ChangeType     AuditChangeTypeEnum `db:"change_type" json:"change_type"`
 	ChangedBy      pgtype.UUID         `db:"changed_by" json:"changed_by"`
@@ -926,10 +1367,42 @@ type UserRolesAudit struct {
 	ChangeReason   pgtype.Text         `db:"change_reason" json:"change_reason"`
 }
 
+// Security-sensitive fields for users. 1:1 with users (user_id PK).
+//
+//	Kept in a separate table so SELECT * on users never accidentally includes
+//	password_hash, lock state, or brute-force counters in API responses.
+//	Must be created in the same transaction as the parent users row.
+type UserSecret struct {
+	UserID pgtype.UUID `db:"user_id" json:"user_id"`
+	// bcrypt hash ($2a/$2b, length 60). NULL for OAuth-only users. Never store plaintext.
+	PasswordHash pgtype.Text `db:"password_hash" json:"password_hash"`
+	// Increment atomically via SQL arithmetic — never read-then-write or concurrent increments will be silently lost.
+	FailedLoginAttempts int16 `db:"failed_login_attempts" json:"failed_login_attempts"`
+	// Increment atomically via SQL arithmetic — never read-then-write. Reset to 0 after every successful password change.
+	FailedChangePasswordAttempts int16 `db:"failed_change_password_attempts" json:"failed_change_password_attempts"`
+	// NULL = not locked by failed attempts. Account unlocks automatically on next login when NOW() > this value — no background job required.
+	LoginLockedUntil pgtype.Timestamptz `db:"login_locked_until" json:"login_locked_until"`
+	// Set by OTP brute-force exhaustion (LockAccount). Cleared by the account-unlock OTP flow or by admin action. Never self-clears.
+	IsLocked bool `db:"is_locked" json:"is_locked"`
+	// Set and cleared exclusively by admin action (RBAC). The user-facing OTP unlock flow must never touch this field. Independent of is_locked.
+	AdminLocked bool `db:"admin_locked" json:"admin_locked"`
+	// UUID of the admin who set admin_locked.
+	AdminLockedBy pgtype.UUID `db:"admin_locked_by" json:"admin_locked_by"`
+	// Human-readable reason for the lock. Required when admin_locked = TRUE.
+	AdminLockedReason pgtype.Text `db:"admin_locked_reason" json:"admin_locked_reason"`
+	// Timestamp when admin_locked was set.
+	AdminLockedAt pgtype.Timestamptz `db:"admin_locked_at" json:"admin_locked_at"`
+	CreatedAt     time.Time          `db:"created_at" json:"created_at"`
+	UpdatedAt     time.Time          `db:"updated_at" json:"updated_at"`
+}
+
 // Login sessions for active-device visibility and audit. Not used for token validation.
 type UserSession struct {
-	ID           uuid.UUID          `db:"id" json:"id"`
-	UserID       pgtype.UUID        `db:"user_id" json:"user_id"`
+	ID     uuid.UUID   `db:"id" json:"id"`
+	UserID pgtype.UUID `db:"user_id" json:"user_id"`
+	// Provider used to initiate this session. NULL only when the session was created
+	//  before provider tracking was added (backfill path). New rows must always supply
+	//  a non-NULL value. CreateUserSession enforces this via a non-nullable parameter.
 	AuthProvider NullAuthProvider   `db:"auth_provider" json:"auth_provider"`
 	StartedAt    pgtype.Timestamptz `db:"started_at" json:"started_at"`
 	LastActiveAt pgtype.Timestamptz `db:"last_active_at" json:"last_active_at"`
@@ -937,4 +1410,32 @@ type UserSession struct {
 	UserAgent    pgtype.Text        `db:"user_agent" json:"user_agent"`
 	IpAddress    *netip.Addr        `db:"ip_address" json:"ip_address"`
 	DeviceName   pgtype.Text        `db:"device_name" json:"device_name"`
+	UpdatedAt    time.Time          `db:"updated_at" json:"updated_at"`
+}
+
+// One row per running Dispatcher instance. Updated every heartbeat_ttl_seconds/2.
+//
+//	StallDetector marks rows offline when heartbeat_at + heartbeat_ttl_seconds < NOW().
+//	Stalled workers' running jobs are reset to pending.
+//	Offline workers older than the retention window should be purged periodically; use idx_workers_stopped.
+type Worker struct {
+	ID uuid.UUID `db:"id" json:"id"`
+	// Hostname of the machine running this Dispatcher instance.
+	Host string `db:"host" json:"host"`
+	// OS process ID of the Dispatcher. Used for signal delivery and process health checks.
+	Pid int32 `db:"pid" json:"pid"`
+	// Maximum concurrent job goroutines for this Dispatcher instance.
+	Concurrency int32              `db:"concurrency" json:"concurrency"`
+	Status      WorkerStatusEnum   `db:"status" json:"status"`
+	HeartbeatAt pgtype.Timestamptz `db:"heartbeat_at" json:"heartbeat_at"`
+	// Heartbeat interval in seconds. StallDetector marks this worker offline when heartbeat_at + heartbeat_ttl_seconds < NOW().
+	HeartbeatTtlSeconds int32              `db:"heartbeat_ttl_seconds" json:"heartbeat_ttl_seconds"`
+	StartedAt           pgtype.Timestamptz `db:"started_at" json:"started_at"`
+	StoppedAt           pgtype.Timestamptz `db:"stopped_at" json:"stopped_at"`
+	// Runtime counter. Resets to 0 on Dispatcher restart.
+	JobsSucceeded int32 `db:"jobs_succeeded" json:"jobs_succeeded"`
+	// Runtime counter. Resets to 0 on Dispatcher restart.
+	JobsFailed int32 `db:"jobs_failed" json:"jobs_failed"`
+	// Runtime counter. Resets to 0 on Dispatcher restart.
+	JobsDead int32 `db:"jobs_dead" json:"jobs_dead"`
 }

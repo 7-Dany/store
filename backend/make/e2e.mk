@@ -181,10 +181,14 @@ endif
 
 # Delete all e2e test users from the test DB.
 # Covers @e2e.test addresses and any punycode (xn--) domains used by tests.
-# auth_audit_log.user_id is ON DELETE CASCADE so audit rows are cleaned automatically.
+# auth_audit_log.user_id is ON DELETE SET NULL, but the table is immutable
+# (trg_deny_audit_update blocks all UPDATEs). Deleting users directly would
+# trigger the FK's SET NULL mechanism — an UPDATE — which the trigger rejects.
+# Fix: use a CTE to delete audit rows first, then delete the users in one
+# atomic statement so the FK's SET NULL action never fires.
 # Uses TEST_DATABASE_URL so e2e tests never touch the dev database.
 _e2e-db-clean:
-	@psql "$(TEST_DATABASE_URL)" -c "DELETE FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%' OR email LIKE '%+tgrl@%' OR email LIKE '%+delb@%' OR email LIKE '%+delvc@%' OR email LIKE '%+delvd@%' OR email LIKE '%+delrl@%' OR email LIKE '%+cncrl@%' OR id IN (SELECT user_id FROM user_identities WHERE provider = 'telegram' AND provider_uid IN ('99887766', '99887700', '99887744'));"
+	@psql "$(TEST_DATABASE_URL)" -c "WITH target AS (SELECT id FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%' OR email LIKE '%+tgrl@%' OR email LIKE '%+delb@%' OR email LIKE '%+delvc@%' OR email LIKE '%+delvd@%' OR email LIKE '%+delrl@%' OR email LIKE '%+cncrl@%' OR id IN (SELECT user_id FROM user_identities WHERE provider = 'telegram' AND provider_uid IN ('99887766', '99887700', '99887744'))), del_audit AS (DELETE FROM auth_audit_log WHERE user_id IN (SELECT id FROM target)) DELETE FROM users WHERE id IN (SELECT id FROM target);"
 	@echo "[e2e] DB cleaned (e2e users removed from test DB)"
 
 # Flush Redis DB 1 (the test server's rate-limiter and blocklist store).

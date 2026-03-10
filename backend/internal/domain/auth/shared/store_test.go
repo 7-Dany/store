@@ -299,7 +299,7 @@ func TestIsNoRows_Nil_ReturnsFalse(t *testing.T) {
 func TestIsDuplicateEmail_UniqueViolationOnEmail_ReturnsTrue(t *testing.T) {
 	t.Parallel()
 	b := zeroBase()
-	pgErr := &pgconn.PgError{Code: "23505", ConstraintName: "idx_users_email"}
+	pgErr := &pgconn.PgError{Code: "23505", ConstraintName: "idx_users_email_active"}
 	require.True(t, b.IsDuplicateEmail(pgErr))
 }
 
@@ -332,7 +332,7 @@ func TestIsDuplicateEmail_NilError_ReturnsFalse(t *testing.T) {
 func TestIsDuplicateEmail_WrappedPgError_ReturnsTrue(t *testing.T) {
 	t.Parallel()
 	b := zeroBase()
-	pgErr := &pgconn.PgError{Code: "23505", ConstraintName: "idx_users_email"}
+	pgErr := &pgconn.PgError{Code: "23505", ConstraintName: "idx_users_email_active"}
 	wrapped := fmt.Errorf("store: %w", pgErr)
 	require.True(t, b.IsDuplicateEmail(wrapped))
 }

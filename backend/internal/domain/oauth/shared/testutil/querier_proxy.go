@@ -70,9 +70,9 @@ func (p *QuerierProxy) GetIdentityByUserAndProvider(ctx context.Context, arg db.
 	return p.Querier.GetIdentityByUserAndProvider(ctx, arg)
 }
 
-func (p *QuerierProxy) UpsertUserIdentity(ctx context.Context, arg db.UpsertUserIdentityParams) (db.UserIdentity, error) {
+func (p *QuerierProxy) UpsertUserIdentity(ctx context.Context, arg db.UpsertUserIdentityParams) (db.UpsertUserIdentityRow, error) {
 	if p.FailUpsertUserIdentity {
-		return db.UserIdentity{}, ErrProxy
+		return db.UpsertUserIdentityRow{}, ErrProxy
 	}
 	return p.Querier.UpsertUserIdentity(ctx, arg)
 }

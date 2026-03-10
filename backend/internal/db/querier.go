@@ -20,48 +20,50 @@ type Querier interface {
 	// ── Email change ───────────────────────────────────────────────────────────
 	// Returns true when no active (non-deleted) user holds @new_email.
 	// Excludes the calling user (id != @user_id) so a same-address re-request
-	// is not rejected here — the same-email guard in the service handles that.
-	// No FOR UPDATE — point-in-time check; SetUserEmail catches 23505 via
-	// idx_users_email_active as the definitive uniqueness guard.
+	// is not rejected here — the same-email guard in the service handles that case.
+	// SetUserEmail catches concurrent races via 23505 on idx_users_email_active.
 	CheckEmailAvailableForChange(ctx context.Context, arg CheckEmailAvailableForChangeParams) (bool, error)
 	// ── Username ───────────────────────────────────────────────────────────────────
-	// Returns true when no row with username = @username exists in users.
-	// No FOR UPDATE — this is a point-in-time availability check; the write path
-	// enforces uniqueness via idx_users_username (23505 on conflict).
+	// Returns true when no active (non-deleted) row with username = @username exists.
+	// Scoped to deleted_at IS NULL (via active_users view) so deleted accounts release
+	// their username for re-registration.
+	// No FOR UPDATE — point-in-time check; write path enforces uniqueness via
+	// idx_users_username_active (23505 on conflict).
 	CheckUsernameAvailable(ctx context.Context, username pgtype.Text) (bool, error)
 	// Marks the token as used. Returns rows-affected: 0 means already consumed.
 	ConsumeAccountDeletionToken(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Marks an email_change_verify or email_change_confirm token as used.
-	// AND used_at IS NULL ensures idempotency: a concurrent correct submission
-	// cannot consume the same token twice.
+	// AND used_at IS NULL ensures idempotency — a concurrent correct submission cannot
+	// consume the same token twice.
 	// Shared by step 2 (consume verify token) and step 3 (consume confirm token).
 	ConsumeEmailChangeToken(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Marks the token as used. The AND used_at IS NULL guard ensures idempotency:
 	// a race between two concurrent correct submissions cannot consume the same token twice.
 	ConsumeEmailVerificationToken(ctx context.Context, id pgtype.UUID) (int64, error)
-	// Marks the token as used. The AND used_at IS NULL guard ensures idempotency:
+	// Marks the token as used. AND used_at IS NULL ensures idempotency:
 	// a race between two concurrent reset submissions cannot consume the same token twice.
 	ConsumePasswordResetToken(ctx context.Context, id pgtype.UUID) (int64, error)
-	// Marks an account_unlock token as used. The AND used_at IS NULL guard ensures
-	// idempotency: a race between two concurrent correct submissions cannot consume
-	// the same token twice.
+	// Marks an account_unlock token as used. AND used_at IS NULL ensures idempotency:
+	// a race between two concurrent correct submissions cannot consume the same token twice.
 	ConsumeUnlockToken(ctx context.Context, id pgtype.UUID) (int64, error)
-	// Issues a new account_deletion OTP token.
-	// max_attempts = 3 (D-19). TTL is supplied by the service as @ttl_seconds.
+	// Issues a new account_deletion OTP token. max_attempts = 3. TTL supplied as @ttl_seconds.
+	//
+	// On 23505 (unique_violation) on idx_ott_account_deletion_active:
+	// a deletion token is already active for this user.
+	// Store layer maps pgErr.ConstraintName == "idx_ott_account_deletion_active"
+	// → ErrDeletionTokenCooldown → handler returns 429.
 	CreateAccountDeletionToken(ctx context.Context, arg CreateAccountDeletionTokenParams) (CreateAccountDeletionTokenRow, error)
 	// Issues a new email_change_confirm OTP token for step 2.
-	// @new_email is stored in the email column (D-09: for audit readability; also
-	// lets step 3 retrieve new_email directly from the token row without a separate query).
-	// max_attempts = 5 (Stage 0 D-12).
-	// The DB constraint chk_ott_ecc_ttl_max caps the TTL at 15 minutes.
+	// @new_email is stored in the email column so step 3 can retrieve the destination
+	// address directly from the token row without a separate query.
+	// max_attempts = 5. The DB constraint chk_ott_ecc_ttl_max caps the TTL at 15 minutes.
 	CreateEmailChangeConfirmToken(ctx context.Context, arg CreateEmailChangeConfirmTokenParams) (CreateEmailChangeConfirmTokenRow, error)
 	// Issues a new email_change_verify OTP token.
 	// @email is the user's CURRENT address (for audit readability).
 	// @metadata stores {"new_email": "..."} so step 2 can retrieve the destination
-	// without a separate KV lookup (one_time_tokens.metadata JSONB, see 001_core.sql).
-	// TTL via @ttl_seconds::float8 — same clock pattern as CreateEmailVerificationToken.
+	// without a separate KV lookup (stored in one_time_tokens.metadata JSONB).
+	// max_attempts = 5. TTL via @ttl_seconds::float8 — same clock pattern as other OTP queries.
 	// The DB constraint chk_ott_ecv_ttl_max caps the TTL at 15 minutes.
-	// max_attempts = 5 (Stage 0 D-12).
 	CreateEmailChangeVerifyToken(ctx context.Context, arg CreateEmailChangeVerifyTokenParams) (CreateEmailChangeVerifyTokenRow, error)
 	// Issues a new email_verification OTP token with a caller-controlled TTL and max 3 attempts.
 	// 3 attempts × 1-in-1,000,000 chance per attempt = 0.0003% brute-force success rate per token.
@@ -69,15 +71,20 @@ type Querier interface {
 	// TTL is passed as @ttl_seconds (float8) so PostgreSQL computes expires_at = NOW() + ttl,
 	// keeping both timestamps on the same clock and preventing chk_ott_ev_ttl_max violations
 	// caused by application/DB clock skew.
-	// The DB constraint chk_ott_ev_ttl_max caps the TTL at 15 minutes (see 001_core.sql).
+	// The DB constraint chk_ott_ev_ttl_max caps the TTL at 15 minutes.
 	// The authoritative TTL value lives in config.Config.OTPValidMinutes (env: OTP_VALID_MINUTES).
 	CreateEmailVerificationToken(ctx context.Context, arg CreateEmailVerificationTokenParams) (CreateEmailVerificationTokenRow, error)
+	// Creates a new user account for a first-time OAuth sign-in.
+	// Atomically inserts both the users row and its companion user_secrets row (NULL
+	// password_hash) using a CTE so trg_require_auth_method (DEFERRABLE INITIALLY
+	// DEFERRED) sees both rows. The caller must INSERT into user_identities in the
+	// same transaction before commit to satisfy the auth-method requirement.
+	// email_verified = TRUE and is_active = TRUE because the provider has already
+	// confirmed the email address.
 	CreateOAuthUser(ctx context.Context, arg CreateOAuthUserParams) (uuid.UUID, error)
 	// Issues a new password_reset OTP token with a caller-controlled TTL and max 3 attempts.
-	// Caller must call InvalidateAllUserPasswordResetTokens first (within the same
-	// transaction) to void any outstanding unused tokens.
-	// TTL is passed as @ttl_seconds (float8) — same pattern as CreateEmailVerificationToken
-	// and CreateUnlockToken. The authoritative value is config.Config.OTPValidMinutes.
+	// Caller must call InvalidateAllUserPasswordResetTokens first (within the same transaction).
+	// TTL via @ttl_seconds::float8 — same clock pattern as CreateEmailVerificationToken.
 	CreatePasswordResetToken(ctx context.Context, arg CreatePasswordResetTokenParams) (CreatePasswordResetTokenRow, error)
 	// Issues a new root refresh token (no parent_jti) with a 30-day TTL.
 	// family_id is generated by the DB DEFAULT (gen_random_uuid()) so each fresh
@@ -87,20 +94,26 @@ type Querier interface {
 	// Issues a child refresh token linked to the presented (now-revoked) parent_jti.
 	// Inherits family_id and session_id from the caller. TTL resets to 30 days from NOW()
 	// rather than inheriting the parent's remaining TTL, consistent with initial login issuance.
-	// NOTE: If ancestry traversal is ever implemented, reinstate:
-	//   CREATE INDEX idx_rt_parent_jti ON refresh_tokens(parent_jti) WHERE parent_jti IS NOT NULL;
 	CreateRotatedRefreshToken(ctx context.Context, arg CreateRotatedRefreshTokenParams) (CreateRotatedRefreshTokenRow, error)
 	// Issues a new account_unlock OTP token. TTL is caller-controlled via @ttl_seconds.
 	// expires_at is computed as NOW() + make_interval(secs => ttl_seconds) so both
-	// created_at and expires_at are on the same PostgreSQL clock, preventing
-	// chk_ott_au_ttl_max violations caused by application/DB clock skew.
+	// timestamps stay on the same PostgreSQL clock, preventing chk_ott_au_ttl_max
+	// violations caused by application/DB clock skew.
 	// No token_hash needed — account_unlock tokens use the OTP code path exclusively.
 	CreateUnlockToken(ctx context.Context, arg CreateUnlockTokenParams) (CreateUnlockTokenRow, error)
 	// ── Registration ────────────────────────────────────────────────────────────
+	// Atomically inserts both the users row and its companion user_secrets row
+	// using a CTE so trg_require_auth_method (DEFERRABLE INITIALLY DEFERRED) sees
+	// both rows before it fires at transaction commit.
+	// Returns the minimal fields needed for the registration response.
 	CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error)
 	// Opens a new login session row. The returned id is embedded in JWT claims and
 	// stored on the refresh_token row so tokens can be tied back to a specific device session.
 	CreateUserSession(ctx context.Context, arg CreateUserSessionParams) (CreateUserSessionRow, error)
+	// Removes the linked identity for the given (user, provider) pair.
+	// Returns rows affected: 0 means the identity did not exist (idempotent).
+	// trg_prevent_orphan_on_identity_delete (002_core_functions.sql) will raise an
+	// exception if this would leave a password-less user with no remaining identity.
 	DeleteUserIdentity(ctx context.Context, arg DeleteUserIdentityParams) (int64, error)
 	// Closes every open session for the user.
 	// Called in the same transaction as RevokeAllUserRefreshTokens so the token ledger
@@ -109,52 +122,57 @@ type Querier interface {
 	// Closes a single session row identified by its id.
 	// AND ended_at IS NULL makes the operation idempotent.
 	// Called during logout to mark the device's session as explicitly ended.
-	// For mass session termination (password change, forced logout) use EndAllUserSessions.
+	// For mass session termination use EndAllUserSessions.
 	EndUserSession(ctx context.Context, id pgtype.UUID) error
 	// Fetches the active account_deletion token for the given user.
 	// FOR UPDATE prevents concurrent double-consumption.
 	GetAccountDeletionToken(ctx context.Context, userID pgtype.UUID) (GetAccountDeletionTokenRow, error)
 	// ── Background purge worker ──
-	// Returns up to 100 user IDs whose grace period has expired.
-	// The worker processes these in a loop, purging each in its own transaction.
+	// Returns up to 100 user IDs whose 30-day grace period has expired.
+	// The worker processes these in a loop, purging each in its own transaction
+	// to bound the blast radius of any single failure.
+	// Index: idx_users_pending_deletion ON users(deleted_at) WHERE deleted_at IS NOT NULL
+	// avoids a full scan of active (deleted_at IS NULL) rows.
 	GetAccountsDueForPurge(ctx context.Context) ([]uuid.UUID, error)
 	// ── Sessions ─────────────────────────────────────────────────────────────────
-	// Returns all open sessions for the user, newest-activity first.
+	// Returns all open sessions for the user, most recently active first.
+	// Limited to 50 rows — enough for any realistic number of concurrent devices.
 	GetActiveSessions(ctx context.Context, userID pgtype.UUID) ([]GetActiveSessionsRow, error)
 	// Fetches the active email_change_confirm token for the given authenticated user.
-	// Lookup by (user_id, token_type) — the user is authenticated via grant token.
-	// The email column holds the new_email address for use in step 3.
+	// The email column holds new_email for use in step 3.
 	// FOR UPDATE prevents concurrent double-consumption.
 	GetEmailChangeConfirmToken(ctx context.Context, userID pgtype.UUID) (GetEmailChangeConfirmTokenRow, error)
 	// Fetches the active email_change_verify token for the given authenticated user.
-	// Lookup is by (user_id, token_type) — no email parameter needed because the user
-	// is already authenticated via JWT.
+	// Lookup is by (user_id, token_type) — no email param needed since the user is
+	// already authenticated via JWT.
 	// Returns metadata so the caller can extract new_email.
 	// FOR UPDATE prevents concurrent double-consumption.
-	// ORDER BY created_at DESC, id DESC picks the most recent token in the unlikely
-	// event that two rows exist (race between invalidation and insert).
 	GetEmailChangeVerifyToken(ctx context.Context, userID pgtype.UUID) (GetEmailChangeVerifyTokenRow, error)
 	// ── Email verification ───────────────────────────────────────────────────────
 	// Looks up by email only — the client sends email + OTP code, no user_id required.
 	// ORDER BY created_at DESC, id DESC picks the most recent valid token.
 	// FOR UPDATE prevents concurrent double-use (two simultaneous correct submissions).
 	GetEmailVerificationToken(ctx context.Context, email string) (GetEmailVerificationTokenRow, error)
-	// oauth.sql — queries for the OAuth domain (Google provider).
-	// Appended to by future providers (Telegram). Do not merge into auth.sql.
 	// ── OAuth Identity ──
+	// Looks up an identity by provider + provider_uid (the external account's stable ID).
+	// Used during OAuth callback to determine whether an incoming provider account is
+	// already linked to an internal user.
+	// access_token is intentionally excluded — it lives in user_identity_tokens and
+	// must never be returned in bulk identity lookups (ciphertext in API response risk).
+	// Callers that need the token must query user_identity_tokens separately by identity_id.
 	GetIdentityByProviderUID(ctx context.Context, arg GetIdentityByProviderUIDParams) (GetIdentityByProviderUIDRow, error)
+	// Returns the identity row for a specific (user, provider) pair.
+	// Used to check whether a user already has a linked account for a given provider
+	// before attempting to link or unlink.
 	GetIdentityByUserAndProvider(ctx context.Context, arg GetIdentityByUserAndProviderParams) (GetIdentityByUserAndProviderRow, error)
-	// Returns created_at of the most recent active (used_at IS NULL) email_change_verify
-	// token for this user. Used by the service to enforce the 2-minute cooldown
-	// before allowing a new request-change call.
+	// Returns created_at of the most recent active email_change_verify token for this user.
+	// Used by the service to enforce a 2-minute cooldown before allowing a new request.
 	// Returns pgx.ErrNoRows when no active verify token exists.
-	// Index: idx_ott_active covers (user_id, token_type, used_at IS NULL).
 	GetLatestEmailChangeVerifyTokenCreatedAt(ctx context.Context, userID pgtype.UUID) (time.Time, error)
 	// Returns created_at of the most recent unused email_verification token for this user.
 	// Used to enforce the resend cooldown window in the application layer.
-	// Index note (F11): idx_ott_active covers the filter (user_id, token_type, used_at IS NULL)
-	// but not the ORDER BY created_at DESC; Postgres sorts a tiny in-memory result set.
-	// For the cooldown check the result set is at most a handful of rows, which is acceptable.
+	// idx_ott_active covers the filter (user_id, token_type, used_at IS NULL);
+	// the ORDER BY created_at DESC sorts a tiny in-memory result set.
 	GetLatestVerificationTokenCreatedAt(ctx context.Context, userID pgtype.UUID) (time.Time, error)
 	// Fetches the most recent active (unused) password_reset token for the email.
 	// FOR UPDATE prevents concurrent double-consumption (same pattern as
@@ -163,8 +181,7 @@ type Querier interface {
 	// ── Forgot / reset password ──────────────────────────────────────────────────
 	// Returns created_at of the most recent active (used_at IS NULL) password_reset
 	// token for the given email. Used by the service to enforce a 60-second cooldown
-	// between reset requests without relying solely on the unique-index constraint.
-	// Returns pgx.ErrNoRows when no active token exists.
+	// between reset requests. Returns pgx.ErrNoRows when no active token exists.
 	GetPasswordResetTokenCreatedAt(ctx context.Context, email string) (time.Time, error)
 	// Returns the token row for OTP validation without locking the row.
 	// Used by VerifyResetCode: no FOR UPDATE because the token is not consumed here.
@@ -175,7 +192,8 @@ type Querier interface {
 	// Used by the /refresh endpoint to validate the presented token before rotation.
 	// Returns pgx.ErrNoRows when the jti does not exist in the table.
 	GetRefreshTokenByJTI(ctx context.Context, jti pgtype.UUID) (GetRefreshTokenByJTIRow, error)
-	// Used by DELETE /sessions/:id to verify the session belongs to the calling user.
+	// Used by DELETE /sessions/:id to verify the session belongs to the calling user
+	// before revoking it.
 	GetSessionByID(ctx context.Context, id pgtype.UUID) (GetSessionByIDRow, error)
 	// Fetches the active account_unlock OTP for the given email.
 	// No is_locked guard — the token exists precisely because the account is locked.
@@ -183,52 +201,62 @@ type Querier interface {
 	// FOR UPDATE prevents concurrent double-consumption.
 	GetUnlockToken(ctx context.Context, email string) (GetUnlockTokenRow, error)
 	// ── OAuth User ──
+	// Returns whether the user has a password set and how many OAuth identities are linked.
+	// Used by the account-settings page to determine which auth methods are available
+	// and whether it is safe to unlink an identity or remove a password.
+	// password_hash lives in user_secrets; a LEFT JOIN on user_identities counts linked providers.
 	GetUserAuthMethods(ctx context.Context, userID pgtype.UUID) (GetUserAuthMethodsRow, error)
+	// Looks up an existing user by email during OAuth callback processing.
+	// Used when a provider returns an email that matches an existing account
+	// (e.g. signing in with Google using an email already registered via password).
+	// Returns is_locked and admin_locked so the OAuth callback handler can gate the
+	// flow with the same lockout checks as the password login path.
 	GetUserByEmailForOAuth(ctx context.Context, email pgtype.Text) (GetUserByEmailForOAuthRow, error)
 	// Returns email_verified for a user looked up by email.
-	// NOTE: called by store tests only — not used in production store code.
-	// Used to assert that VerifyEmailTx actually flipped the flag without
-	// resorting to raw tx.QueryRow calls in tests.
+	// NOTE: used by store tests only — not used in production store code.
 	GetUserEmailVerified(ctx context.Context, email pgtype.Text) (bool, error)
 	// ── Delete Account ──
 	// Returns id, email, password_hash, and deleted_at for the authenticated user.
-	// password_hash is needed by DeleteWithPassword to verify credentials (Path A).
+	// password_hash is needed by DeleteWithPassword to verify credentials.
 	// Returns no-rows for expired-grace-period accounts (deleted_at older than 30 days),
-	// consistent with the login gate (D-05). The handler treats no-rows as a 500
+	// consistent with the login gate. The handler treats no-rows as a 500
 	// (JWT user must always exist within the active window).
 	GetUserForDeletion(ctx context.Context, userID pgtype.UUID) (GetUserForDeletionRow, error)
 	// Returns id and current email for the authenticated user inside a transaction.
 	// FOR UPDATE locks the row to prevent a concurrent email-change from racing past
-	// the uniqueness re-check (D-05) or producing stale old_email in audit metadata.
+	// the uniqueness re-check or producing stale old_email in audit metadata.
+	// Uses active_users view to exclude soft-deleted accounts.
 	GetUserForEmailChangeTx(ctx context.Context, userID pgtype.UUID) (GetUserForEmailChangeTxRow, error)
 	// ── Login ────────────────────────────────────────────────────────────────────
 	// Fetches the fields needed to authenticate a login by either email or username.
 	// The caller passes the raw identifier; the query matches against whichever column equals it.
-	// Only one can match at a time because idx_users_email and idx_users_username are each unique.
+	// Only one can match because idx_users_email_active and idx_users_username_active are unique.
+	//
+	// Recently soft-deleted accounts (within 30-day grace period) are returned so the handler
+	// can show a "your account is pending deletion" message and offer cancellation.
+	// The handler must check deleted_at IS NOT NULL before proceeding with auth logic.
 	//
 	// password_hash IS NOT NULL filters out OAuth-only accounts that have no bcrypt path —
 	// they must authenticate via their identity provider.
 	//
 	// Returns pgx.ErrNoRows when no match; caller must still run a dummy bcrypt compare
 	// before surfacing ErrInvalidCredentials to equalise response timing.
-	//
-	// Index usage:
-	//   email    branch → idx_users_email    (partial unique on email WHERE NOT NULL)
-	//   username branch → idx_users_username (partial unique on username WHERE NOT NULL)
-	// Postgres evaluates both OR branches and uses whichever index is available.
 	GetUserForLogin(ctx context.Context, identifier pgtype.Text) (GetUserForLoginRow, error)
+	// Fetches the account state for a user identified by id during OAuth callback processing.
+	// Used after GetIdentityByProviderUID returns an existing linked identity to verify the
+	// account is still active before issuing tokens.
 	GetUserForOAuthCallback(ctx context.Context, userID pgtype.UUID) (GetUserForOAuthCallbackRow, error)
 	// Fetches the minimal fields needed to gate a password-reset request.
 	// Returns the row regardless of lock state so the service can make its own
-	// anti-enumeration decision without leaking information about account state.
+	// anti-enumeration decision without leaking account state to the caller.
 	GetUserForPasswordReset(ctx context.Context, email pgtype.Text) (GetUserForPasswordResetRow, error)
 	// ── Resend verification ──────────────────────────────────────────────────────
 	// Fetches the minimal fields needed to decide whether a resend is valid.
 	// Returns the row regardless of is_locked / email_verified so the handler can
 	// respond uniformly (anti-enumeration) while still making the right decision internally.
-	// is_active is intentionally excluded — a brand-new unverified account has is_active=FALSE
-	// and must still receive a resend. Only is_locked=TRUE accounts (brute-force lockout)
-	// and already-verified accounts are suppressed.
+	// is_active is intentionally excluded — an unverified account has is_active=FALSE
+	// and must still receive a resend. Only is_locked=TRUE and already-verified accounts
+	// are suppressed.
 	GetUserForResend(ctx context.Context, email pgtype.Text) (GetUserForResendRow, error)
 	// ── Set password (OAuth-only accounts) ────────────────────────────────────
 	// Returns whether the user currently has no password (signed up via OAuth only).
@@ -236,21 +264,26 @@ type Querier interface {
 	GetUserForSetPassword(ctx context.Context, userID pgtype.UUID) (GetUserForSetPasswordRow, error)
 	// Fetches the minimal fields needed to gate a self-service unlock request.
 	// Returns the row regardless of lock state so the service can decide whether to
-	// issue a token without leaking information to unauthenticated callers.
+	// issue a token without leaking account state to unauthenticated callers.
 	GetUserForUnlock(ctx context.Context, email pgtype.Text) (GetUserForUnlockRow, error)
 	// Returns id and current username for the calling user.
 	// FOR UPDATE locks the row inside UpdateUsernameTx to prevent a concurrent
-	// rename from racing past the same-username guard or producing stale audit
-	// metadata (i.e. old_username in the audit log).
+	// rename from racing past the same-username guard or producing stale
+	// old_username in the audit log.
 	GetUserForUsernameUpdate(ctx context.Context, userID pgtype.UUID) (GetUserForUsernameUpdateRow, error)
 	// Returns all linked OAuth identities for the given user, oldest first.
+	// Used by the account-settings page to display connected providers.
 	// access_token and refresh_token_provider are intentionally excluded —
-	// they are provider secrets and must never be returned to clients.
+	// they are provider secrets stored in user_identity_tokens and must never
+	// be returned to clients.
 	GetUserIdentities(ctx context.Context, userID pgtype.UUID) ([]GetUserIdentitiesRow, error)
 	// ── Change password ───────────────────────────────────────────────────────────
 	// Fetches the current bcrypt hash for credential re-verification before a password change.
+	// password_hash lives in user_secrets; a JOIN on users is not needed here.
 	GetUserPasswordHash(ctx context.Context, userID pgtype.UUID) (GetUserPasswordHashRow, error)
 	// ── Profile ───────────────────────────────────────────────────────────────────
+	// Returns the full profile for the authenticated user.
+	// is_locked and admin_locked come from user_secrets; all other fields from users.
 	GetUserProfile(ctx context.Context, userID pgtype.UUID) (GetUserProfileRow, error)
 	// Returns email_verified, is_locked, admin_locked, and is_active in a single round-trip.
 	// Called when MarkEmailVerified returns 0 rows to distinguish:
@@ -258,9 +291,10 @@ type Querier interface {
 	//   email_verified = TRUE                   → already verified (no-op, not an error)
 	// Avoids a second query race window compared to checking each column separately.
 	GetUserVerifiedAndLocked(ctx context.Context, userID pgtype.UUID) (GetUserVerifiedAndLockedRow, error)
-	// Permanently deletes a user row. All child rows (refresh_tokens, user_sessions,
-	// one_time_tokens, user_identities, auth_audit_log, user_roles) are removed via
-	// CASCADE. Must be called AFTER InsertPurgeLog within the same transaction (D-14).
+	// Permanently deletes the user row. All child rows are removed via ON DELETE CASCADE:
+	// refresh_tokens, user_sessions, one_time_tokens, user_identities, user_secrets,
+	// auth_audit_log (user_id SET NULL — row is kept), user_roles.
+	// MUST be called AFTER InsertPurgeLog within the same transaction.
 	HardDeleteUser(ctx context.Context, userID pgtype.UUID) error
 	// Returns true when a consumed (used_at IS NOT NULL) account_unlock token exists
 	// for the email. Called by ConsumeUnlockTokenTx when GetUnlockToken returns no
@@ -271,13 +305,12 @@ type Querier interface {
 	// AND failed_change_password_attempts < 32767 guards against SMALLINT overflow
 	// on pathological inputs (the service threshold is 5, so overflow is unreachable
 	// in normal operation).
-	// Returns pgx.ErrNoRows when the user row no longer exists (deleted between
-	// GetUserPasswordHash and this call) — callers treat this as a non-fatal log.
+	// Returns pgx.ErrNoRows when the user no longer exists — callers treat this as non-fatal.
 	IncrementChangePasswordFailures(ctx context.Context, userID pgtype.UUID) (int16, error)
 	// ── Login lockout & account unlock ───────────────────────────────────────────
 	// Increments failed_login_attempts and sets login_locked_until to 15 minutes
 	// in the future when the threshold (10) is reached.
-	// Returns the updated counter and the new (possibly null) lock timestamp so the
+	// Returns the updated counter and the new (possibly NULL) lock timestamp so the
 	// caller can decide whether to emit a login_lockout audit row.
 	IncrementLoginFailures(ctx context.Context, userID pgtype.UUID) (IncrementLoginFailuresRow, error)
 	// AND attempts < max_attempts prevents incrementing past the brute-force ceiling.
@@ -286,23 +319,24 @@ type Querier interface {
 	// Returns pgx.ErrNoRows when the token is already at max_attempts (no row updated);
 	// callers must treat ErrNoRows as "already at ceiling" and proceed to lock logic.
 	IncrementVerificationAttempts(ctx context.Context, id pgtype.UUID) (int16, error)
-	// provider is typed as non-nullable auth_provider even though the DB column allows NULL.
-	// Every event in the auth domain always has a provider context (the user authenticated
-	// via email, google, etc.), so the non-nullable type produces a cleaner Go API without
-	// requiring pgtype.NullAuthProvider wrapping at every call site. If a future domain
-	// needs to log events without a provider, add a separate InsertAuditLogNoProvider query.
+	// Appends one row to auth_audit_log. provider is typed as non-nullable auth_provider
+	// because every event in the auth domain always has a known provider context,
+	// producing a cleaner Go API than pgtype.NullAuthProvider at every call site.
+	// If a future domain needs providerless events, add a separate InsertAuditLogNoProvider query.
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
-	// Writes a permanent record of the purge before the user row is deleted (D-15).
-	// metadata is a JSONB blob — callers pass {"deleted_at": "<RFC3339>"} at minimum.
+	// Writes a permanent compliance record of the purge to account_purge_log.
+	// account_purge_log has no FK to users so this row survives the subsequent DELETE.
+	// @metadata is a JSONB blob — callers pass {"deleted_at": "<RFC3339>"} at minimum.
+	// Recommended additional keys: purged_by (UUID of the worker job), reason (string),
+	// anonymized_email (one-way hash of the purged email for re-registration dedup).
 	InsertPurgeLog(ctx context.Context, arg InsertPurgeLogParams) error
 	// Voids all unused password_reset tokens for this user before issuing a new one.
 	// Prevents token accumulation and reduces the concurrent-reset attack window.
-	// Called by RequestPasswordResetTx inside the same transaction, immediately
-	// before CreatePasswordResetToken.
+	// Called by RequestPasswordResetTx immediately before CreatePasswordResetToken.
 	InvalidateAllUserPasswordResetTokens(ctx context.Context, userID pgtype.UUID) error
 	// Voids all unused email_verification tokens for this user.
-	// Scoped to token_type = 'email_verification' so that in-flight password-reset
-	// or magic-link tokens are not silently nuked on a re-registration attempt.
+	// Scoped to token_type = 'email_verification' so in-flight password-reset or
+	// magic-link tokens are not silently cancelled on a re-registration attempt.
 	// Called inside the same transaction as CreateEmailVerificationToken.
 	InvalidateAllUserTokens(ctx context.Context, userID pgtype.UUID) error
 	// Voids all unused account_deletion OTP tokens for this user before issuing a new one.
@@ -312,30 +346,26 @@ type Querier interface {
 	// Called inside the same transaction as CreateEmailChangeConfirmToken (step 2).
 	InvalidateUserEmailChangeConfirmTokens(ctx context.Context, userID pgtype.UUID) error
 	// Voids all unused email_change_verify tokens for this user before issuing a new one.
-	// Prevents token accumulation and ensures the partial unique index
-	// (idx_email_change_verify_tokens_user_active) never blocks a legitimate re-request.
 	// Called inside the same transaction as CreateEmailChangeVerifyToken.
 	InvalidateUserEmailChangeVerifyTokens(ctx context.Context, userID pgtype.UUID) error
 	// Sets is_locked = TRUE after max OTP attempts are exhausted.
-	// Does NOT touch is_active: an unverified account (is_active=FALSE) stays inactive;
-	// a verified account (is_active=TRUE) stays active — in both cases the auth path
-	// sees is_locked=TRUE and rejects the request.
-	// AND is_locked = FALSE makes the operation idempotent. Rowcount tells the caller
-	// whether the lock actually changed state. Clearing requires admin action or the
-	// account-unlock OTP flow.
+	// Does NOT touch is_active: a verified account stays active so the user can
+	// still see "account locked" messaging rather than "account not found".
+	// AND is_locked = FALSE makes the operation idempotent. Rowcount tells the
+	// caller whether the lock actually changed state.
+	// Clearing requires admin action or the account-unlock OTP flow.
 	LockAccount(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// Activates the account and marks email_verified = TRUE in one statement.
 	// Guards:
-	//   email_verified = FALSE → prevents double-activation (idempotency guard)
-	//   is_locked      = FALSE → blocks an OTP-brute-force-locked account from being
-	//                            re-activated via the verification path.
-	//   admin_locked   = FALSE → blocks an admin-locked account from verifying;
-	//                            only admin action can clear admin_locked.
+	//   email_verified = FALSE  → prevents double-activation (idempotency guard)
+	//   is_locked = TRUE        → blocks an OTP-brute-force-locked account from being
+	//                             re-activated via the verification path.
+	//   admin_locked = TRUE     → blocks an admin-locked account from verifying;
+	//                             only admin action can clear admin_locked.
 	// Returns rows affected so callers can detect a no-op and investigate the cause
 	// with GetUserVerifiedAndLocked.
 	MarkEmailVerified(ctx context.Context, userID pgtype.UUID) (int64, error)
 	// Resets failed_change_password_attempts to 0 after a successful password change.
-	// Ensures the user starts with a clean counter on their next change-password attempt.
 	// AND failed_change_password_attempts > 0 makes the update a no-op when already zero,
 	// avoiding a write on the happy path for users who never had a failed attempt.
 	ResetChangePasswordFailures(ctx context.Context, userID pgtype.UUID) error
@@ -345,7 +375,7 @@ type Querier interface {
 	ResetLoginFailures(ctx context.Context, userID pgtype.UUID) error
 	// ── Mass revocation ──────────────────────────────────────────────────────────
 	// Revokes every active (non-expired, non-revoked) refresh token for the user.
-	// reason distinguishes mass-revocations from individual reuse events in the audit trail
+	// @reason distinguishes mass-revocations in the audit trail
 	// (e.g. 'password_changed', 'forced_logout').
 	// Scoped to expires_at > NOW() so already-expired rows are left untouched —
 	// they carry no security risk and bulk-updating them wastes I/O.
@@ -359,11 +389,10 @@ type Querier interface {
 	// Pre-verification tokens must never create authenticated sessions — they were issued
 	// during the registration window before the user proved ownership of the email address.
 	RevokePreVerificationTokens(ctx context.Context, userID pgtype.UUID) error
-	// Marks a single refresh token as revoked.
-	// AND revoked_at IS NULL makes the operation idempotent.
-	// Called with reason = 'rotated' during token rotation and reason = 'logout'
-	// during an explicit logout. The 'logout' reason is excluded from the family-cascade
-	// trigger so only the presented token is revoked, not the entire family.
+	// Marks a single refresh token as revoked. AND revoked_at IS NULL makes it idempotent.
+	// Called with reason = 'rotated' during token rotation and 'logout' during explicit logout.
+	// The 'logout' reason is excluded from the family-cascade trigger so only the presented
+	// token is revoked, not the entire family.
 	RevokeRefreshTokenByJTI(ctx context.Context, arg RevokeRefreshTokenByJTIParams) (pgconn.CommandTag, error)
 	// Revokes all non-revoked refresh tokens for a specific session.
 	// Called by RevokeSessionTx when a user explicitly ends a single device session.
@@ -371,8 +400,8 @@ type Querier interface {
 	// Stamps deleted_at = NOW() for the given active user.
 	// Returns deleted_at so the handler can compute scheduled_deletion_at = deleted_at + 30d.
 	ScheduleUserDeletion(ctx context.Context, userID pgtype.UUID) (*time.Time, error)
-	// Sets password_hash for an OAuth-only account.
-	// The WHERE password_hash IS NULL guard is the DB-level concurrency check:
+	// Sets password_hash for an OAuth-only account that has no password yet.
+	// WHERE password_hash IS NULL is the DB-level concurrency guard:
 	// a concurrent set-password call that races past the service guard returns
 	// 0 rows affected, which the store maps to ErrPasswordAlreadySet.
 	SetPasswordHash(ctx context.Context, arg SetPasswordHashParams) (int64, error)
@@ -383,16 +412,15 @@ type Querier interface {
 	SetUserEmail(ctx context.Context, arg SetUserEmailParams) (int64, error)
 	// Sets username for the user identified by id.
 	// Returns rows affected so the store can distinguish:
-	//   23505 unique_violation on idx_users_username → ErrUsernameTaken
-	//   rows == 0                                    → ErrUserNotFound
+	//   23505 unique_violation on idx_users_username_active → ErrUsernameTaken
+	//   rows == 0                                           → ErrUserNotFound
 	SetUsername(ctx context.Context, arg SetUsernameParams) (int64, error)
 	// Clears is_locked, failed_login_attempts, and login_locked_until atomically.
 	// Called after a successful account-unlock OTP confirmation.
 	UnlockAccount(ctx context.Context, userID pgtype.UUID) error
 	// Stamps last_login_at after a successful authentication.
-	// updated_at is intentionally omitted: trg_users_updated_at (BEFORE UPDATE trigger)
-	// already sets updated_at = NOW() on every UPDATE, making an explicit assignment a
-	// dead no-op that wastes a column write.
+	// updated_at is omitted: trg_users_updated_at (BEFORE UPDATE trigger) already
+	// sets updated_at = NOW() on every UPDATE, making an explicit assignment a dead no-op.
 	// Called inside the same transaction as CreateUserSession so a rolled-back login
 	// does not leave a stale last_login_at.
 	UpdateLastLoginAt(ctx context.Context, userID pgtype.UUID) error
@@ -407,10 +435,25 @@ type Querier interface {
 	UpdateSessionLastActive(ctx context.Context, id pgtype.UUID) error
 	// Updates display_name and/or avatar_url using COALESCE so that a NULL
 	// parameter leaves the current column value unchanged (partial-update pattern).
-	// Called by UpdateProfileTx after input validation in the handler confirms
-	// at least one field is non-nil.
+	// Called by UpdateProfileTx after input validation confirms at least one field is non-nil.
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
-	UpsertUserIdentity(ctx context.Context, arg UpsertUserIdentityParams) (UserIdentity, error)
+	// Inserts or updates the identity metadata row for an OAuth account.
+	// Token columns (access_token, access_token_expires_at, refresh_token_provider)
+	// are NOT handled here — call UpsertUserIdentityTokens immediately after in the
+	// same transaction to persist encrypted tokens.
+	//
+	// ON CONFLICT ON CONSTRAINT uq_identity_user_provider refreshes provider-side
+	// metadata (display name, avatar, raw profile) on each login without creating duplicate rows.
+	//
+	// RETURNING uses an explicit column list (not *) so future column additions to
+	// user_identities do not silently change the generated Go struct.
+	UpsertUserIdentity(ctx context.Context, arg UpsertUserIdentityParams) (UpsertUserIdentityRow, error)
+	// Persists encrypted OAuth tokens for the given identity.
+	// access_token MUST be AES-256-GCM encrypted (enc: prefix) before being passed here.
+	// refresh_token_provider MUST also be encrypted if non-NULL.
+	// chk_uit_access_token_encrypted and chk_uit_refresh_token_encrypted enforce this at the DB layer.
+	// Must be called in the same transaction as UpsertUserIdentity, using the returned identity_id.
+	UpsertUserIdentityTokens(ctx context.Context, arg UpsertUserIdentityTokensParams) error
 }
 
 var _ Querier = (*Queries)(nil)

@@ -51,6 +51,16 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 }
 ```
 
+```json 200 (pending deletion)
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_expiry": "2026-04-04T19:15:35Z",
+  "expires_in": 900,
+  "scheduled_deletion_at": "2026-05-04T19:15:35Z"
+}
+```
+
 ```json 400
 {
   "code": "bad_request",
@@ -94,6 +104,20 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
       "expires_in": 900
     }
     ```
+
+    When the account is within its 30-day deletion grace period, a `scheduled_deletion_at` field is also present:
+
+    ```json
+    {
+      "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "refresh_expiry": "2026-04-04T19:15:35Z",
+      "expires_in": 900,
+      "scheduled_deletion_at": "2026-05-04T19:15:35Z"
+    }
+    ```
+
+    `scheduled_deletion_at` is the RFC 3339 timestamp after which the account will be permanently removed. Cancel the pending deletion via [`POST /me/cancel-deletion`](/api-reference/profile/delete-account/cancel-deletion) to clear it.
   </Accordion>
 
   <Accordion title="400 — Bad Request">

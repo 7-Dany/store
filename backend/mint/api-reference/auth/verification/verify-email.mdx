@@ -89,11 +89,19 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
 <AccordionGroup>
   <Accordion title="200 — Success">
-    The OTP was correct. The account is now verified and can be used to log in. The token is consumed and cannot be replayed. If the account was already verified the response is identical — the endpoint is safe to call more than once.
+    The OTP was correct. The account is now verified and can be used to log in. The token is consumed and cannot be replayed.
 
     ```json
     {
       "message": "email verified successfully"
+    }
+    ```
+
+    If the account was already verified, the endpoint still returns `200` but with a distinct message — the endpoint is safe to call more than once:
+
+    ```json
+    {
+      "message": "email already verified"
     }
     ```
   </Accordion>

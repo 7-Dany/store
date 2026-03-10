@@ -15,15 +15,22 @@ import (
 )
 
 const AdminLockUserForTest = `-- name: AdminLockUserForTest :exec
-UPDATE users
-SET admin_locked = TRUE
-WHERE email = $1::text
+UPDATE user_secrets
+SET admin_locked        = TRUE,
+    admin_locked_reason = 'test lock',
+    admin_locked_at     = NOW()
+FROM users
+WHERE user_secrets.user_id = users.id
+  AND users.email = $1::text
 `
 
 // Locks an account by setting admin_locked = TRUE for test isolation.
 // Mirrors LockUserForTest but exercises the admin-lock code path. Production
 // admin-lock logic is handled by the RBAC admin flow; this helper exists only
 // to drive the admin_locked guard in store integration tests.
+// admin_locked, admin_locked_reason, and admin_locked_at all live in user_secrets
+// (001_core.sql schema split). chk_us_admin_lock_coherent requires reason and
+// timestamp to be non-NULL whenever admin_locked = TRUE.
 // @email::text produces a string parameter instead of pgtype.Text.
 func (q *Queries) AdminLockUserForTest(ctx context.Context, email string) error {
 	_, err := q.db.Exec(ctx, AdminLockUserForTest, email)
@@ -125,23 +132,28 @@ func (q *Queries) CountOpenSessionsByUser(ctx context.Context, userID pgtype.UUI
 }
 
 const CreateVerifiedUserWithUsername = `-- name: CreateVerifiedUserWithUsername :one
-INSERT INTO users (
-    email,
-    username,
-    display_name,
-    password_hash,
-    is_active,
-    email_verified
+WITH new_user AS (
+    INSERT INTO users (
+        email,
+        username,
+        display_name,
+        is_active,
+        email_verified
+    )
+    VALUES (
+        $1,
+        $2,
+        'Test User',
+        TRUE,
+        TRUE
+    )
+    RETURNING id
+),
+secrets AS (
+    INSERT INTO user_secrets (user_id, password_hash)
+    SELECT id, $3 FROM new_user
 )
-VALUES (
-    $1,
-    $2,
-    'Test User',
-    $3,
-    TRUE,
-    TRUE
-)
-RETURNING id
+SELECT id FROM new_user
 `
 
 type CreateVerifiedUserWithUsernameParams struct {
@@ -155,6 +167,8 @@ type CreateVerifiedUserWithUsernameParams struct {
 // Used in TestLogin_SuccessByUsername to exercise the username login path without
 // a real registration + verification cycle.
 // display_name is pinned to 'Test User' — irrelevant to the login path under test.
+// password_hash was moved to user_secrets (001_core.sql schema split); both rows
+// are inserted atomically via a CTE and the new users.id is returned.
 func (q *Queries) CreateVerifiedUserWithUsername(ctx context.Context, arg CreateVerifiedUserWithUsernameParams) (uuid.UUID, error) {
 	row := q.db.QueryRow(ctx, CreateVerifiedUserWithUsername, arg.Email, arg.Username, arg.PasswordHash)
 	var id uuid.UUID
@@ -205,20 +219,21 @@ func (q *Queries) DeleteUserByEmail(ctx context.Context, email string) error {
 
 const ExpirePasswordResetToken = `-- name: ExpirePasswordResetToken :exec
 UPDATE one_time_tokens
-SET created_at = NOW() - INTERVAL '10 minutes',
-    expires_at = NOW() - INTERVAL '1 second'
+SET expires_at = created_at + INTERVAL '1 millisecond'
 WHERE email      = $1
   AND token_type = 'password_reset'
   AND used_at    IS NULL
 `
 
-// Back-dates a password_reset token so the service sees it as already expired (expires_at < NOW()).
-// Sets created_at 10 minutes in the past and expires_at 1 second in the past.
+// Expires a password_reset token by setting expires_at just past created_at.
+// created_at is immutable (trg_one_time_tokens_deny_created_at_change) so we
+// only touch expires_at. Setting expires_at = created_at + 1 ms satisfies
+// chk_ott_expires_future (expires_at > created_at) while placing the expiry
+// well in the past by the time any subsequent service call reads the token.
 //
 // Constraint check:
 //
-//	chk_ott_expires_future (expires_at > created_at):
-//	  (NOW() - 1 s) > (NOW() - 10 min) → holds.
+//	chk_ott_expires_future: created_at + 1ms > created_at → holds.
 func (q *Queries) ExpirePasswordResetToken(ctx context.Context, email string) error {
 	_, err := q.db.Exec(ctx, ExpirePasswordResetToken, email)
 	return err
@@ -226,22 +241,23 @@ func (q *Queries) ExpirePasswordResetToken(ctx context.Context, email string) er
 
 const ExpireVerificationToken = `-- name: ExpireVerificationToken :exec
 UPDATE one_time_tokens
-SET created_at = NOW() - INTERVAL '10 minutes',
-    expires_at = NOW() - INTERVAL '1 second'
+SET expires_at = created_at + INTERVAL '1 millisecond'
 WHERE email      = $1
   AND token_type = 'email_verification'
   AND used_at    IS NULL
 `
 
-// Back-dates a token so the service sees it as already expired (expires_at < NOW()).
-// Sets created_at 10 minutes in the past and expires_at 1 second in the past.
+// Expires an email_verification token by setting expires_at just past created_at.
+// created_at is immutable (trg_one_time_tokens_deny_created_at_change) so we
+// only touch expires_at. Setting expires_at = created_at + 1 ms satisfies
+// chk_ott_expires_future (expires_at > created_at) and chk_ott_ev_ttl_max
+// (created_at + 1ms <= created_at + 15min) while placing the expiry well in
+// the past by the time any subsequent service call reads the token.
 //
-// Constraint check:
+// Constraint checks:
 //
-//	chk_ott_expires_future (expires_at > created_at):
-//	  (NOW() - 1 s) > (NOW() - 10 min) → holds.
-//	chk_ott_ev_ttl_max (expires_at <= created_at + 30 min):
-//	  (NOW() - 1 s) <= (NOW() - 10 min + 30 min) = NOW() + 20 min → holds.
+//	chk_ott_expires_future: created_at + 1ms > created_at → holds.
+//	chk_ott_ev_ttl_max: created_at + 1ms <= created_at + 15min → holds.
 func (q *Queries) ExpireVerificationToken(ctx context.Context, email string) error {
 	_, err := q.db.Exec(ctx, ExpireVerificationToken, email)
 	return err
@@ -357,12 +373,13 @@ func (q *Queries) GetTokenAttempts(ctx context.Context, id pgtype.UUID) (int16, 
 
 const GetUserIsLocked = `-- name: GetUserIsLocked :one
 SELECT is_locked
-FROM users
-WHERE id = $1::uuid
+FROM user_secrets
+WHERE user_id = $1::uuid
 `
 
 // Returns the is_locked flag for a user.
 // Used in tests to assert that account locking logic fired correctly.
+// is_locked was moved to user_secrets (001_core.sql schema split).
 func (q *Queries) GetUserIsLocked(ctx context.Context, id pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, GetUserIsLocked, id)
 	var is_locked bool
@@ -387,10 +404,17 @@ func (q *Queries) GetUserLastLoginAt(ctx context.Context, userID pgtype.UUID) (p
 }
 
 const LockUserForTest = `-- name: LockUserForTest :exec
+WITH target AS (
+    UPDATE user_secrets
+    SET is_locked = TRUE
+    FROM users
+    WHERE user_secrets.user_id = users.id
+      AND users.email = $1::text
+    RETURNING user_secrets.user_id
+)
 UPDATE users
-SET is_locked = TRUE,
-    is_active = FALSE
-WHERE email = $1::text
+SET is_active = FALSE
+WHERE id = (SELECT user_id FROM target)
 `
 
 // Locks an account by setting is_locked = TRUE (OTP-brute-force path) and
@@ -398,8 +422,8 @@ WHERE email = $1::text
 // is_active = FALSE keeps the account in a consistent pre-verification-like state
 // for tests that verify the guard order: is_locked is checked BEFORE is_active
 // in the login service, so ErrAccountLocked fires regardless of is_active.
-// Note: chk_users_not_active_and_locked was removed in favour of separate
-// is_locked (OTP path) and admin_locked (RBAC path) columns.
+// is_locked lives in user_secrets; is_active lives in users. Both are updated
+// atomically via a CTE so only one round-trip is needed.
 // @email::text produces a string parameter instead of pgtype.Text.
 // Production lock logic lives in LockAccount (OTP brute-force path).
 func (q *Queries) LockUserForTest(ctx context.Context, email string) error {

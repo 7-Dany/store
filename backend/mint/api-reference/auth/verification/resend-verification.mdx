@@ -77,6 +77,13 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   "message": "too many requests — please slow down"
 }
 ```
+
+```json 503
+{
+  "code": "mail_delivery_failed",
+  "message": "could not send verification email — please try again later"
+}
+```
 </ResponseExample>
 
 ## Responses
@@ -121,6 +128,17 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
     {
       "code": "too_many_requests",
       "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="503 — Mail Delivery Failed">
+    A new verification code was generated but the email could not be dispatched. The previous tokens for this account have already been invalidated. Retry the request to trigger another delivery attempt.
+
+    ```json
+    {
+      "code": "mail_delivery_failed",
+      "message": "could not send verification email — please try again later"
     }
     ```
   </Accordion>

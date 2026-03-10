@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	oauthshared "github.com/7-Dany/store/backend/internal/domain/oauth/shared"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -38,6 +40,9 @@ func (s *Store) WithQuerier(q db.Querier) *Store {
 
 // GetIdentityByProviderUID looks up user_identities by (provider=google, provider_uid).
 // Returns oauthshared.ErrIdentityNotFound on no-rows.
+// AccessToken is intentionally not populated here — it lives in user_identity_tokens
+// and is excluded from bulk identity lookups to prevent ciphertext leaking in API
+// responses. Callers that need the token must query user_identity_tokens separately.
 func (s *Store) GetIdentityByProviderUID(ctx context.Context, providerUID string) (ProviderIdentity, error) {
 	row, err := s.Queries.GetIdentityByProviderUID(ctx, db.GetIdentityByProviderUIDParams{
 		Provider:    db.AuthProviderGoogle,
@@ -55,7 +60,6 @@ func (s *Store) GetIdentityByProviderUID(ctx context.Context, providerUID string
 		ProviderEmail: row.ProviderEmail.String,
 		DisplayName:   row.DisplayName.String,
 		AvatarURL:     row.AvatarURL.String,
-		AccessToken:   row.AccessToken.String,
 	}, nil
 }
 
@@ -138,20 +142,47 @@ func (s *Store) GetUserAuthMethods(ctx context.Context, userID [16]byte) (UserAu
 	}, nil
 }
 
-// UpsertUserIdentity inserts or updates a user_identities row.
-// Returns error only — the returned UserIdentity row is discarded.
+// UpsertUserIdentity inserts or updates a user_identities metadata row, then
+// persists the encrypted access token in the companion user_identity_tokens table.
+// Both writes are wrapped in a transaction so they always succeed or fail together.
 func (s *Store) UpsertUserIdentity(ctx context.Context, in UpsertIdentityInput) error {
-	_, err := s.Queries.UpsertUserIdentity(ctx, db.UpsertUserIdentityParams{
+	h, err := s.BeginOrBind(ctx)
+	if err != nil {
+		return fmt.Errorf("store.UpsertUserIdentity: begin tx: %w", err)
+	}
+
+	row, err := h.Q.UpsertUserIdentity(ctx, db.UpsertUserIdentityParams{
 		UserID:        s.ToPgtypeUUID(in.UserID),
 		Provider:      db.AuthProviderGoogle,
 		ProviderUid:   in.ProviderUID,
 		ProviderEmail: s.ToText(in.ProviderEmail),
 		DisplayName:   s.ToText(in.DisplayName),
 		AvatarURL:     s.ToText(in.AvatarURL),
-		AccessToken:   s.ToText(in.AccessToken),
 	})
 	if err != nil {
+		h.Rollback()
 		return fmt.Errorf("store.UpsertUserIdentity: %w", err)
+	}
+
+	// Persist the encrypted access token. chk_uit_access_token_expiry_coherent
+	// requires expires_at to be non-NULL whenever access_token is non-NULL;
+	// use a 1-hour default (Google's standard token lifetime).
+	var expiresAt pgtype.Timestamptz
+	if in.AccessToken != "" {
+		expiresAt = pgtype.Timestamptz{Time: time.Now().UTC().Add(time.Hour), Valid: true}
+	}
+	if err := h.Q.UpsertUserIdentityTokens(ctx, db.UpsertUserIdentityTokensParams{
+		IdentityID:           s.UUIDToPgtypeUUID(row.ID),
+		AccessToken:          pgtype.Text{String: in.AccessToken, Valid: in.AccessToken != ""},
+		AccessTokenExpiresAt: expiresAt,
+		RefreshTokenProvider: pgtype.Text{},
+	}); err != nil {
+		h.Rollback()
+		return fmt.Errorf("store.UpsertUserIdentity: upsert tokens: %w", err)
+	}
+
+	if err := h.Commit(); err != nil {
+		return fmt.Errorf("store.UpsertUserIdentity: commit: %w", err)
 	}
 	return nil
 }
@@ -257,18 +288,33 @@ func (s *Store) OAuthRegisterTx(ctx context.Context, in OAuthRegisterTxInput) (o
 
 	userPgUUID := s.UUIDToPgtypeUUID(newUserID)
 
-	// 2. Upsert identity row — call the querier directly to stay in the same TX.
-	if _, err := h.Q.UpsertUserIdentity(ctx, db.UpsertUserIdentityParams{
+	// 2. Upsert identity metadata row — call the querier directly to stay in the same TX.
+	identityRow, err := h.Q.UpsertUserIdentity(ctx, db.UpsertUserIdentityParams{
 		UserID:        userPgUUID,
 		Provider:      db.AuthProviderGoogle,
 		ProviderUid:   in.ProviderUID,
 		ProviderEmail: s.ToText(in.ProviderEmail),
 		DisplayName:   s.ToText(in.DisplayName),
 		AvatarURL:     s.ToText(in.AvatarURL),
-		AccessToken:   s.ToText(in.AccessToken),
-	}); err != nil {
+	})
+	if err != nil {
 		h.Rollback()
 		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: upsert identity: %w", err)
+	}
+
+	// 2a. Persist encrypted access token in the companion tokens table.
+	var tokenExpiresAt pgtype.Timestamptz
+	if in.AccessToken != "" {
+		tokenExpiresAt = pgtype.Timestamptz{Time: time.Now().UTC().Add(time.Hour), Valid: true}
+	}
+	if err := h.Q.UpsertUserIdentityTokens(ctx, db.UpsertUserIdentityTokensParams{
+		IdentityID:           s.UUIDToPgtypeUUID(identityRow.ID),
+		AccessToken:          pgtype.Text{String: in.AccessToken, Valid: in.AccessToken != ""},
+		AccessTokenExpiresAt: tokenExpiresAt,
+		RefreshTokenProvider: pgtype.Text{},
+	}); err != nil {
+		h.Rollback()
+		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: upsert identity tokens: %w", err)
 	}
 
 	// 3. Create session row.

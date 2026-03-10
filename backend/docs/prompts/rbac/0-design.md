@@ -1,17 +1,15 @@
-# RBAC Design — v1
+# RBAC Design — v2
 
 ## Changelog
 
 | Version | Change |
 |---------|--------|
 | v1 | Initial design |
+| v2 | Added `access_type` (direct/conditional/request/denied) and `scope` (own/all) to `role_permissions` and `user_permissions`; split `job_queue:manage` into `job_queue:manage` + `job_queue:configure`; replaced `user:ban` with `user:lock` backed by existing `admin_locked` field; added `user:lock` metadata columns to `users`; added `permission_request_approvers` table; updated `CheckUserAccess` to return access_type + scope + conditions; updated middleware to act on access_type; permission count 10 → 13; updated all seeds, gates, and file maps |
 
 ---
 
 ## 1. What Already Exists
-
-The schema and triggers are **complete**. Nothing in this design touches `003_rbac.sql`
-or `004_rbac_functions.sql`.
 
 | Already done | Still needed |
 |---|---|
@@ -20,14 +18,159 @@ or `004_rbac_functions.sql`.
 | `permission_condition_templates`, all audit tables | Role seeds (`sql/seeds/003_roles.sql`) |
 | `permission_group_members` | `internal/platform/rbac/` — checker + middleware |
 | All triggers (audit, privilege escalation, orphaned owner, expiry) | `internal/domain/rbac/` — admin API |
-| `001_roles.sql` seed — owner role row | `app.Deps` wiring, route mounting |
+| `001_roles.sql` seed — owner role row | Schema additions in `003_rbac.sql` (access_type, scope, permission_request_approvers) |
+| `users.admin_locked` + `users.is_locked` fields | `001_core.sql` additions (admin_locked metadata columns) |
 
 The only seed that exists is the `owner` role row. Every permission and every other
-role (admin, vendor, customer, etc.) needs to be seeded by this design.
+role needs to be seeded by this design.
 
 ---
 
-## 2. The Three-Layer Check Model
+## 2. Schema Additions (Phase 0 — before any queries or seeds)
+
+These additions must be applied before Stage 1 begins.
+
+### 2a. `001_core.sql` — `users` table additions
+
+`admin_locked` already exists. These columns record who set it, when, and why —
+so you don't have to dig through `auth_audit_log` to find the actor and reason.
+
+```sql
+-- Metadata for admin_locked. All three are NULL when admin_locked = FALSE.
+admin_locked_by     UUID        REFERENCES users(id) ON DELETE SET NULL,
+admin_locked_reason TEXT,
+admin_locked_at     TIMESTAMPTZ,
+
+CONSTRAINT chk_users_admin_lock_coherent CHECK (
+    (admin_locked = FALSE AND admin_locked_reason IS NULL AND admin_locked_by IS NULL)
+    OR
+    (admin_locked = TRUE  AND admin_locked_reason IS NOT NULL AND admin_locked_at IS NOT NULL)
+),
+CONSTRAINT chk_users_no_self_lock
+    CHECK (admin_locked_by IS NULL OR admin_locked_by != id)
+```
+
+### 2b. `003_rbac.sql` — new ENUMs
+
+```sql
+CREATE TYPE permission_access_type AS ENUM (
+    'direct',       -- granted, no friction
+    'conditional',  -- granted but conditions JSONB is enforced by app layer
+    'request',      -- must submit a request that gets approved first
+    'denied'        -- explicitly blocked
+);
+
+CREATE TYPE permission_scope AS ENUM (
+    'own',   -- can only act on resources the user owns/created
+    'all'    -- can act on any resource of this type
+);
+```
+
+### 2c. `003_rbac.sql` — additions to `role_permissions`
+
+```sql
+-- Add after the existing conditions column:
+access_type permission_access_type NOT NULL DEFAULT 'direct',
+scope       permission_scope       NOT NULL DEFAULT 'own',
+
+-- conditional grants must carry actual conditions
+CONSTRAINT chk_rp_conditional_needs_conditions
+    CHECK (access_type != 'conditional' OR conditions != '{}'),
+
+-- denied and request grants carry no conditions
+CONSTRAINT chk_rp_denied_no_conditions
+    CHECK (access_type != 'denied' OR conditions = '{}'),
+CONSTRAINT chk_rp_request_no_conditions
+    CHECK (access_type != 'request' OR conditions = '{}'),
+```
+
+### 2d. `003_rbac.sql` — additions to `user_permissions`
+
+```sql
+-- Add after the existing conditions column:
+-- access_type is always 'direct' on user_permissions — direct grants never
+-- go through the request flow. scope controls resource visibility.
+scope permission_scope NOT NULL DEFAULT 'own',
+```
+
+### 2e. `003_rbac.sql` — additions to audit tables
+
+`role_permissions_audit` and `user_permissions_audit` must also snapshot the new
+columns so you can see what changed:
+
+```sql
+-- role_permissions_audit additions:
+access_type          permission_access_type,
+previous_access_type permission_access_type,
+scope                permission_scope,
+previous_scope       permission_scope,
+
+-- user_permissions_audit additions:
+scope          permission_scope,
+previous_scope permission_scope,
+```
+
+The trigger functions `fn_audit_role_permissions` and `fn_audit_user_permissions`
+in `004_rbac_functions.sql` must be updated to capture these fields before/after.
+
+### 2f. `003_rbac.sql` — new table: `permission_request_approvers`
+
+When `access_type = 'request'` fires for a permission, this table tells the app
+which roles must approve before the action executes. It reuses the existing
+`005_requests.sql` approval workflow — no duplicate machinery.
+
+```sql
+CREATE TABLE permission_request_approvers (
+    permission_id  UUID    NOT NULL REFERENCES permissions(id) ON DELETE CASCADE,
+    role_id        UUID    NOT NULL REFERENCES roles(id)       ON DELETE CASCADE,
+    approval_level INTEGER NOT NULL DEFAULT 0,
+    min_required   INTEGER NOT NULL DEFAULT 1,
+
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+
+    PRIMARY KEY (permission_id, role_id),
+    CONSTRAINT chk_pra_level_non_negative CHECK (approval_level >= 0),
+    CONSTRAINT chk_pra_min_required_pos   CHECK (min_required > 0)
+);
+
+CREATE INDEX idx_pra_permission ON permission_request_approvers(permission_id);
+CREATE INDEX idx_pra_role       ON permission_request_approvers(role_id);
+CREATE INDEX idx_pra_level      ON permission_request_approvers(permission_id, approval_level);
+```
+
+**How `access_type = 'request'` works at runtime:**
+1. User attempts an action guarded by a `request`-type permission.
+2. Middleware reads `access_type = 'request'` from `CheckUserAccess`.
+3. App creates a `requests` row (`request_type = 'permission_action'`,
+   `request_data = {"permission": "job_queue:configure", "resource": "..."}`)
+4. `request_required_approvers` is populated from `permission_request_approvers`.
+5. Middleware returns HTTP 202 with `{"code": "approval_required", "request_id": "..."}`.
+6. Once approved, the job queue (`execute_request` handler) executes the action.
+
+---
+
+## 3. The Access Model
+
+### Four access types
+
+| access_type | What happens | Who decides |
+|---|---|---|
+| `direct` | Granted, no friction | Role assignment |
+| `conditional` | Granted, conditions JSONB enforced by app layer | Role assignment + conditions |
+| `request` | Must submit approval request first, 202 returned | Role assignment + approvers table |
+| `denied` | Explicitly blocked, 403 returned | Role assignment |
+
+### Two scopes
+
+| scope | What it means |
+|---|---|
+| `own` | Can only act on resources the user created or owns |
+| `all` | Can act on any resource of this type |
+
+Scope is injected into context by the middleware and enforced in queries/handlers —
+not in the permission check itself.
+
+### Three-layer check model (updated)
 
 ```
 Request arrives with Bearer token
@@ -36,38 +179,38 @@ Request arrives with Bearer token
 token.Auth middleware          ← already exists, injects userID into context
         │
         ▼
-rbac.Require("resource:action") ← NEW, reads userID from context
+rbac.Require("resource:action") ← reads userID from context
         │
-        ├─ is owner role? ──────────────────────────── YES → pass (unrestricted)
+        ├─ is owner role? ──────────────────────── YES → pass (unrestricted)
         │
-        └─ has permission via role OR direct grant? ── YES → pass
-                                                        NO  → 403 forbidden
+        └─ CheckUserAccess query returns row
+               │
+               ├─ access_type = 'direct'      → pass, inject scope into context
+               ├─ access_type = 'conditional' → pass, inject scope + conditions into context
+               ├─ access_type = 'request'     → 202, {"code": "approval_required"}
+               ├─ access_type = 'denied'      → 403
+               └─ not found                   → 403
 ```
 
-The three sources of a permission:
+### Three sources of a permission (unchanged)
 
-**Layer 1 — Owner role.** `is_owner_role = TRUE` on the user's role bypasses all
-permission checks. Only one role in the system has this flag. The DB trigger
-`fn_prevent_orphaned_owner` guarantees at least one active owner always exists.
+**Layer 1 — Owner role.** `is_owner_role = TRUE` bypasses all checks.
 
-**Layer 2 — Role permission.** The user's role has a row in `role_permissions` for
-the matching permission. This is the normal path for admin, vendor, customer.
+**Layer 2 — Role permission.** The user's role has a `role_permissions` row for
+the matching permission. `access_type` and `scope` come from this row.
 
-**Layer 3 — Direct grant.** A row in `user_permissions` gives the user this specific
-permission temporarily (`expires_at` is required and bounded to 90 days max by the DB
-trigger). Used for time-limited exceptions without changing the user's role.
-
-The middleware runs one DB query that checks all three layers in a single round-trip.
+**Layer 3 — Direct grant.** A `user_permissions` row gives the user this permission
+temporarily. `access_type` is implicitly `direct`. `scope` comes from the row.
 
 ---
 
-## 3. Package Structure
+## 4. Package Structure
 
 ```
 internal/platform/rbac/
     checker.go          — Checker struct: IsOwner, HasPermission, Require middleware
-    context.go          — inject/read from context for tests
-    errors.go           — ErrForbidden, ErrUnauthenticated
+    context.go          — inject/read from context for tests + scope/conditions helpers
+    errors.go           — ErrForbidden, ErrUnauthenticated, etc.
 
 internal/domain/rbac/
     routes.go           — assembles owner + admin sub-routers
@@ -76,34 +219,32 @@ internal/domain/rbac/
     permissions/        — permission + group read endpoints
     userroles/          — assign / remove a user's role
     userpermissions/    — grant / revoke direct user permissions
+    userlock/           — lock / unlock a user (admin_locked)
 
 sql/queries/rbac.sql    — all RBAC queries (sqlc-generated)
 sql/seeds/002_permissions.sql
 sql/seeds/003_roles.sql
 ```
 
-`internal/platform/rbac/` is infrastructure — used by every domain. It knows about
-the DB but not about any domain business logic.
-
-`internal/domain/rbac/` is the admin API — follows the exact same pattern as
-`internal/domain/auth/{feature}/`: routes → handler → service → store → models.
-
 ---
 
-## 4. SQL Queries (`sql/queries/rbac.sql`)
+## 5. SQL Queries (`sql/queries/rbac.sql`)
 
-### Permission check (hot path — called on every guarded request)
+### Permission check (hot path)
+
+`CheckUserAccess` now returns `access_type`, `scope`, and `conditions` in addition
+to `is_owner` and `has_permission`. The middleware acts on `access_type` directly.
 
 ```sql
 -- name: CheckUserAccess :one
--- Returns (is_owner, has_permission) in one round-trip.
--- The middleware calls this once per guarded request.
--- Owner users short-circuit in Go code — has_permission is still evaluated
--- by the DB but the result is ignored when is_owner = true.
+-- Returns full access context in one round-trip.
+-- is_owner short-circuits in Go — all other fields ignored when is_owner = true.
 -- Index usage:
---   is_owner:        idx_roles_owner + idx_user_roles_lookup
---   has_permission:  idx_role_perms_covering + idx_user_permissions_user_expires
+--   is_owner:       idx_roles_owner + idx_user_roles_lookup
+--   role path:      idx_role_perms_covering + idx_user_roles_lookup
+--   direct path:    idx_user_permissions_user_expires
 SELECT
+    -- Layer 1: owner check
     EXISTS(
         SELECT 1
         FROM   user_roles ur
@@ -112,15 +253,18 @@ SELECT
           AND  r.is_owner_role = TRUE
           AND  (ur.expires_at IS NULL OR ur.expires_at > NOW())
     ) AS is_owner,
+
+    -- Layer 2 + 3: permission existence
     EXISTS(
         SELECT 1
         FROM   user_roles ur
-        JOIN   role_permissions rp ON rp.role_id       = ur.role_id
-        JOIN   permissions p       ON p.id             = rp.permission_id
+        JOIN   role_permissions rp ON rp.role_id    = ur.role_id
+        JOIN   permissions p       ON p.id          = rp.permission_id
         WHERE  ur.user_id          = @user_id::uuid
           AND  (ur.expires_at IS NULL OR ur.expires_at > NOW())
           AND  p.canonical_name    = @permission
           AND  p.is_active         = TRUE
+          AND  rp.access_type     != 'denied'
         UNION ALL
         SELECT 1
         FROM   user_permissions up
@@ -129,15 +273,70 @@ SELECT
           AND  up.expires_at      > NOW()
           AND  p.canonical_name   = @permission
           AND  p.is_active        = TRUE
-    ) AS has_permission;
+    ) AS has_permission,
+
+    -- access_type: role path takes priority over direct grant
+    COALESCE(
+        (SELECT rp.access_type
+         FROM   user_roles ur
+         JOIN   role_permissions rp ON rp.role_id    = ur.role_id
+         JOIN   permissions p       ON p.id          = rp.permission_id
+         WHERE  ur.user_id          = @user_id::uuid
+           AND  (ur.expires_at IS NULL OR ur.expires_at > NOW())
+           AND  p.canonical_name    = @permission
+           AND  p.is_active         = TRUE
+         LIMIT 1),
+        'direct'::permission_access_type
+    ) AS access_type,
+
+    -- scope: role path takes priority over direct grant
+    COALESCE(
+        (SELECT rp.scope
+         FROM   user_roles ur
+         JOIN   role_permissions rp ON rp.role_id    = ur.role_id
+         JOIN   permissions p       ON p.id          = rp.permission_id
+         WHERE  ur.user_id          = @user_id::uuid
+           AND  (ur.expires_at IS NULL OR ur.expires_at > NOW())
+           AND  p.canonical_name    = @permission
+           AND  p.is_active         = TRUE
+         LIMIT 1),
+        (SELECT up.scope
+         FROM   user_permissions up
+         JOIN   permissions p ON p.id = up.permission_id
+         WHERE  up.user_id         = @user_id::uuid
+           AND  up.expires_at      > NOW()
+           AND  p.canonical_name   = @permission
+           AND  p.is_active        = TRUE
+         LIMIT 1)
+    ) AS scope,
+
+    -- conditions: role path takes priority over direct grant
+    COALESCE(
+        (SELECT rp.conditions
+         FROM   user_roles ur
+         JOIN   role_permissions rp ON rp.role_id    = ur.role_id
+         JOIN   permissions p       ON p.id          = rp.permission_id
+         WHERE  ur.user_id          = @user_id::uuid
+           AND  (ur.expires_at IS NULL OR ur.expires_at > NOW())
+           AND  p.canonical_name    = @permission
+           AND  p.is_active         = TRUE
+         LIMIT 1),
+        (SELECT up.conditions
+         FROM   user_permissions up
+         JOIN   permissions p ON p.id = up.permission_id
+         WHERE  up.user_id         = @user_id::uuid
+           AND  up.expires_at      > NOW()
+           AND  p.canonical_name   = @permission
+           AND  p.is_active        = TRUE
+         LIMIT 1),
+        '{}'::jsonb
+    ) AS conditions;
 ```
 
 ### Bootstrap
 
 ```sql
 -- name: CountActiveOwners :one
--- Used by the bootstrap handler to gate POST /owner/bootstrap.
--- Must return 0 for the bootstrap to proceed.
 SELECT COUNT(*) AS count
 FROM   user_roles ur
 JOIN   roles r ON r.id = ur.role_id
@@ -151,15 +350,12 @@ WHERE  is_owner_role  = TRUE
 LIMIT 1;
 
 -- name: GetActiveUserByID :one
--- Used by bootstrap to verify the target user exists and is eligible.
 SELECT id, email, is_active, email_verified
 FROM   users
 WHERE  id         = @user_id::uuid
   AND  deleted_at IS NULL;
 
 -- name: AssignUserRole :one
--- Upserts a user_role row. On conflict (user already has a role), replaces it.
--- granted_by is the actor performing the assignment.
 INSERT INTO user_roles (user_id, role_id, granted_by, granted_reason, expires_at)
 VALUES (
     @user_id::uuid,
@@ -177,8 +373,6 @@ ON CONFLICT (user_id) DO UPDATE
 RETURNING user_id, role_id, expires_at, created_at, updated_at;
 
 -- name: RemoveUserRole :execrows
--- Hard-deletes a user_role row (revocation = delete; history in audit table).
--- fn_prevent_orphaned_owner fires and blocks if this is the last active owner.
 DELETE FROM user_roles WHERE user_id = @user_id::uuid;
 ```
 
@@ -205,8 +399,7 @@ VALUES (@name, sqlc.narg('description'), FALSE, FALSE)
 RETURNING id, name, description, is_system_role, is_owner_role, is_active, created_at, updated_at;
 
 -- name: UpdateRole :one
--- is_system_role = FALSE guard in WHERE prevents renaming owner/admin/system roles.
--- Returns no rows when the role is a system role → ErrSystemRoleImmutable in service.
+-- is_system_role = FALSE guard prevents renaming owner/admin/system roles.
 UPDATE roles
 SET name        = COALESCE(sqlc.narg('name'),        name),
     description = COALESCE(sqlc.narg('description'), description)
@@ -215,8 +408,6 @@ WHERE id             = @id::uuid
 RETURNING id, name, description, is_system_role, is_owner_role, is_active, created_at, updated_at;
 
 -- name: DeactivateRole :execrows
--- Soft-delete. Hard DELETE is blocked by RESTRICT FKs on audit tables.
--- is_system_role = FALSE guard prevents deactivating owner/admin/system roles.
 UPDATE roles
 SET is_active = FALSE
 WHERE id             = @id::uuid
@@ -229,7 +420,7 @@ WHERE id             = @id::uuid
 ```sql
 -- name: GetRolePermissions :many
 SELECT p.id, p.canonical_name, p.name, p.resource_type, p.description,
-       rp.conditions, rp.created_at AS granted_at
+       rp.access_type, rp.scope, rp.conditions, rp.created_at AS granted_at
 FROM   role_permissions rp
 JOIN   permissions p ON p.id = rp.permission_id
 WHERE  rp.role_id  = @role_id::uuid
@@ -237,12 +428,17 @@ WHERE  rp.role_id  = @role_id::uuid
 ORDER  BY p.canonical_name;
 
 -- name: AddRolePermission :exec
-INSERT INTO role_permissions (role_id, permission_id, granted_by, granted_reason, conditions)
+INSERT INTO role_permissions (
+    role_id, permission_id, granted_by, granted_reason,
+    access_type, scope, conditions
+)
 VALUES (
     @role_id::uuid,
     @permission_id::uuid,
     @granted_by::uuid,
     @granted_reason,
+    @access_type,
+    @scope,
     COALESCE(sqlc.narg('conditions')::jsonb, '{}')
 )
 ON CONFLICT (role_id, permission_id) DO NOTHING;
@@ -286,8 +482,6 @@ ORDER  BY p.canonical_name;
 
 ```sql
 -- name: GetUserRole :one
--- Returns the user's current role if one exists and has not expired.
--- Returns pgx.ErrNoRows when the user has no role assignment.
 SELECT ur.user_id, ur.role_id, r.name AS role_name, r.is_owner_role,
        ur.expires_at, ur.created_at AS granted_at, ur.granted_reason
 FROM   user_roles ur
@@ -300,9 +494,9 @@ WHERE  ur.user_id = @user_id::uuid
 
 ```sql
 -- name: GetUserPermissions :many
--- Returns all active direct-grant permissions for the user.
 SELECT up.id, p.canonical_name, p.name, p.resource_type,
-       up.conditions, up.expires_at, up.created_at AS granted_at, up.granted_reason
+       up.scope, up.conditions, up.expires_at,
+       up.created_at AS granted_at, up.granted_reason
 FROM   user_permissions up
 JOIN   permissions p ON p.id = up.permission_id
 WHERE  up.user_id    = @user_id::uuid
@@ -311,76 +505,134 @@ WHERE  up.user_id    = @user_id::uuid
 ORDER  BY p.canonical_name;
 
 -- name: GrantUserPermission :one
-INSERT INTO user_permissions (user_id, permission_id, granted_by, granted_reason, expires_at, conditions)
+INSERT INTO user_permissions (
+    user_id, permission_id, granted_by, granted_reason,
+    expires_at, scope, conditions
+)
 VALUES (
     @user_id::uuid,
     @permission_id::uuid,
     @granted_by::uuid,
     @granted_reason,
     @expires_at::timestamptz,
+    @scope,
     COALESCE(sqlc.narg('conditions')::jsonb, '{}')
 )
 ON CONFLICT (user_id, permission_id) DO UPDATE
     SET granted_by     = EXCLUDED.granted_by,
         granted_reason = EXCLUDED.granted_reason,
         expires_at     = EXCLUDED.expires_at,
+        scope          = EXCLUDED.scope,
         conditions     = EXCLUDED.conditions,
         updated_at     = NOW()
 RETURNING id, user_id, permission_id, expires_at, created_at;
 
 -- name: RevokeUserPermission :execrows
--- Revocation = DELETE; history preserved in user_permissions_audit.
 DELETE FROM user_permissions WHERE id = @id::uuid AND user_id = @user_id::uuid;
+```
+
+### User lock (admin_locked)
+
+```sql
+-- name: LockUser :exec
+-- Sets admin_locked = TRUE with actor, reason, and timestamp.
+UPDATE users
+SET admin_locked        = TRUE,
+    admin_locked_by     = @locked_by::uuid,
+    admin_locked_reason = @reason,
+    admin_locked_at     = NOW(),
+    updated_at          = NOW()
+WHERE id         = @user_id::uuid
+  AND deleted_at IS NULL;
+
+-- name: UnlockUser :exec
+UPDATE users
+SET admin_locked        = FALSE,
+    admin_locked_by     = NULL,
+    admin_locked_reason = NULL,
+    admin_locked_at     = NULL,
+    updated_at          = NOW()
+WHERE id         = @user_id::uuid
+  AND deleted_at IS NULL;
+
+-- name: GetUserLockStatus :one
+SELECT id, admin_locked, admin_locked_by, admin_locked_reason, admin_locked_at,
+       is_locked, login_locked_until
+FROM   users
+WHERE  id         = @user_id::uuid
+  AND  deleted_at IS NULL;
 ```
 
 ---
 
-## 5. Seeds
+## 6. Seeds
 
-### `sql/seeds/002_permissions.sql`
+### `sql/seeds/002_permissions.sql` — 13 permissions
 
-Inserts all permissions the application will ever check. New features add rows here
-before writing middleware guards. `ON CONFLICT DO NOTHING` makes it idempotent.
+**Permission naming rule:** `resource_type:action`
 
-**Permission naming rule:** `resource_type:action` — canonical_name is generated by the DB.
-
-| canonical_name | resource_type | name | Notes |
+| canonical_name | resource_type | name | Capabilities |
 |---|---|---|---|
-| `rbac:read` | rbac | read | List roles, permissions, user assignments |
-| `rbac:manage` | rbac | manage | Create/edit roles, assign role permissions |
-| `rbac:grant_user_permission` | rbac | grant_user_permission | Grant direct user permissions (higher sensitivity) |
-| `job_queue:read` | job_queue | read | View jobs, stats, metrics, schedules |
-| `job_queue:manage` | job_queue | manage | Pause, retry, cancel, update priority |
-| `user:read` | user | read | List/view users (future) |
-| `user:manage` | user | manage | Edit/suspend users (future) |
-| `request:read` | request | read | View requests (future) |
-| `request:manage` | request | manage | Manage requests (future) |
-| `request:approve` | request | approve | Approve requests (future) |
+| `rbac:read` | rbac | read | List roles, permissions, user assignments, audit logs |
+| `rbac:manage` | rbac | manage | Create/update/soft-delete roles; add/remove role permissions; assign/remove user roles |
+| `rbac:grant_user_permission` | rbac | grant_user_permission | Grant/revoke direct time-limited permissions on users |
+| `job_queue:read` | job_queue | read | View jobs, workers, queues, schedules, stats, metrics, WS stream |
+| `job_queue:manage` | job_queue | manage | Cancel jobs, retry dead/failed jobs, update job priority, purge dead jobs |
+| `job_queue:configure` | job_queue | configure | Pause/resume job kinds, force-drain workers, create/update/delete/trigger schedules |
+| `user:read` | user | read | List users, view profiles, view audit/login history |
+| `user:manage` | user | manage | Edit user details (email, name, etc.) |
+| `user:lock` | user | lock | Admin-lock / admin-unlock a user account (`admin_locked` field) |
+| `request:read` | request | read | View requests and their history/status |
+| `request:manage` | request | manage | Create/edit/cancel requests, manage lifecycle (non-approval steps) |
+| `request:approve` | request | approve | Approve or reject a pending request |
+| `product:manage` | product | manage | Create/update/delete products (placeholder for store domain) |
 
-Permission groups (for admin UI organisation):
+Permission groups:
 
-| group name | permissions |
-|---|---|
-| System Administration | rbac:read, rbac:manage, rbac:grant_user_permission |
-| Job Queue | job_queue:read, job_queue:manage |
-| Users | user:read, user:manage |
-| Requests | request:read, request:manage, request:approve |
+| group name | icon | color | permissions |
+|---|---|---|---|
+| System Administration | shield | #6366f1 | rbac:read, rbac:manage, rbac:grant_user_permission |
+| Job Queue | queue | #f59e0b | job_queue:read, job_queue:manage, job_queue:configure |
+| Users | users | #10b981 | user:read, user:manage, user:lock |
+| Requests | inbox | #3b82f6 | request:read, request:manage, request:approve |
+| Products | package | #8b5cf6 | product:manage |
 
-### `sql/seeds/003_roles.sql`
+### `sql/seeds/003_roles.sql` — role assignments
 
-Seeds the non-owner system roles and their default permissions. Owner role already
-exists from `001_roles.sql`. `granted_by` for seed grants uses the owner role user
-looked up via a CTE — if no owner exists yet, uses a sentinel system UUID.
+| Permission | owner | admin | vendor | customer |
+|---|---|---|---|---|
+| rbac:read | ✓ | ✓ | | |
+| rbac:manage | ✓ | ✓ | | |
+| rbac:grant_user_permission | ✓ | ✓ | | |
+| job_queue:read | ✓ | ✓ | | |
+| job_queue:manage | ✓ | ✓ | | |
+| job_queue:configure | ✓ | ✓ (request) | | |
+| user:read | ✓ | ✓ | | |
+| user:manage | ✓ | ✓ | | |
+| user:lock | ✓ | ✓ (request) | | |
+| request:read | ✓ | ✓ | ✓ | ✓ |
+| request:manage | ✓ | ✓ | ✓ | |
+| request:approve | ✓ | ✓ | | |
+| product:manage | ✓ | ✓ | ✓ (conditional, own) | |
 
-| Role | is_system_role | Default permissions |
-|---|---|---|
-| admin | TRUE | All 10 permissions above |
-| vendor | FALSE | request:read, request:manage |
-| customer | FALSE | request:read |
+Notes on access_type in seeds:
+- `job_queue:configure` for admin → `access_type = 'request'` (pausing all workers is high blast radius; requires owner approval)
+- `user:lock` for admin → `access_type = 'request'` (locking a user is a policy decision; requires owner approval)
+- `product:manage` for vendor → `access_type = 'conditional'`, `scope = 'own'`, `conditions = {"max_price": 1000}` (vendor manages their own products up to $1000; above that requires a request)
+
+Owner bypasses all checks at the middleware level — the table above shows what
+gets seeded for audit trail purposes only.
+
+`granted_by` for seed grants uses the owner role user looked up via CTE —
+falls back to sentinel UUID `'00000000-0000-0000-0000-000000000000'` if no owner
+exists yet (first-deploy scenario).
+
+Total role-permission rows seeded: 16 (owner gets all 13 + admin gets 13 minus
+the 2 request-type ones are still seeded but with access_type='request').
 
 ---
 
-## 6. Type Contracts
+## 7. Type Contracts
 
 ### `internal/platform/rbac/checker.go`
 
@@ -392,12 +644,25 @@ const (
     PermRBACGrantUserPerm     = "rbac:grant_user_permission"
     PermJobQueueRead          = "job_queue:read"
     PermJobQueueManage        = "job_queue:manage"
+    PermJobQueueConfigure     = "job_queue:configure"
     PermUserRead              = "user:read"
     PermUserManage            = "user:manage"
+    PermUserLock              = "user:lock"
     PermRequestRead           = "request:read"
     PermRequestManage         = "request:manage"
     PermRequestApprove        = "request:approve"
+    PermProductManage         = "product:manage"
 )
+
+// AccessResult is the full access context returned by CheckUserAccess.
+// Injected into context by Require middleware for downstream handlers.
+type AccessResult struct {
+    IsOwner       bool
+    HasPermission bool
+    AccessType    string          // "direct" | "conditional" | "request" | "denied"
+    Scope         string          // "own" | "all"
+    Conditions    json.RawMessage // '{}' when no conditions
+}
 
 // Checker performs RBAC permission checks against the database.
 // All methods are safe for concurrent use from multiple goroutines.
@@ -411,52 +676,67 @@ func NewChecker(pool *pgxpool.Pool) *Checker
 // IsOwner reports whether userID holds the active owner role.
 func (c *Checker) IsOwner(ctx context.Context, userID string) (bool, error)
 
-// HasPermission reports whether userID holds the given canonical permission
-// via their role or a direct grant.
+// HasPermission reports whether userID holds the given canonical permission.
 func (c *Checker) HasPermission(ctx context.Context, userID, permission string) (bool, error)
 
 // Require returns chi-compatible middleware that enforces the given permission.
-// Prerequisite: token.Auth must run first — it injects userID into context.
+// Prerequisite: token.Auth must run first.
 //
-//   r.With(deps.JWTAuth, deps.RBAC.Require(rbac.PermJobQueueRead)).Get("/stats", h.Stats)
+// Behaviour by access_type:
+//   direct      → 200 path, inject scope+conditions into context
+//   conditional → 200 path, inject scope+conditions into context (handler enforces)
+//   request     → 202, {"code":"approval_required","request_id":"<uuid>"}
+//   denied      → 403
+//   not found   → 403
+//   owner       → 200 path, unrestricted (access_type ignored)
 //
-// 401 when no userID is in context (token.Auth did not run or token was invalid).
-// 403 when authenticated but permission is not held.
-// 500 on a transient DB error — fails closed, never grants access on error.
+// 401 when no userID in context.
+// 500 on DB error — fails closed.
 func (c *Checker) Require(permission string) func(http.Handler) http.Handler
-```
-
-### `internal/platform/rbac/errors.go`
-
-```go
-var ErrForbidden       = errors.New("insufficient permissions")
-var ErrUnauthenticated = errors.New("authentication required")
-var ErrSystemRoleImmutable = errors.New("system roles cannot be modified")
-var ErrCannotReassignOwner = errors.New("owner role cannot be reassigned via this route")
-var ErrCannotModifyOwnRole = errors.New("you cannot modify your own role assignment")
-var ErrOwnerAlreadyExists  = errors.New("an active owner already exists")
 ```
 
 ### `internal/platform/rbac/context.go`
 
 ```go
-// InjectPermissionsForTest writes a set of allowed permissions into ctx so
-// handler tests can bypass the DB check. Same pattern as token.InjectUserIDForTest.
+// InjectPermissionsForTest writes allowed permissions into ctx for handler tests.
 // Never call from production code.
 func InjectPermissionsForTest(ctx context.Context, perms ...string) context.Context
 
-// HasPermissionInContext checks if a test-injected permission set contains
-// the given permission. Returns (false, false) when no test set is present —
-// Checker falls through to the DB.
+// HasPermissionInContext checks test-injected permissions.
+// Returns (false, false) when no test set present — Checker falls through to DB.
 func HasPermissionInContext(ctx context.Context, permission string) (allowed, found bool)
+
+// AccessResultFromContext returns the AccessResult injected by Require middleware.
+// Returns nil when called outside a guarded route.
+func AccessResultFromContext(ctx context.Context) *AccessResult
+
+// ScopeFromContext returns the scope ("own"|"all") from the current request context.
+// Returns "own" as the safe default when not set.
+func ScopeFromContext(ctx context.Context) string
+
+// ConditionsFromContext returns the conditions JSONB from the current request context.
+// Returns '{}' when not set.
+func ConditionsFromContext(ctx context.Context) json.RawMessage
+```
+
+### `internal/platform/rbac/errors.go`
+
+```go
+var ErrForbidden              = errors.New("insufficient permissions")
+var ErrUnauthenticated        = errors.New("authentication required")
+var ErrApprovalRequired       = errors.New("action requires approval — request submitted")
+var ErrSystemRoleImmutable    = errors.New("system roles cannot be modified")
+var ErrCannotReassignOwner    = errors.New("owner role cannot be reassigned via this route")
+var ErrCannotModifyOwnRole    = errors.New("you cannot modify your own role assignment")
+var ErrOwnerAlreadyExists     = errors.New("an active owner already exists")
+var ErrCannotLockOwner        = errors.New("owner accounts cannot be admin-locked")
+var ErrCannotLockSelf         = errors.New("you cannot lock your own account")
 ```
 
 ### `internal/app/deps.go` additions
 
 ```go
-// RBAC is the permission checker. Used by domain routes via deps.RBAC.Require("...").
-// Constructed once in server.New from the shared DB pool.
-RBAC *rbac.Checker
+RBAC *rbac.Checker  // use deps.RBAC.Require("resource:action")
 ```
 
 ### Domain models
@@ -484,6 +764,8 @@ type RolePermission struct {
     CanonicalName string          `json:"canonical_name"`
     ResourceType  string          `json:"resource_type"`
     Name          string          `json:"name"`
+    AccessType    string          `json:"access_type"`
+    Scope         string          `json:"scope"`
     Conditions    json.RawMessage `json:"conditions,omitempty"`
 }
 type CreateRoleInput struct { Name string; Description string }
@@ -509,6 +791,7 @@ type UserPermission struct {
     ID            string          `json:"id"`
     CanonicalName string          `json:"canonical_name"`
     ResourceType  string          `json:"resource_type"`
+    Scope         string          `json:"scope"`
     Conditions    json.RawMessage `json:"conditions,omitempty"`
     ExpiresAt     time.Time       `json:"expires_at"`
     GrantedAt     time.Time       `json:"granted_at"`
@@ -517,14 +800,28 @@ type UserPermission struct {
 type GrantPermissionInput struct {
     PermissionID  string          `json:"permission_id"`
     GrantedReason string          `json:"granted_reason"`
+    Scope         string          `json:"scope"`
     ExpiresAt     time.Time       `json:"expires_at"`
     Conditions    json.RawMessage `json:"conditions,omitempty"`
+}
+
+// userlock/models.go
+type LockUserInput struct {
+    Reason string `json:"reason"`
+}
+type UserLockStatus struct {
+    UserID       string     `json:"user_id"`
+    AdminLocked  bool       `json:"admin_locked"`
+    LockedBy     *string    `json:"locked_by,omitempty"`
+    LockedReason *string    `json:"locked_reason,omitempty"`
+    LockedAt     *time.Time `json:"locked_at,omitempty"`
+    IsLocked     bool       `json:"is_locked"`
 }
 ```
 
 ---
 
-## 7. REST API
+## 8. REST API
 
 | # | Method | Path | Auth | Permission | Description |
 |---|--------|------|------|------------|-------------|
@@ -534,8 +831,8 @@ type GrantPermissionInput struct {
 | 4 | GET | `/api/v1/admin/rbac/roles/:id` | JWT | `rbac:read` | Get role by ID |
 | 5 | PATCH | `/api/v1/admin/rbac/roles/:id` | JWT | `rbac:manage` | Update name/description (non-system only) |
 | 6 | DELETE | `/api/v1/admin/rbac/roles/:id` | JWT | `rbac:manage` | Soft-delete role (non-system only) |
-| 7 | GET | `/api/v1/admin/rbac/roles/:id/permissions` | JWT | `rbac:read` | List permissions on role |
-| 8 | POST | `/api/v1/admin/rbac/roles/:id/permissions` | JWT | `rbac:manage` | Add permission to role |
+| 7 | GET | `/api/v1/admin/rbac/roles/:id/permissions` | JWT | `rbac:read` | List permissions on role (includes access_type + scope) |
+| 8 | POST | `/api/v1/admin/rbac/roles/:id/permissions` | JWT | `rbac:manage` | Add permission to role (with access_type + scope) |
 | 9 | DELETE | `/api/v1/admin/rbac/roles/:id/permissions/:perm_id` | JWT | `rbac:manage` | Remove permission from role |
 | 10 | GET | `/api/v1/admin/rbac/permissions` | JWT | `rbac:read` | List all active permissions |
 | 11 | GET | `/api/v1/admin/rbac/permissions/groups` | JWT | `rbac:read` | List permission groups with members |
@@ -545,6 +842,9 @@ type GrantPermissionInput struct {
 | 15 | GET | `/api/v1/admin/rbac/users/:user_id/permissions` | JWT | `rbac:read` | List active direct grants |
 | 16 | POST | `/api/v1/admin/rbac/users/:user_id/permissions` | JWT | `rbac:grant_user_permission` | Grant direct permission to user |
 | 17 | DELETE | `/api/v1/admin/rbac/users/:user_id/permissions/:grant_id` | JWT | `rbac:grant_user_permission` | Revoke direct permission grant |
+| 18 | POST | `/api/v1/admin/users/:user_id/lock` | JWT | `user:lock` | Admin-lock a user account |
+| 19 | DELETE | `/api/v1/admin/users/:user_id/lock` | JWT | `user:lock` | Admin-unlock a user account |
+| 20 | GET | `/api/v1/admin/users/:user_id/lock` | JWT | `user:read` | Get user lock status |
 
 **Route 1 (bootstrap) notes:**
 - Unauthenticated — the only unauthenticated write route in the system.
@@ -555,29 +855,28 @@ type GrantPermissionInput struct {
 
 **Routes 5, 6 (system role guard):**
 - The `UpdateRole` and `DeactivateRole` queries enforce `is_system_role = FALSE`
-  at the DB level. Zero rows affected → service returns `ErrSystemRoleImmutable` → 409.
+  at the DB level. Zero rows → service returns `ErrSystemRoleImmutable` → 409.
 
 **Route 13 (assign role) guards:**
 - Cannot reassign owner users → `ErrCannotReassignOwner` → 409.
 - Cannot assign to self → `ErrCannotModifyOwnRole` → 409.
 - `fn_prevent_orphaned_owner` fires at DB level if re-assigning the last owner.
 
+**Routes 18/19 (lock/unlock) guards:**
+- Cannot lock owner accounts → `ErrCannotLockOwner` → 409.
+- Cannot lock self → `ErrCannotLockSelf` → 409.
+- `user:lock` for admin is seeded as `access_type = 'request'` → admin gets 202 with an approval request; owner approves it directly.
+- Owner-role users bypass `access_type` checks and can lock directly.
+
+**Unlock flow guard (existing `domain/auth/unlock`):**
+- If `admin_locked = TRUE`, the user-facing OTP unlock flow returns `ErrAdminLocked`
+  and refuses to clear `admin_locked`. Only routes 18/19 touch that field.
+
 ---
 
-## 8. Middleware Design
+## 9. Middleware Design
 
-### Usage in any domain route
-
-```go
-// Any domain's routes.go — after deps.RBAC is wired
-r.With(deps.JWTAuth, deps.RBAC.Require(rbac.PermJobQueueRead)).
-    Get("/stats", h.Stats)
-
-r.With(deps.JWTAuth, deps.RBAC.Require(rbac.PermJobQueueManage)).
-    Post("/jobs/{id}/retry", h.Retry)
-```
-
-### `Require` implementation sketch
+### Updated `Require` implementation sketch
 
 ```go
 func (c *Checker) Require(permission string) func(http.Handler) http.Handler {
@@ -607,236 +906,303 @@ func (c *Checker) Require(permission string) func(http.Handler) http.Handler {
             })
             if err != nil {
                 slog.ErrorContext(r.Context(), "rbac.Require: db check", "error", err)
-                // Fail closed — never grant access on a transient DB error.
                 respond.Error(w, http.StatusInternalServerError, "internal_error",
                     "internal server error")
                 return
             }
 
-            if !row.IsOwner && !row.HasPermission {
+            // Owner bypasses all access_type logic.
+            if row.IsOwner {
+                ctx := injectAccessResult(r.Context(), &AccessResult{
+                    IsOwner: true, Scope: "all",
+                })
+                next.ServeHTTP(w, r.WithContext(ctx))
+                return
+            }
+
+            if !row.HasPermission {
                 respond.Error(w, http.StatusForbidden, "forbidden",
                     "insufficient permissions")
                 return
             }
 
-            next.ServeHTTP(w, r)
+            switch row.AccessType {
+            case "denied":
+                respond.Error(w, http.StatusForbidden, "forbidden",
+                    "insufficient permissions")
+                return
+
+            case "request":
+                // Submit an approval request and return 202.
+                reqID, reqErr := c.submitApprovalRequest(r.Context(), userID, permission, r)
+                if reqErr != nil {
+                    slog.ErrorContext(r.Context(), "rbac.Require: submit request", "error", reqErr)
+                    respond.Error(w, http.StatusInternalServerError, "internal_error",
+                        "internal server error")
+                    return
+                }
+                respond.JSON(w, http.StatusAccepted, map[string]any{
+                    "code":       "approval_required",
+                    "request_id": reqID,
+                    "message":    "this action requires approval — request submitted",
+                })
+                return
+
+            default: // "direct" or "conditional"
+                ctx := injectAccessResult(r.Context(), &AccessResult{
+                    HasPermission: true,
+                    AccessType:    row.AccessType,
+                    Scope:         row.Scope,
+                    Conditions:    row.Conditions,
+                })
+                next.ServeHTTP(w, r.WithContext(ctx))
+            }
         })
     }
 }
 ```
 
+### Usage examples
+
+```go
+// direct — passes through cleanly
+r.With(deps.JWTAuth, deps.RBAC.Require(rbac.PermJobQueueRead)).
+    Get("/stats", h.Stats)
+
+// conditional — handler reads scope + conditions from context and enforces them
+r.With(deps.JWTAuth, deps.RBAC.Require(rbac.PermProductManage)).
+    Post("/products", h.CreateProduct)
+// In handler:
+// conditions := rbac.ConditionsFromContext(r.Context()) → {"max_price": 1000}
+// scope      := rbac.ScopeFromContext(r.Context())      → "own"
+
+// request — middleware submits approval request and returns 202; handler never called
+r.With(deps.JWTAuth, deps.RBAC.Require(rbac.PermJobQueueConfigure)).
+    Post("/queues/{kind}/pause", h.PauseKind)
+```
+
 ### V2: Caching (post-launch)
 
-V1 makes one DB query per guarded request. The query is fast — two EXISTS subqueries
-on covering indexes. Acceptable at current scale.
-
-When RBAC check latency shows up in profiling, add a short-TTL in-memory cache in
-`Checker` keyed by `(userID, permission)` with a 30-second TTL. Invalidate entries
-on any of: `AssignUserRole`, `RemoveUserRole`, `GrantUserPermission`,
-`RevokeUserPermission`, `AddRolePermission`, `RemoveRolePermission`. One method
-added to `Checker` (`invalidate(userID)`), called by each store method. Zero changes
-to `Require` — it checks cache first, falls back to DB on miss.
+V1 makes one DB query per guarded request. When RBAC check latency shows up in
+profiling, add a short-TTL in-memory cache in `Checker` keyed by
+`(userID, permission)` with a 30-second TTL. Invalidate on any of:
+`AssignUserRole`, `RemoveUserRole`, `GrantUserPermission`, `RevokeUserPermission`,
+`AddRolePermission`, `RemoveRolePermission`. Zero changes to `Require`.
 
 ---
 
-## 9. Bootstrap Flow
-
-### The problem
-
-How does the first admin user get the owner role if every write route requires auth
-and RBAC? The system can't grant what doesn't exist yet.
-
-### Solution
+## 10. Bootstrap Flow
 
 `POST /owner/bootstrap` is unauthenticated. It:
 
 1. `CountActiveOwners` — if > 0, return 409 `owner_already_exists`.
 2. `GetActiveUserByID` — verify target user exists, is active, is email-verified.
-3. `GetOwnerRoleID` — look up the owner role seeded in `001_roles.sql`.
-4. `AssignUserRole` — insert with `granted_by = user_id` (self-grant, acceptable only here).
+3. `GetOwnerRoleID` — look up owner role from `001_roles.sql`.
+4. `AssignUserRole` — insert with `granted_by = user_id` (self-grant, bootstrap only).
 5. Return `{ user_id, role_name, granted_at }`.
 
-Once step 4 succeeds, the endpoint permanently returns 409 on every future call.
-
-### First-run sequence
-
-```
-1. Deploy the app (schema + seeds applied)
-2. Register a user account: POST /api/v1/auth/register
-3. Verify the email
-4. POST /api/v1/owner/bootstrap  { "user_id": "<uuid>" }
-   → assigns owner role
-5. All RBAC-guarded routes are now accessible for that user
-6. Bootstrap permanently returns 409 from now on
-```
+Rate-limited: 3 req / 15 min per IP. Permanently returns 409 after first success.
 
 ---
 
-## 10. Decisions
+## 11. Decisions
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
-| D-R1 | Platform package for checker, domain package for admin API | Checker is used by every domain — it belongs in `platform/`. The admin API is a domain concern. |
-| D-R2 | Single `CheckUserAccess` query combining `is_owner` + `has_permission` | One DB round-trip per guarded request. UNION ALL handles role + direct-grant paths. |
+| D-R1 | Platform package for checker, domain package for admin API | Checker is used by every domain — belongs in `platform/`. Admin API is a domain concern. |
+| D-R2 | `CheckUserAccess` returns access_type + scope + conditions, not just booleans | Middleware needs to act on access_type; handlers need scope and conditions. One round-trip still. |
 | D-R3 | No caching in V1 | Query is fast and fully indexed. Premature caching adds invalidation complexity before there is a measured problem. |
 | D-R4 | `POST /owner/bootstrap` is unauthenticated | Chicken-and-egg: can't authenticate to get owner permissions if no owner exists. Rate-limited + 409 guard makes it safe. |
-| D-R5 | System roles are immutable via API | The DB WHERE `is_system_role = FALSE` guard enforces this. Renaming `owner` or `admin` would break seed-based assumptions. |
-| D-R6 | Owner role reassignment is out of scope for V1 | High-risk operation that needs its own flow (confirmation, two-owner window). Not needed at launch scale. |
-| D-R7 | `granted_by` references `users.id` with RESTRICT FK | Every grant has a named human accountable. You cannot delete a user who has granted permissions — they must be transferred first. |
+| D-R5 | System roles are immutable via API | DB WHERE `is_system_role = FALSE` guard enforces this. |
+| D-R6 | Owner role reassignment out of scope for V1 | High-risk, needs own flow (confirmation, two-owner window). |
+| D-R7 | `granted_by` RESTRICT FK on all grants | Every grant has a named human accountable. You cannot delete a user who has granted permissions. |
 | D-R8 | Role deletion = soft-delete | RESTRICT FKs on audit tables block hard DELETE. Soft-delete preserves audit trail. |
-| D-R9 | Context injection for tests (`InjectPermissionsForTest`) | Same pattern as `token.InjectUserIDForTest`. Handler tests can exercise RBAC paths without a real DB. |
-| D-R10 | Permission constants in `internal/platform/rbac/` | Raw string literals scattered across domains are a typo risk. Constants are compile-checked. |
-| D-R11 | Fail closed on DB error in `Require` | On a transient DB failure, return 500 rather than granting access. Denying on uncertainty is the correct security posture. |
+| D-R9 | Context injection for tests (`InjectPermissionsForTest`) | Same pattern as `token.InjectUserIDForTest`. Handler tests bypass DB. |
+| D-R10 | Permission constants in `internal/platform/rbac/` | Raw string literals are a typo risk. Constants are compile-checked. |
+| D-R11 | Fail closed on DB error | Return 500, never grant on uncertainty. |
+| D-R12 | `access_type = 'request'` reuses `005_requests.sql` workflow | No duplicate approval machinery. `permission_request_approvers` seeds which roles must approve per permission. |
+| D-R13 | `job_queue:manage` vs `job_queue:configure` split | manage = job-level ops (low blast radius: retry, cancel, priority). configure = system-level ops (pause all workers, delete schedules — high blast radius). |
+| D-R14 | `user:lock` over separate `user:ban` | `admin_locked` already exists and is admin-only. Adding metadata columns (locked_by, reason, at) gives everything a ban would without a redundant field. One concept, not two overlapping ones. |
+| D-R15 | `user:lock` for admin seeded as `access_type = 'request'` | Locking a user is a policy decision — admin initiates, owner approves. |
+| D-R16 | `scope` on `user_permissions` (direct grants) | Even a direct grant should specify resource visibility. Defaults to 'own' — the safe default. |
 
 ---
 
-## 11. Tests
+## 12. Tests
 
-### Checker (unit — uses `InjectPermissionsForTest` or test DB)
+### Checker
 
 | # | Case | Layer |
 |---|------|-------|
 | T-R01 | `Require` passes for owner regardless of permission name | U |
-| T-R02 | `Require` passes when user has permission via role | I |
-| T-R03 | `Require` passes when user has permission via direct grant | I |
-| T-R04 | `Require` returns 403 when user has no role and no direct grant | I |
-| T-R05 | `Require` returns 403 when direct grant is expired | I |
-| T-R06 | `Require` returns 401 when no userID in context | U |
-| T-R07 | `Require` uses test-injected permissions when present (no DB hit) | U |
-| T-R08 | `Require` returns 500 and denies access on DB error (fail closed) | U |
-| T-R09 | `IsOwner` returns true for owner role user | I |
-| T-R10 | `IsOwner` returns false for non-owner user | I |
-| T-R11 | `HasPermission` returns true via role path | I |
-| T-R12 | `HasPermission` returns true via direct-grant path | I |
-| T-R13 | `HasPermission` returns false after role permission is removed | I |
+| T-R02 | `Require` passes and injects scope for `access_type = 'direct'` | I |
+| T-R03 | `Require` passes and injects scope + conditions for `access_type = 'conditional'` | I |
+| T-R04 | `Require` returns 202 with request_id for `access_type = 'request'` | I |
+| T-R05 | `Require` returns 403 for `access_type = 'denied'` | I |
+| T-R06 | `Require` returns 403 when user has no role and no direct grant | I |
+| T-R07 | `Require` returns 403 when direct grant is expired | I |
+| T-R08 | `Require` returns 401 when no userID in context | U |
+| T-R09 | `Require` uses test-injected permissions (no DB hit) | U |
+| T-R10 | `Require` returns 500 and denies access on DB error (fail closed) | U |
+| T-R11 | `IsOwner` returns true for owner role user | I |
+| T-R12 | `IsOwner` returns false for non-owner user | I |
+| T-R13 | `HasPermission` returns true via role path | I |
+| T-R14 | `HasPermission` returns true via direct-grant path | I |
+| T-R15 | `HasPermission` returns false after role permission is removed | I |
+| T-R16 | `ScopeFromContext` returns 'all' for admin, 'own' for vendor | I |
+| T-R17 | `ConditionsFromContext` returns conditions for conditional grant | I |
 
 ### Bootstrap
 
 | # | Case | Layer |
 |---|------|-------|
-| T-R14 | Bootstrap succeeds when no owner exists | I |
-| T-R15 | Bootstrap returns 409 when owner already exists | I |
-| T-R16 | Bootstrap returns 422 when `user_id` is unknown | I |
-| T-R17 | Bootstrap returns 422 when user is not email-verified | I |
-| T-R18 | Bootstrap is rate-limited (3 req / 15 min per IP) | U |
+| T-R18 | Bootstrap succeeds when no owner exists | I |
+| T-R19 | Bootstrap returns 409 when owner already exists | I |
+| T-R20 | Bootstrap returns 422 when `user_id` is unknown | I |
+| T-R21 | Bootstrap returns 422 when user is not email-verified | I |
+| T-R22 | Bootstrap is rate-limited (3 req / 15 min per IP) | U |
 
 ### Roles API
 
 | # | Case | Layer |
 |---|------|-------|
-| T-R19 | `GET /roles` returns seeded roles | I |
-| T-R20 | `POST /roles` creates a new role | I |
-| T-R21 | `PATCH /roles/:id` updates name for non-system role | I |
-| T-R22 | `PATCH /roles/:id` returns 409 for system role | I |
-| T-R23 | `DELETE /roles/:id` soft-deletes non-system role | I |
-| T-R24 | `DELETE /roles/:id` returns 409 for system role | I |
-| T-R25 | `GET /roles/:id/permissions` lists role permissions | I |
-| T-R26 | `POST /roles/:id/permissions` adds permission to role | I |
-| T-R27 | `DELETE /roles/:id/permissions/:perm_id` removes permission | I |
+| T-R23 | `GET /roles` returns seeded roles | I |
+| T-R24 | `POST /roles` creates a new role | I |
+| T-R25 | `PATCH /roles/:id` updates name for non-system role | I |
+| T-R26 | `PATCH /roles/:id` returns 409 for system role | I |
+| T-R27 | `DELETE /roles/:id` soft-deletes non-system role | I |
+| T-R28 | `DELETE /roles/:id` returns 409 for system role | I |
+| T-R29 | `GET /roles/:id/permissions` lists permissions with access_type + scope | I |
+| T-R30 | `POST /roles/:id/permissions` adds permission with access_type + scope | I |
+| T-R31 | `DELETE /roles/:id/permissions/:perm_id` removes permission | I |
 
 ### Permissions API
 
 | # | Case | Layer |
 |---|------|-------|
-| T-R28 | `GET /permissions` returns all seeded active permissions | I |
-| T-R29 | `GET /permissions/groups` returns groups with members | I |
+| T-R32 | `GET /permissions` returns all 13 seeded active permissions | I |
+| T-R33 | `GET /permissions/groups` returns groups with members | I |
 
 ### User role management
 
 | # | Case | Layer |
 |---|------|-------|
-| T-R30 | `PUT /users/:id/role` assigns role; `GET` returns it | I |
-| T-R31 | `PUT /users/:id/role` replaces an existing role | I |
-| T-R32 | `PUT /users/:id/role` returns 409 for owner target user | I |
-| T-R33 | `PUT /users/:id/role` returns 409 for self-assignment | I |
-| T-R34 | `DELETE /users/:id/role` removes role | I |
+| T-R34 | `PUT /users/:id/role` assigns role; `GET` returns it | I |
+| T-R35 | `PUT /users/:id/role` replaces an existing role | I |
+| T-R36 | `PUT /users/:id/role` returns 409 for owner target user | I |
+| T-R37 | `PUT /users/:id/role` returns 409 for self-assignment | I |
+| T-R38 | `DELETE /users/:id/role` removes role | I |
 
 ### User permissions management
 
 | # | Case | Layer |
 |---|------|-------|
-| T-R35 | `POST /users/:id/permissions` grants direct permission | I |
-| T-R36 | `GET /users/:id/permissions` returns only active grants | I |
-| T-R37 | `DELETE /users/:id/permissions/:grant_id` revokes grant | I |
-| T-R38 | Expired grant does not appear in `GET` and does not pass `Require` | I |
-| T-R39 | Grant with `expires_at > 90 days` returns 422 (DB trigger fires) | I |
-| T-R40 | Granter without the permission cannot grant it (privilege escalation trigger) | I |
+| T-R39 | `POST /users/:id/permissions` grants direct permission with scope | I |
+| T-R40 | `GET /users/:id/permissions` returns only active grants with scope | I |
+| T-R41 | `DELETE /users/:id/permissions/:grant_id` revokes grant | I |
+| T-R42 | Expired grant does not appear in `GET` and does not pass `Require` | I |
+| T-R43 | Grant with `expires_at > 90 days` returns 422 (DB trigger fires) | I |
+| T-R44 | Granter without the permission cannot grant it (privilege escalation trigger) | I |
+
+### User lock management
+
+| # | Case | Layer |
+|---|------|-------|
+| T-R45 | `POST /users/:id/lock` admin-locks user; `GET` reflects locked state | I |
+| T-R46 | `DELETE /users/:id/lock` admin-unlocks user; `GET` reflects unlocked state | I |
+| T-R47 | Lock returns 409 when target is owner | I |
+| T-R48 | Lock returns 409 when target is self | I |
+| T-R49 | Admin (request access_type) gets 202 on lock attempt, not direct lock | I |
+| T-R50 | `auth/unlock` OTP flow refuses to clear `admin_locked` | I |
+| T-R51 | Admin-locked user cannot log in (login service guard) | I |
+| T-R52 | Admin-locked user's existing tokens are invalidated via Redis key | I |
 
 ---
 
-## 12. File Map
+## 13. File Map
 
 ```
-sql/queries/rbac.sql                         NEW — all queries above
-sql/seeds/002_permissions.sql                NEW — all permissions + groups
-sql/seeds/003_roles.sql                      NEW — admin/vendor/customer + their permissions
+-- Phase 0: schema additions
+001_core.sql                                 MODIFY — admin_locked_by, admin_locked_reason,
+                                                       admin_locked_at + constraints
+003_rbac.sql                                 MODIFY — permission_access_type + permission_scope ENUMs;
+                                                       access_type + scope on role_permissions;
+                                                       scope on user_permissions;
+                                                       access_type/scope snapshot columns on both audit tables;
+                                                       permission_request_approvers table
+004_rbac_functions.sql                       MODIFY — fn_audit_role_permissions + fn_audit_user_permissions
+                                                       capture access_type/scope before/after snapshots
 
+-- Phase 1: queries + seeds
+sql/queries/rbac.sql                         NEW — all 25 queries (23 v1 + LockUser, UnlockUser, GetUserLockStatus)
+sql/seeds/002_permissions.sql                NEW — 13 permissions + 5 groups + group members
+sql/seeds/003_roles.sql                      NEW — admin/vendor/customer roles + role-permission rows with access_type + scope
+
+-- Phase 3: platform package
 internal/platform/rbac/
-    checker.go                               NEW — Checker, IsOwner, HasPermission, Require
-    context.go                               NEW — InjectPermissionsForTest, HasPermissionInContext
-    errors.go                                NEW — all sentinel errors
-    checker_test.go                          NEW — T-R01 through T-R13
+    checker.go                               NEW — Checker, IsOwner, HasPermission, Require (access_type aware)
+    context.go                               NEW — AccessResult, scope, conditions context helpers
+    errors.go                                NEW — all sentinels incl. ErrApprovalRequired, ErrCannotLockOwner
+    checker_test.go                          NEW — T-R01 through T-R17
 
+-- Phases 4-9: domain package
 internal/domain/rbac/
-    routes.go                                NEW — assembles owner + admin sub-routers
-    bootstrap/
-        handler.go, service.go, store.go     NEW
-        models.go, routes.go, validators.go  NEW
-    roles/
-        handler.go, service.go, store.go     NEW
-        models.go, routes.go, validators.go  NEW
-    permissions/
-        handler.go, service.go, store.go     NEW
-        models.go, routes.go                 NEW
-    userroles/
-        handler.go, service.go, store.go     NEW
-        models.go, routes.go, validators.go  NEW
-    userpermissions/
-        handler.go, service.go, store.go     NEW
-        models.go, routes.go, validators.go  NEW
+    routes.go                                NEW
+    bootstrap/   handler.go, service.go, store.go, models.go, routes.go, validators.go  NEW
+    roles/       handler.go, service.go, store.go, models.go, routes.go, validators.go  NEW
+    permissions/ handler.go, service.go, store.go, models.go, routes.go                NEW
+    userroles/   handler.go, service.go, store.go, models.go, routes.go, validators.go  NEW
+    userpermissions/ handler.go, service.go, store.go, models.go, routes.go, validators.go NEW
+    userlock/    handler.go, service.go, store.go, models.go, routes.go, validators.go  NEW
 
+-- Phase 10: existing files to modify
+internal/domain/auth/login/service.go        MODIFY — add admin_locked guard in step 6 guard chain
+internal/domain/auth/unlock/service.go       MODIFY — refuse to clear admin_locked
+internal/domain/auth/shared/errors.go        MODIFY — add ErrAdminLocked sentinel
+internal/domain/oauth/google/service.go      MODIFY — add admin_locked guard before session creation
+internal/domain/oauth/telegram/service.go    MODIFY — add admin_locked guard before session creation
+internal/platform/token/middleware.go        MODIFY — add step 3c: Redis "admin_locked_user:<uid>" check
 internal/app/deps.go                         MODIFY — add RBAC *rbac.Checker
 internal/server/server.go                    MODIFY — construct Checker, add to deps
-internal/server/routes.go                    MODIFY — mount /owner and /admin/rbac sub-routers
+internal/server/routes.go                    MODIFY — mount /owner and /admin/rbac + /admin/users sub-routers
 ```
 
 ---
 
-## 13. Implementation Phases
+## 14. Implementation Phases
 
 | Phase | What | Needs | Gate |
 |-------|------|-------|------|
-| 1 | `sql/queries/rbac.sql` + `sqlc generate` | nothing | `db` package compiles with new generated methods |
-| 2 | `sql/seeds/002_permissions.sql` + `003_roles.sql` | Phase 1 | All permissions + roles present in DB; `SELECT COUNT(*) FROM permissions` = 10 |
-| 3 | `internal/platform/rbac/` — checker + middleware | Phase 1 | T-R01 through T-R13 green; `go build ./...` passes |
-| 4 | Bootstrap route (`/owner/bootstrap`) | Phase 3 | T-R14 through T-R18 green |
-| 5 | Permissions read API (routes 10–11) | Phase 3 | T-R28, T-R29 green |
-| 6 | Roles API (routes 2–9) | Phase 3 | T-R19 through T-R27 green |
-| 7 | User role management (routes 12–14) | Phase 6 | T-R30 through T-R34 green |
-| 8 | User permission management (routes 15–17) | Phase 7 | T-R35 through T-R40 green |
-| 9 | Wire into server + mount routes | Phases 4–8 | Server boots; `go test ./...` green |
+| 0 | Schema additions to `001_core.sql`, `003_rbac.sql`, `004_rbac_functions.sql` | nothing | `make sqlc` compiles; new columns present in DB |
+| 1 | `sql/queries/rbac.sql` + `sqlc generate` | Phase 0 | `db` package compiles with all 25 new generated methods |
+| 2 | `sql/seeds/002_permissions.sql` + `003_roles.sql` | Phase 1 | `SELECT COUNT(*) FROM permissions` = 13; roles + role-permission rows present |
+| 3 | `internal/platform/rbac/` — checker + middleware | Phase 1 | T-R01 through T-R17 green; `go build ./...` passes |
+| 4 | Bootstrap route (`/owner/bootstrap`) | Phase 3 | T-R18 through T-R22 green |
+| 5 | Permissions read API (routes 10–11) | Phase 3 | T-R32, T-R33 green |
+| 6 | Roles API (routes 2–9) | Phase 3 | T-R23 through T-R31 green |
+| 7 | User role management (routes 12–14) | Phase 6 | T-R34 through T-R38 green |
+| 8 | User permission management (routes 15–17) | Phase 7 | T-R39 through T-R44 green |
+| 9 | User lock management (routes 18–20) | Phase 7 | T-R45 through T-R52 green |
+| 10 | Wire into server; update login/oauth/unlock/token middleware | Phases 4–9 | Server boots; `go test ./...` green |
 
-**Phase 3 is the unlock for everything else.** Once the checker and middleware exist
-and compile, every other domain — job queue, user management, requests — can add
-`deps.RBAC.Require(...)` guards to their routes immediately. Phases 4–8 can even
-run in parallel with the job queue implementation phases.
-
-Phase 9 is the only phase that modifies existing files.
+**Phase 0 is the new prerequisite** — schema additions land before Stage 1.
+**Phase 3 is the unlock** — once `Require` exists every other domain can add guards immediately.
+Phases 4–9 can run in parallel once Phase 3 is green.
+Phase 10 is the only phase that modifies existing files outside the rbac domain.
 
 ---
 
-## 14. Wiring (Phase 9)
+## 15. Wiring (Phase 10)
 
 ### `internal/app/deps.go`
 
 ```go
-RBAC *rbac.Checker  // permission checker; use deps.RBAC.Require("resource:action")
+RBAC *rbac.Checker  // use deps.RBAC.Require("resource:action")
 ```
 
 ### `internal/server/server.go`
 
 ```go
-// After pool is available — one line:
 deps.RBAC = rbac.NewChecker(pool)
 ```
 
@@ -847,18 +1213,23 @@ r.Route("/api/v1", func(r chi.Router) {
     r.Mount("/auth",    auth.Routes(ctx, deps))
     r.Mount("/oauth",   oauth.Routes(ctx, deps))
     r.Mount("/profile", profile.Routes(ctx, deps))
-    r.Mount("/owner",   rbacdomain.OwnerRoutes(ctx, deps))  // bootstrap only
-    r.Mount("/admin",   rbacdomain.AdminRoutes(ctx, deps))  // /admin/rbac/*
+    r.Mount("/owner",   rbacdomain.OwnerRoutes(ctx, deps))
+    r.Mount("/admin",   rbacdomain.AdminRoutes(ctx, deps))
 })
 ```
 
-### Job queue routes (now possible after Phase 3)
+### Job queue routes
 
 ```go
-// internal/platform/jobqueue/api.go
+// read — direct pass-through
 r.With(deps.JWTAuth, deps.RBAC.Require(rbac.PermJobQueueRead)).
     Get("/stats", h.Stats)
 
+// manage — direct pass-through
 r.With(deps.JWTAuth, deps.RBAC.Require(rbac.PermJobQueueManage)).
     Post("/jobs/{id}/retry", h.Retry)
+
+// configure — admin gets 202 (approval_required); owner passes directly
+r.With(deps.JWTAuth, deps.RBAC.Require(rbac.PermJobQueueConfigure)).
+    Post("/queues/{kind}/pause", h.PauseKind)
 ```

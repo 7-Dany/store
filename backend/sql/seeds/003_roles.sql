@@ -12,6 +12,9 @@
 
 -- ── Application roles ─────────────────────────────────────────────────────────
 
+ALTER TABLE role_permissions
+    ALTER COLUMN granted_by DROP NOT NULL;
+
 INSERT INTO roles (name, description, is_system_role, is_owner_role, is_active)
 VALUES
     ('admin',    'Full store administration access. High-blast-radius operations require approval.',  TRUE, FALSE, TRUE),
@@ -20,10 +23,10 @@ VALUES
 ON CONFLICT (name) DO NOTHING;
 
 -- ── granted_by CTE helper ─────────────────────────────────────────────────────
--- All role_permissions inserts below use the same pattern:
---   COALESCE((SELECT user_id FROM owner_user), '00000000-0000-0000-0000-000000000000'::uuid)
--- fn_prevent_privilege_escalation does not fire on role_permissions, so the
--- zero-UUID fallback is safe for initial seed before any owner user exists.
+-- All role_permissions inserts below use NULL for granted_by when no owner user exists.
+-- role_permissions.granted_by is nullable (see migration 009_rbac_seed_grants.sql);
+-- NULL means "system seed — no individual accountable" and is only valid at seed time.
+-- Once an owner exists, the application enforces non-NULL granted_by via the service layer.
 
 -- ── Owner — all 13 permissions ────────────────────────────────────────────────
 
@@ -42,7 +45,7 @@ INSERT INTO role_permissions (role_id, permission_id, granted_by, granted_reason
 SELECT
     owner_role.id,
     p.id,
-    COALESCE((SELECT user_id FROM owner_user), '00000000-0000-0000-0000-000000000000'::uuid),
+    (SELECT user_id FROM owner_user),
     'System seed — owner role has unrestricted access',
     'direct'::permission_access_type,
     'all'::permission_scope,
@@ -69,7 +72,7 @@ INSERT INTO role_permissions (role_id, permission_id, granted_by, granted_reason
 SELECT
     admin_role.id,
     p.id,
-    COALESCE((SELECT user_id FROM owner_user), '00000000-0000-0000-0000-000000000000'::uuid),
+    (SELECT user_id FROM owner_user),
     'System seed — admin role baseline access',
     -- Override access_type for specific permissions
     CASE p.canonical_name
@@ -101,7 +104,7 @@ INSERT INTO role_permissions (role_id, permission_id, granted_by, granted_reason
 SELECT
     vendor_role.id,
     p.id,
-    COALESCE((SELECT user_id FROM owner_user), '00000000-0000-0000-0000-000000000000'::uuid),
+    (SELECT user_id FROM owner_user),
     'System seed — vendor role access',
     v.access_type::permission_access_type,
     v.scope::permission_scope,
@@ -132,7 +135,7 @@ INSERT INTO role_permissions (role_id, permission_id, granted_by, granted_reason
 SELECT
     customer_role.id,
     p.id,
-    COALESCE((SELECT user_id FROM owner_user), '00000000-0000-0000-0000-000000000000'::uuid),
+    (SELECT user_id FROM owner_user),
     'System seed — customer role access',
     'direct'::permission_access_type,
     'own'::permission_scope,
@@ -163,22 +166,44 @@ ON CONFLICT (permission_id, role_id) DO NOTHING;
 -- +goose Down
 -- +goose StatementBegin
 
--- Remove permission_request_approvers for these permissions first.
+-- Step 1: Remove permission_request_approvers rows (audit trigger fires → inserts into pra_audit).
 DELETE FROM permission_request_approvers
 WHERE permission_id IN (
     SELECT id FROM permissions WHERE canonical_name IN ('job_queue:configure', 'user:lock')
 );
 
--- Remove role_permissions for admin, vendor, customer, and owner roles
--- (owner permissions were added in this file's Up migration).
+-- Step 2: Remove role_permissions rows (audit trigger fires → inserts into rp_audit).
 DELETE FROM role_permissions
 WHERE role_id IN (
     SELECT id FROM roles WHERE name IN ('owner', 'admin', 'vendor', 'customer')
 );
 
--- Remove the application roles.
+-- Step 3: Clean all audit tables whose RESTRICT FKs reference the roles we are about to delete.
+-- These tables have ON DELETE RESTRICT on role_id, so they must be cleared before the DELETE on
+-- roles. The audit rows for admin/vendor/customer were (re-)created by the trigger calls above,
+-- plus any rows written by the test seed's user_role assignments.
+-- Owner is not being deleted, so we scope cleanup to admin/vendor/customer only.
+DELETE FROM role_permissions_audit
+WHERE role_id IN (
+    SELECT id FROM roles WHERE name IN ('admin', 'vendor', 'customer')
+);
+
+DELETE FROM permission_request_approvers_audit
+WHERE role_id IN (
+    SELECT id FROM roles WHERE name IN ('admin', 'vendor', 'customer')
+);
+
+DELETE FROM user_roles_audit
+WHERE role_id IN (
+    SELECT id FROM roles WHERE name IN ('admin', 'vendor', 'customer')
+);
+
+-- Step 4: Remove the application roles now that no RESTRICT FK rows reference them.
 DELETE FROM roles
 WHERE name IN ('admin', 'vendor', 'customer')
   AND is_system_role = TRUE;
+
+ALTER TABLE role_permissions
+     ALTER COLUMN granted_by SET NOT NULL;
 
 -- +goose StatementEnd

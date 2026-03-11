@@ -19,7 +19,9 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/crypto"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/mailer"
+	"github.com/7-Dany/store/backend/internal/db"
 	"github.com/7-Dany/store/backend/internal/platform/ratelimit"
+	"github.com/7-Dany/store/backend/internal/platform/rbac"
 	"github.com/7-Dany/store/backend/internal/platform/token"
 )
 
@@ -118,6 +120,9 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		SecureCookies:    !cfg.HTTPSDisabled,
 	}
 
+	// ── RBAC checker ─────────────────────────────────────────────────────
+	rbacChecker := rbac.NewChecker(db.New(pool))
+
 	// ── Shared deps ───────────────────────────────────────────────────────
 	deps := &app.Deps{
 		Pool:                pool,
@@ -134,6 +139,8 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		HTTPSEnabled:        cfg.HTTPSEnabled,
 		OTPTokenTTL:         time.Duration(cfg.OTPValidMinutes) * time.Minute,
 		Encryptor:           encryptor,
+		RBAC:                rbacChecker,
+		// ApprovalSubmitter: assigned in Phase 10 when requests domain is ready.
 		OAuth: app.OAuthConfig{
 			GoogleClientID:     cfg.GoogleClientID,
 			GoogleClientSecret: cfg.GoogleClientSecret,

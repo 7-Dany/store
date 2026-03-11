@@ -550,6 +550,13 @@ DECLARE
  v_role_is_owner    BOOLEAN;
  v_granter_is_owner BOOLEAN;
 BEGIN
+ -- Escape hatch for test fixtures and seeding scripts only.
+ -- Mirrors the same bypass already present in fn_prevent_privilege_escalation.
+ -- Must never be set to '1' in production code paths.
+ IF current_setting('rbac.skip_escalation_check', TRUE) = '1' THEN
+  RETURN NEW;
+ END IF;
+
  -- Single pass: resolve whether the target role is the owner role AND whether
  -- the granter holds an active owner role in one index seek.
  -- idx_roles_owner_active (partial: is_owner_role=TRUE AND is_active=TRUE) makes
@@ -573,6 +580,20 @@ BEGIN
   RETURN NEW;
  END IF;
 
+ -- Bootstrap exception: if no active owner exists yet, allow the first assignment.
+ -- This is the chicken-and-egg path — the /owner/bootstrap endpoint is the only
+ -- caller; the service layer must gate on CountActiveOwners = 0 before calling this.
+ IF NOT EXISTS (
+  SELECT 1
+  FROM   user_roles ur
+  JOIN   roles r ON r.id = ur.role_id
+  WHERE  r.is_owner_role = TRUE
+    AND  r.is_active     = TRUE
+    AND  (ur.expires_at IS NULL OR ur.expires_at > NOW())
+ ) THEN
+  RETURN NEW;
+ END IF;
+
  -- Granting the owner role requires the granter to hold an active owner role themselves.
  IF NOT v_granter_is_owner THEN
   RAISE EXCEPTION
@@ -587,12 +608,12 @@ $$;
 
 COMMENT ON FUNCTION fn_prevent_owner_role_escalation() IS
  'Blocks assignment of the owner role unless the granter holds an active owner role. '
+ 'Bootstrap exception: when no active owner exists, the first assignment is always allowed '
+ '(chicken-and-egg path for /owner/bootstrap). Service layer must gate on CountActiveOwners = 0. '
  'Fires on INSERT and on UPDATE OF role_id. Middleware should enforce this first; '
  'this trigger is the DB backstop. '
- 'Rewritten to a single SELECT that resolves both role identity and granter ownership '
- 'in one index seek, down from two sequential queries. '
- 'COALESCE(v_granter_is_owner, FALSE) guards against NULL so the check stays correct '
- 'even if NOT FOUND handling is ever refactored.';
+ 'Escape hatch: SET LOCAL rbac.skip_escalation_check = ''1'' (transaction-scoped, '
+ 'for test fixtures and seeding scripts only — never expose to end users).';
 
 CREATE TRIGGER trg_prevent_owner_role_escalation
  BEFORE INSERT OR UPDATE OF role_id ON user_roles

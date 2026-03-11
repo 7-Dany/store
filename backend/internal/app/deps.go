@@ -15,6 +15,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/crypto"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/mailer"
+	"github.com/7-Dany/store/backend/internal/platform/rbac"
 	"github.com/7-Dany/store/backend/internal/platform/token"
 )
 
@@ -93,6 +94,17 @@ type Deps struct {
 	// OTP_VALID_MINUTES is the single source of truth — no hardcoded intervals
 	// anywhere in the service or store layers.
 	OTPTokenTTL time.Duration
+
+	// ── RBAC ────────────────────────────────────────────────────────────────────
+	// RBAC is the platform checker used to guard admin routes.
+	// Constructed in server.New from the shared DB pool.
+	RBAC *rbac.Checker
+	// ApprovalSubmitter is nil until the requests domain is wired in Phase 10.
+	// ApprovalGate returns 503 when this is nil — safe until then.
+	ApprovalSubmitter rbac.ApprovalSubmitter
+	// ConditionalEscalator is nil until the requests domain is wired in Phase 10.
+	// Domain handlers that perform conditional escalation must nil-check before use.
+	ConditionalEscalator rbac.ConditionalEscalator
 
 	// ── Crypto ────────────────────────────────────────────────────────────────
 	// Encryptor is the AES-256-GCM encryptor for OAuth tokens at rest.

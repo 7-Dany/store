@@ -23,7 +23,7 @@ INSERT INTO permissions (name, resource_type, description) VALUES
     ('manage',              'request',    'Create/edit/cancel requests; manage lifecycle non-approval steps'),
     ('approve',             'request',    'Approve or reject a pending request'),
     ('manage',              'product',    'Create/update/delete products (placeholder for store domain)')
-ON CONFLICT (resource_type, name) DO NOTHING;
+ON CONFLICT (canonical_name) DO NOTHING;
 
 -- ── Permission groups ─────────────────────────────────────────────────────────
 
@@ -104,7 +104,10 @@ ON CONFLICT (group_id, permission_id) DO NOTHING;
 -- +goose Down
 -- +goose StatementBegin
 
--- Remove group members first (FK), then groups, then permissions.
+-- Collect the permission IDs we are about to delete.
+-- Used in every audit-table cleanup below to avoid repeating the long IN list.
+
+-- Step 1: Remove group members (CASCADE would also handle this, but explicit is clearer).
 DELETE FROM permission_group_members
 WHERE group_id IN (
     SELECT id FROM permission_groups
@@ -114,6 +117,70 @@ WHERE group_id IN (
 DELETE FROM permission_groups
 WHERE name IN ('system_administration', 'job_queue', 'users', 'requests', 'products');
 
+-- Step 2: Clean all audit tables that have ON DELETE RESTRICT on permission_id.
+-- These rows were written by triggers during the 003_roles Down migration that ran
+-- just before this one, or by any other seed/test that touched these permissions.
+DELETE FROM role_permissions_audit
+WHERE permission_id IN (
+    SELECT id FROM permissions
+    WHERE (resource_type, name) IN (
+        ('rbac',      'read'),
+        ('rbac',      'manage'),
+        ('rbac',      'grant_user_permission'),
+        ('job_queue', 'read'),
+        ('job_queue', 'manage'),
+        ('job_queue', 'configure'),
+        ('user',      'read'),
+        ('user',      'manage'),
+        ('user',      'lock'),
+        ('request',   'read'),
+        ('request',   'manage'),
+        ('request',   'approve'),
+        ('product',   'manage')
+    )
+);
+
+DELETE FROM user_permissions_audit
+WHERE permission_id IN (
+    SELECT id FROM permissions
+    WHERE (resource_type, name) IN (
+        ('rbac',      'read'),
+        ('rbac',      'manage'),
+        ('rbac',      'grant_user_permission'),
+        ('job_queue', 'read'),
+        ('job_queue', 'manage'),
+        ('job_queue', 'configure'),
+        ('user',      'read'),
+        ('user',      'manage'),
+        ('user',      'lock'),
+        ('request',   'read'),
+        ('request',   'manage'),
+        ('request',   'approve'),
+        ('product',   'manage')
+    )
+);
+
+DELETE FROM permission_request_approvers_audit
+WHERE permission_id IN (
+    SELECT id FROM permissions
+    WHERE (resource_type, name) IN (
+        ('rbac',      'read'),
+        ('rbac',      'manage'),
+        ('rbac',      'grant_user_permission'),
+        ('job_queue', 'read'),
+        ('job_queue', 'manage'),
+        ('job_queue', 'configure'),
+        ('user',      'read'),
+        ('user',      'manage'),
+        ('user',      'lock'),
+        ('request',   'read'),
+        ('request',   'manage'),
+        ('request',   'approve'),
+        ('product',   'manage')
+    )
+);
+
+-- Step 3: Delete the permissions now that no RESTRICT FK rows reference them.
 DELETE FROM permissions
 WHERE (resource_type, name) IN (
     ('rbac',      'read'),

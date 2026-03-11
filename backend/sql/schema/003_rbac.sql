@@ -3,6 +3,7 @@
 
 /*
  * 003_rbac.sql — Role-Based Access Control (RBAC) schema.
+ * NOTE: role_permissions.granted_by is nullable — see migration 009_rbac_nullable_granted_by.sql.
  *
  * Implements a one-role-per-user RBAC model with temporary per-user direct grants
  * as escape hatches. Key design decisions:
@@ -342,8 +343,9 @@ CREATE TABLE role_permissions (
  scope permission_scope NOT NULL DEFAULT 'own',
 
  -- Human accountable for creating this grant. RESTRICT prevents their deletion while
- -- the grant exists — ensures there is always a traceable human responsible.
- granted_by UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+ -- the grant exists. NULL only for system-seeded grants (no individual accountable);
+ -- the service layer enforces non-NULL for all application-created grants.
+ granted_by UUID REFERENCES users(id) ON DELETE RESTRICT,
 
  -- Free-text business justification. Required for accountability; max 500 chars.
  granted_reason TEXT NOT NULL,

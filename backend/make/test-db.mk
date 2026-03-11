@@ -37,14 +37,14 @@ else
 	@echo "[OK] Test database '$(TEST_DB_NAME)' dropped"
 endif
 
-test-db-reset: test-db-drop test-db-create test-migrate-up ## Drop, create, and migrate the test database
+test-db-reset: test-db-drop test-db-create test-migrate-up test-seed ## Drop, create, and migrate the test database (includes seeds)
 ifeq ($(DETECTED_OS),Windows)
 	@Write-Host "[OK] Test database reset — '$(TEST_DB_NAME)' is ready" -ForegroundColor Green
 else
 	@echo "[OK] Test database reset — '$(TEST_DB_NAME)' is ready"
 endif
 
-test-db-setup: test-db-create test-migrate-up ## Create test database and apply all migrations (idempotent first-run)
+test-db-setup: test-db-create test-migrate-up test-seed ## Create test database, apply all migrations and seeds (idempotent first-run)
 ifeq ($(DETECTED_OS),Windows)
 	@Write-Host "[OK] Test database setup complete" -ForegroundColor Green
 else

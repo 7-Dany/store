@@ -140,6 +140,7 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		OTPTokenTTL:         time.Duration(cfg.OTPValidMinutes) * time.Minute,
 		Encryptor:           encryptor,
 		RBAC:                rbacChecker,
+		BootstrapSecret:     cfg.BootstrapSecret,
 		// ApprovalSubmitter: assigned in Phase 10 when requests domain is ready.
 		OAuth: app.OAuthConfig{
 			GoogleClientID:     cfg.GoogleClientID,

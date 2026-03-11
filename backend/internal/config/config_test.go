@@ -24,6 +24,7 @@ func validBaseConfig() *Config {
 		JWTAccessSecret:     "abcdef1234567890abcdef1234567890ab",                               // 34 unique chars
 		JWTRefreshSecret:    "1234567890abcdef1234567890abcdef12",                               // distinct, unique chars
 		TokenEncryptionKey:  "a1b2c3d4e5f67890abcdef1234567890a1b2c3d4e5f67890abcdef1234567890", // 64 hex chars
+		BootstrapSecret:     "test-bootstrap-secret-value-here",
 		MailWorkers:         4,
 		MailDeliveryTimeout: 30 * time.Second,
 		AccessTokenTTL:      15 * time.Minute,
@@ -32,7 +33,6 @@ func validBaseConfig() *Config {
 		DBMaxConnLifetime:   30 * time.Minute,
 		DBMaxConnIdle:       5 * time.Minute,
 		DBHealthCheck:       1 * time.Minute,
-		// OAuth
 		GoogleClientID:     "fake-google-client-id.apps.googleusercontent.com",
 		GoogleClientSecret: "fake-google-client-secret",
 		GoogleRedirectURI:  "http://localhost:8080/api/v1/oauth/google/callback",
@@ -146,7 +146,7 @@ func TestConfigValidate_ReportsAllMissingFieldsAtOnce(t *testing.T) {
 	}
 	for _, field := range []string{
 		"DATABASE_URL", "SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM",
-		"TOKEN_ENCRYPTION_KEY",
+		"TOKEN_ENCRYPTION_KEY", "BOOTSTRAP_SECRET",
 		"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI",
 		"OAUTH_SUCCESS_URL", "OAUTH_ERROR_URL",
 	} {
@@ -880,6 +880,7 @@ func setLoadEnv(t *testing.T) func() {
 		"OAUTH_SUCCESS_URL":    "http://localhost:3000/dashboard",
 		"OAUTH_ERROR_URL":      "http://localhost:3000/login",
 		"TELEGRAM_BOT_TOKEN":   "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ-fake-token",
+		"BOOTSTRAP_SECRET":     "test-bootstrap-secret-value-here",
 	}
 	keys := make([]string, 0, len(vars))
 	for k, v := range vars {
@@ -1012,6 +1013,7 @@ func TestLoad_ReturnsErrorOnMissingRequired(t *testing.T) {
 		"DATABASE_URL", "SMTP_HOST", "SMTP_USERNAME",
 		"SMTP_PASSWORD", "SMTP_FROM", "ALLOWED_ORIGINS",
 		"JWT_ACCESS_SECRET", "JWT_REFRESH_SECRET", "TOKEN_ENCRYPTION_KEY",
+		"BOOTSTRAP_SECRET",
 		"GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URI",
 		"OAUTH_SUCCESS_URL", "OAUTH_ERROR_URL",
 	} {
@@ -1298,6 +1300,75 @@ func TestConfigValidate_RejectsEmptyAppName(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "APP_NAME") {
 		t.Errorf("error should mention APP_NAME, got: %v", err)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// BOOTSTRAP_SECRET
+// ─────────────────────────────────────────────────────────────
+
+func TestConfigValidate_RejectsMissingBootstrapSecret(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.BootstrapSecret = ""
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for missing BOOTSTRAP_SECRET, got nil")
+	}
+	if !strings.Contains(err.Error(), "BOOTSTRAP_SECRET") {
+		t.Errorf("error should mention BOOTSTRAP_SECRET, got: %v", err)
+	}
+}
+
+func TestConfigValidate_AcceptsNonEmptyBootstrapSecret(t *testing.T) {
+	cfg := validBaseConfig()
+	cfg.BootstrapSecret = "any-non-empty-value"
+	if err := cfg.validate(); err != nil {
+		t.Errorf("non-empty BOOTSTRAP_SECRET should be valid, got: %v", err)
+	}
+}
+
+func TestLoad_ParsesBootstrapSecretFromEnv(t *testing.T) {
+	setLoadEnv(t)
+	t.Setenv("BOOTSTRAP_SECRET", "my-bootstrap-passphrase")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.BootstrapSecret != "my-bootstrap-passphrase" {
+		t.Errorf("BootstrapSecret = %q, want \"my-bootstrap-passphrase\"", cfg.BootstrapSecret)
+	}
+}
+
+func TestLoad_RejectsEmptyBootstrapSecret(t *testing.T) {
+	setLoadEnv(t)
+	t.Setenv("BOOTSTRAP_SECRET", "")
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() with empty BOOTSTRAP_SECRET should fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "BOOTSTRAP_SECRET") {
+		t.Errorf("error should mention BOOTSTRAP_SECRET, got: %v", err)
+	}
+}
+
+func TestConfigValidate_ReportsBootstrapSecretInBulkMissingError(t *testing.T) {
+	// BOOTSTRAP_SECRET must appear in the bulk missing-field error so the
+	// operator can fix all absent required vars in one restart.
+	cfg := &Config{
+		AppEnv:           "development",
+		AllowedOrigins:   []string{"http://localhost:3000"},
+		JWTAccessSecret:  "abcdef1234567890abcdef1234567890ab",
+		JWTRefreshSecret: "1234567890abcdef1234567890abcdef12",
+		MailWorkers:      4,
+		DBMaxConns:       20,
+		DBMinConns:       2,
+	}
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for multiple missing fields, got nil")
+	}
+	if !strings.Contains(err.Error(), "BOOTSTRAP_SECRET") {
+		t.Errorf("bulk missing-field error should mention BOOTSTRAP_SECRET, got: %v", err)
 	}
 }
 

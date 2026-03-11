@@ -105,6 +105,13 @@
             ]
           },
           {
+            "group": "RBAC",
+            "icon": "shield-halved",
+            "pages": [
+              "api-reference/rbac/bootstrap/bootstrap"
+            ]
+          },
+          {
             "group": "Profile",
             "icon": "circle-user",
             "pages": [

@@ -99,6 +99,9 @@ type Deps struct {
 	// RBAC is the platform checker used to guard admin routes.
 	// Constructed in server.New from the shared DB pool.
 	RBAC *rbac.Checker
+	// BootstrapSecret is the value of BOOTSTRAP_SECRET sourced from config.
+	// Passed to bootstrap.Routes so the handler never reads os.Getenv directly.
+	BootstrapSecret string
 	// ApprovalSubmitter is nil until the requests domain is wired in Phase 10.
 	// ApprovalGate returns 503 when this is nil — safe until then.
 	ApprovalSubmitter rbac.ApprovalSubmitter

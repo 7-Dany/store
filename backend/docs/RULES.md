@@ -1,7 +1,7 @@
 # Project Rules
 
 **Stack:** Go · PostgreSQL 18 · chi · pgx v5 · sqlc · goose  
-**Last updated:** 2026-03-10
+**Last updated:** 2026-03-11
 
 > **This file contains only conventions that apply globally across all packages.**  
 > Auth-specific patterns, code flow traces, and auth ADRs live in [`docs/rules/auth.md`](rules/auth.md).  
@@ -342,7 +342,7 @@ When adding code, this table tells you which file it belongs in:
 | A new infrastructure concern (caching, mail, etc.) | `internal/platform/{name}/` |
 | A new audit event name | `internal/audit/audit.go` |
 | A new production SQL query | `sql/queries/{domain}.sql` (append to the relevant section) |
-| A new test-only SQL query | `sql/queries_test/{domain}_test.sql` (append at the end) |
+| A new test-only SQL query | `sql/queries_test/{domain}_test.sql` (append at the end) — **never** use raw SQL strings or `pool.Exec`/`tx.QueryRow` in test files |
 | A new env variable | `internal/config/config.go` only |
 | A new transactional email type | `internal/platform/mailer/templates/{name}.go` + `registry.go` |
 
@@ -1143,14 +1143,41 @@ Token consumption queries use `FOR UPDATE` to prevent concurrent double-consumpt
 
 #### No raw SQL in Go
 
-**Raw SQL strings are banned from all Go files — production and test alike.** Every query must live in a `.sql` file under `sql/queries/` and be referenced only through the sqlc-generated `db.Querier` interface.
+**Raw SQL strings are banned from all Go files — production and test alike.** Every query must live in a `.sql` file under `sql/queries/` and be referenced only through the sqlc-generated query layer.
 
 | Need | Correct location |
 |---|---|
-| Production query | `sql/queries/auth.sql` — append to the relevant section comment |
-| Test-only helper query (read-back assertions, seed data, timestamp manipulation) | `sql/queries_test/auth_test.sql` — append at the end |
+| Production query | `sql/queries/{domain}.sql` — append to the relevant section comment |
+| Test-only helper query (read-back assertions, seed data, state coercion, timestamp manipulation) | `sql/queries_test/{domain}_test.sql` — append at the end |
 
-Test-only `.sql` files follow the same `-- name:` + `PascalCase` convention. Run `make sqlc` after adding any query. Store integration tests that need to assert a row's state after a transaction call the generated querier method — they never call `pool.QueryRow(ctx, "SELECT ...")` or equivalent directly.
+Test-only `.sql` files follow the same `-- name:` + `PascalCase` convention and the same section-comment grouping style. Run `make sqlc` after adding any query.
+
+**Banned patterns in any `.go` file (including test files):**
+
+```go
+// All of these are banned — move the SQL to a .sql file and run make sqlc.
+pool.Exec(ctx, "UPDATE users SET email_verified = TRUE WHERE id = $1", id)
+tx.QueryRow(ctx, "SELECT id FROM roles WHERE is_owner_role = TRUE")
+conn.Query(ctx, "INSERT INTO user_roles ...")
+```
+
+**Calling test-only generated methods:** Methods generated from `sql/queries_test/` are defined directly on `*db.Queries` (they carry the `//go:build integration_test` tag) but are **not** added to the `db.Querier` interface (which has no build tag). Test code that needs these methods must obtain a `*db.Queries` value rather than the interface:
+
+```go
+// Wrong — db.Querier does not expose test-only methods.
+_, q := authsharedtest.MustBeginTx(t, testPool)   // q is db.Querier
+q.CreateVerifiedUserWithUsername(...)              // compile error
+
+// Correct — use db.New(tx) to get the concrete *db.Queries.
+tx, _ := authsharedtest.MustBeginTx(t, testPool)
+q := db.New(tx)                                    // *db.Queries exposes test methods
+q.CreateVerifiedUserWithUsername(...)
+
+// Also correct — type-assert when you already have db.Querier.
+_, iface := authsharedtest.MustBeginTx(t, testPool)
+cq := iface.(*db.Queries)
+cq.CreateVerifiedUserWithUsername(...)
+```
 
 This rule exists because raw SQL in Go files bypasses `go vet`, type-checking, and the sqlc schema-diff check. A raw SQL string that drifts from the schema fails only at runtime in CI, not at compile time.
 
@@ -1292,8 +1319,9 @@ Use this checklist when extracting or verifying a feature sub-package.
 - [ ] `s.IsDuplicateEmail(err)` used for unique-violation detection.
 - [ ] No `pgtype.*`, `pgx.*`, or `db.*` type in public method signatures.
 - [ ] `InsertAuditLog` calls use `audit.Event*` constants — no string literals.
-- [ ] No raw SQL strings — every query is a generated `db.Querier` method call (RULES.md §3.9).
-- [ ] New production queries added to `sql/queries/auth.sql`; new test helpers added to `sql/queries_test/auth_test.sql`; `make sqlc` run after any addition.
+- [ ] No raw SQL strings — every query is a generated `db.Querier` or `*db.Queries` method call (RULES.md §3.9).
+- [ ] No `pool.Exec`, `tx.Exec`, `pool.QueryRow`, `tx.QueryRow` calls with inline SQL strings anywhere in any `.go` file.
+- [ ] New production queries added to `sql/queries/{domain}.sql`; new test helpers added to `sql/queries_test/{domain}_test.sql`; `make sqlc` run after any addition.
 - [ ] Error wrapping: `fmt.Errorf("store.{Method}: {step}: %w", err)`.
 - [ ] Every multi-step Tx method has numbered step comments.
 
@@ -1350,7 +1378,9 @@ Use this checklist when extracting or verifying a feature sub-package.
 - [ ] `txStores` is defined here; delegates to `{domain}sharedtest.MustBeginTx` for transaction setup.
 - [ ] Seed helpers (e.g. `createUser`, `withProxy`) defined here; use `{domain}sharedtest` builder helpers rather than calling `db.Querier` methods with pgtype fields directly.
 - [ ] Every test function name ends with `_Integration`.
-- [ ] No raw SQL strings — all read-back queries are generated `db.Querier` methods (RULES.md §3.9).
+- [ ] No raw SQL strings — all read-back and seed queries are generated `db.Querier` or `*db.Queries` methods (RULES.md §3.9).
+- [ ] No `pool.Exec`, `tx.Exec`, `pool.QueryRow`, `tx.QueryRow` calls with inline SQL strings — add queries to `sql/queries_test/{domain}_test.sql` and run `make sqlc` instead (RULES.md §3.9).
+- [ ] Test-only generated methods (from `queries_test/`) are called on `db.New(tx)` or a type-asserted `*db.Queries`, never on the `db.Querier` interface (RULES.md §3.9).
 - [ ] No `{feature}_test.go` file exists — there is no non-build-tagged test file in the package.
 - [ ] No `main_test.go` file exists — `TestMain` lives here, behind the `integration_test` build tag. `RunTestMain` lowers the bcrypt cost for the whole test binary including unit tests.
 

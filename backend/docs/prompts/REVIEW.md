@@ -18,11 +18,11 @@ You are performing a deep review of the Go package at:
 1. `docs/RULES.md` — the authoritative source for every naming, layering,
    import, testing, and commenting convention in this codebase.
 2. Every `.go` file in `{PACKAGE_PATH}` (production and test files).
-3. `internal/domain/auth/shared/errors.go` — shared sentinel errors.
-4. `internal/domain/auth/shared/store.go` — BaseStore helpers.
-5. `internal/domain/auth/shared/testutil/fake_storer.go` — FakeStorer catalogue.
-6. `internal/domain/auth/shared/testutil/querier_proxy.go` — QuerierProxy catalogue.
-7. `internal/domain/auth/shared/testutil/builders.go` — test helpers.
+3. `internal/domain/{feature}/shared/errors.go` — shared sentinel errors.
+4. `internal/domain/{feature}shared/store.go` — BaseStore helpers.
+5. `internal/domain/{feature}/shared/testutil/fake_storer.go` — FakeStorer catalogue.
+6. `internal/domain/{feature}/shared/testutil/querier_proxy.go` — QuerierProxy catalogue.
+7. `internal/domain/{feature}/shared/testutil/builders.go` — test helpers.
 
 Produce **exactly four parts**, in order, with no extra sections.
 
@@ -181,11 +181,11 @@ Rules for this checklist:
 
 Before adding a test in any **feature sub-package** (register, login, profile,
 password, session, unlock, verification), check whether the behaviour under
-test is already enforced by a function in `internal/domain/auth/shared`.
+test is already enforced by a function in `internal/domain/{feature}/shared`.
 Redundant tests slow the suite and create false confidence (two identical tests
 both pass even when the logic is broken in a third path).
 
-**Do NOT re-test these in feature packages — they are fully covered in `authshared`:**
+**Do NOT re-test these in feature packages — they are fully covered in `{featureshared}`:**
 
 | Shared function | What is already tested |
 |---|---|

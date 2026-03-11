@@ -173,6 +173,11 @@ const (
 	// EventAccountDeletionOTPFailed is emitted by IncrementAttemptsTx when the
 	// user submits an incorrect OTP code during the email-deletion flow (Path B-2).
 	EventAccountDeletionOTPFailed EventType = "account_deletion_otp_failed"
+
+	// EventOwnerBootstrapped is emitted by BootstrapOwnerTx when the first owner
+	// role assignment is successfully committed. This is an irreversible
+	// privilege escalation and must always be present in the audit trail.
+	EventOwnerBootstrapped EventType = "owner_bootstrapped"
 )
 
 // AllEvents returns a slice of every audit event constant defined in this package.
@@ -218,5 +223,6 @@ func AllEvents() []EventType {
 		EventAccountDeletionOTPRequested,
 		EventAccountDeletionCancelled,
 		EventAccountDeletionOTPFailed,
+		EventOwnerBootstrapped,
 	}
 }

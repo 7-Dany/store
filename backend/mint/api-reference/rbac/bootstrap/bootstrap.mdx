@@ -1,0 +1,210 @@
+---
+title: "Bootstrap Owner"
+authMethod: "bearer"
+description: "Assigns the owner role to the authenticated user. Can only be called once — subsequent calls are rejected once an active owner exists."
+api: "POST http://localhost:8080/api/v1/owner/bootstrap"
+---
+
+<ParamField body="bootstrap_secret" type="string" required>
+  The bootstrap secret configured for this server. The calling user must be authenticated with a verified account — this secret is required on top of that to complete the one-time setup, and must match exactly.
+</ParamField>
+
+## Behaviour
+
+**One-time operation** — The endpoint checks whether an active owner already exists before assigning the role. Once a user has been bootstrapped as owner, all subsequent calls return `409 owner_already_exists` regardless of the caller or secret supplied.
+
+**Prerequisites** — The calling user's account must be active and have a verified email address. Accounts that fail either check are rejected with `422` before the role assignment is attempted.
+
+## Rate Limiting
+
+**3 requests per 15 minutes per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "bootstrap_secret": "super-secret-bootstrap-key"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "user_id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+  "role_name": "owner",
+  "granted_at": "2026-03-11T17:52:14.122Z"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "missing or invalid access token"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "invalid bootstrap secret"
+}
+```
+
+```json 409
+{
+  "code": "owner_already_exists",
+  "message": "an active owner already exists"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "bootstrap_secret is required"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="201 — Created">
+    The owner role was successfully assigned to the calling user. The response confirms the user ID, the role name, and the exact timestamp the grant was recorded.
+
+    ```json
+    {
+      "user_id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+      "role_name": "owner",
+      "granted_at": "2026-03-11T17:52:14.122Z"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    The request body is not valid JSON (syntax error or unexpected end of input). Fix the JSON before retrying.
+
+    ```json
+    {
+      "code": "bad_request",
+      "message": "malformed JSON body"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/login/login) and include it in the request header.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The `bootstrap_secret` supplied does not match the value configured for this server.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "invalid bootstrap secret"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    The authenticated user's account no longer exists. This can only occur if the account was deleted between the time the access token was issued and the time this request was processed.
+
+    ```json
+    {
+      "code": "user_not_found",
+      "message": "authenticated user account no longer exists"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    An active owner already exists. The bootstrap path can only be used once. No further action is needed — the system already has an owner.
+
+    ```json
+    {
+      "code": "owner_already_exists",
+      "message": "an active owner already exists"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="413 — Request Too Large">
+    The request body exceeds the maximum allowed size. Reduce the body size and retry.
+
+    ```json
+    {
+      "code": "request_too_large",
+      "message": "request body too large"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    Returned for three distinct scenarios. Check the `code` field to distinguish them.
+
+    **Missing secret** — `bootstrap_secret` was absent or blank:
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "bootstrap_secret is required"
+    }
+    ```
+
+    **Account not active** — The calling user's account is not active:
+
+    ```json
+    {
+      "code": "user_not_active",
+      "message": "user account is not active"
+    }
+    ```
+
+    **Email not verified** — The calling user has not completed email verification. Verify first via [`POST /auth/verify-email`](/api-reference/auth/verification/verify-email):
+
+    ```json
+    {
+      "code": "email_not_verified",
+      "message": "user email address must be verified before bootstrapping"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 3 requests per 15 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected server-side error occurred. Contact your system administrator if this persists.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

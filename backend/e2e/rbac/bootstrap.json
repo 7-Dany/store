@@ -1,0 +1,939 @@
+{
+  "info": {
+    "_postman_id": "rbac-bootstrap-e2e",
+    "name": "RBAC – Bootstrap (POST /api/v1/owner/bootstrap)",
+    "description": "E2E tests for POST /api/v1/owner/bootstrap.\n\nFolder execution order (orchestrated by make e2e-rbac):\n  1. setup                — register + fetch Gmail OTP + verify email + login + GET /me\n                           (captures bstrp_access_token and bstrp_happy_id)\n  2. auth-guard           — 401 without Authorization header (JWT guard)\n  3. validation           — 422/400/413 input-error cases (authenticated; fires before secret check)\n  4. secret-guard         — 403 wrong bootstrap_secret (authenticated; fires before service)\n  5. happy-path           — 201 + body shape + role_name checks (consumes the one-time slot)\n  6. owner-already-exists — 409 after a successful bootstrap (owner guard)\n  7. rate-limiting        — IP limiter exhaustion: 3 warmups, 4th → 429 (Redis flushed first)\n\nRoute: POST /api/v1/owner/bootstrap\nGuard order (handler): JWT auth → body decode → validate secret non-empty → compare secret → service\nRate limit: burst=3, rate=3/15 min per IP → Retry-After: 300 s\nRate limiter fires AFTER JWT middleware — all rate-limit requests must carry a valid token.\n\nEnvironment variables required:\n  bootstrap_secret   — must match BOOTSTRAP_SECRET in the running server's .env\n  gmail_test_email   — Gmail address for OTP receipt\n  gmail_access_token — OAuth2 token for Gmail API reads\n\nAll test users use @e2e.test addresses or gmail_test_email.\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before each suite run.\n\nNotes on what is NOT covered here (covered by internal tests):\n  - user_not_found → 404                          — handler_test.go (requires authenticated ghost user;\n                                                     untestable via black-box e2e since a valid JWT\n                                                     cannot be issued for a non-existent account)\n  - email_not_verified → 422 email_not_verified    — service_test.go / handler_test.go\n                                                     Not testable via black-box e2e: an unverified user\n                                                     cannot log in to obtain a JWT.\n  - Inactive user account → 422 user_not_active    — service_test.go + store_test.go\n  - BootstrapOwnerTx / DB failures → 500           — service_test.go\n  - All error responses carry code + JSON CT       — handler_test.go",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Increment the request sequence counter and derive a unique X-Forwarded-For IP",
+          "// for every request so non-RL folders never exhaust any rate-limit bucket.",
+          "// The rate-limiting folder overrides _xff to 127.0.0.1 via its own prerequest.",
+          "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.' + ((n>>16)&0xff) + '.' + ((n>>8)&0xff) + '.' + (n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Registers the gmail_test_email user, fetches the OTP from Gmail, verifies email, logs in, and calls GET /me to capture bstrp_access_token and bstrp_happy_id.\n\nbstrp_access_token is required by every subsequent folder (the endpoint now requires JWT auth).\nbstrp_happy_id is captured from GET /me body.id — this is the authenticated caller whose user ID the service will use.",
+      "item": [
+        {
+          "name": "POST /register → 201 (setup owner candidate)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) {",
+                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
+                  "}",
+                  "pm.collectionVariables.set('bstrp_happy_email', email);",
+                  "pm.collectionVariables.set('bstrp_happy_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "console.log('[INFO] Done waiting. Querying Gmail API (async)...');",
+                  "",
+                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email found in Gmail.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode email body.'); return; }",
+                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in email body.'); return; }",
+                  "        pm.collectionVariables.set('bstrp_code', match[1]);",
+                  "        console.log('[INFO] OTP stored in collection variable \"bstrp_code\":', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"BstrpOwner\", \"email\": \"{{bstrp_happy_email}}\", \"password\": \"{{bstrp_happy_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200 (consume OTP)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('bstrp_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] collection variable \"bstrp_code\" is empty — Gmail fetch did not complete.');",
+                  "    console.error('        Check: gmail_access_token is set and not expired, --delay-request >= 8000.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{bstrp_happy_email}}\", \"code\": \"{{bstrp_code}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (store access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('bstrp_access_token', body.access_token);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{bstrp_happy_email}}\", \"password\": \"{{bstrp_happy_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "GET /me → 200 (capture user_id for assertions)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('id field present and UUID format', () => {",
+                  "    pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);",
+                  "});",
+                  "pm.collectionVariables.set('bstrp_happy_id', body.id);",
+                  "console.log('[INFO] Captured user_id for assertions:', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth-guard",
+      "description": "Verifies that the JWT middleware rejects unauthenticated callers before any body or service logic is reached. No Authorization header is sent. Must return 401 regardless of body content.",
+      "item": [
+        {
+          "name": "no Authorization header → 401 unauthorized",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// JWTAuth middleware fires first — no token means 401 before body is read.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is unauthorized', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "validation",
+      "description": "Body decode and bootstrap_secret validation cases. All requests carry a valid JWT (bstrp_access_token from setup). Validation fires after auth but before the secret comparison, so no owner slot is consumed. Validation rules from validators.go: bootstrap_secret must be present and non-empty (whitespace-only is treated as empty).",
+      "item": [
+        {
+          "name": "malformed JSON → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.eql('bad_request'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        },
+        {
+          "name": "empty body → 422 (bootstrap_secret absent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        },
+        {
+          "name": "missing bootstrap_secret field → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"not_bootstrap_secret\": \"something\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        },
+        {
+          "name": "empty bootstrap_secret → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        },
+        {
+          "name": "whitespace-only bootstrap_secret → 422 (trimmed to empty)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// validateBootstrapRequest trims bootstrap_secret before checking emptiness,",
+                  "// so '   ' becomes '' and must return 422 validation_error.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"   \"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        },
+        {
+          "name": "body > 1 MiB → 413",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Pad the body past the 1 MiB MaxBytesReader limit.",
+                  "// http.MaxBytesReader fires during json.Decoder.Decode and maps to 413.",
+                  "const pad = 'x'.repeat(1024 * 1024 + 1);",
+                  "pm.request.body.update({",
+                  "  mode: 'raw',",
+                  "  raw: JSON.stringify({ bootstrap_secret: 'any', _pad: pad })",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 413', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "secret-guard",
+      "description": "Verifies the BOOTSTRAP_SECRET constant-time comparison. A valid JWT is present, the body is well-formed, but bootstrap_secret does not match the server's BOOTSTRAP_SECRET. Must return 403 forbidden before any service or DB call is made.",
+      "item": [
+        {
+          "name": "wrong bootstrap_secret → 403 forbidden",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// subtle.ConstantTimeCompare fails → handler returns 403 before reaching the service.",
+                  "// No DB state changes — this request is entirely safe to repeat.",
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('code is forbidden', () => pm.expect(pm.response.json().code).to.eql('forbidden'));",
+                  "pm.test('no role_name or granted_at in body', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body).to.not.have.property('role_name');",
+                  "    pm.expect(body).to.not.have.property('granted_at');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"this-is-the-wrong-secret\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path",
+      "description": "Uses the verified + authenticated account created by setup (bstrp_access_token from POST /login, bstrp_happy_id from GET /me). Sends the correct bootstrap_secret from the environment. Asserts 201 with user_id matching the JWT caller, role_name=owner, and granted_at. This call consumes the one-time bootstrap slot.",
+      "item": [
+        {
+          "name": "POST /bootstrap valid JWT + correct secret → 201 owner assigned",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const token = pm.collectionVariables.get('bstrp_access_token');",
+                  "if (!token) {",
+                  "    console.error('[ERROR] bstrp_access_token not set — setup/POST /login did not capture the token.');",
+                  "}",
+                  "const secret = pm.environment.get('bootstrap_secret');",
+                  "if (!secret) {",
+                  "    console.error('[ERROR] bootstrap_secret not set in environment — add it to environment.json.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "const body = pm.response.json();",
+                  "",
+                  "// user_id must be echoed back and must match the authenticated caller.",
+                  "pm.test('user_id matches the JWT caller (bstrp_happy_id)', () => {",
+                  "    const expected = pm.collectionVariables.get('bstrp_happy_id');",
+                  "    pm.expect(body.user_id).to.eql(expected);",
+                  "});",
+                  "",
+                  "// role_name must be 'owner'.",
+                  "pm.test('role_name is owner', () => {",
+                  "    pm.expect(body.role_name).to.eql('owner');",
+                  "});",
+                  "",
+                  "// granted_at must be an ISO 8601 timestamp.",
+                  "pm.test('granted_at is a parseable date', () => {",
+                  "    pm.expect(body).to.have.property('granted_at');",
+                  "    const d = new Date(body.granted_at);",
+                  "    pm.expect(isNaN(d.getTime())).to.be.false;",
+                  "});",
+                  "",
+                  "// Content-Type must be application/json.",
+                  "pm.test('Content-Type is application/json', () => {",
+                  "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+                  "});",
+                  "",
+                  "// No Set-Cookie header — bootstrap issues no session.",
+                  "pm.test('no Set-Cookie header', () => {",
+                  "    const sc = pm.response.headers.get('Set-Cookie') || '';",
+                  "    pm.expect(sc).to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "owner-already-exists",
+      "description": "Verifies the single-owner invariant after a successful bootstrap. Requires a valid JWT and the correct bootstrap_secret to reach the service layer (the secret check fires before the service call). Once CountActiveOwners > 0, the endpoint must reject all subsequent calls with 409 regardless of which user is authenticated.",
+      "item": [
+        {
+          "name": "same user → 409 owner_already_exists",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Service step 1: CountActiveOwners > 0 → ErrOwnerAlreadyExists.",
+                  "// The check fires before any user lookup.",
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is owner_already_exists', () => pm.expect(pm.response.json().code).to.eql('owner_already_exists'));",
+                  "pm.test('no role_name or granted_at in body', () => {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body).to.not.have.property('role_name');",
+                  "    pm.expect(body).to.not.have.property('granted_at');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        },
+        {
+          "name": "repeated call → 409 (owner guard fires before secret is compared)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Confirms the owner guard is truly checked first in the service,",
+                  "// after the secret has already passed. Returns 409 not 403.",
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is owner_already_exists', () => pm.expect(pm.response.json().code).to.eql('owner_already_exists'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting",
+      "description": "Verifies the bstrp:ip: IP rate limiter (burst=3, rate=3/15 min per IP → 1 token/300 s). The folder prerequest pins _xff to 127.0.0.1 so all requests share one bucket.\n\nIMPORTANT: The rate limiter fires AFTER JWTAuth middleware. All requests must carry a valid access token to reach the limiter — requests without a token return 401 before the limiter is checked.\n\n3 warmup requests drain the burst capacity (each returns 409 since an owner already exists — owner check fires before any DB mutation). The 4th must return 429 with code=too_many_requests and Retry-After: 300.\n\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env and Redis flushed (make _e2e-kv-clean) before this folder.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Override the collection-level unique IP so every request in this",
+              "// folder shares the 127.0.0.1 bucket and exhausts it together.",
+              "pm.collectionVariables.set('_xff', '127.0.0.1');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "warmup 1/3 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Returns 409 (owner already exists) — confirms the request reached the handler.",
+                  "pm.test('not rate-limited yet (bstrp:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/3 — consume slot (→ not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (bstrp:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/3 — consume slot (→ not 429, last allowed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (bstrp:ip: slot 3 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        },
+        {
+          "name": "4th request → 429 (bstrp:ip: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
+                  "// rate = 3 / (15*60) = 3/900 tok/s → refill interval = 300 s",
+                  "// Retry-After = ceil(1 / (3/900)) = ceil(300) = 300 s",
+                  "pm.test('Retry-After is 300 (ceil(1 / (3/900)) = 300 s)', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('300');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{bstrp_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter used by the collection prerequest to generate unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current X-Forwarded-For value. Set to a unique IP by the collection prerequest; overridden to 127.0.0.1 by the rate-limiting folder prerequest."
+    },
+    {
+      "key": "bstrp_happy_email",
+      "value": "",
+      "description": "Set by setup folder from gmail_test_email environment variable. Used by setup/verify-email and setup/login."
+    },
+    {
+      "key": "bstrp_happy_password",
+      "value": "",
+      "description": "Set by setup folder. Used for setup/login."
+    },
+    {
+      "key": "bstrp_code",
+      "value": "",
+      "description": "6-digit OTP fetched asynchronously from Gmail during setup/register test script. Consumed by setup/verify-email."
+    },
+    {
+      "key": "bstrp_access_token",
+      "value": "",
+      "description": "JWT access_token from setup/login. Required by every folder except auth-guard. Used as the Authorization: Bearer header value."
+    },
+    {
+      "key": "bstrp_happy_id",
+      "value": "",
+      "description": "user_id captured from setup/GET /me body.id. Used in happy-path to assert that the bootstrap response echoes back the JWT caller's ID."
+    }
+  ]
+}

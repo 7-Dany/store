@@ -20,12 +20,14 @@
 #   e2e/profile/email.json              → POST /email/request-change + POST /email/verify-current + POST /email/confirm-change (requires JWT)
 #   e2e/profile/delete-account.json     → DELETE /profile/me + POST /profile/me/cancel-deletion (requires JWT) + GET /profile/me/deletion-method (requires JWT)
 #   e2e/profile/identities.json         → GET /me/identities (requires JWT)
+#   e2e/rbac/bootstrap.json             → POST /owner/bootstrap
 #
 # Individual targets   — run a single collection:
 #   e2e-health, e2e-register, e2e-verify-email, e2e-login, e2e-session,
 #   e2e-unlock, e2e-password, e2e-set-password, e2e-me, e2e-sessions,
 #   e2e-revoke-session, e2e-update-profile, e2e-username, e2e-email,
-#   e2e-delete-account, e2e-identities, e2e-oauth-google, e2e-oauth-telegram
+#   e2e-delete-account, e2e-identities, e2e-oauth-google, e2e-oauth-telegram,
+#   e2e-rbac-bootstrap
 #
 # Group targets        — run a folder of collections in order:
 #   e2e-auth           — register + verify-email + login + session + unlock + password
@@ -33,8 +35,11 @@
 #   e2e-profile        — me + sessions + revoke-session + update-profile +
 #                        set-password + username + email + delete-account + identities
 #
+# Group targets        — run a folder of collections in order:
+#   e2e-rbac           — rbac-bootstrap
+#
 # Suite target         — run everything at once:
-#   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile
+#   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile + e2e-rbac
 #
 # Rate-limiting notes:
 #   Collections whose rate-limiters sit INSIDE the JWTAuth middleware group
@@ -62,6 +67,7 @@ E2E_TEMPLATE := $(E2E_DIR)/environment.template.json
 E2E_AUTH     := $(E2E_DIR)/auth
 E2E_PROFILE  := $(E2E_DIR)/profile
 E2E_OAUTH    := $(E2E_DIR)/oauth
+E2E_RBAC     := $(E2E_DIR)/rbac
 E2E_DELAY    ?= 150
 
 # ── OS-aware printing ─────────────────────────────────────────────────────────
@@ -152,6 +158,15 @@ _F_GOOGLE_RL_CB    := --folder "rate-limiting-cb"
 _F_TELEGRAM_MAIN   := --folder "setup" --folder "callback-happy-path" --folder "callback-failures" --folder "validation" --folder "link-happy-path" --folder "link-failures" --folder "unlink-happy-path" --folder "unlink-failures" --folder "auth-failures" --folder "rate-limiting-lnk" --folder "rate-limiting-unlk"
 _F_TELEGRAM_RL_CB  := --folder "rate-limiting-cb"
 
+# rbac/bootstrap (JWT-gated rate-limiter — single invocation)
+# ALL folders share ONE invocation so bstrp_access_token (captured in setup/login)
+# persists across folders. The rate-limiting folder requires a valid JWT because
+# the bstrp:ip: limiter fires AFTER the JWTAuth middleware.
+# The main run assigns unique X-Forwarded-For IPs via the collection prerequest
+# counter, so the 127.0.0.1 bucket used by rate-limiting is never consumed by
+# earlier folders — no Redis flush is needed between them.
+_F_BSTRP_MAIN := --folder "setup" --folder "auth-guard" --folder "validation" --folder "secret-guard" --folder "happy-path" --folder "owner-already-exists" --folder "rate-limiting"
+
 # ── PHONY ─────────────────────────────────────────────────────────────────────
 .PHONY: e2e-install \
         e2e e2e-health \
@@ -162,6 +177,7 @@ _F_TELEGRAM_RL_CB  := --folder "rate-limiting-cb"
         e2e-delete-account e2e-identities \
         e2e-oauth-google e2e-oauth-telegram \
         e2e-profile e2e-auth e2e-oauth \
+        e2e-rbac e2e-rbac-bootstrap \
         _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
 
 # ── Tooling ───────────────────────────────────────────────────────────────────
@@ -210,7 +226,7 @@ endif
 
 # ── Suite targets ─────────────────────────────────────────────────────────────
 
-e2e: e2e-health e2e-auth e2e-oauth e2e-profile ## Run ALL e2e suites (health + auth + oauth + profile)
+e2e: e2e-health e2e-auth e2e-oauth e2e-profile e2e-rbac ## Run ALL e2e suites (health + auth + oauth + profile + rbac)
 
 e2e-auth: _e2e-check-env ## Run all auth E2E collections in order (register → verify-email → login → session → unlock → password)
 	@$(MAKE) e2e-register
@@ -456,6 +472,24 @@ e2e-oauth-google: _e2e-check-env ## Run Google OAuth E2E (initiate + callback gu
 
 # NOTE: rate-limiting-lnk/unlk are JWT-gated (single invocation with main folders).
 #       rate-limiting-cb is unauthenticated — separate invocation after Redis flush.
+e2e-rbac: _e2e-check-env ## Run all RBAC E2E collections in order (bootstrap)
+	@$(MAKE) e2e-rbac-bootstrap
+	@$(call _e2e_ok,[e2e] rbac suite passed)
+
+# ── rbac/bootstrap ────────────────────────────────────────────────────────────
+
+# Rate limit: burst=3, rate=3/(15*60) tok/s → Retry-After = ceil(900/3) = 300 s.
+# All folders share ONE invocation so bstrp_access_token (captured in setup/login)
+# persists in collection variables. Redis is flushed before rate-limiting.
+e2e-rbac-bootstrap: _e2e-check-env ## Run POST /owner/bootstrap E2E (all folders)
+	@$(call _e2e_info,[e2e] --- POST /owner/bootstrap ---)
+	@$(MAKE) _e2e-clean
+	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + validation + secret-guard + happy-path + owner-already-exists + rate-limiting (single invocation))
+	$(call newman-run,$(E2E_RBAC)/bootstrap.json,$(_F_BSTRP_MAIN),$(E2E_DELAY))
+	@$(call _e2e_ok,[e2e] rbac-bootstrap suite passed)
+
+# ── oauth/telegram ────────────────────────────────────────────────────────────
+
 e2e-oauth-telegram: _e2e-check-env ## Run Telegram OAuth E2E (callback + link + unlink)
 	@$(call _e2e_info,[e2e] --- POST /oauth/telegram/callback + POST /oauth/telegram/link + DELETE /oauth/telegram/unlink ---)
 	@$(MAKE) _e2e-clean

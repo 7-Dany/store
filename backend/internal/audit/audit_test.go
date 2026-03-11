@@ -134,6 +134,7 @@ func TestEventConstants_ExactValues(t *testing.T) {
 		{audit.EventAccountDeletionOTPRequested, "account_deletion_otp_requested"},
 		{audit.EventAccountDeletionCancelled,    "account_deletion_cancelled"},
 		{audit.EventAccountDeletionOTPFailed,    "account_deletion_otp_failed"},
+		{audit.EventOwnerBootstrapped,           "owner_bootstrapped"},
 	}
 
 	// Enforce exhaustiveness: AllEvents() must contain exactly as many entries

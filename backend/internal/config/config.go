@@ -124,6 +124,14 @@ type Config struct {
 	// that feature going live.
 	TokenEncryptionKey string
 
+	// ── RBAC ──────────────────────────────────────────────────
+	// BootstrapSecret is the one-time passphrase that gates POST /owner/bootstrap.
+	// A caller must supply this value in the request body to claim the owner role.
+	// Use a high-entropy random string; generate with: openssl rand -hex 32.
+	// Required (non-empty). The handler rejects every bootstrap attempt with 403
+	// when the value does not match, but a missing env var is caught here at startup.
+	BootstrapSecret string
+
 	// ── OAuth ─────────────────────────────────────────────────
 	// GoogleClientID is the OAuth 2.0 client ID issued by the Google Cloud Console.
 	// Required.
@@ -197,6 +205,9 @@ func Load() (*Config, error) {
 		// Security
 		TokenEncryptionKey: os.Getenv("TOKEN_ENCRYPTION_KEY"),
 
+		// RBAC
+		BootstrapSecret: os.Getenv("BOOTSTRAP_SECRET"),
+
 		// OAuth
 		GoogleClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 		GoogleClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
@@ -265,6 +276,7 @@ func (c *Config) validate() error {
 		{"JWT_ACCESS_SECRET", c.JWTAccessSecret},
 		{"JWT_REFRESH_SECRET", c.JWTRefreshSecret},
 		{"TOKEN_ENCRYPTION_KEY", c.TokenEncryptionKey},
+		{"BOOTSTRAP_SECRET", c.BootstrapSecret},
 		{"GOOGLE_CLIENT_ID", c.GoogleClientID},
 		{"GOOGLE_CLIENT_SECRET", c.GoogleClientSecret},
 		{"GOOGLE_REDIRECT_URI", c.GoogleRedirectURI},

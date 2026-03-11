@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,4 +69,41 @@ func (f *BootstrapFakeStorer) BootstrapOwnerTx(ctx context.Context, in bootstrap
 		return f.BootstrapOwnerTxFn(ctx, in)
 	}
 	return bootstrap.BootstrapResult{}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PermissionsFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// PermissionsFakeStorer is a hand-written implementation of permissions.Storer
+// for service unit tests. Each method delegates to its Fn field if non-nil,
+// otherwise returns a safe default so tests only configure the fields they need.
+//
+// Defaults are chosen so that the happy path succeeds without any configuration:
+//   - GetPermissions      → ([]permissions.Permission{}, nil)
+//   - GetPermissionGroups → ([]permissions.PermissionGroup{}, nil)
+type PermissionsFakeStorer struct {
+	GetPermissionsFn      func(ctx context.Context) ([]permissions.Permission, error)
+	GetPermissionGroupsFn func(ctx context.Context) ([]permissions.PermissionGroup, error)
+}
+
+// compile-time interface check.
+var _ permissions.Storer = (*PermissionsFakeStorer)(nil)
+
+// GetPermissions delegates to GetPermissionsFn if set.
+// Default: returns ([]permissions.Permission{}, nil).
+func (f *PermissionsFakeStorer) GetPermissions(ctx context.Context) ([]permissions.Permission, error) {
+	if f.GetPermissionsFn != nil {
+		return f.GetPermissionsFn(ctx)
+	}
+	return []permissions.Permission{}, nil
+}
+
+// GetPermissionGroups delegates to GetPermissionGroupsFn if set.
+// Default: returns ([]permissions.PermissionGroup{}, nil).
+func (f *PermissionsFakeStorer) GetPermissionGroups(ctx context.Context) ([]permissions.PermissionGroup, error) {
+	if f.GetPermissionGroupsFn != nil {
+		return f.GetPermissionGroupsFn(ctx)
+	}
+	return []permissions.PermissionGroup{}, nil
 }

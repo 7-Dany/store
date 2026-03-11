@@ -108,7 +108,9 @@
             "group": "RBAC",
             "icon": "shield-halved",
             "pages": [
-              "api-reference/rbac/bootstrap/bootstrap"
+              "api-reference/rbac/bootstrap/bootstrap",
+              "api-reference/rbac/permissions/list-permissions",
+              "api-reference/rbac/permissions/list-permission-groups"
             ]
           },
           {

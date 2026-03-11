@@ -51,3 +51,31 @@ func (q *Queries) CreateActiveUnverifiedUserForTest(ctx context.Context, arg Cre
 	err := row.Scan(&id)
 	return id, err
 }
+
+const CreatePermissionGroupForTest = `-- name: CreatePermissionGroupForTest :one
+INSERT INTO permission_groups (name, display_order)
+VALUES ($1, 999)
+RETURNING id
+`
+
+// Inserts a bare permission group with no members, returning its id.
+// Used by TestGetPermissionGroups_ZeroMemberGroup to verify that a group
+// with no permission_group_members rows returns Members = [] (not nil).
+func (q *Queries) CreatePermissionGroupForTest(ctx context.Context, name string) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, CreatePermissionGroupForTest, name)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const DeactivateAllPermissionsForTest = `-- name: DeactivateAllPermissionsForTest :exec
+UPDATE permissions SET is_active = FALSE
+`
+
+// Soft-deactivates every permission row inside the current transaction.
+// Used by TestGetPermissions_Empty to verify that GetPermissions returns
+// an allocated empty slice (not nil) when no active rows exist.
+func (q *Queries) DeactivateAllPermissionsForTest(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, DeactivateAllPermissionsForTest)
+	return err
+}

@@ -24,3 +24,17 @@ secrets AS (
     SELECT id, @password_hash FROM new_user
 )
 SELECT id FROM new_user;
+
+-- name: DeactivateAllPermissionsForTest :exec
+-- Soft-deactivates every permission row inside the current transaction.
+-- Used by TestGetPermissions_Empty to verify that GetPermissions returns
+-- an allocated empty slice (not nil) when no active rows exist.
+UPDATE permissions SET is_active = FALSE;
+
+-- name: CreatePermissionGroupForTest :one
+-- Inserts a bare permission group with no members, returning its id.
+-- Used by TestGetPermissionGroups_ZeroMemberGroup to verify that a group
+-- with no permission_group_members rows returns Members = [] (not nil).
+INSERT INTO permission_groups (name, display_order)
+VALUES (@name, 999)
+RETURNING id;

@@ -8,6 +8,7 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 )
 
 // Routes builds and returns the full rbac chi.Mux, mounting the /owner and
@@ -31,10 +32,10 @@ func ownerRoutes(ctx context.Context, deps *app.Deps) *chi.Mux {
 }
 
 // adminRoutes returns the /admin sub-router (JWT-auth required on all routes).
-// Phases 5–9 will mount feature sub-routers here.
 func adminRoutes(ctx context.Context, deps *app.Deps) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(chimiddleware.AllowContentType("application/json"))
-	// Phases 5–9 will mount here.
+	permissions.Routes(ctx, r, deps)
+	// Phases 6–9 will mount here.
 	return r
 }

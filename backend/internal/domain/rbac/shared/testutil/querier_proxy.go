@@ -31,6 +31,11 @@ type QuerierProxy struct {
 	FailGetActiveUserByID bool
 	FailAssignUserRole    bool
 	FailInsertAuditLog    bool
+
+	// ── permissions ───────────────────────────────────────────────────────────
+	FailGetPermissions            bool
+	FailGetPermissionGroups       bool
+	FailGetPermissionGroupMembers bool
 }
 
 // NewQuerierProxy constructs a QuerierProxy backed by base.
@@ -71,4 +76,25 @@ func (p *QuerierProxy) InsertAuditLog(ctx context.Context, arg db.InsertAuditLog
 		return ErrProxy
 	}
 	return p.Querier.InsertAuditLog(ctx, arg)
+}
+
+func (p *QuerierProxy) GetPermissions(ctx context.Context) ([]db.GetPermissionsRow, error) {
+	if p.FailGetPermissions {
+		return nil, ErrProxy
+	}
+	return p.Querier.GetPermissions(ctx)
+}
+
+func (p *QuerierProxy) GetPermissionGroups(ctx context.Context) ([]db.GetPermissionGroupsRow, error) {
+	if p.FailGetPermissionGroups {
+		return nil, ErrProxy
+	}
+	return p.Querier.GetPermissionGroups(ctx)
+}
+
+func (p *QuerierProxy) GetPermissionGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]db.GetPermissionGroupMembersRow, error) {
+	if p.FailGetPermissionGroupMembers {
+		return nil, ErrProxy
+	}
+	return p.Querier.GetPermissionGroupMembers(ctx, groupID)
 }

@@ -38,6 +38,34 @@ All error responses share the same shape:
 
 ---
 
+## Permissions Reference
+
+Admin endpoints that require a specific permission list it in their documentation. Use this table as a reference when assigning permissions to roles.
+
+The `canonical_name` column is the exact value used in permission checks — use it when granting permissions via the API.
+
+| Canonical name               | Resource type | Description                                          |
+| ---------------------------- | ------------- | ---------------------------------------------------- |
+| `rbac:read`                  | rbac          | View roles, permissions, and user role assignments   |
+| `rbac:manage`                | rbac          | Create and modify roles and role assignments         |
+| `rbac:grant_user_permission` | rbac          | Grant or revoke direct permissions on a user         |
+| `job_queue:read`             | job_queue     | View job queues and their current status             |
+| `job_queue:manage`           | job_queue     | Pause, resume, and drain job queues                  |
+| `job_queue:configure`        | job_queue     | Change queue configuration and worker settings       |
+| `user:read`                  | user          | View user accounts and profile data                  |
+| `user:manage`                | user          | Create and update user accounts                      |
+| `user:lock`                  | user          | Lock and unlock user accounts                        |
+| `request:read`               | request       | View pending and historical approval requests        |
+| `request:manage`             | request       | Submit and cancel approval requests                  |
+| `request:approve`            | request       | Approve or reject pending requests                   |
+| `product:manage`             | product       | Create, update, and delete products                  |
+
+<Info>
+  The owner role bypasses all permission checks and has unrestricted access to every endpoint.
+</Info>
+
+---
+
 ## Guides
 
 Looking for end-to-end flow walkthroughs instead of individual endpoints?

@@ -1,0 +1,105 @@
+---
+title: "List Permissions"
+authMethod: "bearer"
+description: "Returns all active RBAC permissions, ordered alphabetically by canonical name. Requires the rbac:read permission."
+api: "GET http://localhost:8080/api/v1/admin/permissions"
+---
+
+## Behaviour
+
+**Read-only catalogue** — This endpoint reflects whatever permissions are seeded in the database. It does not create, modify, or delete any permission records.
+
+**Always returns an array** — The `permissions` key is always present in the response. An empty catalogue returns `[]` rather than `null`.
+
+**Description is optional** — The `description` field is omitted from each permission object when no description has been set.
+
+<ResponseExample>
+```json 200
+{
+  "permissions": [
+    {
+      "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+      "canonical_name": "rbac:read",
+      "resource_type": "rbac",
+      "name": "RBAC Read",
+      "description": "View roles, permissions, and user role assignments."
+    },
+    {
+      "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5c",
+      "canonical_name": "user:read",
+      "resource_type": "user",
+      "name": "User Read"
+    }
+  ]
+}
+```
+
+```json 401
+{
+  "code": "missing_token",
+  "message": "missing or invalid access token"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "insufficient permissions"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    Returns the full list of active permissions. The `description` field is omitted when empty. The array is always present — an empty catalogue returns `[]` rather than `null`.
+
+    ```json
+    {
+      "permissions": [
+        {
+          "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+          "canonical_name": "rbac:read",
+          "resource_type": "rbac",
+          "name": "RBAC Read",
+          "description": "View roles, permissions, and user role assignments."
+        }
+      ]
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/login/login) and include it in the request header.
+
+    ```json
+    {
+      "code": "missing_token",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `rbac:read` permission. Contact your owner or administrator to have the permission granted.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "insufficient permissions"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected server-side error occurred. Contact your system administrator if this persists.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -29,4 +30,37 @@ func (f *BootstrapFakeServicer) Bootstrap(ctx context.Context, in bootstrap.Boot
 		return f.BootstrapFn(ctx, in)
 	}
 	return bootstrap.BootstrapResult{}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PermissionsFakeServicer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// PermissionsFakeServicer is a hand-written implementation of permissions.Servicer
+// for handler unit tests. Set the Fn fields to control responses; leave nil
+// to return an empty slice and nil error.
+type PermissionsFakeServicer struct {
+	ListPermissionsFn      func(ctx context.Context) ([]permissions.Permission, error)
+	ListPermissionGroupsFn func(ctx context.Context) ([]permissions.PermissionGroup, error)
+}
+
+// compile-time interface check.
+var _ permissions.Servicer = (*PermissionsFakeServicer)(nil)
+
+// ListPermissions delegates to ListPermissionsFn if set.
+// Default: returns ([]permissions.Permission{}, nil).
+func (f *PermissionsFakeServicer) ListPermissions(ctx context.Context) ([]permissions.Permission, error) {
+	if f.ListPermissionsFn != nil {
+		return f.ListPermissionsFn(ctx)
+	}
+	return []permissions.Permission{}, nil
+}
+
+// ListPermissionGroups delegates to ListPermissionGroupsFn if set.
+// Default: returns ([]permissions.PermissionGroup{}, nil).
+func (f *PermissionsFakeServicer) ListPermissionGroups(ctx context.Context) ([]permissions.PermissionGroup, error) {
+	if f.ListPermissionGroupsFn != nil {
+		return f.ListPermissionGroupsFn(ctx)
+	}
+	return []permissions.PermissionGroup{}, nil
 }

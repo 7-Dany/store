@@ -171,6 +171,20 @@ BEGIN
  NULLIF(current_setting('rbac.acting_user', TRUE), '')::UUID,
  OLD.granted_by
  );
+
+ -- Orphan guard: skip the audit INSERT when the parent users row no longer
+ -- exists. Two scenarios trigger this:
+ -- a) Sequential cleanup in one transaction: user_roles is deleted explicitly
+ -- first, then users is deleted; the ON DELETE CASCADE would re-fire this
+ -- trigger after the users row is already gone.
+ -- b) Orphaned user_roles rows left by a previous aborted cleanup that
+ -- deleted users but not user_roles.
+ -- Without this guard the INSERT violates fk_ur_audit_user (RESTRICT).
+ -- The deletion still proceeds; only this audit record is omitted.
+ IF NOT EXISTS (SELECT 1 FROM users WHERE id = OLD.user_id) THEN
+ RETURN OLD;
+ END IF;
+
  INSERT INTO user_roles_audit (
  user_id, role_id, previous_role_id,
  expires_at, previous_expires_at,
@@ -218,7 +232,9 @@ $$;
 COMMENT ON FUNCTION fn_audit_user_roles() IS
  'Writes an immutable record to user_roles_audit on every INSERT/UPDATE/DELETE. '
  'UPDATE and DELETE changed_by reads rbac.acting_user (falls back to granted_by). '
- 'On DELETE, previous_role_id captures OLD.role_id so the revoked role is preserved.';
+ 'On DELETE, previous_role_id captures OLD.role_id so the revoked role is preserved. '
+ 'Orphan guard: skips the audit INSERT when the parent users row no longer exists, '
+ 'preventing fk_ur_audit_user (RESTRICT) violations during e2e cleanup.';
 
 CREATE TRIGGER trg_audit_user_roles
  AFTER INSERT OR UPDATE OR DELETE ON user_roles
@@ -239,6 +255,13 @@ BEGIN
  NULLIF(current_setting('rbac.acting_user', TRUE), '')::UUID,
  OLD.granted_by
  );
+
+ -- Orphan guard: same rationale as fn_audit_user_roles.
+ -- Skip the audit INSERT when the parent users row no longer exists.
+ IF NOT EXISTS (SELECT 1 FROM users WHERE id = OLD.user_id) THEN
+ RETURN OLD;
+ END IF;
+
  INSERT INTO user_permissions_audit (
  user_id, permission_id,
  conditions, scope,
@@ -298,7 +321,9 @@ COMMENT ON FUNCTION fn_audit_user_permissions() IS
  'Writes an immutable record to user_permissions_audit on every INSERT/UPDATE/DELETE. '
  'UPDATE and DELETE changed_by reads rbac.acting_user (falls back to granted_by). '
  'user_permissions is the highest-risk RBAC table — every mutation is tracked unconditionally. '
- 'Snapshots scope before/after each mutation.';
+ 'Snapshots scope before/after each mutation. '
+ 'Orphan guard: skips the audit INSERT when the parent users row no longer exists, '
+ 'preventing fk_up_audit_user (RESTRICT) violations during e2e cleanup.';
 
 CREATE TRIGGER trg_audit_user_permissions
  AFTER INSERT OR UPDATE OR DELETE ON user_permissions
@@ -482,10 +507,16 @@ CREATE OR REPLACE FUNCTION fn_prevent_orphaned_owner()
 RETURNS TRIGGER
 LANGUAGE plpgsql AS $$
 BEGIN
+ -- Escape hatch for test fixtures and seeding scripts only.
+ -- Mirrors the same bypass used in fn_prevent_privilege_escalation and
+ -- fn_prevent_owner_role_escalation. Must never be set to '1' in production.
+ IF current_setting('rbac.skip_orphan_check', TRUE) = '1' THEN
+ RETURN OLD;
+ END IF;
+
  -- PG forbids subqueries in WHEN clauses; early-exit for non-owner rows.
  IF NOT EXISTS (
- SELECT 1 FROM roles WHERE id = OLD.role_id AND is_owner_role = TRUE AND is_active = TRUE
- ) THEN
+ SELECT 1 FROM roles WHERE id = OLD.role_id AND is_owner_role = TRUE AND is_active = TRUE) THEN
  RETURN OLD;
  END IF;
 
@@ -518,7 +549,9 @@ COMMENT ON FUNCTION fn_prevent_orphaned_owner() IS
  'Prevents deletion or reassignment of the last active owner-role assignment. '
  'Uses PERFORM ... FOR UPDATE OF ur to lock all remaining owner rows, serialising '
  'concurrent removal attempts without COUNT aggregation overhead. '
- 'NOT FOUND after PERFORM means no remaining owners → raise exception.';
+ 'NOT FOUND after PERFORM means no remaining owners → raise exception. '
+ 'Escape hatch: SET rbac.skip_orphan_check = ''1'' (session-scoped, '
+ 'for test fixtures and seeding scripts only — never use in production).';
 
 -- Fires before a user_roles row is deleted.
 CREATE TRIGGER trg_prevent_orphaned_owner_on_delete

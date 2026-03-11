@@ -1,0 +1,125 @@
+---
+title: "List Permission Groups"
+authMethod: "bearer"
+description: "Returns all active permission groups with their member permissions embedded. Useful for rendering a categorised permission picker in admin UIs. Requires the rbac:read permission."
+api: "GET http://localhost:8080/api/v1/admin/permissions/groups"
+---
+
+## Behaviour
+
+**Read-only catalogue** — This endpoint reflects whatever groups and members are seeded in the database. It does not create, modify, or delete any records.
+
+**Ordered by display_order** — Groups are returned in ascending `display_order` so they can be rendered directly without client-side sorting.
+
+**Members are embedded** — Each group includes its member permissions inline in the same shape as the objects returned by [`GET /admin/permissions`](/api-reference/rbac/permissions/list-permissions). No secondary request is needed to resolve group members.
+
+**Always returns arrays** — Both the `groups` key and each group's `members` key are always present. An empty catalogue returns `[]` rather than `null` for both.
+
+**Optional display fields** — `display_label`, `icon`, and `color_hex` are omitted from a group when not set.
+
+<ResponseExample>
+```json 200
+{
+  "groups": [
+    {
+      "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+      "name": "rbac",
+      "display_label": "Access Control",
+      "icon": "shield",
+      "color_hex": "#6366f1",
+      "display_order": 1,
+      "is_visible": true,
+      "members": [
+        {
+          "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5c",
+          "canonical_name": "rbac:read",
+          "resource_type": "rbac",
+          "name": "RBAC Read",
+          "description": "View roles, permissions, and user role assignments."
+        }
+      ]
+    }
+  ]
+}
+```
+
+```json 401
+{
+  "code": "missing_token",
+  "message": "missing or invalid access token"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "insufficient permissions"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    Returns all active groups ordered by `display_order`. Each group embeds its member permissions in the same shape as [`GET /admin/permissions`](/api-reference/rbac/permissions/list-permissions). Optional fields (`display_label`, `icon`, `color_hex`) are omitted when empty. The `groups` and `members` arrays are always present — an empty catalogue returns `[]` rather than `null`.
+
+    ```json
+    {
+      "groups": [
+        {
+          "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+          "name": "rbac",
+          "display_label": "Access Control",
+          "icon": "shield",
+          "color_hex": "#6366f1",
+          "display_order": 1,
+          "is_visible": true,
+          "members": [
+            {
+              "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5c",
+              "canonical_name": "rbac:read",
+              "resource_type": "rbac",
+              "name": "RBAC Read",
+              "description": "View roles, permissions, and user role assignments."
+            }
+          ]
+        }
+      ]
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/login/login) and include it in the request header.
+
+    ```json
+    {
+      "code": "missing_token",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `rbac:read` permission. Contact your owner or administrator to have the permission granted.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "insufficient permissions"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected server-side error occurred. Contact your system administrator if this persists.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

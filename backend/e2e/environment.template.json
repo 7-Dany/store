@@ -32,6 +32,13 @@
       "description": "Telegram bot token issued by @BotFather. Used by e2e pre-request scripts to compute HMAC-SHA256 signatures for all Telegram OAuth test requests. Must match TELEGRAM_BOT_TOKEN in .env."
     },
     {
+      "key": "bootstrap_secret",
+      "value": "",
+      "type": "secret",
+      "enabled": true,
+      "description": "One-time secret that gates POST /owner/bootstrap. Must match BOOTSTRAP_SECRET in .env."
+    },
+    {
       "key": "gmail_access_token",
       "value": "",
       "type": "secret",

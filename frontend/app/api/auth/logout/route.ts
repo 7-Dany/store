@@ -1,0 +1,47 @@
+import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+
+const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8080/api/v1";
+
+// POST /api/auth/logout
+// Forwards to Go backend with Bearer + refresh_token cookie, clears both
+// cookies, then redirects to /login. Always treats as success — the backend
+// returns 204 regardless (idempotent, best-effort).
+export async function POST(request: Request) {
+  const cookieStore = await cookies();
+  const session = cookieStore.get("session")?.value;
+  const refreshToken = cookieStore.get("refresh_token")?.value;
+
+  try {
+    await fetch(`${API_BASE}/auth/logout`, {
+      method: "POST",
+      headers: {
+        ...(session ? { Authorization: `Bearer ${session}` } : {}),
+        ...(refreshToken ? { Cookie: `refresh_token=${refreshToken}` } : {}),
+      },
+    });
+  } catch {
+    // Backend unreachable — still clear cookies and redirect.
+  }
+
+  const origin = new URL(request.url).origin;
+  const res = NextResponse.redirect(`${origin}/login`);
+
+  // Clear session cookie (access token)
+  res.cookies.set("session", "", {
+    path: "/",
+    maxAge: 0,
+    httpOnly: true,
+    sameSite: "strict",
+  });
+
+  // Clear refresh token cookie — scoped to /api/v1/auth on the Go backend
+  res.cookies.set("refresh_token", "", {
+    path: "/",
+    maxAge: 0,
+    httpOnly: true,
+    sameSite: "strict",
+  });
+
+  return res;
+}

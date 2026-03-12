@@ -98,18 +98,17 @@ export function TelegramLoginButton() {
         so `group-hover:` on the visible button div fires correctly.
         The visible button has `pointer-events-none` so clicks fall through to the iframe.
       */}
-      <div className="group relative">
+      <div className="group relative transition-transform duration-150 active:scale-[0.99]">
         {/* Visible button — pointer-events-none so clicks reach the iframe */}
         <div
           aria-label="Continue with Telegram"
           className={cn(
             "flex w-full items-center justify-center gap-3",
-            "rounded-lg border border-border bg-card",
-            "px-4 h-10",
-            "text-sm font-medium text-foreground",
-            "shadow-xs transition-colors duration-150 pointer-events-none",
+            "h-10 rounded-4xl border border-border bg-input/30 px-4",
+            "text-sm font-medium text-muted-foreground",
+            "transition-colors duration-150 pointer-events-none",
             // group-hover fires because the iframe (inside group) receives the pointer
-            "group-hover:bg-muted",
+            "group-hover:bg-input/50",
           )}
         >
           {isPending ? (
@@ -123,7 +122,11 @@ export function TelegramLoginButton() {
             </>
           ) : (
             <>
-              <IconBrandTelegram size={18} stroke={1.75} className="shrink-0" />
+              <IconBrandTelegram
+                size={18}
+                stroke={1.75}
+                className="shrink-0 text-muted-foreground"
+              />
               <span>Continue with Telegram</span>
             </>
           )}

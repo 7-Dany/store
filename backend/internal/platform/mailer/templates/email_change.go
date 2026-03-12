@@ -27,41 +27,62 @@ var emailChangeOTPTemplateStr = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <title>Your email change request</title>
 </head>
-<body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background:#f4f4f5;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:40px 0;">
+<body style="margin:0;padding:0;background:#f1f3f4;font-family:'Google Sans',Roboto,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f3f4;padding:48px 0;">
     <tr><td align="center">
-      <table width="480" cellpadding="0" cellspacing="0"
-             style="background:#fff;border-radius:8px;padding:40px;box-shadow:0 2px 8px rgba(0,0,0,.08);">
-        <tr><td style="text-align:center;padding-bottom:24px;">
-          <h1 style="margin:0;font-size:22px;color:#18181b;">{{.AppName}}</h1>
+      <table width="520" cellpadding="0" cellspacing="0"
+             style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(60,64,67,.15),0 4px 8px rgba(60,64,67,.1);">
+
+        <!-- blue top accent -->
+        <tr><td style="height:4px;background:#1a73e8;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+        <!-- header -->
+        <tr><td style="padding:32px 48px 0;">
+          <p style="margin:0;font-size:22px;font-weight:700;color:#1a73e8;letter-spacing:-0.5px;">{{.AppName}}</p>
         </td></tr>
-        <tr><td style="color:#3f3f46;font-size:15px;line-height:1.6;">
-          <p style="margin:0 0 16px;">Hello,</p>
-          <p style="margin:0 0 24px;">
+
+        <!-- body -->
+        <tr><td style="padding:24px 48px 0;">
+          <p style="margin:0 0 6px;font-size:20px;font-weight:600;color:#202124;">Confirm your email change</p>
+          <p style="margin:0;font-size:14px;color:#5f6368;line-height:1.6;">
             We received a request to change the email address on your {{.AppName}} account.
             Enter the code below to confirm it&#39;s really you.
-            It expires in <strong>{{.ValidMins}} minutes</strong>.
+            This code expires in <strong style="color:#202124;">{{.ValidMins}} minutes</strong>.
           </p>
         </td></tr>
-        <tr><td align="center" style="padding-bottom:28px;">
-          <div style="display:inline-block;background:#f4f4f5;border-radius:8px;padding:20px 40px;">
-            <span style="font-size:36px;font-weight:700;letter-spacing:10px;color:#18181b;font-family:monospace;">
-              {{.Code}}
-            </span>
-          </div>
+
+        <!-- OTP code -->
+        <tr><td align="center" style="padding:28px 48px;">
+          <table cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="background:#e8f0fe;border-radius:8px;padding:18px 36px;text-align:center;">
+                <span style="font-size:34px;font-weight:700;letter-spacing:12px;color:#1a73e8;font-family:monospace;">{{.Code}}</span>
+              </td>
+            </tr>
+          </table>
         </td></tr>
-        <tr><td style="color:#71717a;font-size:13px;line-height:1.5;">
-          <p style="margin:0 0 8px;">
-            If you did not request this change, you can safely ignore this email.
-            Your account will not be affected.
+
+        <!-- security notice -->
+        <tr><td style="padding:0 48px 32px;">
+          <table cellpadding="0" cellspacing="0" width="100%">
+            <tr>
+              <td style="background:#fafafa;border-left:3px solid #dadce0;border-radius:0 4px 4px 0;padding:12px 16px;">
+                <p style="margin:0;font-size:12px;color:#5f6368;line-height:1.6;">
+                  If you did not request this change, you can safely ignore this email &mdash;
+                  your account will not be affected. Never share this code with anyone.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td></tr>
+
+        <!-- footer -->
+        <tr><td style="padding:20px 48px;border-top:1px solid #e8eaed;">
+          <p style="margin:0;font-size:12px;color:#80868b;text-align:center;">
+            &copy; {{.Year}} {{.AppName}} &nbsp;&middot;&nbsp; This is an automated message, please do not reply.
           </p>
-          <p style="margin:0;">
-            Never share this code with anyone. {{.AppName}} will never ask for it by phone or chat.
-          </p>
         </td></tr>
-        <tr><td style="padding-top:32px;border-top:1px solid #e4e4e7;color:#a1a1aa;font-size:12px;text-align:center;">
-          &copy; {{.Year}} {{.AppName}}. All rights reserved.
-        </td></tr>
+
       </table>
     </td></tr>
   </table>
@@ -79,39 +100,61 @@ var emailChangeConfirmOTPTemplateStr = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <title>Confirm your new email</title>
 </head>
-<body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background:#f4f4f5;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:40px 0;">
+<body style="margin:0;padding:0;background:#f1f3f4;font-family:'Google Sans',Roboto,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f3f4;padding:48px 0;">
     <tr><td align="center">
-      <table width="480" cellpadding="0" cellspacing="0"
-             style="background:#fff;border-radius:8px;padding:40px;box-shadow:0 2px 8px rgba(0,0,0,.08);">
-        <tr><td style="text-align:center;padding-bottom:24px;">
-          <h1 style="margin:0;font-size:22px;color:#18181b;">{{.AppName}}</h1>
+      <table width="520" cellpadding="0" cellspacing="0"
+             style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(60,64,67,.15),0 4px 8px rgba(60,64,67,.1);">
+
+        <!-- blue top accent -->
+        <tr><td style="height:4px;background:#1a73e8;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+        <!-- header -->
+        <tr><td style="padding:32px 48px 0;">
+          <p style="margin:0;font-size:22px;font-weight:700;color:#1a73e8;letter-spacing:-0.5px;">{{.AppName}}</p>
         </td></tr>
-        <tr><td style="color:#3f3f46;font-size:15px;line-height:1.6;">
-          <p style="margin:0 0 16px;">Hello,</p>
-          <p style="margin:0 0 24px;">
+
+        <!-- body -->
+        <tr><td style="padding:24px 48px 0;">
+          <p style="margin:0 0 6px;font-size:20px;font-weight:600;color:#202124;">Confirm your new email address</p>
+          <p style="margin:0;font-size:14px;color:#5f6368;line-height:1.6;">
             Use the code below to confirm this as your new email address.
-            It expires in <strong>{{.ValidMins}} minutes</strong>.
+            This code expires in <strong style="color:#202124;">{{.ValidMins}} minutes</strong>.
           </p>
         </td></tr>
-        <tr><td align="center" style="padding-bottom:28px;">
-          <div style="display:inline-block;background:#f4f4f5;border-radius:8px;padding:20px 40px;">
-            <span style="font-size:36px;font-weight:700;letter-spacing:10px;color:#18181b;font-family:monospace;">
-              {{.Code}}
-            </span>
-          </div>
+
+        <!-- OTP code -->
+        <tr><td align="center" style="padding:28px 48px;">
+          <table cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="background:#e8f0fe;border-radius:8px;padding:18px 36px;text-align:center;">
+                <span style="font-size:34px;font-weight:700;letter-spacing:12px;color:#1a73e8;font-family:monospace;">{{.Code}}</span>
+              </td>
+            </tr>
+          </table>
         </td></tr>
-        <tr><td style="color:#71717a;font-size:13px;line-height:1.5;">
-          <p style="margin:0 0 8px;">
-            If you did not request this change, you can safely ignore this email.
+
+        <!-- security notice -->
+        <tr><td style="padding:0 48px 32px;">
+          <table cellpadding="0" cellspacing="0" width="100%">
+            <tr>
+              <td style="background:#fafafa;border-left:3px solid #dadce0;border-radius:0 4px 4px 0;padding:12px 16px;">
+                <p style="margin:0;font-size:12px;color:#5f6368;line-height:1.6;">
+                  If you did not request this change, you can safely ignore this email &mdash;
+                  your current email will remain unchanged. Never share this code with anyone.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td></tr>
+
+        <!-- footer -->
+        <tr><td style="padding:20px 48px;border-top:1px solid #e8eaed;">
+          <p style="margin:0;font-size:12px;color:#80868b;text-align:center;">
+            &copy; {{.Year}} {{.AppName}} &nbsp;&middot;&nbsp; This is an automated message, please do not reply.
           </p>
-          <p style="margin:0;">
-            Never share this code with anyone. {{.AppName}} will never ask for it by phone or chat.
-          </p>
         </td></tr>
-        <tr><td style="padding-top:32px;border-top:1px solid #e4e4e7;color:#a1a1aa;font-size:12px;text-align:center;">
-          &copy; {{.Year}} {{.AppName}}. All rights reserved.
-        </td></tr>
+
       </table>
     </td></tr>
   </table>
@@ -130,35 +173,48 @@ var emailChangedNotificationTemplateStr = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <title>Your email address has been changed</title>
 </head>
-<body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background:#f4f4f5;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:40px 0;">
+<body style="margin:0;padding:0;background:#f1f3f4;font-family:'Google Sans',Roboto,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f3f4;padding:48px 0;">
     <tr><td align="center">
-      <table width="480" cellpadding="0" cellspacing="0"
-             style="background:#fff;border-radius:8px;padding:40px;box-shadow:0 2px 8px rgba(0,0,0,.08);">
-        <tr><td style="text-align:center;padding-bottom:24px;">
-          <h1 style="margin:0;font-size:22px;color:#18181b;">{{.AppName}}</h1>
+      <table width="520" cellpadding="0" cellspacing="0"
+             style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(60,64,67,.15),0 4px 8px rgba(60,64,67,.1);">
+
+        <!-- amber top accent for security alert -->
+        <tr><td style="height:4px;background:#f9ab00;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+        <!-- header -->
+        <tr><td style="padding:32px 48px 0;">
+          <p style="margin:0;font-size:22px;font-weight:700;color:#1a73e8;letter-spacing:-0.5px;">{{.AppName}}</p>
         </td></tr>
-        <tr><td style="color:#3f3f46;font-size:15px;line-height:1.6;">
-          <p style="margin:0 0 16px;">Hello,</p>
-          <p style="margin:0 0 24px;">
-            The email address associated with your {{.AppName}} account has been
-            successfully changed. This address will no longer receive account
-            notifications.
+
+        <!-- body -->
+        <tr><td style="padding:24px 48px 32px;">
+          <p style="margin:0 0 6px;font-size:20px;font-weight:600;color:#202124;">Your email address was changed</p>
+          <p style="margin:0 0 16px;font-size:14px;color:#5f6368;line-height:1.6;">
+            The email address on your {{.AppName}} account has been successfully updated.
+            This address will no longer receive account notifications.
           </p>
-          <p style="margin:0 0 24px;">
-            If you did not make this change, please contact our support team
-            immediately to secure your account.
+
+          <!-- alert box -->
+          <table cellpadding="0" cellspacing="0" width="100%">
+            <tr>
+              <td style="background:#fef7e0;border-left:3px solid #f9ab00;border-radius:0 4px 4px 0;padding:12px 16px;">
+                <p style="margin:0;font-size:12px;color:#5f6368;line-height:1.6;">
+                  <strong style="color:#202124;">Wasn&rsquo;t you?</strong> If you did not make this change, please
+                  contact support immediately to secure your account.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td></tr>
+
+        <!-- footer -->
+        <tr><td style="padding:20px 48px;border-top:1px solid #e8eaed;">
+          <p style="margin:0;font-size:12px;color:#80868b;text-align:center;">
+            &copy; {{.Year}} {{.AppName}} &nbsp;&middot;&nbsp; You received this because this address was previously registered on your account.
           </p>
         </td></tr>
-        <tr><td style="color:#71717a;font-size:13px;line-height:1.5;">
-          <p style="margin:0;">
-            You are receiving this message because this address was previously
-            registered on your {{.AppName}} account.
-          </p>
-        </td></tr>
-        <tr><td style="padding-top:32px;border-top:1px solid #e4e4e7;color:#a1a1aa;font-size:12px;text-align:center;">
-          &copy; {{.Year}} {{.AppName}}. All rights reserved.
-        </td></tr>
+
       </table>
     </td></tr>
   </table>

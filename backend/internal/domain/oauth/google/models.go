@@ -77,7 +77,8 @@ type OAuthLoginTxInput struct {
 	UserID    [16]byte
 	IPAddress string
 	UserAgent string
-	NewUser   bool // true when registering a brand-new user via OAuth
+	NewUser   bool   // true when registering a brand-new user via OAuth
+	AvatarURL string // provider avatar; backfilled into users.avatar_url only when currently NULL
 }
 
 // OAuthRegisterTxInput carries the parameters for Store.OAuthRegisterTx.

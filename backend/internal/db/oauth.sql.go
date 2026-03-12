@@ -15,10 +15,11 @@ import (
 
 const CreateOAuthUser = `-- name: CreateOAuthUser :one
 WITH new_user AS (
-    INSERT INTO users (email, display_name, email_verified, is_active)
+    INSERT INTO users (email, display_name, avatar_url, email_verified, is_active)
     VALUES (
         $1::text,
         $2::text,
+        $3::text,
         TRUE,
         TRUE
     )
@@ -34,6 +35,7 @@ SELECT id FROM new_user
 type CreateOAuthUserParams struct {
 	Email       pgtype.Text `db:"email" json:"email"`
 	DisplayName pgtype.Text `db:"display_name" json:"display_name"`
+	AvatarURL   pgtype.Text `db:"avatar_url" json:"avatar_url"`
 }
 
 // Creates a new user account for a first-time OAuth sign-in.
@@ -43,8 +45,10 @@ type CreateOAuthUserParams struct {
 // same transaction before commit to satisfy the auth-method requirement.
 // email_verified = TRUE and is_active = TRUE because the provider has already
 // confirmed the email address.
+// avatar_url is seeded from the provider's profile picture so the user's profile
+// shows an avatar immediately without a separate update step.
 func (q *Queries) CreateOAuthUser(ctx context.Context, arg CreateOAuthUserParams) (uuid.UUID, error) {
-	row := q.db.QueryRow(ctx, CreateOAuthUser, arg.Email, arg.DisplayName)
+	row := q.db.QueryRow(ctx, CreateOAuthUser, arg.Email, arg.DisplayName, arg.AvatarURL)
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
@@ -307,6 +311,26 @@ func (q *Queries) GetUserIdentities(ctx context.Context, userID pgtype.UUID) ([]
 		return nil, err
 	}
 	return items, nil
+}
+
+const UpdateUserAvatarIfNull = `-- name: UpdateUserAvatarIfNull :exec
+UPDATE users
+SET avatar_url = $1
+WHERE id = $2::uuid
+  AND avatar_url IS NULL
+`
+
+type UpdateUserAvatarIfNullParams struct {
+	AvatarURL pgtype.Text `db:"avatar_url" json:"avatar_url"`
+	UserID    pgtype.UUID `db:"user_id" json:"user_id"`
+}
+
+// Backfills avatar_url from an OAuth provider only when the user has no avatar set.
+// Called during OAuth login to sync the provider's picture without overwriting
+// a profile picture the user has explicitly set via PATCH /profile/me.
+func (q *Queries) UpdateUserAvatarIfNull(ctx context.Context, arg UpdateUserAvatarIfNullParams) error {
+	_, err := q.db.Exec(ctx, UpdateUserAvatarIfNull, arg.AvatarURL, arg.UserID)
+	return err
 }
 
 const UpsertUserIdentity = `-- name: UpsertUserIdentity :one

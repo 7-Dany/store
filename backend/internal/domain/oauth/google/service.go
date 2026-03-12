@@ -253,6 +253,7 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 			IPAddress: in.IPAddress,
 			UserAgent: in.UserAgent,
 			NewUser:   false,
+			AvatarURL: claims.Picture,
 		})
 		if err != nil {
 			slog.ErrorContext(ctx, "google.HandleCallback: OAuthLoginTx failed", "error", err)
@@ -305,6 +306,7 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 				IPAddress: in.IPAddress,
 				UserAgent: in.UserAgent,
 				NewUser:   false,
+				AvatarURL: claims.Picture,
 			})
 			if err != nil {
 				slog.ErrorContext(ctx, "google.HandleCallback: OAuthLoginTx failed (email-match path)", "error", err)

@@ -156,11 +156,18 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// SendOTPEmail is a no-op when result.RawCode is empty (anti-enumeration path).
+	if result.RawCode == "" {
+		slog.DebugContext(r.Context(), "password.ForgotPassword: suppressed — service returned empty code (anti-enumeration)")
+	} else {
+		slog.DebugContext(r.Context(), "password.ForgotPassword: dispatching OTP email", "email", result.Email)
+	}
 	if err := mailer.SendOTPEmail(r.Context(), h.OTPHandlerBase, result.UserID, result.Email, result.RawCode, "password"); err != nil {
 		// Security: do not surface mail failure — any non-202 response here
 		// reveals that the email is registered and verified (anti-enumeration).
 		slog.WarnContext(r.Context(), "password.ForgotPassword: mail delivery failed",
 			"error", err, "email", result.Email)
+	} else if result.RawCode != "" {
+		slog.InfoContext(r.Context(), "password.ForgotPassword: OTP email dispatched", "email", result.Email)
 	}
 
 	respond.JSON(w, http.StatusAccepted, map[string]string{

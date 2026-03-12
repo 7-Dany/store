@@ -18,39 +18,61 @@ var verificationEmailTemplateStr = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width,initial-scale=1.0">
   <title>Verify your email</title>
 </head>
-<body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;background:#f4f4f5;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f5;padding:40px 0;">
+<body style="margin:0;padding:0;background:#f1f3f4;font-family:'Google Sans',Roboto,Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f3f4;padding:48px 0;">
     <tr><td align="center">
-      <table width="480" cellpadding="0" cellspacing="0"
-             style="background:#fff;border-radius:8px;padding:40px;box-shadow:0 2px 8px rgba(0,0,0,.08);">
-        <tr><td style="text-align:center;padding-bottom:24px;">
-          <h1 style="margin:0;font-size:22px;color:#18181b;">{{.AppName}}</h1>
+      <table width="520" cellpadding="0" cellspacing="0"
+             style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(60,64,67,.15),0 4px 8px rgba(60,64,67,.1);">
+
+        <!-- blue top accent -->
+        <tr><td style="height:4px;background:#1a73e8;font-size:0;line-height:0;">&nbsp;</td></tr>
+
+        <!-- header -->
+        <tr><td style="padding:32px 48px 0;">
+          <p style="margin:0;font-size:22px;font-weight:700;color:#1a73e8;letter-spacing:-0.5px;">{{.AppName}}</p>
         </td></tr>
-        <tr><td style="color:#3f3f46;font-size:15px;line-height:1.6;">
-          <p style="margin:0 0 16px;">Hello,</p>
-          <p style="margin:0 0 24px;">
-            Use the code below to verify your email address.
-            It expires in <strong>{{.ValidMins}} minutes</strong>.
+
+        <!-- body -->
+        <tr><td style="padding:24px 48px 0;">
+          <p style="margin:0 0 6px;font-size:20px;font-weight:600;color:#202124;">Verify your email address</p>
+          <p style="margin:0;font-size:14px;color:#5f6368;line-height:1.6;">
+            Use the verification code below to confirm your email address.
+            This code expires in <strong style="color:#202124;">{{.ValidMins}} minutes</strong>.
           </p>
         </td></tr>
-        <tr><td align="center" style="padding-bottom:28px;">
-          <div style="display:inline-block;background:#f4f4f5;border-radius:8px;padding:20px 40px;">
-            <span style="font-size:36px;font-weight:700;letter-spacing:10px;color:#18181b;font-family:monospace;">
-              {{.Code}}
-            </span>
-          </div>
+
+        <!-- OTP code -->
+        <tr><td align="center" style="padding:28px 48px;">
+          <table cellpadding="0" cellspacing="0">
+            <tr>
+              <td style="background:#e8f0fe;border-radius:8px;padding:18px 36px;text-align:center;">
+                <span style="font-size:34px;font-weight:700;letter-spacing:12px;color:#1a73e8;font-family:monospace;">{{.Code}}</span>
+              </td>
+            </tr>
+          </table>
         </td></tr>
-        <tr><td style="color:#71717a;font-size:13px;line-height:1.5;">
-          <p style="margin:0 0 8px;">
-            If you didn&rsquo;t request this, you can safely ignore this email.
+
+        <!-- security notice -->
+        <tr><td style="padding:0 48px 32px;">
+          <table cellpadding="0" cellspacing="0" width="100%">
+            <tr>
+              <td style="background:#fafafa;border-left:3px solid #dadce0;border-radius:0 4px 4px 0;padding:12px 16px;">
+                <p style="margin:0;font-size:12px;color:#5f6368;line-height:1.6;">
+                  If you didn&rsquo;t create a {{.AppName}} account, you can safely ignore this email.
+                  Never share this code with anyone &mdash; {{.AppName}} will never ask for it.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td></tr>
+
+        <!-- footer -->
+        <tr><td style="padding:20px 48px;border-top:1px solid #e8eaed;">
+          <p style="margin:0;font-size:12px;color:#80868b;text-align:center;">
+            &copy; {{.Year}} {{.AppName}} &nbsp;&middot;&nbsp; This is an automated message, please do not reply.
           </p>
-          <p style="margin:0;">
-            Never share this code with anyone. {{.AppName}} will never ask for it by phone or chat.
-          </p>
         </td></tr>
-        <tr><td style="padding-top:32px;border-top:1px solid #e4e4e7;color:#a1a1aa;font-size:12px;text-align:center;">
-          &copy; {{.Year}} {{.AppName}}. All rights reserved.
-        </td></tr>
+
       </table>
     </td></tr>
   </table>

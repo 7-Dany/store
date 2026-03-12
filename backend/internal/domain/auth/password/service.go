@@ -94,6 +94,8 @@ func NewService(store Storer, tokenTTL time.Duration) *Service {
 // authshared.GenerateCodeHash (bcrypt at otpBcryptCost). An attacker measuring
 // response times cannot distinguish registered from unknown emails.
 func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInput) (authshared.OTPIssuanceResult, error) {
+	slog.DebugContext(ctx, "password.RequestPasswordReset: start", "email", in.Email, "ip", in.IPAddress)
+
 	// 1. Look up the account. Unknown email → silent no-op (anti-enumeration).
 	user, err := s.store.GetUserForPasswordReset(ctx, in.Email)
 	if err != nil {
@@ -102,6 +104,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 			// match the bcrypt cost of authshared.GenerateCodeHash on the happy path
 			// (Conventions §7, ADR-006).
 			_ = authshared.GetDummyOTPHash()
+			slog.DebugContext(ctx, "password.RequestPasswordReset: suppressed — email not found", "email", in.Email)
 			return authshared.OTPIssuanceResult{}, nil
 		}
 		return authshared.OTPIssuanceResult{}, fmt.Errorf("password.RequestPasswordReset: get user: %w", err)
@@ -109,6 +112,12 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 
 	// 2. Unverified, locked, or inactive → silent no-op (anti-enumeration).
 	if !user.EmailVerified || user.IsLocked || !user.IsActive {
+		slog.DebugContext(ctx, "password.RequestPasswordReset: suppressed — account not eligible",
+			"email", in.Email,
+			"email_verified", user.EmailVerified,
+			"is_locked", user.IsLocked,
+			"is_active", user.IsActive,
+		)
 		return authshared.OTPIssuanceResult{}, nil
 	}
 
@@ -117,6 +126,12 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 	const resetCooldown = 60 * time.Second
 	issuedAt, cooldownErr := s.store.GetPasswordResetTokenCreatedAt(ctx, in.Email)
 	if cooldownErr == nil && time.Since(issuedAt) < resetCooldown {
+		slog.DebugContext(ctx, "password.RequestPasswordReset: suppressed — cooldown active",
+			"email", in.Email,
+			"issued_at", issuedAt,
+			"elapsed", time.Since(issuedAt).Round(time.Second),
+			"cooldown", resetCooldown,
+		)
 		return authshared.OTPIssuanceResult{}, nil
 	}
 	if cooldownErr != nil && !errors.Is(cooldownErr, authshared.ErrTokenNotFound) {
@@ -125,12 +140,14 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 	}
 
 	// 3. Generate OTP.
+	slog.DebugContext(ctx, "password.RequestPasswordReset: generating OTP", "email", in.Email)
 	raw, codeHash, err := authshared.GenerateCodeHash()
 	if err != nil {
 		return authshared.OTPIssuanceResult{}, fmt.Errorf("password.RequestPasswordReset: generate code hash: %w", err)
 	}
 
 	// 4. Persist token + audit row.
+	slog.DebugContext(ctx, "password.RequestPasswordReset: persisting token", "email", in.Email)
 	if err := s.store.RequestPasswordResetTx(ctx, RequestPasswordResetStoreInput{
 		UserID:    user.ID,
 		Email:     in.Email,
@@ -141,12 +158,14 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 	}); err != nil {
 		if errors.Is(err, authshared.ErrResetTokenCooldown) {
 			// Cooldown: a valid token already exists; return silently (anti-enumeration).
+			slog.DebugContext(ctx, "password.RequestPasswordReset: suppressed — active token already exists (DB cooldown)", "email", in.Email)
 			return authshared.OTPIssuanceResult{}, nil
 		}
 		return authshared.OTPIssuanceResult{},
 			fmt.Errorf("password.RequestPasswordReset: request password reset tx: %w", err)
 	}
 
+	slog.InfoContext(ctx, "password.RequestPasswordReset: OTP issued", "email", in.Email)
 	return authshared.NewOTPIssuanceResult(user.ID, in.Email, raw), nil
 }
 

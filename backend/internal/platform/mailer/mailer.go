@@ -183,9 +183,23 @@ func (m *SMTPMailer) sendOTPEmail(ctx context.Context, toEmail, code, key string
 	}
 
 	addr := fmt.Sprintf("%s:%d", m.cfg.Host, m.cfg.Port)
+	slog.DebugContext(ctx, "mailer: dialing SMTP",
+		"addr", addr,
+		"from", m.cfg.From,
+		"to", emailToken(toEmail),
+		"subject", subject,
+		"template", key,
+	)
 	if err := sendWithContext(ctx, addr, m.auth, m.cfg.From, []string{toEmail}, msg); err != nil {
+		slog.ErrorContext(ctx, "mailer: SMTP send failed",
+			"addr", addr,
+			"to", emailToken(toEmail),
+			"template", key,
+			"error", err,
+		)
 		return fmt.Errorf("mailer: smtp send: %w", err)
 	}
+	slog.DebugContext(ctx, "mailer: SMTP send succeeded", "to", emailToken(toEmail), "template", key)
 	return nil
 }
 
@@ -322,6 +336,7 @@ func sendOTP(
 	// request (unknown email / already-verified / cooldown path). Return
 	// immediately without sending mail so callers don't need their own guard.
 	if rawCode == "" {
+		slog.DebugContext(ctx, logPrefix+": sendOTP suppressed — empty rawCode (anti-enumeration)")
 		return nil
 	}
 

@@ -241,6 +241,19 @@ func (s *Store) OAuthLoginTx(ctx context.Context, in OAuthLoginTxInput) (oauthsh
 		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthLoginTx: update last login at: %w", err)
 	}
 
+	// 3a. Backfill avatar_url into users if not already set (e.g. accounts that
+	// registered via email/password before linking Google). The query is a no-op
+	// when users.avatar_url IS NOT NULL, so it never overwrites a custom avatar.
+	if in.AvatarURL != "" {
+		if err := h.Q.UpdateUserAvatarIfNull(ctx, db.UpdateUserAvatarIfNullParams{
+			AvatarURL: s.ToText(in.AvatarURL),
+			UserID:    userPgUUID,
+		}); err != nil {
+			h.Rollback()
+			return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthLoginTx: backfill avatar: %w", err)
+		}
+	}
+
 	// 4. Audit log — use context.WithoutCancel so a client disconnect cannot
 	// abort the write (D-17).
 	if err := h.Q.InsertAuditLog(context.WithoutCancel(ctx), db.InsertAuditLogParams{
@@ -280,6 +293,7 @@ func (s *Store) OAuthRegisterTx(ctx context.Context, in OAuthRegisterTxInput) (o
 	newUserID, err := h.Q.CreateOAuthUser(ctx, db.CreateOAuthUserParams{
 		Email:       s.ToText(in.Email),
 		DisplayName: s.ToText(in.DisplayName),
+		AvatarURL:   s.ToText(in.AvatarURL),
 	})
 	if err != nil {
 		h.Rollback()

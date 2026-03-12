@@ -109,6 +109,8 @@ type Querier interface {
 	// same transaction before commit to satisfy the auth-method requirement.
 	// email_verified = TRUE and is_active = TRUE because the provider has already
 	// confirmed the email address.
+	// avatar_url is seeded from the provider's profile picture so the user's profile
+	// shows an avatar immediately without a separate update step.
 	CreateOAuthUser(ctx context.Context, arg CreateOAuthUserParams) (uuid.UUID, error)
 	// Issues a new password_reset OTP token with a caller-controlled TTL and max 3 attempts.
 	// Caller must call InvalidateAllUserPasswordResetTokens first (within the same transaction).
@@ -518,6 +520,10 @@ type Querier interface {
 	// device session shows real activity, not just creation time.
 	// AND ended_at IS NULL makes the update a no-op for already-closed sessions.
 	UpdateSessionLastActive(ctx context.Context, id pgtype.UUID) error
+	// Backfills avatar_url from an OAuth provider only when the user has no avatar set.
+	// Called during OAuth login to sync the provider's picture without overwriting
+	// a profile picture the user has explicitly set via PATCH /profile/me.
+	UpdateUserAvatarIfNull(ctx context.Context, arg UpdateUserAvatarIfNullParams) error
 	// Updates display_name and/or avatar_url using COALESCE so that a NULL
 	// parameter leaves the current column value unchanged (partial-update pattern).
 	// Called by UpdateProfileTx after input validation confirms at least one field is non-nil.

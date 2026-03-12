@@ -141,11 +141,14 @@ GROUP BY us.password_hash;
 -- same transaction before commit to satisfy the auth-method requirement.
 -- email_verified = TRUE and is_active = TRUE because the provider has already
 -- confirmed the email address.
+-- avatar_url is seeded from the provider's profile picture so the user's profile
+-- shows an avatar immediately without a separate update step.
 WITH new_user AS (
-    INSERT INTO users (email, display_name, email_verified, is_active)
+    INSERT INTO users (email, display_name, avatar_url, email_verified, is_active)
     VALUES (
         sqlc.narg('email')::text,
         sqlc.narg('display_name')::text,
+        sqlc.narg('avatar_url')::text,
         TRUE,
         TRUE
     )
@@ -156,6 +159,15 @@ _secrets AS (
     SELECT id FROM new_user
 )
 SELECT id FROM new_user;
+
+-- name: UpdateUserAvatarIfNull :exec
+-- Backfills avatar_url from an OAuth provider only when the user has no avatar set.
+-- Called during OAuth login to sync the provider's picture without overwriting
+-- a profile picture the user has explicitly set via PATCH /profile/me.
+UPDATE users
+SET avatar_url = @avatar_url
+WHERE id = @user_id::uuid
+  AND avatar_url IS NULL;
 
 -- name: GetUserByEmailForOAuth :one
 -- Looks up an existing user by email during OAuth callback processing.

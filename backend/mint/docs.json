@@ -125,7 +125,10 @@
               "api-reference/rbac/roles/delete-role",
               "api-reference/rbac/roles/list-role-permissions",
               "api-reference/rbac/roles/add-role-permission",
-              "api-reference/rbac/roles/remove-role-permission"
+              "api-reference/rbac/roles/remove-role-permission",
+              "api-reference/rbac/user-roles/get-user-role",
+              "api-reference/rbac/user-roles/assign-role",
+              "api-reference/rbac/user-roles/remove-role"
             ]
           },
           {

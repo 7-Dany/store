@@ -8,6 +8,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/roles"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/userroles"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -221,4 +222,53 @@ func (f *RolesFakeStorer) GetPermissionCaps(ctx context.Context, permissionID [1
 		return f.GetPermissionCapsFn(ctx, permissionID)
 	}
 	return roles.PermissionCaps{}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UserRolesFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// UserRolesFakeStorer is a hand-written implementation of userroles.Storer for
+// service unit tests. Each method delegates to its Fn field if non-nil,
+// otherwise returns a safe default so tests only configure the fields they need.
+//
+// Defaults:
+//
+//	GetUserRoleFn      → (UserRole{RoleName: "admin"}, nil) — a non-owner role so guards pass by default
+//	AssignUserRoleTxFn → (UserRole{}, nil)
+//	RemoveUserRoleFn   → nil
+type UserRolesFakeStorer struct {
+	GetUserRoleFn      func(ctx context.Context, userID [16]byte) (userroles.UserRole, error)
+	AssignUserRoleTxFn func(ctx context.Context, in userroles.AssignRoleTxInput) (userroles.UserRole, error)
+	RemoveUserRoleFn   func(ctx context.Context, userID [16]byte, actingUserID string) error
+}
+
+// compile-time interface check.
+var _ userroles.Storer = (*UserRolesFakeStorer)(nil)
+
+// GetUserRole delegates to GetUserRoleFn if set.
+// Default: returns (UserRole{RoleName: "admin"}, nil) — a non-owner role.
+func (f *UserRolesFakeStorer) GetUserRole(ctx context.Context, userID [16]byte) (userroles.UserRole, error) {
+	if f.GetUserRoleFn != nil {
+		return f.GetUserRoleFn(ctx, userID)
+	}
+	return userroles.UserRole{RoleName: "admin"}, nil
+}
+
+// AssignUserRoleTx delegates to AssignUserRoleTxFn if set.
+// Default: returns (UserRole{}, nil).
+func (f *UserRolesFakeStorer) AssignUserRoleTx(ctx context.Context, in userroles.AssignRoleTxInput) (userroles.UserRole, error) {
+	if f.AssignUserRoleTxFn != nil {
+		return f.AssignUserRoleTxFn(ctx, in)
+	}
+	return userroles.UserRole{}, nil
+}
+
+// RemoveUserRole delegates to RemoveUserRoleFn if set.
+// Default: returns nil.
+func (f *UserRolesFakeStorer) RemoveUserRole(ctx context.Context, userID [16]byte, actingUserID string) error {
+	if f.RemoveUserRoleFn != nil {
+		return f.RemoveUserRoleFn(ctx, userID, actingUserID)
+	}
+	return nil
 }

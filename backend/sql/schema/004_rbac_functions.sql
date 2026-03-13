@@ -507,26 +507,29 @@ CREATE TRIGGER trg_validate_user_permission_expiry
  */
 CREATE OR REPLACE FUNCTION fn_prevent_orphaned_owner()
 RETURNS TRIGGER
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql AS $func$
 BEGIN
  -- Escape hatch for test fixtures and seeding scripts only.
  -- Mirrors the same bypass used in fn_prevent_privilege_escalation and
  -- fn_prevent_owner_role_escalation. Must never be set to '1' in production.
  IF current_setting('rbac.skip_orphan_check', TRUE) = '1' THEN
- RETURN OLD;
+  RETURN CASE TG_OP WHEN 'DELETE' THEN OLD ELSE NEW END;
  END IF;
 
  -- PG forbids subqueries in WHEN clauses; early-exit for non-owner rows.
+ -- IMPORTANT: return NEW (not OLD) for UPDATE so the role_id change is not reverted.
+ -- Returning OLD from a BEFORE UPDATE trigger overwrites NEW with OLD, silently
+ -- reverting the role_id change without raising an error.
  IF NOT EXISTS (
  SELECT 1 FROM roles WHERE id = OLD.role_id AND is_owner_role = TRUE AND is_active = TRUE) THEN
- RETURN OLD;
+  RETURN CASE TG_OP WHEN 'DELETE' THEN OLD ELSE NEW END;
  END IF;
 
  -- Lock ALL remaining owner rows to serialise concurrent removal attempts.
  -- PERFORM acquires the FOR UPDATE locks without COUNT aggregation overhead,
  -- and stops only after visiting every qualifying row (no LIMIT) so that all
  -- concurrent owner-removal transactions are fully serialised.
- -- NOT FOUND → no remaining owners → reject the removal.
+ -- NOT FOUND -> no remaining owners -> reject the removal.
  PERFORM 1
  FROM user_roles ur
  JOIN roles r ON r.id = ur.role_id
@@ -543,9 +546,9 @@ BEGIN
  USING ERRCODE = 'integrity_constraint_violation';
  END IF;
 
- RETURN OLD;
+ RETURN CASE TG_OP WHEN 'DELETE' THEN OLD ELSE NEW END;
 END;
-$$;
+$func$;
 
 COMMENT ON FUNCTION fn_prevent_orphaned_owner() IS
  'Prevents deletion or reassignment of the last active owner-role assignment. '

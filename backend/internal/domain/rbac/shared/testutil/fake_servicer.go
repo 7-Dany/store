@@ -8,6 +8,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/roles"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/userroles"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -165,6 +166,55 @@ func (f *RolesFakeServicer) AddRolePermission(ctx context.Context, roleID string
 func (f *RolesFakeServicer) RemoveRolePermission(ctx context.Context, roleID, permID, actingUserID string) error {
 	if f.RemoveRolePermissionFn != nil {
 		return f.RemoveRolePermissionFn(ctx, roleID, permID, actingUserID)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UserRolesFakeServicer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// UserRolesFakeServicer is a hand-written implementation of userroles.Servicer
+// for handler unit tests. Set the Fn fields to control responses; leave nil
+// to return safe defaults.
+//
+// Defaults:
+//
+//	GetUserRoleFn → (UserRole{RoleName: "admin"}, nil)
+//	AssignRoleFn  → (UserRole{}, nil)
+//	RemoveRoleFn  → nil
+type UserRolesFakeServicer struct {
+	GetUserRoleFn func(ctx context.Context, targetUserID string) (userroles.UserRole, error)
+	AssignRoleFn  func(ctx context.Context, targetUserID, actingUserID string, in userroles.AssignRoleInput) (userroles.UserRole, error)
+	RemoveRoleFn  func(ctx context.Context, targetUserID, actingUserID string) error
+}
+
+// compile-time interface check.
+var _ userroles.Servicer = (*UserRolesFakeServicer)(nil)
+
+// GetUserRole delegates to GetUserRoleFn if set.
+// Default: returns (UserRole{RoleName: "admin"}, nil).
+func (f *UserRolesFakeServicer) GetUserRole(ctx context.Context, targetUserID string) (userroles.UserRole, error) {
+	if f.GetUserRoleFn != nil {
+		return f.GetUserRoleFn(ctx, targetUserID)
+	}
+	return userroles.UserRole{RoleName: "admin"}, nil
+}
+
+// AssignRole delegates to AssignRoleFn if set.
+// Default: returns (UserRole{}, nil).
+func (f *UserRolesFakeServicer) AssignRole(ctx context.Context, targetUserID, actingUserID string, in userroles.AssignRoleInput) (userroles.UserRole, error) {
+	if f.AssignRoleFn != nil {
+		return f.AssignRoleFn(ctx, targetUserID, actingUserID, in)
+	}
+	return userroles.UserRole{}, nil
+}
+
+// RemoveRole delegates to RemoveRoleFn if set.
+// Default: returns nil.
+func (f *UserRolesFakeServicer) RemoveRole(ctx context.Context, targetUserID, actingUserID string) error {
+	if f.RemoveRoleFn != nil {
+		return f.RemoveRoleFn(ctx, targetUserID, actingUserID)
 	}
 	return nil
 }

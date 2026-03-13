@@ -181,7 +181,61 @@ Check that:
 
 ## Step 5 — Assign the role to users
 
-With the role ready, assign it to the appropriate users through the user management endpoints. Each user holds exactly one role at a time — assigning a new role replaces the previous one. Users inherit all the permissions of the role they are assigned.
+With the role ready, use [`PUT /admin/rbac/users/{user_id}/role`](/api-reference/rbac/user-roles/assign-role) to assign it to the appropriate users.
+
+Each user holds **exactly one role** at a time. Assigning a new role replaces the previous one in a single operation — there is no intermediate state. The user immediately inherits all the permissions of their new role.
+
+### Permanent vs temporary assignments
+
+Omit `expires_at` for a permanent grant. The user retains the role until it is explicitly changed or removed.
+
+```json
+{
+  "role_id": "<role uuid>",
+  "granted_reason": "Permanent assignment for full-time order support staff."
+}
+```
+
+Supply `expires_at` to create a temporary grant. The role stops being active the moment the timestamp passes — the user is treated as having no role until a new assignment is made.
+
+```json
+{
+  "role_id": "<role uuid>",
+  "granted_reason": "Covering for primary manager during leave — expires end of month.",
+  "expires_at": "2024-07-31T23:59:59Z"
+}
+```
+
+Temporary grants must expire between **5 minutes** and **90 days** from the time of the request. Values outside that range are rejected with `422`.
+
+### Restrictions to be aware of
+
+- **You cannot modify your own role.** Attempting to assign or remove a role for your own user ID returns `409 cannot_modify_own_role`.
+- **The owner role cannot be assigned through this endpoint.** If the target user already holds the owner role, the request is rejected with `409 cannot_reassign_owner`. The owner role is only assignable via the bootstrap endpoint.
+
+### Checking a user's current role
+
+Use [`GET /admin/rbac/users/{user_id}/role`](/api-reference/rbac/user-roles/get-user-role) to confirm what role a user currently holds, when it was granted, and whether it is temporary.
+
+```json
+{
+  "user_id": "018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c",
+  "role_id": "029f5d4b-2c3e-8a5f-0d1b-3e4f5a6b7c8d",
+  "role_name": "Order Support Agent",
+  "is_owner_role": false,
+  "granted_reason": "Permanent assignment for full-time order support staff.",
+  "granted_at": "2024-06-01T10:00:00Z",
+  "expires_at": null
+}
+```
+
+A `404 user_role_not_found` response means the user has no active role — either they were never assigned one, or a temporary assignment has expired.
+
+### Removing a role
+
+Use [`DELETE /admin/rbac/users/{user_id}/role`](/api-reference/rbac/user-roles/remove-role) to remove a user's current role assignment. After removal the user has no role and will be denied access to any permission-guarded endpoint.
+
+The same restrictions apply: you cannot remove your own role, and you cannot remove the owner role through this endpoint. Additionally, the last active owner in the system cannot be removed — at least one owner must always exist.
 
 ---
 
@@ -196,3 +250,5 @@ A few practices that keep your permission setup manageable over time:
 **Review roles periodically.** As your team changes, some roles may accumulate permissions that are no longer needed. Use [`GET /admin/rbac/roles/{id}/permissions`](/api-reference/rbac/roles/list-role-permissions) to audit what each role can do and use [`DELETE /admin/rbac/roles/{id}/permissions/{perm_id}`](/api-reference/rbac/roles/remove-role-permission) to remove anything that no longer applies.
 
 **Don't modify system roles.** System roles are protected for a reason — they underpin core store behaviour. Build on top of them with custom roles instead.
+
+**Expired temporary roles leave users with no access.** There is no grace period — the moment a temporary assignment expires, the user is locked out. If you use temporary grants, have a process in place to renew or replace them before they lapse.

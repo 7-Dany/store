@@ -34,22 +34,29 @@ api: "POST http://localhost:8080/admin/rbac/roles/{id}/permissions"
 
 <ParamField body="granted_reason" type="string" required>
   A short explanation of why this permission is being granted. Used for auditing — make it clear and specific (e.g. `"Support team needs to view all orders"`).
+
+  <Expandable title="requirements">
+    - Cannot be empty or whitespace
+    - Maximum 500 characters
+  </Expandable>
 </ParamField>
 
 <ParamField body="conditions" type="object">
-  A JSON object that holds additional constraints for `conditional` access type grants. Defaults to `{}` when omitted.
+  A JSON object that holds additional constraints for `conditional` access type grants. Defaults to `{}` when omitted. Required to be non-empty when `access_type` is `conditional`.
 </ParamField>
 
 ## Behaviour
 
 Adds a permission grant to the role. The caller's identity is recorded alongside the grant for audit purposes. If `conditions` is not provided it defaults to an empty object (`{}`).
 
-Before calling this endpoint, read the permission's `capabilities` field from [`GET /admin/rbac/permissions`](/api-reference/rbac/permissions/list-permissions) to determine which `access_type` and `scope` values are valid. Passing values outside what the permission allows returns `422`.
+Before calling this endpoint, read the permission's `capabilities` field from [`GET /admin/rbac/permissions`](/api-reference/rbac/permissions/list-permissions) to determine which `access_type` and `scope` values are valid for that permission. Passing values outside what the permission allows returns `422`.
+
+If the permission is already granted to the role, the endpoint returns `409 grant_already_exists` rather than silently updating the grant. To change the `access_type` or `scope` of an existing grant, remove it first with [`DELETE /admin/rbac/roles/{id}/permissions/{perm_id}`](/api-reference/rbac/roles/remove-role-permission), then re-add it with the new values.
 
 To understand the full grant workflow, see the [Permission Setup Guide](/guides/rbac/permissions-setup-guide).
 
 <RequestExample>
-```json Example
+```json Direct grant
 {
   "permission_id": "019a1b2c-3d4e-5f60-a7b8-c9d0e1f2a3b4",
   "access_type": "direct",
@@ -57,10 +64,21 @@ To understand the full grant workflow, see the [Permission Setup Guide](/guides/
   "granted_reason": "Support team needs full read access to orders."
 }
 ```
+
+```json Conditional grant
+{
+  "permission_id": "019a1b2c-3d4e-5f60-a7b8-c9d0e1f2a3b4",
+  "access_type": "conditional",
+  "scope": "own",
+  "conditions": { "region": "EU" },
+  "granted_reason": "EU vendors may manage their own products within EU region constraints."
+}
+```
 </RequestExample>
 
 <ResponseExample>
 ```json 204
+// 204 No Content — empty body
 ```
 
 ```json 404
@@ -167,6 +185,14 @@ To understand the full grant workflow, see the [Permission Setup Guide](/guides/
     {
       "code": "validation_error",
       "message": "access_type must be one of: direct, conditional, request, denied"
+    }
+    ```
+
+    **`conditional_requires_conditions`** — `access_type` is `conditional` but `conditions` is empty or was not provided:
+    ```json
+    {
+      "code": "conditional_requires_conditions",
+      "message": "conditions must be non-empty when access_type is conditional"
     }
     ```
 

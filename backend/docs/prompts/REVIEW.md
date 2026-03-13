@@ -18,11 +18,20 @@ You are performing a deep review of the Go package at:
 1. `docs/RULES.md` — the authoritative source for every naming, layering,
    import, testing, and commenting convention in this codebase.
 2. Every `.go` file in `{PACKAGE_PATH}` (production and test files).
-3. `internal/domain/{feature}/shared/errors.go` — shared sentinel errors.
-4. `internal/domain/{feature}shared/store.go` — BaseStore helpers.
-5. `internal/domain/{feature}/shared/testutil/fake_storer.go` — FakeStorer catalogue.
-6. `internal/domain/{feature}/shared/testutil/querier_proxy.go` — QuerierProxy catalogue.
-7. `internal/domain/{feature}/shared/testutil/builders.go` — test helpers.
+3. Domain `shared/errors.go` — shared sentinel errors (path depends on domain; see table below).
+4. Domain `shared/store.go` — BaseStore helpers.
+5. Domain `shared/testutil/fake_storer.go` — FakeStorer catalogue.
+6. Domain `shared/testutil/querier_proxy.go` — QuerierProxy catalogue.
+7. Domain `shared/testutil/builders.go` — test helpers.
+
+**Domain shared paths:**
+
+| Package path prefix | Shared path | Testutil package name |
+|---|---|---|
+| `internal/domain/auth/{feature}/` | `internal/domain/auth/shared/` | `authsharedtest` |
+| `internal/domain/profile/{feature}/` | `internal/domain/auth/shared/` (auth shared — profile has no own testutil) | `authsharedtest` |
+| `internal/domain/oauth/{provider}/` | `internal/domain/oauth/shared/` | `oauthsharedtest` |
+| `internal/domain/rbac/{feature}/` | `internal/domain/rbac/shared/` | `rbacsharedtest` |
 
 Produce **exactly four parts**, in order, with no extra sections.
 
@@ -140,6 +149,16 @@ abstraction or hand-rolls an alternative:
 | Rate limiting | `platform/ratelimit` limiters | |
 | Key-value / blocklist | `platform/kvstore` | |
 | Email delivery | `platform/mailer` | |
+| RBAC permission check | `deps.RBAC.Require(rbac.Perm*)` — never raw `db.CheckUserAccess` call | |
+| RBAC approval gate | `deps.RBAC.ApprovalGate(deps.ApprovalSubmitter)` when `access_type=request` possible | |
+| RBAC permission constant | `rbac.Perm*` constant — never a raw string literal | |
+
+**RBAC-specific checks (apply only to `internal/domain/rbac/` packages):**
+- `deps.JWTAuth` must come **before** `deps.RBAC.Require(...)` in every `r.With(...)` chain.
+- `ApprovalGate` must only be present on routes where the permission can realistically have `access_type = 'request'`.
+- `ConditionalEscalator` nil-check must be present in handler code if the `conditional` access path is possible.
+- No IP rate limiter on pure admin routes unless the design doc explicitly specifies one.
+- Routes must be mounted under `/admin/` sub-router (not at the `/api/v1/` root).
 
 For any cell marked as a violation, provide a finding entry in the same format
 as Part 2.
@@ -177,15 +196,19 @@ Rules for this checklist:
 - Apply all conventions from RULES.md §3.8 and §3.13 test checklist to every
   generated test name (suffix `_Integration`, `t.Parallel()`, no raw SQL, etc.).
 
-### Avoiding Redundant Tests: What `authshared` Already Guarantees
+### Avoiding Redundant Tests: What Shared Packages Already Guarantee
 
-Before adding a test in any **feature sub-package** (register, login, profile,
-password, session, unlock, verification), check whether the behaviour under
-test is already enforced by a function in `internal/domain/{feature}/shared`.
-Redundant tests slow the suite and create false confidence (two identical tests
-both pass even when the logic is broken in a third path).
+Before adding a test in any **feature sub-package**, check whether the behaviour
+under test is already enforced by a function in that domain's `shared/` package.
+Redundant tests slow the suite and create false confidence.
 
-**Do NOT re-test these in feature packages — they are fully covered in `{featureshared}`:**
+---
+
+#### `authshared` — `internal/domain/auth/shared/`
+
+Applies to: `auth/{feature}/`, `profile/{feature}/`
+
+**Do NOT re-test these — fully covered in `authshared`:**
 
 | Shared function | What is already tested |
 |---|---|
@@ -201,12 +224,41 @@ both pass even when the logic is broken in a third path).
 | `ErrTokenAlreadyConsumed` | same pointer as `ErrTokenAlreadyUsed` (`errors.Is` both ways). |
 | `ErrIdentifierTooLong` | used by `login/validators.go` to guard the identifier byte length; do not remove or re-declare it in the login package. |
 
-**What to test in feature packages instead:**
-- That the feature's *handler* or *service* calls `NormaliseEmail` /
-  `ValidatePassword` / etc. and maps the returned sentinel to the correct HTTP
-  status + error code. One test per sentinel is sufficient; do not repeat
-  boundary-value sub-cases.
-- That the feature's *store* correctly passes validated inputs to the DB and
-  handles DB-level errors (unique violations, no-rows, etc.).
-- Business rules that live exclusively in the feature (e.g. rate-limiting
-  cooldowns, token issuance TTL, specific audit event types).
+---
+
+#### `oauthshared` — `internal/domain/oauth/shared/`
+
+Applies to: `oauth/google/`, `oauth/telegram/`
+
+`oauthshared` is a thin struct-only package (`LoggedInSession`, `LinkedIdentity`).
+There are no shared business-logic functions to avoid re-testing here.
+
+**What to test in OAuth feature packages:**
+- Provider-specific HMAC / OIDC token verification logic.
+- Store methods: identity upsert, unlink, OAuth session creation.
+- Handler: correct response shape, cookie issuance, redirect URL construction.
+- Error mapping: provider errors → correct HTTP status + code string.
+
+---
+
+#### `rbacshared` — `internal/domain/rbac/shared/`
+
+Applies to: `rbac/bootstrap/`, `rbac/permissions/`, `rbac/roles/`, `rbac/userroles/`
+
+`rbacshared` exposes only `ErrUserNotFound`. There are no shared validation or
+crypto functions to avoid re-testing here.
+
+**What to test in RBAC feature packages:**
+- Permission constant routing: correct `rbac.Perm*` constant used per route.
+- Handler RBAC guard: missing permission → 403 (use `HasPermissionInContext` test hook to inject).
+- Handler owner bypass: `IsOwner=true` injected → expected success status.
+- Store methods: query results mapped to correct models; `pgtype` does not leak past store boundary.
+- Service guard ordering matches the design doc exactly.
+- `ApprovalGate` path: `access_type=request` AccessResult in context → 202 with `request_id`.
+
+---
+
+**What to test in any feature package (applies to all domains):**
+- That the feature's *handler* or *service* calls shared validators and maps the returned sentinel to the correct HTTP status + error code. One test per sentinel is sufficient; do not repeat boundary-value sub-cases.
+- That the feature's *store* correctly passes validated inputs to the DB and handles DB-level errors (unique violations, no-rows, etc.).
+- Business rules that live exclusively in the feature (rate-limiting cooldowns, token issuance TTL, specific audit event types).

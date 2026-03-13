@@ -37,6 +37,10 @@ type QuerierProxy struct {
 	FailGetPermissionGroups       bool
 	FailGetPermissionGroupMembers bool
 
+	// ── user roles ────────────────────────────────────────────────────────────
+	FailGetUserRole    bool
+	FailRemoveUserRole bool
+
 	// ── roles ─────────────────────────────────────────────────────────────────
 	FailGetRoles             bool
 	FailGetRoleByID          bool
@@ -171,6 +175,20 @@ func (p *QuerierProxy) RemoveRolePermission(ctx context.Context, arg db.RemoveRo
 		return 0, ErrProxy
 	}
 	return p.Querier.RemoveRolePermission(ctx, arg)
+}
+
+func (p *QuerierProxy) GetUserRole(ctx context.Context, userID pgtype.UUID) (db.GetUserRoleRow, error) {
+	if p.FailGetUserRole {
+		return db.GetUserRoleRow{}, ErrProxy
+	}
+	return p.Querier.GetUserRole(ctx, userID)
+}
+
+func (p *QuerierProxy) RemoveUserRole(ctx context.Context, userID pgtype.UUID) (int64, error) {
+	if p.FailRemoveUserRole {
+		return 0, ErrProxy
+	}
+	return p.Querier.RemoveUserRole(ctx, userID)
 }
 
 func (p *QuerierProxy) SetActingUser(ctx context.Context, userID string) error {

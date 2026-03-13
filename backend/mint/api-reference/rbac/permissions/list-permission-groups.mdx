@@ -11,7 +11,7 @@ api: "GET http://localhost:8080/api/v1/admin/permissions/groups"
 
 **Ordered by display_order** — Groups are returned in ascending `display_order` so they can be rendered directly without client-side sorting.
 
-**Members are embedded** — Each group includes its member permissions inline in the same shape as the objects returned by [`GET /admin/permissions`](/api-reference/rbac/permissions/list-permissions). No secondary request is needed to resolve group members.
+**Members are embedded** — Each group includes its member permissions inline in the same shape as the objects returned by [`GET /admin/permissions`](/api-reference/rbac/permissions/list-permissions), including the `capabilities` field. No secondary request is needed to resolve group members.
 
 **Always returns arrays** — Both the `groups` key and each group's `members` key are always present. An empty catalogue returns `[]` rather than `null` for both.
 
@@ -34,8 +34,12 @@ api: "GET http://localhost:8080/api/v1/admin/permissions/groups"
           "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5c",
           "canonical_name": "rbac:read",
           "resource_type": "rbac",
-          "name": "RBAC Read",
-          "description": "View roles, permissions, and user role assignments."
+          "name": "read",
+          "description": "List roles, permissions, user assignments, and audit logs.",
+          "capabilities": {
+            "scope_policy": "none",
+            "access_types": ["direct", "denied"]
+          }
         }
       ]
     }
@@ -62,7 +66,7 @@ api: "GET http://localhost:8080/api/v1/admin/permissions/groups"
 
 <AccordionGroup>
   <Accordion title="200 — OK">
-    Returns all active groups ordered by `display_order`. Each group embeds its member permissions in the same shape as [`GET /admin/permissions`](/api-reference/rbac/permissions/list-permissions). Optional fields (`display_label`, `icon`, `color_hex`) are omitted when empty. The `groups` and `members` arrays are always present — an empty catalogue returns `[]` rather than `null`.
+    Returns all active groups ordered by `display_order`. Each group embeds its member permissions in the same shape as [`GET /admin/permissions`](/api-reference/rbac/permissions/list-permissions), including `capabilities`. Optional fields (`display_label`, `icon`, `color_hex`) are omitted when empty. The `groups` and `members` arrays are always present — an empty catalogue returns `[]` rather than `null`.
 
     ```json
     {
@@ -80,8 +84,12 @@ api: "GET http://localhost:8080/api/v1/admin/permissions/groups"
               "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5c",
               "canonical_name": "rbac:read",
               "resource_type": "rbac",
-              "name": "RBAC Read",
-              "description": "View roles, permissions, and user role assignments."
+              "name": "read",
+              "description": "List roles, permissions, user assignments, and audit logs.",
+              "capabilities": {
+                "scope_policy": "none",
+                "access_types": ["direct", "denied"]
+              }
             }
           ]
         }

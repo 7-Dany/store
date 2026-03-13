@@ -33,6 +33,13 @@ func RandomUUID() [16]byte {
 	return [16]byte(uuid.New())
 }
 
+// ShortID returns the first 8 hex characters of a new random UUID.
+// Useful for generating unique name suffixes in integration tests.
+func ShortID() string {
+	id := uuid.New()
+	return fmt.Sprintf("%x", id[0:4])
+}
+
 // ─── Email helpers ────────────────────────────────────────────────────────────
 
 // NewEmail returns a unique email address for the current test run.

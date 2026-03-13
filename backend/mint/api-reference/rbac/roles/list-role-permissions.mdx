@@ -1,0 +1,140 @@
+---
+title: "List Role Permissions"
+description: "Returns all permissions currently assigned to a role."
+api: "GET http://localhost:8080/admin/rbac/roles/{id}/permissions"
+---
+
+<ParamField path="id" type="string" required>
+  The UUID of the role whose permissions you want to retrieve.
+</ParamField>
+
+## Behaviour
+
+Returns the full list of permission grants for the given role, including each permission's `access_type`, `scope`, and any `conditions` attached to the grant. The role must exist — a valid UUID that references no role returns `404`.
+
+**`scope` is always `"all"` for non-scoped permissions** — Permissions with `scope_policy: "none"` (most admin permissions) have their `scope` normalised to `"all"` at write time. This is a storage convention and does not mean the grantee can act on all resources — for these permissions, scope simply has no meaning.
+
+<RequestExample>
+```bash Example
+curl -X GET http://localhost:8080/admin/rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c/permissions \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "permissions": [
+    {
+      "permission_id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+      "canonical_name": "rbac:read",
+      "resource_type": "rbac",
+      "name": "read",
+      "access_type": "direct",
+      "scope": "all",
+      "conditions": {},
+      "granted_at": "2024-06-01T12:00:00Z"
+    },
+    {
+      "permission_id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5c",
+      "canonical_name": "product:manage",
+      "resource_type": "product",
+      "name": "manage",
+      "access_type": "conditional",
+      "scope": "own",
+      "conditions": { "region": "EU" },
+      "granted_at": "2024-06-02T09:30:00Z"
+    }
+  ]
+}
+```
+
+```json 404
+{
+  "code": "role_not_found",
+  "message": "role not found"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    Returns the list of permission grants for the role, ordered by `canonical_name`. The array is empty (`[]`) if no permissions have been assigned yet.
+
+    Each grant object contains:
+
+    | Field | Description |
+    |---|---|
+    | `permission_id` | UUID of the permission definition |
+    | `canonical_name` | `resource_type:name`, e.g. `rbac:read` |
+    | `resource_type` | Resource domain (e.g. `rbac`, `user`, `product`) |
+    | `name` | Action verb (e.g. `read`, `manage`, `configure`) |
+    | `access_type` | How the middleware applies this grant: `direct`, `conditional`, `request`, or `denied` |
+    | `scope` | Resource visibility: `own` or `all`. Always `"all"` for permissions with `scope_policy: "none"` (normalised at write time). |
+    | `conditions` | ABAC conditions object. `{}` for non-conditional grants. |
+    | `granted_at` | ISO 8601 timestamp when the grant was created. |
+
+    ```json
+    {
+      "permissions": [
+        {
+          "permission_id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+          "canonical_name": "rbac:read",
+          "resource_type": "rbac",
+          "name": "read",
+          "access_type": "direct",
+          "scope": "all",
+          "conditions": {},
+          "granted_at": "2024-06-01T12:00:00Z"
+        }
+      ]
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `rbac:read` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    No role exists with the given ID, or the ID is not a valid UUID.
+
+    ```json
+    {
+      "code": "role_not_found",
+      "message": "role not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,1714 @@
+{
+  "info": {
+    "_postman_id": "rbac-roles-e2e",
+    "name": "RBAC – Roles (/admin/rbac/roles)",
+    "description": "E2E tests for the roles CRUD API and role-permission grant management.\n\nRoutes covered:\n  GET    /api/v1/admin/rbac/roles\n  POST   /api/v1/admin/rbac/roles\n  GET    /api/v1/admin/rbac/roles/{id}\n  PATCH  /api/v1/admin/rbac/roles/{id}\n  DELETE /api/v1/admin/rbac/roles/{id}\n  GET    /api/v1/admin/rbac/roles/{id}/permissions\n  POST   /api/v1/admin/rbac/roles/{id}/permissions\n  DELETE /api/v1/admin/rbac/roles/{id}/permissions/{perm_id}\n\nFolder execution order (orchestrated by make e2e-rbac):\n  1. setup            — register + Gmail OTP + verify-email + login\n                        (captures roles_access_token — plain user, no RBAC permissions yet)\n  2. auth-guard       — 401 on GET /roles and POST /roles with no Authorization header\n  3. rbac-guard       — 403 on rbac:read and rbac:manage routes with valid JWT but no permissions\n  4. owner-bootstrap  — POST /owner/bootstrap promotes the test user to owner\n                        (owner role grants rbac:read + rbac:manage; RBAC middleware reads DB\n                        per request — no re-login needed; the same token becomes effective)\n  5. happy-path       — full CRUD flow: list → create → get → update → list-perms →\n                        add-perm → list-perms-after → remove-perm → delete role\n  6. not-found        — 404 cases for all routes that accept an {id} URL param\n  7. validation       — 422/400/413 input-error cases for POST and PATCH routes\n  8. immutable-guard  — 409 when attempting to update or delete a system role\n\nGuard order (handler):\n  GET    routes: JWTAuth → RBAC.Require(rbac:read)   → handler\n  mutate routes: JWTAuth → RBAC.Require(rbac:manage) → handler\n\nThe admin router applies AllowContentType(\"application/json\") before JWTAuth, so POST/PATCH\nrequests in auth-guard must carry Content-Type: application/json to reach the 401 guard.\n\nEnvironment variables required:\n  bootstrap_secret   — must match BOOTSTRAP_SECRET in the running server's .env\n  gmail_test_email   — Gmail address for OTP receipt\n  gmail_access_token — OAuth2 token for Gmail API reads\n\nNotes on what is NOT covered here (covered by unit tests):\n  - DB / store errors → 500                    — handler_test.go, service_test.go\n  - UUID parse failure → ErrRoleNotFound       — service_test.go (invalid UUID string)\n  - Conditions JSON default '{}' applied        — service_test.go\n  - nil roles marshals as [] not null           — handler_test.go\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before each suite run.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Increment the request sequence counter and derive a unique X-Forwarded-For IP",
+          "// for every request so admin-route requests never collide on any shared bucket.",
+          "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.' + ((n>>16)&0xff) + '.' + ((n>>8)&0xff) + '.' + (n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Registers the gmail_test_email user, fetches the OTP via Gmail API, verifies email, and logs in. Captures roles_access_token (plain user — no RBAC permissions yet). This same token is reused for rbac-guard (→ 403) and, after owner-bootstrap promotes the user, for all subsequent folders (→ 200/201/204). The RBAC middleware reads permissions from DB on each request so no re-login is needed after bootstrap.",
+      "item": [
+        {
+          "name": "POST /register → 201 (setup roles user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) {",
+                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
+                  "}",
+                  "pm.collectionVariables.set('roles_email', email);",
+                  "pm.collectionVariables.set('roles_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "console.log('[INFO] Done waiting. Querying Gmail API (async)...');",
+                  "",
+                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email found in Gmail.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode email body.'); return; }",
+                  "        const match = body.match(/(?<!#)\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in email body.'); return; }",
+                  "        pm.collectionVariables.set('roles_code', match[1]);",
+                  "        console.log('[INFO] OTP stored in collection variable \"roles_code\":', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"RolesUser\", \"email\": \"{{roles_email}}\", \"password\": \"{{roles_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verify-email → 200 (consume OTP)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('roles_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] collection variable \"roles_code\" is empty — Gmail fetch did not complete.');",
+                  "    console.error('        Check: gmail_access_token is set and not expired, --delay-request >= 8000.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{roles_email}}\", \"code\": \"{{roles_code}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verify-email"]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (capture roles_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('roles_access_token', body.access_token);",
+                  "console.log('[INFO] Captured roles_access_token (plain user — no RBAC permissions yet).');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{roles_email}}\", \"password\": \"{{roles_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth-guard",
+      "description": "Verifies that the JWTAuth middleware rejects requests with no Authorization header before RBAC or handler logic is reached. Tests a representative read route (GET /roles) and a representative mutate route (POST /roles). POST carries Content-Type: application/json so the AllowContentType router middleware passes before JWTAuth fires.",
+      "item": [
+        {
+          "name": "GET /rbac/roles — no Authorization → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// JWTAuth fires before RBAC.Require — no token means 401 before any handler logic.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles — no Authorization → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// AllowContentType passes (Content-Type: application/json present).",
+                  "// JWTAuth fires next — no token → 401 before RBAC or body decode.",
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"any\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /rbac/roles/{id}/permissions/{perm_id} — no Authorization → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions/00000000-0000-0000-0000-000000000002",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions", "00000000-0000-0000-0000-000000000002"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rbac-guard",
+      "description": "Verifies that RBAC.Require rejects a valid JWT belonging to a plain user with no rbac:read or rbac:manage permission. The JWT is valid (from setup/login) but the user has not yet been bootstrapped as owner. Must return 403 before the handler is called. owner-bootstrap runs after this folder.",
+      "item": [
+        {
+          "name": "GET /rbac/roles — valid JWT, no rbac:read → 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// JWTAuth passes. RBAC.Require(rbac:read) fires next — user has no owner role → 403.",
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('code is forbidden', () => pm.expect(pm.response.json().code).to.eql('forbidden'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles — valid JWT, no rbac:manage → 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// JWTAuth passes. RBAC.Require(rbac:manage) fires next → 403 before body decode.",
+                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
+                  "pm.test('code is forbidden', () => pm.expect(pm.response.json().code).to.eql('forbidden'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"any\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "owner-bootstrap",
+      "description": "Promotes the setup user to owner by calling POST /owner/bootstrap with the correct bootstrap_secret. The owner role carries all permissions including rbac:read and rbac:manage. RBAC.Require reads the DB on every request — no re-login is needed; the existing roles_access_token is sufficient for all subsequent requests.",
+      "item": [
+        {
+          "name": "POST /owner/bootstrap → 201 (grant owner role to roles user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const token = pm.collectionVariables.get('roles_access_token');",
+                  "if (!token) {",
+                  "    console.error('[ERROR] roles_access_token not set — setup/POST /login did not complete.');",
+                  "}",
+                  "const secret = pm.environment.get('bootstrap_secret');",
+                  "if (!secret) {",
+                  "    console.error('[ERROR] bootstrap_secret not set in environment — add it to environment.json.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('role_name is owner', () => pm.expect(pm.response.json().role_name).to.eql('owner'));",
+                  "console.log('[INFO] roles user is now owner — RBAC.Require(rbac:read) and RBAC.Require(rbac:manage) will pass on subsequent requests.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "owner", "bootstrap"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path",
+      "description": "Full CRUD flow authenticated as owner (rbac:read + rbac:manage granted by owner-bootstrap).\n\nExecution order:\n  1. GET /admin/permissions            — capture roles_perm_id for the AddRolePermission step\n  2. GET /rbac/roles                   — assert non-empty list; capture roles_system_role_id\n  3. POST /rbac/roles                  — create test role; capture roles_role_id\n  4. GET /rbac/roles/{id}              — assert created role shape\n  5. PATCH /rbac/roles/{id}            — update name + description\n  6. GET /rbac/roles/{id}/permissions  — assert empty list before adding\n  7. POST /rbac/roles/{id}/permissions — add a permission grant → 204\n  8. GET /rbac/roles/{id}/permissions  — assert list now contains one entry; capture roles_grant_perm_id\n  9. DELETE /rbac/roles/{id}/permissions/{perm_id} — remove the grant → 204\n  10. DELETE /rbac/roles/{id}          — delete the test role → 204",
+      "item": [
+        {
+          "name": "GET /admin/permissions → 200 (capture roles_perm_id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('permissions array is non-empty', () => {",
+                  "    pm.expect(body.permissions).to.be.an('array').and.have.length.above(0);",
+                  "});",
+                  "// Capture the first permission ID for use in the AddRolePermission step.",
+                  "pm.collectionVariables.set('roles_perm_id', body.permissions[0].id);",
+                  "console.log('[INFO] Captured roles_perm_id:', body.permissions[0].id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "GET /rbac/roles → 200 (list includes seeded roles; capture system role id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "pm.test('Content-Type is application/json', () => {",
+                  "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "",
+                  "pm.test('top-level key is roles array', () => {",
+                  "    pm.expect(body.roles).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('roles list is non-empty (seed data present)', () => {",
+                  "    pm.expect(body.roles.length).to.be.greaterThan(0);",
+                  "});",
+                  "",
+                  "pm.test('each role has id, name, is_system_role, is_owner_role, is_active, created_at', () => {",
+                  "    body.roles.forEach((r, i) => {",
+                  "        pm.expect(r, `roles[${i}].id`).to.have.property('id').that.is.a('string').and.not.empty;",
+                  "        pm.expect(r, `roles[${i}].name`).to.have.property('name').that.is.a('string').and.not.empty;",
+                  "        pm.expect(r, `roles[${i}].is_system_role`).to.have.property('is_system_role').that.is.a('boolean');",
+                  "        pm.expect(r, `roles[${i}].is_owner_role`).to.have.property('is_owner_role').that.is.a('boolean');",
+                  "        pm.expect(r, `roles[${i}].is_active`).to.have.property('is_active').that.is.a('boolean');",
+                  "        pm.expect(r, `roles[${i}].created_at`).to.have.property('created_at').that.is.a('string').and.not.empty;",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('owner role is present in the list', () => {",
+                  "    const found = body.roles.some(r => r.is_owner_role === true);",
+                  "    pm.expect(found, 'no role with is_owner_role=true in list').to.be.true;",
+                  "});",
+                  "",
+                  "// Capture the first system role ID for the immutable-guard folder.",
+                  "const systemRole = body.roles.find(r => r.is_system_role === true);",
+                  "if (systemRole) {",
+                  "    pm.collectionVariables.set('roles_system_role_id', systemRole.id);",
+                  "    console.log('[INFO] Captured roles_system_role_id:', systemRole.id);",
+                  "} else {",
+                  "    console.warn('[WARN] No system role found in list — immutable-guard tests will be skipped.');",
+                  "}",
+                  "",
+                  "pm.test('no Set-Cookie header', () => {",
+                  "    const sc = pm.response.headers.get('Set-Cookie') || '';",
+                  "    pm.expect(sc).to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles → 201 (create test role; capture roles_role_id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "",
+                  "pm.test('Content-Type is application/json', () => {",
+                  "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "",
+                  "pm.test('id is a UUID string', () => {",
+                  "    pm.expect(body.id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);",
+                  "});",
+                  "",
+                  "pm.test('name matches request', () => {",
+                  "    pm.expect(body.name).to.eql('e2e-test-role');",
+                  "});",
+                  "",
+                  "pm.test('description matches request', () => {",
+                  "    pm.expect(body.description).to.eql('Created by E2E test suite');",
+                  "});",
+                  "",
+                  "pm.test('is_system_role is false', () => { pm.expect(body.is_system_role).to.be.false; });",
+                  "pm.test('is_owner_role is false', () => { pm.expect(body.is_owner_role).to.be.false; });",
+                  "pm.test('is_active is true', () => { pm.expect(body.is_active).to.be.true; });",
+                  "",
+                  "pm.test('created_at is a parseable date', () => {",
+                  "    pm.expect(isNaN(new Date(body.created_at).getTime())).to.be.false;",
+                  "});",
+                  "",
+                  "pm.test('no Set-Cookie header', () => {",
+                  "    pm.expect(pm.response.headers.get('Set-Cookie') || '').to.be.empty;",
+                  "});",
+                  "",
+                  "pm.collectionVariables.set('roles_role_id', body.id);",
+                  "console.log('[INFO] Captured roles_role_id:', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"e2e-test-role\", \"description\": \"Created by E2E test suite\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        },
+        {
+          "name": "GET /rbac/roles/{id} → 200 (get the created role)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const id = pm.collectionVariables.get('roles_role_id');",
+                  "if (!id) { console.error('[ERROR] roles_role_id not set — POST /rbac/roles did not complete.'); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const body = pm.response.json();",
+                  "const expectedID = pm.collectionVariables.get('roles_role_id');",
+                  "",
+                  "pm.test('id matches roles_role_id', () => { pm.expect(body.id).to.eql(expectedID); });",
+                  "pm.test('name is e2e-test-role', () => { pm.expect(body.name).to.eql('e2e-test-role'); });",
+                  "pm.test('is_system_role is false', () => { pm.expect(body.is_system_role).to.be.false; });",
+                  "pm.test('is_active is true', () => { pm.expect(body.is_active).to.be.true; });",
+                  "pm.test('no Set-Cookie header', () => {",
+                  "    pm.expect(pm.response.headers.get('Set-Cookie') || '').to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}"]
+            }
+          }
+        },
+        {
+          "name": "PATCH /rbac/roles/{id} → 200 (update name and description)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const body = pm.response.json();",
+                  "pm.test('id is unchanged', () => { pm.expect(body.id).to.eql(pm.collectionVariables.get('roles_role_id')); });",
+                  "pm.test('name is updated', () => { pm.expect(body.name).to.eql('e2e-test-role-updated'); });",
+                  "pm.test('description is updated', () => { pm.expect(body.description).to.eql('Updated by E2E test suite'); });",
+                  "pm.test('no Set-Cookie header', () => {",
+                  "    pm.expect(pm.response.headers.get('Set-Cookie') || '').to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"e2e-test-role-updated\", \"description\": \"Updated by E2E test suite\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}"]
+            }
+          }
+        },
+        {
+          "name": "GET /rbac/roles/{id}/permissions → 200 (empty before any grant)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('top-level key is permissions array', () => {",
+                  "    pm.expect(body.permissions).to.be.an('array');",
+                  "});",
+                  "pm.test('permissions list is empty (no grants yet)', () => {",
+                  "    pm.expect(body.permissions).to.have.lengthOf(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles/{id}/permissions → 204 (add permission grant)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const permID = pm.collectionVariables.get('roles_perm_id');",
+                  "if (!permID) {",
+                  "    console.error('[ERROR] roles_perm_id not set — GET /admin/permissions step did not complete.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 204 No Content — no body, no Set-Cookie.",
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                  "pm.test('no Set-Cookie header', () => {",
+                  "    pm.expect(pm.response.headers.get('Set-Cookie') || '').to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"permission_id\": \"{{roles_perm_id}}\", \"access_type\": \"direct\", \"scope\": \"all\", \"granted_reason\": \"E2E test grant\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "GET /rbac/roles/{id}/permissions → 200 (one entry after grant; capture roles_grant_perm_id)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "",
+                  "const body = pm.response.json();",
+                  "",
+                  "pm.test('permissions list has exactly one entry', () => {",
+                  "    pm.expect(body.permissions).to.be.an('array').and.have.lengthOf(1);",
+                  "});",
+                  "",
+                  "pm.test('permission entry has required fields', () => {",
+                  "    const p = body.permissions[0];",
+                  "    pm.expect(p.permission_id).to.be.a('string').and.not.empty;",
+                  "    pm.expect(p.canonical_name).to.be.a('string').and.not.empty;",
+                  "    pm.expect(p.resource_type).to.be.a('string').and.not.empty;",
+                  "    pm.expect(p.name).to.be.a('string').and.not.empty;",
+                  "    pm.expect(p.access_type).to.eql('direct');",
+                  "    pm.expect(p.scope).to.eql('all');",
+                  "    pm.expect(isNaN(new Date(p.granted_at).getTime())).to.be.false;",
+                  "});",
+                  "",
+                  "pm.test('permission_id matches roles_perm_id', () => {",
+                  "    pm.expect(body.permissions[0].permission_id).to.eql(pm.collectionVariables.get('roles_perm_id'));",
+                  "});",
+                  "",
+                  "// Capture permission_id for the subsequent RemoveRolePermission request.",
+                  "pm.collectionVariables.set('roles_grant_perm_id', body.permissions[0].permission_id);",
+                  "console.log('[INFO] Captured roles_grant_perm_id:', body.permissions[0].permission_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /rbac/roles/{id}/permissions/{perm_id} → 204 (remove the grant)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const permID = pm.collectionVariables.get('roles_grant_perm_id');",
+                  "if (!permID) {",
+                  "    console.error('[ERROR] roles_grant_perm_id not set — GET /permissions after grant did not complete.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                  "pm.test('no Set-Cookie header', () => {",
+                  "    pm.expect(pm.response.headers.get('Set-Cookie') || '').to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions/{{roles_grant_perm_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}", "permissions", "{{roles_grant_perm_id}}"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /rbac/roles/{id} → 204 (delete the test role)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                  "pm.test('no Set-Cookie header', () => {",
+                  "    pm.expect(pm.response.headers.get('Set-Cookie') || '').to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "not-found",
+      "description": "Verifies that routes accepting an {id} URL parameter return 404 with the correct code when the ID is a valid UUID that does not correspond to any row. Uses static UUIDs guaranteed not to exist after a clean DB run.",
+      "item": [
+        {
+          "name": "GET /rbac/roles/{id} — unknown role → 404 role_not_found",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code is role_not_found', () => pm.expect(pm.response.json().code).to.eql('role_not_found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001"]
+            }
+          }
+        },
+        {
+          "name": "PATCH /rbac/roles/{id} — unknown role → 404 role_not_found",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code is role_not_found', () => pm.expect(pm.response.json().code).to.eql('role_not_found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"ghost-role\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /rbac/roles/{id} — unknown role → 404 role_not_found",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code is role_not_found', () => pm.expect(pm.response.json().code).to.eql('role_not_found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001"]
+            }
+          }
+        },
+        {
+          "name": "GET /rbac/roles/{id}/permissions — unknown role → 404 role_not_found",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code is role_not_found', () => pm.expect(pm.response.json().code).to.eql('role_not_found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles/{id}/permissions — unknown role → 404 role_not_found",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code is role_not_found', () => pm.expect(pm.response.json().code).to.eql('role_not_found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"permission_id\": \"{{roles_perm_id}}\", \"access_type\": \"direct\", \"scope\": \"all\", \"granted_reason\": \"test\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles/{id}/permissions — valid role, unknown permission → 404 permission_not_found",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Create a temporary role so the service can proceed past the role-exists check",
+                  "// and reach the permission-exists check where it returns ErrPermissionNotFound.",
+                  "pm.sendRequest({",
+                  "    url: pm.variables.get('base_url') + '/api/v1/admin/rbac/roles',",
+                  "    method: 'POST',",
+                  "    header: {",
+                  "        'Content-Type': 'application/json',",
+                  "        'Authorization': 'Bearer ' + pm.collectionVariables.get('roles_access_token')",
+                  "    },",
+                  "    body: { mode: 'raw', raw: JSON.stringify({ name: 'e2e-perm-not-found-' + Date.now() }) }",
+                  "}, (err, res) => {",
+                  "    if (err || res.code !== 201) {",
+                  "        console.error('[ERROR] Could not create temp role:', err || res.code);",
+                  "        return;",
+                  "    }",
+                  "    pm.collectionVariables.set('roles_temp_role_id', res.json().id);",
+                  "    console.log('[INFO] Temp role created:', res.json().id);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code is permission_not_found', () => pm.expect(pm.response.json().code).to.eql('permission_not_found'));",
+                  "",
+                  "// Clean up the temporary role.",
+                  "const tempID = pm.collectionVariables.get('roles_temp_role_id');",
+                  "if (tempID) {",
+                  "    pm.sendRequest({",
+                  "        url: pm.variables.get('base_url') + '/api/v1/admin/rbac/roles/' + tempID,",
+                  "        method: 'DELETE',",
+                  "        header: { Authorization: 'Bearer ' + pm.collectionVariables.get('roles_access_token') }",
+                  "    }, (err) => { if (err) console.warn('[WARN] Temp role cleanup failed:', err); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"permission_id\": \"00000000-0000-0000-0000-000000000002\", \"access_type\": \"direct\", \"scope\": \"all\", \"granted_reason\": \"test\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_temp_role_id}}/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_temp_role_id}}", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /rbac/roles/{id}/permissions/{perm_id} — unknown grant → 404 role_permission_not_found",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 404', () => pm.response.to.have.status(404));",
+                  "pm.test('code is role_permission_not_found', () => pm.expect(pm.response.json().code).to.eql('role_permission_not_found'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions/00000000-0000-0000-0000-000000000002",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions", "00000000-0000-0000-0000-000000000002"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "validation",
+      "description": "Body decode and field validation cases for POST /rbac/roles, PATCH /rbac/roles/{id}, and POST /rbac/roles/{id}/permissions. All requests carry a valid JWT. Validation fires after RBAC.Require but before any service or DB call — no state is mutated.\n\nRules from validators.go:\n  createRole:        name required and trimmed; name <= 100 chars\n  updateRole:        at least one field (name or description) must be present; if name present, must be non-empty and <= 100 chars\n  addRolePermission: permission_id required; granted_reason required; access_type in {direct,conditional,request,denied}; scope in {own,all}; permission_id must be a valid UUID (handler rejects before service)",
+      "item": [
+        {
+          "name": "POST /rbac/roles — malformed JSON → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.eql('bad_request'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles — empty body → 422 (name absent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles — whitespace-only name → 422 (trimmed to empty)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// validateCreateRole trims name before checking emptiness.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"   \"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles — name > 100 chars → 422",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.request.body.update({",
+                  "    mode: 'raw',",
+                  "    raw: JSON.stringify({ name: 'a'.repeat(101) })",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"placeholder\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles — body > 1 MiB → 413",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const pad = 'x'.repeat(1024 * 1024 + 1);",
+                  "pm.request.body.update({ mode: 'raw', raw: JSON.stringify({ name: 'any', _pad: pad }) });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 413', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles"]
+            }
+          }
+        },
+        {
+          "name": "PATCH /rbac/roles/{id} — no fields → 422 (at least one required)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// validateUpdateRole: both Name and Description nil → ErrNoUpdateFields.",
+                  "// Validation fires before any DB call so the unknown UUID does not trigger 404.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001"]
+            }
+          }
+        },
+        {
+          "name": "PATCH /rbac/roles/{id} — empty name → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Name is explicitly set to empty string — fails ErrNameEmpty.",
+                  "// Validation fires before service so the unknown UUID does not trigger 404.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles/{id}/permissions — missing permission_id → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"access_type\": \"direct\", \"scope\": \"all\", \"granted_reason\": \"test\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles/{id}/permissions — missing granted_reason → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"permission_id\": \"{{roles_perm_id}}\", \"access_type\": \"direct\", \"scope\": \"all\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles/{id}/permissions — invalid access_type → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// access_type must be one of: direct, conditional, request, denied.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"permission_id\": \"{{roles_perm_id}}\", \"access_type\": \"superuser\", \"scope\": \"all\", \"granted_reason\": \"test\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles/{id}/permissions — invalid scope → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// scope must be one of: own, all.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"permission_id\": \"{{roles_perm_id}}\", \"access_type\": \"direct\", \"scope\": \"global\", \"granted_reason\": \"test\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+            }
+          }
+        },
+        {
+          "name": "POST /rbac/roles/{id}/permissions — invalid UUID permission_id → 422",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// uuid.Parse(req.PermissionID) fails — handler returns 422 before calling service.",
+                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
+                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"permission_id\": \"not-a-uuid\", \"access_type\": \"direct\", \"scope\": \"all\", \"granted_reason\": \"test\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "immutable-guard",
+      "description": "Verifies that rbac.ErrSystemRoleImmutable maps to 409 system_role_immutable when attempting to update or delete a system role. Uses roles_system_role_id captured during happy-path/GET /rbac/roles. Both requests are safe to repeat — the role is never mutated.",
+      "item": [
+        {
+          "name": "PATCH /rbac/roles/{system_role_id} → 409 system_role_immutable",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const id = pm.collectionVariables.get('roles_system_role_id');",
+                  "if (!id) {",
+                  "    console.warn('[WARN] roles_system_role_id not set — check happy-path/GET /rbac/roles captured a system role.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const id = pm.collectionVariables.get('roles_system_role_id');",
+                  "if (!id) { console.warn('[WARN] roles_system_role_id not set — test skipped.'); return; }",
+                  "",
+                  "// Service returns rbac.ErrSystemRoleImmutable → handler maps to 409.",
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is system_role_immutable', () => pm.expect(pm.response.json().code).to.eql('system_role_immutable'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\": \"hacked-system-role\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_system_role_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_system_role_id}}"]
+            }
+          }
+        },
+        {
+          "name": "DELETE /rbac/roles/{system_role_id} → 409 system_role_immutable",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const id = pm.collectionVariables.get('roles_system_role_id');",
+                  "if (!id) {",
+                  "    console.warn('[WARN] roles_system_role_id not set — skipping immutable DELETE test.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const id = pm.collectionVariables.get('roles_system_role_id');",
+                  "if (!id) { console.warn('[WARN] roles_system_role_id not set — test skipped.'); return; }",
+                  "",
+                  "pm.test('status is 409', () => pm.response.to.have.status(409));",
+                  "pm.test('code is system_role_immutable', () => pm.expect(pm.response.json().code).to.eql('system_role_immutable'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_system_role_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_system_role_id}}"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter used by the collection prerequest to generate unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current X-Forwarded-For value. Set to a unique IP by the collection prerequest."
+    },
+    {
+      "key": "roles_email",
+      "value": "",
+      "description": "Set from gmail_test_email. Used by setup/register, setup/verify-email, and setup/login."
+    },
+    {
+      "key": "roles_password",
+      "value": "",
+      "description": "Password for the roles test user. Set in setup/register prerequest."
+    },
+    {
+      "key": "roles_code",
+      "value": "",
+      "description": "6-digit OTP fetched asynchronously from Gmail during setup/register test script. Consumed by setup/verify-email."
+    },
+    {
+      "key": "roles_access_token",
+      "value": "",
+      "description": "JWT access_token from setup/login. Plain user before owner-bootstrap; owner after. The RBAC middleware reads permissions from DB on each request so this same token works for both rbac-guard (403) and happy-path (200/201/204) without re-issuing."
+    },
+    {
+      "key": "roles_perm_id",
+      "value": "",
+      "description": "Permission ID captured from GET /admin/permissions[0].id. Used as the permission_id argument to POST /rbac/roles/{id}/permissions in the happy-path and not-found folders."
+    },
+    {
+      "key": "roles_system_role_id",
+      "value": "",
+      "description": "ID of the first system role found in GET /rbac/roles. Used by the immutable-guard folder to assert 409 on PATCH and DELETE. Left empty if no system role is seeded."
+    },
+    {
+      "key": "roles_role_id",
+      "value": "",
+      "description": "ID of the test role created by POST /rbac/roles in the happy-path folder. Used for all subsequent happy-path operations and deleted at the end of the happy-path folder."
+    },
+    {
+      "key": "roles_grant_perm_id",
+      "value": "",
+      "description": "permission_id from the first entry in GET /rbac/roles/{id}/permissions after AddRolePermission. Used as the {perm_id} URL parameter for DELETE /rbac/roles/{id}/permissions/{perm_id}."
+    },
+    {
+      "key": "roles_temp_role_id",
+      "value": "",
+      "description": "Temporary role ID created inline during the not-found/permission_not_found test. Cleaned up in that test's post-script."
+    }
+  ]
+}

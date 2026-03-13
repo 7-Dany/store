@@ -1,0 +1,89 @@
+---
+title: "Remove Role Permission"
+description: "Removes a permission grant from a role."
+api: "DELETE http://localhost:8080/admin/rbac/roles/{id}/permissions/{perm_id}"
+---
+
+<ParamField path="id" type="string" required>
+  The UUID of the role.
+</ParamField>
+
+<ParamField path="perm_id" type="string" required>
+  The UUID of the permission to remove from the role.
+</ParamField>
+
+## Behaviour
+
+Removes the specific permission grant from the role. If the role or permission grant cannot be found — including when either ID is not a valid UUID — the endpoint returns `404`.
+
+<RequestExample>
+```bash Example
+curl -X DELETE \
+  http://localhost:8080/admin/rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c/permissions/019a1b2c-3d4e-5f60-a7b8-c9d0e1f2a3b4 \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+```
+
+```json 404
+{
+  "code": "role_permission_not_found",
+  "message": "role permission grant not found"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The permission was successfully removed from the role. No body is returned.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `rbac:manage` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    The permission grant was not found on this role, or one of the IDs is not a valid UUID.
+
+    ```json
+    {
+      "code": "role_permission_not_found",
+      "message": "role permission grant not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

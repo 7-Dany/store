@@ -15,6 +15,8 @@ api: "POST http://localhost:8080/api/v1/owner/bootstrap"
 
 **Prerequisites** — The calling user's account must be active and have a verified email address. Accounts that fail either check are rejected with `422` before the role assignment is attempted.
 
+**The owner assignment is protected** — Once bootstrapped, the owner is the only active owner in the system. This assignment cannot be removed as long as no other active owner exists. Transferring ownership to another user will be supported in a future endpoint.
+
 ## Rate Limiting
 
 **3 requests per 15 minutes per IP address**.

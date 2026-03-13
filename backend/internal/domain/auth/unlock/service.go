@@ -4,7 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
@@ -51,6 +54,8 @@ func NewService(store Storer, tokenTTL time.Duration) *Service {
 // (step 1) and the not-locked path (step 3) to equalise response latency
 // with the happy path, which calls GenerateCodeHash (bcrypt at cost 12).
 func (s *Service) RequestUnlock(ctx context.Context, in RequestUnlockInput) (authshared.OTPIssuanceResult, error) {
+	slog.DebugContext(ctx, "unlock.RequestUnlock: start", "email", in.Email, "ip", in.IPAddress)
+
 	// 1. Look up the account. Unknown email → silent no-op (anti-enumeration).
 	user, err := s.store.GetUserForUnlock(ctx, in.Email)
 	if err != nil {
@@ -59,6 +64,7 @@ func (s *Service) RequestUnlock(ctx context.Context, in RequestUnlockInput) (aut
 			// equalize response latency with the happy path, which calls GenerateCodeHash
 			// (bcrypt at cost 12).
 			_ = authshared.GetDummyOTPHash()
+			slog.DebugContext(ctx, "unlock.RequestUnlock: suppressed — email not found", "email", in.Email)
 			return authshared.OTPIssuanceResult{}, nil
 		}
 		return authshared.OTPIssuanceResult{}, fmt.Errorf("unlock.RequestUnlock: get user: %w", err)
@@ -68,6 +74,7 @@ func (s *Service) RequestUnlock(ctx context.Context, in RequestUnlockInput) (aut
 	// ownership of the email address (anti-enumeration: same silent no-op).
 	if !user.EmailVerified {
 		_ = authshared.GetDummyOTPHash()
+		slog.DebugContext(ctx, "unlock.RequestUnlock: suppressed — email not verified", "email", in.Email)
 		return authshared.OTPIssuanceResult{}, nil
 	}
 
@@ -76,6 +83,7 @@ func (s *Service) RequestUnlock(ctx context.Context, in RequestUnlockInput) (aut
 	// Anti-enumeration: same silent no-op as the other suppression paths.
 	if user.AdminLocked {
 		_ = authshared.GetDummyOTPHash()
+		slog.DebugContext(ctx, "unlock.RequestUnlock: suppressed — admin locked (not eligible for self-unlock)", "email", in.Email)
 		return authshared.OTPIssuanceResult{}, nil
 	}
 
@@ -87,6 +95,7 @@ func (s *Service) RequestUnlock(ctx context.Context, in RequestUnlockInput) (aut
 		// Without this, a caller who knows the email is registered can distinguish
 		// "not locked" (fast) from "locked" (slow) by timing the response.
 		_ = authshared.GetDummyOTPHash()
+		slog.DebugContext(ctx, "unlock.RequestUnlock: suppressed — account not locked", "email", in.Email)
 		return authshared.OTPIssuanceResult{}, nil
 	}
 
@@ -95,6 +104,7 @@ func (s *Service) RequestUnlock(ctx context.Context, in RequestUnlockInput) (aut
 	// from flooding the inbox with multiple simultaneous OTP emails.
 	_, err = s.store.GetUnlockToken(ctx, in.Email)
 	if err == nil {
+		slog.DebugContext(ctx, "unlock.RequestUnlock: suppressed — active token already exists", "email", in.Email)
 		return authshared.OTPIssuanceResult{}, nil
 	}
 	if !errors.Is(err, authshared.ErrTokenNotFound) {
@@ -120,6 +130,10 @@ func (s *Service) RequestUnlock(ctx context.Context, in RequestUnlockInput) (aut
 		return authshared.OTPIssuanceResult{}, fmt.Errorf("unlock.RequestUnlock: request unlock tx: %w", err)
 	}
 
+	slog.InfoContext(ctx, "unlock.RequestUnlock: OTP issued",
+		"user_id", uuid.UUID(user.ID).String(),
+		"email", in.Email,
+	)
 	return authshared.NewOTPIssuanceResult(user.ID, in.Email, raw), nil
 }
 
@@ -129,6 +143,7 @@ func (s *Service) RequestUnlock(ctx context.Context, in RequestUnlockInput) (aut
 // Anti-enumeration, attempt-increment, and dummy-hash latency equalisation are
 // handled by authshared.ConsumeOTPToken (ADR-005, ADR-006).
 func (s *Service) ConsumeUnlockToken(ctx context.Context, in ConfirmUnlockInput) error {
+	slog.DebugContext(ctx, "unlock.ConsumeUnlockToken: start", "email", in.Email, "ip", in.IPAddress)
 	return authshared.ConsumeOTPToken(
 		ctx,
 		in.Code,

@@ -14,9 +14,10 @@ import (
 )
 
 type Querier interface {
-	// ON CONFLICT DO NOTHING: idempotent — adding a permission the role already has is a no-op.
-	// To update access_type/scope on an existing grant, remove + re-add from the service layer.
-	AddRolePermission(ctx context.Context, arg AddRolePermissionParams) error
+	// ON CONFLICT (role_id, permission_id) DO NOTHING: returns 0 when the grant
+	// already exists. The service maps 0 rows → ErrGrantAlreadyExists → 409.
+	// To update access_type/scope on an existing grant, remove it first then re-add.
+	AddRolePermission(ctx context.Context, arg AddRolePermissionParams) (int64, error)
 	// Inserts or replaces a user's role assignment. ON CONFLICT targets the user_id
 	// PRIMARY KEY (one-role-per-user invariant). fn_prevent_owner_role_escalation fires
 	// as a DB backstop before each INSERT/UPDATE OF role_id.
@@ -227,6 +228,9 @@ type Querier interface {
 	// The consuming query (GetPasswordResetToken) uses FOR UPDATE separately.
 	GetPasswordResetTokenForVerify(ctx context.Context, email string) (GetPasswordResetTokenForVerifyRow, error)
 	GetPermissionByCanonicalName(ctx context.Context, canonicalName pgtype.Text) (GetPermissionByCanonicalNameRow, error)
+	// Returns the capability flags for a single permission by primary key.
+	// Used by AddRolePermission to validate access_type and scope before inserting.
+	GetPermissionByID(ctx context.Context, id pgtype.UUID) (GetPermissionByIDRow, error)
 	GetPermissionGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]GetPermissionGroupMembersRow, error)
 	GetPermissionGroups(ctx context.Context) ([]GetPermissionGroupsRow, error)
 	// ── Permissions ─────────────────────────────────────────────────────────────
@@ -480,6 +484,11 @@ type Querier interface {
 	// Stamps deleted_at = NOW() for the given active user.
 	// Returns deleted_at so the handler can compute scheduled_deletion_at = deleted_at + 30d.
 	ScheduleUserDeletion(ctx context.Context, userID pgtype.UUID) (*time.Time, error)
+	// Sets rbac.acting_user for the current transaction so audit triggers
+	// (fn_audit_role_permissions, etc.) record the correct deletion actor.
+	// set_config(name, value, is_local=true) is equivalent to SET LOCAL and
+	// accepts a parameterized value, unlike the SET statement.
+	SetActingUser(ctx context.Context, userID string) error
 	// Sets password_hash for an OAuth-only account that has no password yet.
 	// WHERE password_hash IS NULL is the DB-level concurrency guard:
 	// a concurrent set-password call that races past the service guard returns

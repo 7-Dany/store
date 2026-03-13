@@ -607,6 +607,71 @@ func AllPermissionScopeValues() []PermissionScope {
 	}
 }
 
+// Declares which scope values are valid when creating a grant for this permission. 'none' = scope field is not meaningful; 'any' = caller chooses own or all.
+type PermissionScopePolicy string
+
+const (
+	PermissionScopePolicyNone PermissionScopePolicy = "none"
+	PermissionScopePolicyOwn  PermissionScopePolicy = "own"
+	PermissionScopePolicyAll  PermissionScopePolicy = "all"
+	PermissionScopePolicyAny  PermissionScopePolicy = "any"
+)
+
+func (e *PermissionScopePolicy) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = PermissionScopePolicy(s)
+	case string:
+		*e = PermissionScopePolicy(s)
+	default:
+		return fmt.Errorf("unsupported scan type for PermissionScopePolicy: %T", src)
+	}
+	return nil
+}
+
+type NullPermissionScopePolicy struct {
+	PermissionScopePolicy PermissionScopePolicy `json:"permission_scope_policy"`
+	Valid                 bool                  `json:"valid"` // Valid is true if PermissionScopePolicy is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullPermissionScopePolicy) Scan(value interface{}) error {
+	if value == nil {
+		ns.PermissionScopePolicy, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.PermissionScopePolicy.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullPermissionScopePolicy) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.PermissionScopePolicy), nil
+}
+
+func (e PermissionScopePolicy) Valid() bool {
+	switch e {
+	case PermissionScopePolicyNone,
+		PermissionScopePolicyOwn,
+		PermissionScopePolicyAll,
+		PermissionScopePolicyAny:
+		return true
+	}
+	return false
+}
+
+func AllPermissionScopePolicyValues() []PermissionScopePolicy {
+	return []PermissionScopePolicy{
+		PermissionScopePolicyNone,
+		PermissionScopePolicyOwn,
+		PermissionScopePolicyAll,
+		PermissionScopePolicyAny,
+	}
+}
+
 // Request lifecycle states. Terminal: rejected, cancelled, completed, failed.
 type RequestStatusEnum string
 
@@ -967,10 +1032,13 @@ type Permission struct {
 	ResourceType string      `db:"resource_type" json:"resource_type"`
 	Description  pgtype.Text `db:"description" json:"description"`
 	// Generated: resource_type || ':' || name. Used for fast canonical-name lookups.
-	CanonicalName pgtype.Text `db:"canonical_name" json:"canonical_name"`
-	IsActive      bool        `db:"is_active" json:"is_active"`
-	CreatedAt     time.Time   `db:"created_at" json:"created_at"`
-	UpdatedAt     time.Time   `db:"updated_at" json:"updated_at"`
+	CanonicalName    pgtype.Text           `db:"canonical_name" json:"canonical_name"`
+	IsActive         bool                  `db:"is_active" json:"is_active"`
+	ScopePolicy      PermissionScopePolicy `db:"scope_policy" json:"scope_policy"`
+	AllowConditional bool                  `db:"allow_conditional" json:"allow_conditional"`
+	AllowRequest     bool                  `db:"allow_request" json:"allow_request"`
+	CreatedAt        time.Time             `db:"created_at" json:"created_at"`
+	UpdatedAt        time.Time             `db:"updated_at" json:"updated_at"`
 }
 
 // Per-permission rules defining valid ABAC conditions on grants. Structural checks enforced by DB trigger; value validation in app layer.
@@ -1060,7 +1128,7 @@ type RefreshToken struct {
 // Approval requests with flexible JSONB payloads and quorum support.
 type Request struct {
 	ID uuid.UUID `db:"id" json:"id"`
-	// Discriminator: product_creation, vendor_withdrawal, permission_action, etc.
+	// Discriminator: product_creation, vendor_withdrawal, permission_action, etc. FK to request_type_schemas ensures a schema row exists before requests of this type can be inserted.
 	RequestType string            `db:"request_type" json:"request_type"`
 	RequesterID pgtype.UUID       `db:"requester_id" json:"requester_id"`
 	Status      RequestStatusEnum `db:"status" json:"status"`

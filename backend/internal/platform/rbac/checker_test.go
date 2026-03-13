@@ -132,7 +132,7 @@ func addRolePermission(t *testing.T, q db.Querier, roleID, permID, grantedBy uui
 	if conditions == nil {
 		conditions = []byte("{}")
 	}
-	err := q.AddRolePermission(context.Background(), db.AddRolePermissionParams{
+	_, err := q.AddRolePermission(context.Background(), db.AddRolePermissionParams{
 		RoleID:        toPgtypeUUID(roleID),
 		PermissionID:  toPgtypeUUID(permID),
 		GrantedBy:     toPgtypeUUID(grantedBy),
@@ -545,6 +545,58 @@ func TestRequire_Denied_Returns403(t *testing.T) {
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.False(t, nextCalled)
+}
+
+// ── T-R05b (integration) — denied role + direct user_permission → 403 (IsExplicitlyDenied fires) ─
+
+// TestRequire_DeniedRolePlusDirect_Returns403 verifies that a 'denied' role grant takes
+// absolute priority over a competing 'direct' user_permissions grant for the same permission.
+// This is the F-2 regression case: IsExplicitlyDenied must be checked before HasPermission.
+func TestRequire_DeniedRolePlusDirect_Returns403(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no test database")
+	}
+	tx, q := authsharedtest.MustBeginTx(t, testPool)
+
+	// Create a user with a 'denied' role grant for PermRBACRead.
+	userIDStr, permID := createUserWithRolePerm(t, testPool, q, rbac.PermRBACRead,
+		db.PermissionAccessTypeDenied, db.PermissionScopeOwn, nil)
+	userID, err := uuid.Parse(userIDStr)
+	require.NoError(t, err)
+
+	// Bypass fn_prevent_privilege_escalation so we can insert a direct grant
+	// without the granter needing a role that holds the permission.
+	_, err = tx.Exec(context.Background(), "SET LOCAL rbac.skip_escalation_check = '1'")
+	require.NoError(t, err)
+
+	// Bypass expiry lead-time check so we can set a near-future expires_at in tests.
+	_, err = tx.Exec(context.Background(), "SET LOCAL rbac.min_temp_grant_lead = '1 second'")
+	require.NoError(t, err)
+
+	// Also insert a 'direct' user_permissions grant for the same permission.
+	// This is the competing grant that the bug allowed to bypass the denied role.
+	_, err = q.GrantUserPermission(context.Background(), db.GrantUserPermissionParams{
+		UserID:        toPgtypeUUID(userID),
+		PermissionID:  toPgtypeUUID(permID),
+		GrantedBy:     toPgtypeUUID(userID),
+		GrantedReason: "integration test - competing direct grant",
+		ExpiresAt:     pgtype.Timestamptz{Time: time.Now().Add(30 * time.Minute), Valid: true},
+		Scope:         db.PermissionScopeAll,
+		Conditions:    []byte("{}"),
+	})
+	require.NoError(t, err)
+
+	checker := rbac.NewChecker(q)
+
+	var nextCalled bool
+	r := authedRequest(userIDStr)
+	w := httptest.NewRecorder()
+	checker.Require(rbac.PermRBACRead)(nextHandler(&nextCalled)).ServeHTTP(w, r)
+
+	// Denied role must win over the direct grant — 403, next NOT called.
+	assert.Equal(t, http.StatusForbidden, w.Code,
+		"denied role grant must override a competing direct user_permissions grant")
+	assert.False(t, nextCalled, "next must NOT be called when IsExplicitlyDenied is true")
 }
 
 // ── T-R06 (integration) — Require returns 403 when user has no role ──────────

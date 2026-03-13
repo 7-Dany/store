@@ -40,25 +40,126 @@ All error responses share the same shape:
 
 ## Permissions Reference
 
-Admin endpoints that require a specific permission list it in their documentation. Use this table as a reference when assigning permissions to roles.
+Admin endpoints that require a specific permission list it in their documentation. Use this as a reference when assigning permissions to roles via [`POST /admin/rbac/roles/{id}/permissions`](/api-reference/rbac/roles/add-role-permission).
 
-The `canonical_name` column is the exact value used in permission checks — use it when granting permissions via the API.
+The `canonical_name` is the exact value used in permission checks. The `scope_policy` and `access_types` come from each permission's [`capabilities`](/api-reference/rbac/permissions/list-permissions) object and determine which `scope` and `access_type` values are valid for grants:
 
-| Canonical name               | Resource type | Description                                          |
-| ---------------------------- | ------------- | ---------------------------------------------------- |
-| `rbac:read`                  | rbac          | View roles, permissions, and user role assignments   |
-| `rbac:manage`                | rbac          | Create and modify roles and role assignments         |
-| `rbac:grant_user_permission` | rbac          | Grant or revoke direct permissions on a user         |
-| `job_queue:read`             | job_queue     | View job queues and their current status             |
-| `job_queue:manage`           | job_queue     | Pause, resume, and drain job queues                  |
-| `job_queue:configure`        | job_queue     | Change queue configuration and worker settings       |
-| `user:read`                  | user          | View user accounts and profile data                  |
-| `user:manage`                | user          | Create and update user accounts                      |
-| `user:lock`                  | user          | Lock and unlock user accounts                        |
-| `request:read`               | request       | View pending and historical approval requests        |
-| `request:manage`             | request       | Submit and cancel approval requests                  |
-| `request:approve`            | request       | Approve or reject pending requests                   |
-| `product:manage`             | product       | Create, update, and delete products                  |
+- **`scope_policy: none`** — scope has no meaning for this permission; hide the scope field in your UI. The service normalises the stored value to `"all"` automatically.
+- **`scope_policy: any`** — caller chooses `"own"` or `"all"`; show a scope selector.
+- **`access_types`** — only the listed values are accepted. `direct` and `denied` are always present. `request` and `conditional` appear only when explicitly enabled. Passing anything outside this list returns `422 access_type_not_allowed`.
+- **`request` at runtime** — when a user calls an endpoint guarded by a `request`-type permission, the action is not executed immediately. The API returns `202` with `{ "code": "approval_required", "request_id": "..." }`. The action only executes once an approver approves the submitted request.
+{/* TODO-A: update this bullet when condition schema validation is implemented. See docs/prompts/rbac/DOCS-TODOS.md */}
+
+#### rbac
+
+<AccordionGroup>
+  <Accordion title="rbac:read" icon="shield-halved">
+    List roles, permissions, user assignments, and audit logs.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `denied`
+  </Accordion>
+
+  <Accordion title="rbac:manage" icon="shield-halved">
+    Create/update/soft-delete roles; add/remove role permissions; assign/remove user roles.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `denied`
+  </Accordion>
+
+  <Accordion title="rbac:grant_user_permission" icon="shield-halved">
+    Grant/revoke time-limited direct permissions on individual users.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `denied`
+  </Accordion>
+</AccordionGroup>
+
+#### job_queue
+
+<AccordionGroup>
+  <Accordion title="job_queue:read" icon="list-check">
+    View jobs, workers, queues, schedules, stats, metrics, and WS stream.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `denied`
+  </Accordion>
+
+  <Accordion title="job_queue:manage" icon="list-check">
+    Cancel jobs, retry dead/failed jobs, update job priority, purge dead jobs.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `denied`
+  </Accordion>
+
+  <Accordion title="job_queue:configure" icon="list-check">
+    Pause/resume job kinds, force-drain workers, create/update/delete/trigger schedules.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `request`, `denied`
+  </Accordion>
+</AccordionGroup>
+
+#### user
+
+<AccordionGroup>
+  <Accordion title="user:read" icon="users">
+    List users, view profiles, view audit and login history.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `denied`
+  </Accordion>
+
+  <Accordion title="user:manage" icon="users">
+    Edit user details (email, name, etc.).
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `denied`
+  </Accordion>
+
+  <Accordion title="user:lock" icon="users">
+    Admin-lock and admin-unlock a user account.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `request`, `denied`
+  </Accordion>
+</AccordionGroup>
+
+#### request
+
+<AccordionGroup>
+  <Accordion title="request:read" icon="inbox">
+    View requests and their history and status.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `denied`
+  </Accordion>
+
+  <Accordion title="request:manage" icon="inbox">
+    Create/edit/cancel requests; manage lifecycle non-approval steps.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `denied`
+  </Accordion>
+
+  <Accordion title="request:approve" icon="inbox">
+    Approve or reject a pending request.
+
+    **Scope policy:** `none` — scope is not applicable for this permission\
+    **Allowed access types:** `direct`, `denied`
+  </Accordion>
+</AccordionGroup>
+
+#### product
+
+<AccordionGroup>
+  <Accordion title="product:manage" icon="box">
+    Create, update, and delete products.
+
+    **Scope policy:** `any` — choose `own` (user's own products) or `all` (any product)\
+    **Allowed access types:** `direct`, `conditional`, `request`, `denied`
+  </Accordion>
+</AccordionGroup>
 
 <Info>
   The owner role bypasses all permission checks and has unrestricted access to every endpoint.
@@ -91,5 +192,11 @@ Looking for end-to-end flow walkthroughs instead of individual endpoints?
   </Card>
   <Card title="Email Change Flow" icon="envelope" href="/guides/profile/email-change-flow">
     Prove ownership of the current and new address in three steps.
+  </Card>
+  <Card title="Delete Account Flow" icon="trash" href="/guides/profile/delete-account-flow">
+    Choose a deletion method, confirm identity, and permanently close an account — including the cancellation window.
+  </Card>
+  <Card title="Permission Setup Guide" icon="shield-halved" href="/guides/rbac/permissions-setup-guide">
+    Create roles, assign permissions with the right access type and scope, and audit grants correctly.
   </Card>
 </CardGroup>

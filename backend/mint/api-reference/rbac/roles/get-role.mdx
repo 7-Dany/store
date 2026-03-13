@@ -1,0 +1,101 @@
+---
+title: "Get Role"
+description: "Returns a single role by its ID."
+api: "GET http://localhost:8080/admin/rbac/roles/{id}"
+---
+
+<ParamField path="id" type="string" required>
+  The UUID of the role to retrieve.
+</ParamField>
+
+<RequestExample>
+```bash Example
+curl -X GET http://localhost:8080/admin/rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "id": "018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c",
+  "name": "Store Manager",
+  "description": "Can manage products and orders.",
+  "is_system_role": false,
+  "is_owner_role": false,
+  "is_active": true,
+  "created_at": "2024-06-01T10:00:00Z"
+}
+```
+
+```json 404
+{
+  "code": "role_not_found",
+  "message": "role not found"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The role was found and returned successfully.
+
+    ```json
+    {
+      "id": "018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c",
+      "name": "Store Manager",
+      "description": "Can manage products and orders.",
+      "is_system_role": false,
+      "is_owner_role": false,
+      "is_active": true,
+      "created_at": "2024-06-01T10:00:00Z"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `rbac:read` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    No role exists with the given ID, or the ID is not a valid UUID.
+
+    ```json
+    {
+      "code": "role_not_found",
+      "message": "role not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

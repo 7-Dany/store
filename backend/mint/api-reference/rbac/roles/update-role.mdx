@@ -1,0 +1,151 @@
+---
+title: "Update Role"
+description: "Updates the name or description of a custom role."
+api: "PATCH http://localhost:8080/admin/rbac/roles/{id}"
+---
+
+<ParamField path="id" type="string" required>
+  The UUID of the role to update.
+</ParamField>
+
+<ParamField body="name" type="string">
+  New display name for the role.
+
+  <Expandable title="requirements">
+    - Cannot be blank if provided
+    - Maximum 100 characters
+  </Expandable>
+</ParamField>
+
+<ParamField body="description" type="string">
+  New description for the role. Pass an empty string to clear it.
+</ParamField>
+
+## Behaviour
+
+This is a partial update — only the fields you include are changed. At least one field (`name` or `description`) must be present in the request body.
+
+System roles and the owner role cannot be modified. Attempting to update them returns `409 Conflict`.
+
+<RequestExample>
+```json Example
+{
+  "name": "Senior Store Manager",
+  "description": "Manages products, orders, and staff."
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "id": "018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c",
+  "name": "Senior Store Manager",
+  "description": "Manages products, orders, and staff.",
+  "is_system_role": false,
+  "is_owner_role": false,
+  "is_active": true,
+  "created_at": "2024-06-01T10:00:00Z"
+}
+```
+
+```json 409
+{
+  "code": "system_role_immutable",
+  "message": "system roles cannot be modified"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "at least one field (name or description) must be provided"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The role was updated. Returns the full updated role object.
+
+    ```json
+    {
+      "id": "018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c",
+      "name": "Senior Store Manager",
+      "description": "Manages products, orders, and staff.",
+      "is_system_role": false,
+      "is_owner_role": false,
+      "is_active": true,
+      "created_at": "2024-06-01T10:00:00Z"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `rbac:manage` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    No role exists with the given ID, or the ID is not a valid UUID.
+
+    ```json
+    {
+      "code": "role_not_found",
+      "message": "role not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    The role is a system or owner role and cannot be modified.
+
+    ```json
+    {
+      "code": "system_role_immutable",
+      "message": "system roles cannot be modified"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    The request body failed validation — either no fields were provided, or `name` was blank.
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "at least one field (name or description) must be provided"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

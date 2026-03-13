@@ -38,3 +38,15 @@ UPDATE permissions SET is_active = FALSE;
 INSERT INTO permission_groups (name, display_order)
 VALUES (@name, 999)
 RETURNING id;
+
+-- name: GetLatestRolePermissionAuditEntry :one
+-- Returns the most recent audit row for a given (role_id, permission_id, change_type).
+-- Used by integration tests to assert that the correct actor was recorded by
+-- fn_audit_role_permissions after a DELETE.
+SELECT changed_by, changed_at, change_type
+FROM   role_permissions_audit
+WHERE  role_id       = @role_id::uuid
+  AND  permission_id = @permission_id::uuid
+  AND  change_type   = @change_type::audit_change_type_enum
+ORDER  BY changed_at DESC
+LIMIT  1;

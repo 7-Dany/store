@@ -175,6 +175,60 @@ func (b BaseStore) IsDuplicateUsername(err error) bool {
 	return false
 }
 
+// IsUniqueViolation reports whether err is a Postgres unique-violation (23505)
+// on the named constraint. Pass an empty string to match any unique violation.
+func (b BaseStore) IsUniqueViolation(err error, constraintName string) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23505" && (constraintName == "" || pgErr.ConstraintName == constraintName)
+	}
+	return false
+}
+
+// IsForeignKeyViolation reports whether err is a Postgres foreign-key violation (23503)
+// on the named constraint. Pass an empty string to match any FK violation.
+func (b BaseStore) IsForeignKeyViolation(err error, constraintName string) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "23503" && (constraintName == "" || pgErr.ConstraintName == constraintName)
+	}
+	return false
+}
+
+// WithActingUser sets rbac.acting_user to userID for the duration of fn, then
+// clears it. This ensures audit triggers (fn_audit_role_permissions, etc.) in
+// 004_rbac_functions.sql record the correct actor on DELETE operations.
+//
+// Must be called for every DELETE on role_permissions, user_roles, or
+// user_permissions. Omitting it causes audit rows to record OLD.granted_by
+// (original granter) or NULL instead of the actual deletion actor.
+//
+// SET LOCAL is transaction-scoped in Postgres — the variable is automatically
+// cleared at transaction end. The explicit clear after fn is belt-and-suspenders
+// for long-lived connections where autocommit wraps each statement in its own
+// implicit transaction.
+//
+// Constraint: SET LOCAL only works inside an explicit transaction. All domain
+// delete routes in V1 are single-statement and run in autocommit, which means
+// SET LOCAL behaves as SET SESSION (session-scoped). This is acceptable in V1.
+// When multi-statement transactions are introduced, audit actors will be correct
+// automatically. Document this on any multi-statement delete that is added.
+//
+// If userID is empty, rbac.acting_user is cleared (triggers treat empty as NULL).
+func (b *BaseStore) WithActingUser(ctx context.Context, userID string, fn func() error) error {
+	// set_config('rbac.acting_user', userID, true) is transaction-local (is_local=true)
+	// and goes through b.Queries — the same connection as the subsequent DELETE.
+	// This guarantees the audit trigger reads the correct actor regardless of whether
+	// we are in a test transaction (TxBound=true) or production autocommit.
+	if err := b.Queries.SetActingUser(ctx, userID); err != nil {
+		return fmt.Errorf("rbacshared.WithActingUser: set acting_user: %w", err)
+	}
+	err := fn()
+	// Clear on a best-effort basis; errors here are non-fatal.
+	_ = b.Queries.SetActingUser(ctx, "")
+	return err
+}
+
 // ── Standalone helpers ────────────────────────────────────────────────────────
 
 // LogRollback calls tx.Rollback and logs any error that is not ErrTxClosed.

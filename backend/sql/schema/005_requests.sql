@@ -85,6 +85,33 @@ COMMENT ON TYPE sla_violation_type_enum IS
 
 
 /* ─────────────────────────────────────────────────────────────
+ REQUEST TYPE SCHEMAS
+ ───────────────────────────────────────────────────────────── */
+
+-- Stores the JSON Schema for each request_type's request_data payload.
+-- The application layer validates incoming request_data against this schema before INSERT.
+CREATE TABLE request_type_schemas (
+ -- Keyed by the same discriminator used in requests.request_type.
+ request_type VARCHAR(100) PRIMARY KEY,
+
+ -- JSON Schema object defining the valid shape of request_data for this type.
+ json_schema JSONB NOT NULL,
+
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+ -- json_schema must be a JSON object (not an array or scalar).
+ CONSTRAINT chk_rts_schema_is_object
+ CHECK (jsonb_typeof(json_schema) = 'object')
+);
+
+COMMENT ON TABLE request_type_schemas IS
+ 'JSON Schema validation rules for request_data keyed by request_type.';
+COMMENT ON COLUMN request_type_schemas.json_schema IS
+ 'JSON Schema for this request_type''s request_data payload.';
+
+
+/* ─────────────────────────────────────────────────────────────
  REQUESTS
  ───────────────────────────────────────────────────────────── */
 
@@ -103,7 +130,10 @@ CREATE TABLE requests (
 
  -- Discriminator: product_creation, vendor_withdrawal, permission_action, etc.
  -- Controls which JSON Schema is used to validate request_data.
- request_type VARCHAR(100) NOT NULL,
+ -- FK ensures a request_type_schemas row exists before any request of this type
+ -- can be inserted. ON DELETE RESTRICT prevents schema removal while requests exist.
+ request_type VARCHAR(100) NOT NULL
+  REFERENCES request_type_schemas(request_type) ON DELETE RESTRICT,
 
  -- Owner of the request; SET NULL on user purge to preserve the request record.
  requester_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -177,7 +207,8 @@ CREATE INDEX idx_requests_approval_queue ON requests(priority DESC, created_at A
 COMMENT ON TABLE requests IS
  'Approval requests with flexible JSONB payloads and quorum support.';
 COMMENT ON COLUMN requests.request_type IS
- 'Discriminator: product_creation, vendor_withdrawal, permission_action, etc.';
+ 'Discriminator: product_creation, vendor_withdrawal, permission_action, etc. '
+ 'FK to request_type_schemas ensures a schema row exists before requests of this type can be inserted.';
 COMMENT ON COLUMN requests.request_data IS
  'Flexible payload. Structure validated against request_type_schemas.';
 COMMENT ON COLUMN requests.priority IS
@@ -238,33 +269,6 @@ COMMENT ON TABLE request_status_history IS
 COMMENT ON COLUMN request_status_history.changed_by IS
  'Actor who triggered the transition. Read from rbac.acting_user session variable; '
  'falls back to NULL when unset (e.g. automated scheduler transitions).';
-
-
-/* ─────────────────────────────────────────────────────────────
- REQUEST TYPE SCHEMAS
- ───────────────────────────────────────────────────────────── */
-
--- Stores the JSON Schema for each request_type's request_data payload.
--- The application layer validates incoming request_data against this schema before INSERT.
-CREATE TABLE request_type_schemas (
- -- Keyed by the same discriminator used in requests.request_type.
- request_type VARCHAR(100) PRIMARY KEY,
-
- -- JSON Schema object defining the valid shape of request_data for this type.
- json_schema JSONB NOT NULL,
-
- created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
- updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-
- -- json_schema must be a JSON object (not an array or scalar).
- CONSTRAINT chk_rts_schema_is_object
- CHECK (jsonb_typeof(json_schema) = 'object')
-);
-
-COMMENT ON TABLE request_type_schemas IS
- 'JSON Schema validation rules for request_data keyed by request_type.';
-COMMENT ON COLUMN request_type_schemas.json_schema IS
- 'JSON Schema for this request_type''s request_data payload.';
 
 
 /* ─────────────────────────────────────────────────────────────

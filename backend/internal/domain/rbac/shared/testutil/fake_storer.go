@@ -7,6 +7,7 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/roles"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -106,4 +107,118 @@ func (f *PermissionsFakeStorer) GetPermissionGroups(ctx context.Context) ([]perm
 		return f.GetPermissionGroupsFn(ctx)
 	}
 	return []permissions.PermissionGroup{}, nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RolesFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// RolesFakeStorer is a hand-written implementation of roles.Storer for service
+// unit tests. Nil Fn fields return safe defaults so tests only configure what
+// they need.
+//
+// Defaults:
+//
+//	GetRoles              → ([]roles.Role{}, nil)
+//	GetRoleByID           → (roles.Role{}, nil)
+//	CreateRole            → (roles.Role{}, nil)
+//	UpdateRole            → (roles.Role{}, nil)
+//	DeactivateRole        → nil
+//	GetRolePermissions    → ([]roles.RolePermission{}, nil)
+//	AddRolePermission     → nil
+//	RemoveRolePermission  → nil
+type RolesFakeStorer struct {
+	GetRolesFn             func(ctx context.Context) ([]roles.Role, error)
+	GetRoleByIDFn          func(ctx context.Context, roleID [16]byte) (roles.Role, error)
+	CreateRoleFn           func(ctx context.Context, in roles.CreateRoleInput) (roles.Role, error)
+	UpdateRoleFn           func(ctx context.Context, roleID [16]byte, in roles.UpdateRoleInput) (roles.Role, error)
+	DeactivateRoleFn       func(ctx context.Context, roleID [16]byte) error
+	GetRolePermissionsFn   func(ctx context.Context, roleID [16]byte) ([]roles.RolePermission, error)
+	AddRolePermissionFn    func(ctx context.Context, roleID [16]byte, in roles.AddRolePermissionInput) error
+	RemoveRolePermissionFn func(ctx context.Context, roleID, permID [16]byte, actingUserID string) error
+	GetPermissionCapsFn    func(ctx context.Context, permissionID [16]byte) (roles.PermissionCaps, error)
+}
+
+// compile-time interface check.
+var _ roles.Storer = (*RolesFakeStorer)(nil)
+
+// GetRoles delegates to GetRolesFn if set.
+// Default: returns ([]roles.Role{}, nil).
+func (f *RolesFakeStorer) GetRoles(ctx context.Context) ([]roles.Role, error) {
+	if f.GetRolesFn != nil {
+		return f.GetRolesFn(ctx)
+	}
+	return []roles.Role{}, nil
+}
+
+// GetRoleByID delegates to GetRoleByIDFn if set.
+// Default: returns (roles.Role{}, nil).
+func (f *RolesFakeStorer) GetRoleByID(ctx context.Context, roleID [16]byte) (roles.Role, error) {
+	if f.GetRoleByIDFn != nil {
+		return f.GetRoleByIDFn(ctx, roleID)
+	}
+	return roles.Role{}, nil
+}
+
+// CreateRole delegates to CreateRoleFn if set.
+// Default: returns (roles.Role{}, nil).
+func (f *RolesFakeStorer) CreateRole(ctx context.Context, in roles.CreateRoleInput) (roles.Role, error) {
+	if f.CreateRoleFn != nil {
+		return f.CreateRoleFn(ctx, in)
+	}
+	return roles.Role{}, nil
+}
+
+// UpdateRole delegates to UpdateRoleFn if set.
+// Default: returns (roles.Role{}, nil).
+func (f *RolesFakeStorer) UpdateRole(ctx context.Context, roleID [16]byte, in roles.UpdateRoleInput) (roles.Role, error) {
+	if f.UpdateRoleFn != nil {
+		return f.UpdateRoleFn(ctx, roleID, in)
+	}
+	return roles.Role{}, nil
+}
+
+// DeactivateRole delegates to DeactivateRoleFn if set.
+// Default: returns nil.
+func (f *RolesFakeStorer) DeactivateRole(ctx context.Context, roleID [16]byte) error {
+	if f.DeactivateRoleFn != nil {
+		return f.DeactivateRoleFn(ctx, roleID)
+	}
+	return nil
+}
+
+// GetRolePermissions delegates to GetRolePermissionsFn if set.
+// Default: returns ([]roles.RolePermission{}, nil).
+func (f *RolesFakeStorer) GetRolePermissions(ctx context.Context, roleID [16]byte) ([]roles.RolePermission, error) {
+	if f.GetRolePermissionsFn != nil {
+		return f.GetRolePermissionsFn(ctx, roleID)
+	}
+	return []roles.RolePermission{}, nil
+}
+
+// AddRolePermission delegates to AddRolePermissionFn if set.
+// Default: returns nil.
+func (f *RolesFakeStorer) AddRolePermission(ctx context.Context, roleID [16]byte, in roles.AddRolePermissionInput) error {
+	if f.AddRolePermissionFn != nil {
+		return f.AddRolePermissionFn(ctx, roleID, in)
+	}
+	return nil
+}
+
+// RemoveRolePermission delegates to RemoveRolePermissionFn if set.
+// Default: returns nil.
+func (f *RolesFakeStorer) RemoveRolePermission(ctx context.Context, roleID, permID [16]byte, actingUserID string) error {
+	if f.RemoveRolePermissionFn != nil {
+		return f.RemoveRolePermissionFn(ctx, roleID, permID, actingUserID)
+	}
+	return nil
+}
+
+// GetPermissionCaps delegates to GetPermissionCapsFn if set.
+// Default: returns (roles.PermissionCaps{}, nil).
+func (f *RolesFakeStorer) GetPermissionCaps(ctx context.Context, permissionID [16]byte) (roles.PermissionCaps, error) {
+	if f.GetPermissionCapsFn != nil {
+		return f.GetPermissionCapsFn(ctx, permissionID)
+	}
+	return roles.PermissionCaps{}, nil
 }

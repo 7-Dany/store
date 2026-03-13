@@ -61,6 +61,20 @@ CREATE TYPE permission_scope AS ENUM (
 COMMENT ON TYPE permission_scope IS
  'Resource visibility injected into context by Require middleware for downstream query scoping.';
 
+-- Controls whether and how scope applies to a permission.
+-- Used by the admin UI and AddRolePermission validator to determine which scope
+-- values are valid for a given permission.
+CREATE TYPE permission_scope_policy AS ENUM (
+    'none', -- scope is not applicable (rbac:manage, job_queue:configure, etc.)
+    'own',  -- only scope = 'own' is valid
+    'all',  -- only scope = 'all' is valid
+    'any'   -- both 'own' and 'all' are valid (e.g. product:manage)
+);
+
+COMMENT ON TYPE permission_scope_policy IS
+    'Declares which scope values are valid when creating a grant for this permission. '
+    '''none'' = scope field is not meaningful; ''any'' = caller chooses own or all.';
+
 
 /* ─────────────────────────────────────────────────────────────
  POLICY CONSTANTS
@@ -158,6 +172,29 @@ CREATE TABLE permissions (
 
  -- Soft-delete; CHECK constraints in role_permissions prevent granting inactive permissions.
  is_active BOOLEAN NOT NULL DEFAULT TRUE,
+
+ -- ── Capability flags ──────────────────────────────────────────────────────────
+
+ -- Declares which scope values make sense for this permission.
+ -- 'none'  = scope is not applicable (e.g. rbac:manage has no 'own' concept)
+ -- 'own'   = only 'own' scope is valid
+ -- 'all'   = only 'all' scope is valid
+ -- 'any'   = caller may choose 'own' or 'all' (e.g. product:manage)
+ -- The AddRolePermission service validates incoming scope against this.
+ -- When scope_policy = 'none', the service writes scope = 'all' as a neutral value.
+ scope_policy permission_scope_policy NOT NULL DEFAULT 'none',
+
+ -- TRUE if access_type = 'conditional' is allowed for grants of this permission.
+ -- FALSE (default) means the conditional approval path is disabled and the
+ -- permission_condition_templates table is not consulted.
+ -- Must match the presence of a permission_condition_templates row (see TODO-4).
+ allow_conditional BOOLEAN NOT NULL DEFAULT FALSE,
+
+ -- TRUE if access_type = 'request' is allowed for grants of this permission.
+ -- FALSE (default) means the approval-request path is disabled.
+ -- Requires a permission_request_approvers row before any grant can use it
+ -- (enforced in the service layer, not at the DB level in V1).
+ allow_request BOOLEAN NOT NULL DEFAULT FALSE,
 
  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -820,6 +857,7 @@ DROP TABLE IF EXISTS permissions CASCADE;
 DROP INDEX IF EXISTS idx_roles_owner_active;
 DROP TABLE IF EXISTS roles CASCADE;
 
+DROP TYPE IF EXISTS permission_scope_policy CASCADE;
 DROP TYPE IF EXISTS permission_scope CASCADE;
 DROP TYPE IF EXISTS permission_access_type CASCADE;
 DROP TYPE IF EXISTS audit_change_type_enum CASCADE;

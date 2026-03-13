@@ -51,6 +51,8 @@ func NewService(store Storer, tokenTTL ...time.Duration) *Service {
 // Timing invariant: HashPassword is called before CreateUserTx so that both the
 // happy path and the duplicate-email path incur the same bcrypt cost.
 func (s *Service) Register(ctx context.Context, in RegisterInput) (RegisterResult, error) {
+	slog.DebugContext(ctx, "register.Register: start", "email", in.Email, "ip", in.IPAddress)
+
 	// 1. Hash the password.
 	// Security: HashPassword is called first — equalises timing between the happy
 	// path and the duplicate-email path so response latency cannot reveal whether
@@ -91,6 +93,8 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegisterResul
 		// already equalised between this path and the success path.
 		return RegisterResult{}, err
 	}
+
+	slog.InfoContext(ctx, "register.Register: success", "user_id", created.UserID, "email", created.Email)
 
 	return RegisterResult{
 		UserID:  created.UserID,

@@ -75,6 +75,8 @@ func NewService(store Storer) *Service {
 // user no longer exists. Returns authshared.ErrAccountLocked or
 // authshared.ErrAccountInactive when the account has been suspended.
 func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua string) (RotatedSession, error) {
+	slog.DebugContext(ctx, "session.RotateRefreshToken: start", "jti", uuid.UUID(jti).String(), "ip", ip)
+
 	// 1. Look up the DB row by jti. jti is already [16]byte — no uuid.Parse needed.
 	stored, err := s.store.GetRefreshTokenByJTI(ctx, jti)
 	if err != nil {
@@ -134,6 +136,11 @@ func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua s
 		return RotatedSession{}, authshared.ErrAccountInactive
 	}
 
+	slog.DebugContext(ctx, "session.RotateRefreshToken: guards passed, rotating token",
+		"user_id", uuid.UUID(stored.UserID).String(),
+		"session_id", uuid.UUID(stored.SessionID).String(),
+	)
+
 	// 5. Rotate: revoke old token, insert child, stamp last_login_at, audit log.
 	rotated, err := s.store.RotateRefreshTokenTx(ctx, RotateTxInput{
 		CurrentJTI: stored.JTI,
@@ -150,6 +157,11 @@ func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua s
 		return RotatedSession{}, fmt.Errorf("session.RotateRefreshToken: rotate tx: %w", err)
 	}
 
+	slog.InfoContext(ctx, "session.RotateRefreshToken: success",
+		"user_id", uuid.UUID(stored.UserID).String(),
+		"session_id", uuid.UUID(stored.SessionID).String(),
+	)
+
 	return rotated, nil
 }
 
@@ -157,12 +169,14 @@ func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua s
 // every open session, and writes an audit row for the given user.
 // The reason "forced_logout" is hardcoded.
 func (s *Service) RevokeAllUserTokens(ctx context.Context, userID [16]byte, ipAddress, userAgent string) error {
+	slog.DebugContext(ctx, "session.RevokeAllUserTokens: start", "user_id", uuid.UUID(userID).String(), "ip", ipAddress)
 	// Security: detach from the request context so a client-timed disconnect cannot
 	// abort the token revocation or session termination, leaving active tokens in
 	// the DB with no audit evidence of the revocation attempt (ADR-004).
 	if err := s.store.RevokeAllUserTokensTx(context.WithoutCancel(ctx), userID, "forced_logout", ipAddress, userAgent); err != nil {
 		return fmt.Errorf("session.RevokeAllUserTokens: revoke: %w", err)
 	}
+	slog.InfoContext(ctx, "session.RevokeAllUserTokens: all sessions revoked", "user_id", uuid.UUID(userID).String())
 	return nil
 }
 
@@ -175,6 +189,10 @@ func (s *Service) RevokeAllUserTokens(ctx context.Context, userID [16]byte, ipAd
 // token identifiers via LogoutTxInput. Errors are logged but never returned
 // so the handler always clears the cookie and writes 204.
 func (s *Service) Logout(ctx context.Context, in LogoutTxInput) error {
+	slog.DebugContext(ctx, "session.Logout: start",
+		"user_id", uuid.UUID(in.UserID).String(),
+		"session_id", uuid.UUID(in.SessionID).String(),
+	)
 	// Security: detach from the request context so a client disconnect cannot
 	// prevent the DB revocation from completing.
 	if err := s.store.LogoutTx(context.WithoutCancel(ctx), in); err != nil {

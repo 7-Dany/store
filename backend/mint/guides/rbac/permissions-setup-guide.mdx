@@ -1,0 +1,198 @@
+---
+title: "Permission Setup Guide"
+icon: "shield-halved"
+description: "How to create roles and assign permissions correctly."
+---
+
+This guide walks you through setting up roles and permissions for your store. Follow the steps in order — each step builds on the last.
+
+---
+
+## Overview
+
+Access in the store is controlled by **roles**. A role is a named collection of permissions. You assign a role to a user, and that user inherits everything the role allows.
+
+There are two kinds of roles:
+
+- **System roles** — created automatically when the store is set up. They cannot be modified or deleted.
+- **Custom roles** — created by you to match your team's structure.
+
+---
+
+## Step 1 — Create the role
+
+Start by creating a role that represents a job or responsibility in your store.
+
+Use [`POST /admin/rbac/roles`](/api-reference/rbac/roles/create-role) and give it a clear, descriptive name. Be specific — a name like `"Order Support Agent"` is better than `"Support"` because it makes the role's scope obvious to other admins.
+
+```json
+{
+  "name": "Order Support Agent",
+  "description": "Can view and manage customer orders on behalf of support."
+}
+```
+
+Save the `id` from the response — you'll need it in the next steps.
+
+---
+
+## Step 2 — Find the permissions you need
+
+Before assigning permissions, you need the `permission_id` for each one you want to grant. Use [`GET /admin/rbac/permissions`](/api-reference/rbac/permissions/list-permissions) to browse available permissions and note down the IDs.
+
+Each permission has a `canonical_name` (e.g. `rbac:read`, `user:manage`) that describes exactly what it controls. Use these names to identify the right permissions for your role.
+
+---
+
+## Understanding permission capabilities
+
+Every permission returned by [`GET /admin/rbac/permissions`](/api-reference/rbac/permissions/list-permissions) includes a `capabilities` object. Read this before building a grant — it tells you exactly which `access_type` and `scope` values are valid for that permission.
+
+```json
+// Example: product:manage
+{
+  "canonical_name": "product:manage",
+  "capabilities": {
+    "scope_policy": "any",
+    "access_types": ["direct", "conditional", "request", "denied"]
+  }
+}
+
+// Example: rbac:read
+{
+  "canonical_name": "rbac:read",
+  "capabilities": {
+    "scope_policy": "none",
+    "access_types": ["direct", "denied"]
+  }
+}
+```
+
+### `capabilities.access_types`
+
+Only the values listed here are accepted by [`POST /admin/rbac/roles/{id}/permissions`](/api-reference/rbac/roles/add-role-permission) for this permission. Passing any other value returns `422 access_type_not_allowed`. `"direct"` and `"denied"` are always present. `"conditional"` and `"request"` appear only when explicitly enabled for that permission.
+
+### `capabilities.scope_policy`
+
+Controls which `scope` value you may pass — and how the admin UI should render the scope field:
+
+| `scope_policy` | UI guidance | Behaviour |
+|---|---|---|
+| `"none"` | Hide the scope field | Scope is not meaningful for this permission. The service silently normalises the stored value to `"all"` regardless of what you send. |
+| `"own"` | Pre-fill `"own"`, render read-only | Only `scope: "own"` is accepted. Any other value returns `422 scope_not_allowed`. |
+| `"all"` | Pre-fill `"all"`, render read-only | Only `scope: "all"` is accepted. Any other value returns `422 scope_not_allowed`. |
+| `"any"` | Show selector with both options | Either `"own"` or `"all"` is accepted. Choose based on how much access the role should have. |
+
+---
+
+## Step 3 — Assign permissions to the role
+
+Use [`POST /admin/rbac/roles/{id}/permissions`](/api-reference/rbac/roles/add-role-permission) for each permission you want to add.
+
+Every grant requires you to choose an **access type** and a **scope**.
+
+### Choosing an access type
+
+| Access Type | When to use it |
+|---|---|
+| `direct` | The user always has this permission, no conditions apply. Use this for most cases. |
+| `conditional` | The permission only applies when certain conditions are met. Use this for nuanced rules (e.g. only during business hours). Requires a `conditions` object. |
+| `request` | The user must submit an approval request before the action executes. When a user hits an endpoint guarded by a `request`-type permission, the API returns `202` with `{ "code": "approval_required", "request_id": "..." }` instead of executing the action. Once an approver approves the request, the action proceeds. Use this for sensitive operations that need a second layer of approval. |
+| `denied` | Explicitly blocks this permission, even if another role the user holds would allow it. Use this when you need a hard override. |
+
+For most roles, start with `direct`. Only use `conditional`, `request`, or `denied` when you have a specific reason.
+
+### Choosing a scope
+
+| Scope | What it means |
+|---|---|
+| `own` | The user can only act on resources they created or own. |
+| `all` | The user can act on any resource of this type, regardless of who owns it. |
+
+A support agent who needs to view any customer's orders should get `scope: "all"`. A seller who should only manage their own listings should get `scope: "own"`.
+
+### Writing a clear granted reason
+
+The `granted_reason` field is required and is used for auditing. Write a sentence that explains *why* this permission is being granted — not just what it does.
+
+Good: `"Support agents need to view all orders to assist customers."`  
+Poor: `"orders read access"`
+
+### Example grants
+
+A simple `direct` grant for a permission with `scope_policy: "none"` (no scope field needed in the UI; the service normalises it):
+
+```json
+{
+  "permission_id": "<rbac:read uuid>",
+  "access_type": "direct",
+  "scope": "all",
+  "granted_reason": "Admins need to list roles and permissions."
+}
+```
+
+A `request`-type grant for `job_queue:configure`, which has `allow_request = true` and `scope_policy: "none"`:
+
+```json
+{
+  "permission_id": "<job_queue:configure uuid>",
+  "access_type": "request",
+  "scope": "all",
+  "granted_reason": "Admin must request approval to pause or reconfigure job queues."
+}
+```
+
+A `conditional` grant for `product:manage`, which has `scope_policy: "any"` and `allow_conditional = true`:
+
+```json
+{
+  "permission_id": "<product:manage uuid>",
+  "access_type": "conditional",
+  "scope": "own",
+  "conditions": { "region": "EU" },
+  "granted_reason": "EU vendor may manage their own products within EU region constraints."
+}
+```
+
+Repeat this for every permission the role needs.
+
+If a permission is already granted to the role, the API returns `409 grant_already_exists`.
+To change the `access_type` or `scope` of an existing grant, remove it first with
+[`DELETE /admin/rbac/roles/{id}/permissions/{perm_id}`](/api-reference/rbac/roles/remove-role-permission),
+then re-add it with the corrected values.
+
+{/* TODO-A: remove this Warning and replace with condition schema docs once validation is implemented. See docs/prompts/rbac/DOCS-TODOS.md */}
+<Warning id="conditional-grants">
+  **Conditional grants in V1 — content is not yet validated.** The `conditions` object is stored and passed to the handler, but its contents are not validated against a schema at grant time. Any well-formed JSON object is accepted. Full condition schema enforcement is planned for a future release. Until then, be deliberate about the keys and values you use — the handler is responsible for interpreting them correctly.
+</Warning>
+
+---
+
+## Step 4 — Review the role's permissions
+
+Once you've finished adding permissions, use [`GET /admin/rbac/roles/{id}/permissions`](/api-reference/rbac/roles/list-role-permissions) to review exactly what the role can do before assigning it to any users.
+
+Check that:
+- Every permission you intended to add is present
+- The `access_type` and `scope` on each grant are correct
+- No unnecessary permissions were added
+
+---
+
+## Step 5 — Assign the role to users
+
+With the role ready, assign it to the appropriate users through the user management endpoints. Each user holds exactly one role at a time — assigning a new role replaces the previous one. Users inherit all the permissions of the role they are assigned.
+
+---
+
+## Keeping permissions clean
+
+A few practices that keep your permission setup manageable over time:
+
+**Design roles around job functions, not individuals.** Because each user holds exactly one role at a time, roles should represent a complete set of responsibilities for a given function. If a user needs capabilities from two roles, consolidate those permissions into a single role that covers both.
+
+**Use `denied` sparingly.** An explicit deny overrides all grants, which can be surprising. Only use it when you need a guaranteed hard block, and document the reason clearly in `granted_reason`.
+
+**Review roles periodically.** As your team changes, some roles may accumulate permissions that are no longer needed. Use [`GET /admin/rbac/roles/{id}/permissions`](/api-reference/rbac/roles/list-role-permissions) to audit what each role can do and use [`DELETE /admin/rbac/roles/{id}/permissions/{perm_id}`](/api-reference/rbac/roles/remove-role-permission) to remove anything that no longer applies.
+
+**Don't modify system roles.** System roles are protected for a reason — they underpin core store behaviour. Build on top of them with custom roles instead.

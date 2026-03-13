@@ -372,6 +372,7 @@ BEGIN
  FROM role_permissions rp
  WHERE rp.role_id       = ur.role_id
  AND rp.permission_id = NEW.permission_id
+ AND rp.access_type  != 'denied'
  )
  INTO v_granter_is_owner, v_granter_has_perm
  FROM user_roles ur
@@ -411,7 +412,8 @@ COMMENT ON FUNCTION fn_prevent_privilege_escalation() IS
  'is_owner_role and permission existence in one index seek on the user_id PK. '
  'Owner-role users are exempt. Middleware should check first; this is the DB backstop. '
  'Receiving a direct user_permissions grant does NOT confer re-grant rights; '
- 'only role-based grants count for escalation checks.';
+ 'only role-based grants count for escalation checks. '
+ 'Denied grants do not confer re-grant rights — enforced by access_type != ''denied'' filter on the EXISTS check.';
 
 CREATE TRIGGER trg_prevent_privilege_escalation
  BEFORE INSERT OR UPDATE ON user_permissions

@@ -177,6 +177,8 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 // Timing invariant: CheckPassword always runs, even if the user is not found.
 // The dummy password hash is used on the no-rows path.
 func (s *Service) UpdatePasswordHash(ctx context.Context, in ChangePasswordInput) error {
+	slog.DebugContext(ctx, "password.UpdatePasswordHash: start", "user_id", in.UserID, "ip", in.IPAddress)
+
 	uid, err := authshared.ParseUserID("password.UpdatePasswordHash", in.UserID)
 	if err != nil {
 		return err
@@ -202,6 +204,7 @@ func (s *Service) UpdatePasswordHash(ctx context.Context, in ChangePasswordInput
 	}
 
 	if pwErr != nil {
+		slog.DebugContext(ctx, "password.UpdatePasswordHash: wrong current password", "user_id", in.UserID)
 		if !errors.Is(pwErr, authshared.ErrInvalidCredentials) {
 			return fmt.Errorf("password.UpdatePasswordHash: password check: %w", pwErr)
 		}
@@ -253,6 +256,8 @@ func (s *Service) UpdatePasswordHash(ctx context.Context, in ChangePasswordInput
 	); resetErr != nil {
 		slog.ErrorContext(ctx, "password.UpdatePasswordHash: reset change password failures", "error", resetErr)
 	}
+
+	slog.InfoContext(ctx, "password.UpdatePasswordHash: success", "user_id", in.UserID)
 	return nil
 }
 
@@ -333,6 +338,8 @@ func (s *Service) VerifyResetCode(ctx context.Context, in VerifyResetCodeInput) 
 // Note: account-lock state is not re-checked here; the handler has no
 // locked-account branch for this endpoint.
 func (s *Service) ConsumePasswordResetToken(ctx context.Context, in ResetPasswordInput) ([16]byte, error) {
+	slog.DebugContext(ctx, "password.ConsumePasswordResetToken: start", "email", in.Email, "ip", in.IPAddress)
+
 	// 1. Validate password strength before any DB work.
 	if err := authshared.ValidatePassword(in.NewPassword); err != nil {
 		return [16]byte{}, err
@@ -350,6 +357,8 @@ func (s *Service) ConsumePasswordResetToken(ctx context.Context, in ResetPasswor
 	}
 
 	var userID [16]byte
+	slog.DebugContext(ctx, "password.ConsumePasswordResetToken: new hash computed, consuming token", "email", in.Email)
+
 	err = authshared.ConsumeOTPToken(
 		ctx,
 		in.Code,
@@ -380,5 +389,8 @@ func (s *Service) ConsumePasswordResetToken(ctx context.Context, in ResetPasswor
 			})
 		},
 	)
+	if err == nil {
+		slog.InfoContext(ctx, "password.ConsumePasswordResetToken: success", "email", in.Email)
+	}
 	return userID, err
 }

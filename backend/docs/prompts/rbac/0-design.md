@@ -991,7 +991,13 @@ V1 makes one DB query per guarded request. When RBAC check latency shows up in
 profiling, add a short-TTL in-memory cache in `Checker` keyed by
 `(userID, permission)` with a 30-second TTL. Invalidate on any of:
 `AssignUserRole`, `RemoveUserRole`, `GrantUserPermission`, `RevokeUserPermission`,
-`AddRolePermission`, `RemoveRolePermission`. Zero changes to `Require`.
+`AddRolePermission`, `RemoveRolePermission`, `DeactivatePermission`
+(`permissions.is_active = FALSE`). Zero changes to `Require`.
+
+Note: when a permission is deactivated, all cache entries keyed on its
+`canonical_name` must be evicted regardless of user. A wildcard eviction on
+`canonical_name` is simpler than tracking individual `(user, permission)` pairs
+and is correct since permission deactivation is operationally rare.
 
 ---
 
@@ -1232,6 +1238,30 @@ These queries return data that changes at most a few times a year and are called
 | `GetOwnerRoleID` | `roles` | 1 |
 
 Add a 5-minute in-process TTL cache in the relevant service layer, invalidated on any mutation (create/update/deactivate role, permission seed reload). `GetOwnerRoleID` in particular can be a process-lifetime singleton after first load. Implement after launch when DB query latency appears in profiling.
+
+### TODO-4 · Condition template enforcement ⚠️ Pre-conditional-grants blocker
+
+`permission_condition_templates` defines the valid ABAC condition vocabulary per
+permission but is never read at runtime. There are no queries, no trigger, and no
+app-layer validation against it. When `allow_conditional = TRUE` is set on a
+permission in Phase 8, any JSON object will be accepted as conditions — including
+keys that are semantically wrong or dangerous (e.g. `{"bypass_everything": true}`).
+
+Must be resolved before any permission has `allow_conditional = TRUE` in production:
+
+1. Add `GetConditionTemplate` query:
+   `SELECT required_conditions, forbidden_conditions, validation_rules
+    FROM permission_condition_templates WHERE permission_id = @id`.
+2. In `AddRolePermission` service: when `access_type = 'conditional'`, fetch the
+   template and validate `conditions` against `required_conditions` (all keys must be
+   present) and `forbidden_conditions` (no matching keys may be present). Value/type/
+   range rules in `validation_rules` are evaluated in the app layer.
+3. Add a trigger in `004_rbac_functions.sql` that enforces: `allow_conditional = TRUE`
+   requires a matching `permission_condition_templates` row (BEFORE INSERT/UPDATE on
+   `permissions`).
+
+This is a hard gate for Phase 8 — do not seed any permission with
+`allow_conditional = TRUE` until this TODO is closed.
 
 ---
 

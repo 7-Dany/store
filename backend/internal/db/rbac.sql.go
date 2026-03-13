@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const AddRolePermission = `-- name: AddRolePermission :exec
+const AddRolePermission = `-- name: AddRolePermission :execrows
 INSERT INTO role_permissions (
     role_id, permission_id, granted_by, granted_reason,
     access_type, scope, conditions
@@ -40,10 +40,11 @@ type AddRolePermissionParams struct {
 	Conditions    []byte               `db:"conditions" json:"conditions"`
 }
 
-// ON CONFLICT DO NOTHING: idempotent — adding a permission the role already has is a no-op.
-// To update access_type/scope on an existing grant, remove + re-add from the service layer.
-func (q *Queries) AddRolePermission(ctx context.Context, arg AddRolePermissionParams) error {
-	_, err := q.db.Exec(ctx, AddRolePermission,
+// ON CONFLICT (role_id, permission_id) DO NOTHING: returns 0 when the grant
+// already exists. The service maps 0 rows → ErrGrantAlreadyExists → 409.
+// To update access_type/scope on an existing grant, remove it first then re-add.
+func (q *Queries) AddRolePermission(ctx context.Context, arg AddRolePermissionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, AddRolePermission,
 		arg.RoleID,
 		arg.PermissionID,
 		arg.GrantedBy,
@@ -52,7 +53,10 @@ func (q *Queries) AddRolePermission(ctx context.Context, arg AddRolePermissionPa
 		arg.Scope,
 		arg.Conditions,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const AssignUserRole = `-- name: AssignUserRole :one
@@ -398,8 +402,39 @@ func (q *Queries) GetPermissionByCanonicalName(ctx context.Context, canonicalNam
 	return i, err
 }
 
+const GetPermissionByID = `-- name: GetPermissionByID :one
+SELECT id, canonical_name, scope_policy, allow_conditional, allow_request
+FROM   permissions
+WHERE  id        = $1::uuid
+  AND  is_active = TRUE
+`
+
+type GetPermissionByIDRow struct {
+	ID               uuid.UUID             `db:"id" json:"id"`
+	CanonicalName    pgtype.Text           `db:"canonical_name" json:"canonical_name"`
+	ScopePolicy      PermissionScopePolicy `db:"scope_policy" json:"scope_policy"`
+	AllowConditional bool                  `db:"allow_conditional" json:"allow_conditional"`
+	AllowRequest     bool                  `db:"allow_request" json:"allow_request"`
+}
+
+// Returns the capability flags for a single permission by primary key.
+// Used by AddRolePermission to validate access_type and scope before inserting.
+func (q *Queries) GetPermissionByID(ctx context.Context, id pgtype.UUID) (GetPermissionByIDRow, error) {
+	row := q.db.QueryRow(ctx, GetPermissionByID, id)
+	var i GetPermissionByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.CanonicalName,
+		&i.ScopePolicy,
+		&i.AllowConditional,
+		&i.AllowRequest,
+	)
+	return i, err
+}
+
 const GetPermissionGroupMembers = `-- name: GetPermissionGroupMembers :many
-SELECT p.id, p.canonical_name, p.name, p.resource_type, p.description
+SELECT p.id, p.canonical_name, p.name, p.resource_type, p.description,
+       p.scope_policy, p.allow_conditional, p.allow_request
 FROM   permission_group_members pgm
 JOIN   permissions p ON p.id = pgm.permission_id
 WHERE  pgm.group_id = $1::uuid
@@ -408,11 +443,14 @@ ORDER  BY p.canonical_name
 `
 
 type GetPermissionGroupMembersRow struct {
-	ID            uuid.UUID   `db:"id" json:"id"`
-	CanonicalName pgtype.Text `db:"canonical_name" json:"canonical_name"`
-	Name          string      `db:"name" json:"name"`
-	ResourceType  string      `db:"resource_type" json:"resource_type"`
-	Description   pgtype.Text `db:"description" json:"description"`
+	ID               uuid.UUID             `db:"id" json:"id"`
+	CanonicalName    pgtype.Text           `db:"canonical_name" json:"canonical_name"`
+	Name             string                `db:"name" json:"name"`
+	ResourceType     string                `db:"resource_type" json:"resource_type"`
+	Description      pgtype.Text           `db:"description" json:"description"`
+	ScopePolicy      PermissionScopePolicy `db:"scope_policy" json:"scope_policy"`
+	AllowConditional bool                  `db:"allow_conditional" json:"allow_conditional"`
+	AllowRequest     bool                  `db:"allow_request" json:"allow_request"`
 }
 
 func (q *Queries) GetPermissionGroupMembers(ctx context.Context, groupID pgtype.UUID) ([]GetPermissionGroupMembersRow, error) {
@@ -430,6 +468,9 @@ func (q *Queries) GetPermissionGroupMembers(ctx context.Context, groupID pgtype.
 			&i.Name,
 			&i.ResourceType,
 			&i.Description,
+			&i.ScopePolicy,
+			&i.AllowConditional,
+			&i.AllowRequest,
 		); err != nil {
 			return nil, err
 		}
@@ -488,20 +529,25 @@ func (q *Queries) GetPermissionGroups(ctx context.Context) ([]GetPermissionGroup
 
 const GetPermissions = `-- name: GetPermissions :many
 
-SELECT id, canonical_name, name, resource_type, description, is_active, created_at
+SELECT id, canonical_name, name, resource_type, description,
+       scope_policy, allow_conditional, allow_request,
+       is_active, created_at
 FROM   permissions
 WHERE  is_active = TRUE
 ORDER  BY canonical_name
 `
 
 type GetPermissionsRow struct {
-	ID            uuid.UUID   `db:"id" json:"id"`
-	CanonicalName pgtype.Text `db:"canonical_name" json:"canonical_name"`
-	Name          string      `db:"name" json:"name"`
-	ResourceType  string      `db:"resource_type" json:"resource_type"`
-	Description   pgtype.Text `db:"description" json:"description"`
-	IsActive      bool        `db:"is_active" json:"is_active"`
-	CreatedAt     time.Time   `db:"created_at" json:"created_at"`
+	ID               uuid.UUID             `db:"id" json:"id"`
+	CanonicalName    pgtype.Text           `db:"canonical_name" json:"canonical_name"`
+	Name             string                `db:"name" json:"name"`
+	ResourceType     string                `db:"resource_type" json:"resource_type"`
+	Description      pgtype.Text           `db:"description" json:"description"`
+	ScopePolicy      PermissionScopePolicy `db:"scope_policy" json:"scope_policy"`
+	AllowConditional bool                  `db:"allow_conditional" json:"allow_conditional"`
+	AllowRequest     bool                  `db:"allow_request" json:"allow_request"`
+	IsActive         bool                  `db:"is_active" json:"is_active"`
+	CreatedAt        time.Time             `db:"created_at" json:"created_at"`
 }
 
 // ── Permissions ─────────────────────────────────────────────────────────────
@@ -520,6 +566,9 @@ func (q *Queries) GetPermissions(ctx context.Context) ([]GetPermissionsRow, erro
 			&i.Name,
 			&i.ResourceType,
 			&i.Description,
+			&i.ScopePolicy,
+			&i.AllowConditional,
+			&i.AllowRequest,
 			&i.IsActive,
 			&i.CreatedAt,
 		); err != nil {
@@ -948,6 +997,19 @@ func (q *Queries) RevokeUserPermission(ctx context.Context, arg RevokeUserPermis
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const SetActingUser = `-- name: SetActingUser :exec
+SELECT set_config('rbac.acting_user', $1::text, true)
+`
+
+// Sets rbac.acting_user for the current transaction so audit triggers
+// (fn_audit_role_permissions, etc.) record the correct deletion actor.
+// set_config(name, value, is_local=true) is equivalent to SET LOCAL and
+// accepts a parameterized value, unlike the SET statement.
+func (q *Queries) SetActingUser(ctx context.Context, userID string) error {
+	_, err := q.db.Exec(ctx, SetActingUser, userID)
+	return err
 }
 
 const UnlockUser = `-- name: UnlockUser :exec

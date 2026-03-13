@@ -9,21 +9,25 @@
 
 -- ── Permissions ───────────────────────────────────────────────────────────────
 
-INSERT INTO permissions (name, resource_type, description) VALUES
-    ('read',                'rbac',       'List roles, permissions, user assignments, and audit logs'),
-    ('manage',              'rbac',       'Create/update/soft-delete roles; add/remove role permissions; assign/remove user roles'),
-    ('grant_user_permission','rbac',      'Grant/revoke time-limited direct permissions on individual users'),
-    ('read',                'job_queue',  'View jobs, workers, queues, schedules, stats, metrics, and WS stream'),
-    ('manage',              'job_queue',  'Cancel jobs, retry dead/failed jobs, update job priority, purge dead jobs'),
-    ('configure',           'job_queue',  'Pause/resume job kinds, force-drain workers, create/update/delete/trigger schedules'),
-    ('read',                'user',       'List users, view profiles, view audit and login history'),
-    ('manage',              'user',       'Edit user details (email, name, etc.)'),
-    ('lock',                'user',       'Admin-lock and admin-unlock a user account (admin_locked field)'),
-    ('read',                'request',    'View requests and their history and status'),
-    ('manage',              'request',    'Create/edit/cancel requests; manage lifecycle non-approval steps'),
-    ('approve',             'request',    'Approve or reject a pending request'),
-    ('manage',              'product',    'Create/update/delete products (placeholder for store domain)')
-ON CONFLICT (canonical_name) DO NOTHING;
+INSERT INTO permissions (name, resource_type, description, scope_policy, allow_conditional, allow_request)
+VALUES
+    ('read',                 'rbac',       'List roles, permissions, user assignments, and audit logs',                              'none', FALSE, FALSE),
+    ('manage',               'rbac',       'Create/update/soft-delete roles; add/remove role permissions; assign/remove user roles', 'none', FALSE, FALSE),
+    ('grant_user_permission','rbac',       'Grant/revoke time-limited direct permissions on individual users',                       'none', FALSE, FALSE),
+    ('read',                 'job_queue',  'View jobs, workers, queues, schedules, stats, metrics, and WS stream',                  'none', FALSE, FALSE),
+    ('manage',               'job_queue',  'Cancel jobs, retry dead/failed jobs, update job priority, purge dead jobs',             'none', FALSE, FALSE),
+    ('configure',            'job_queue',  'Pause/resume job kinds, force-drain workers, create/update/delete/trigger schedules',   'none', FALSE, TRUE),
+    ('read',                 'user',       'List users, view profiles, view audit and login history',                               'none', FALSE, FALSE),
+    ('manage',               'user',       'Edit user details (email, name, etc.)',                                                 'none', FALSE, FALSE),
+    ('lock',                 'user',       'Admin-lock and admin-unlock a user account (admin_locked field)',                       'none', FALSE, TRUE),
+    ('read',                 'request',    'View requests and their history and status',                                            'none', FALSE, FALSE),
+    ('manage',               'request',    'Create/edit/cancel requests; manage lifecycle non-approval steps',                     'none', FALSE, FALSE),
+    ('approve',              'request',    'Approve or reject a pending request',                                                   'none', FALSE, FALSE),
+    ('manage',               'product',    'Create/update/delete products (placeholder for store domain)',                         'any',  TRUE,  TRUE)
+ON CONFLICT (canonical_name) DO UPDATE SET
+    scope_policy      = EXCLUDED.scope_policy,
+    allow_conditional = EXCLUDED.allow_conditional,
+    allow_request     = EXCLUDED.allow_request;
 
 -- ── Permission groups ─────────────────────────────────────────────────────────
 

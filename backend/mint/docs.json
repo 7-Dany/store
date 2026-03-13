@@ -52,6 +52,13 @@
               "guides/profile/email-change-flow",
               "guides/profile/delete-account-flow"
             ]
+          },
+          {
+            "group": "RBAC",
+            "icon": "shield-halved",
+            "pages": [
+              "guides/rbac/permissions-setup-guide"
+            ]
           }
         ]
       },
@@ -110,7 +117,15 @@
             "pages": [
               "api-reference/rbac/bootstrap/bootstrap",
               "api-reference/rbac/permissions/list-permissions",
-              "api-reference/rbac/permissions/list-permission-groups"
+              "api-reference/rbac/permissions/list-permission-groups",
+              "api-reference/rbac/roles/list-roles",
+              "api-reference/rbac/roles/get-role",
+              "api-reference/rbac/roles/create-role",
+              "api-reference/rbac/roles/update-role",
+              "api-reference/rbac/roles/delete-role",
+              "api-reference/rbac/roles/list-role-permissions",
+              "api-reference/rbac/roles/add-role-permission",
+              "api-reference/rbac/roles/remove-role-permission"
             ]
           },
           {

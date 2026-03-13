@@ -63,7 +63,7 @@
                   "        if (parts && parts.length) { const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html'); if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/')); }",
                   "        else if (msg.payload && msg.payload.body && msg.payload.body.data) { body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/')); }",
                   "        if (!body) { console.warn('[WARN] Could not decode verification email body.'); return; }",
-                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        const match = body.match(/(?<!#)\\b(\\d{6})\\b/);",
                   "        if (!match) { console.warn('[WARN] No 6-digit OTP found in verification email.'); return; }",
                   "        pm.collectionVariables.set('prof_vfy_code', match[1]);",
                   "        console.log('[INFO] Verification OTP stored in prof_vfy_code:', match[1]);",

@@ -48,7 +48,8 @@ func NewService(store Storer, tokenTTL time.Duration) *Service {
 // VerifyEmailTx already marks the email as verified inside its transaction,
 // so the onSuccess callback is a no-op.
 func (s *Service) VerifyEmail(ctx context.Context, in VerifyEmailInput) error {
-	return authshared.ConsumeOTPToken(
+	slog.DebugContext(ctx, "verification.VerifyEmail: start", "email", in.Email, "ip", in.IPAddress)
+	err := authshared.ConsumeOTPToken(
 		ctx,
 		in.Code,
 		func(checkFn func(authshared.VerificationToken) error) error {
@@ -71,6 +72,10 @@ func (s *Service) VerifyEmail(ctx context.Context, in VerifyEmailInput) error {
 			})
 		},
 	)
+	if err == nil {
+		slog.InfoContext(ctx, "verification.VerifyEmail: success", "email", in.Email)
+	}
+	return err
 }
 
 // ResendVerification issues a fresh OTP for the given email address.
@@ -82,6 +87,8 @@ func (s *Service) VerifyEmail(ctx context.Context, in VerifyEmailInput) error {
 // The caller must inspect ResendResult.RawCode: an empty string means
 // the request was silently suppressed and no email should be sent.
 func (s *Service) ResendVerification(ctx context.Context, in ResendInput) (authshared.OTPIssuanceResult, error) {
+	slog.DebugContext(ctx, "verification.ResendVerification: start", "email", in.Email, "ip", in.IPAddress)
+
 	// 1. Look up the account. Unknown email -> silent no-op (anti-enumeration).
 	user, err := s.store.GetUserForResend(ctx, in.Email)
 	if err != nil {
@@ -90,6 +97,7 @@ func (s *Service) ResendVerification(ctx context.Context, in ResendInput) (auths
 			// equalize response latency with the happy path, which calls GenerateCodeHash
 			// (bcrypt at cost 12).
 			_ = authshared.GetDummyOTPHash()
+			slog.DebugContext(ctx, "verification.ResendVerification: suppressed — email not found", "email", in.Email)
 			return authshared.OTPIssuanceResult{}, nil
 		}
 		return authshared.OTPIssuanceResult{}, fmt.Errorf("verification.ResendVerification: get user: %w", err)
@@ -97,6 +105,11 @@ func (s *Service) ResendVerification(ctx context.Context, in ResendInput) (auths
 
 	// 2. Already verified or admin-locked -> silent no-op (anti-enumeration).
 	if user.EmailVerified || user.IsLocked {
+		slog.DebugContext(ctx, "verification.ResendVerification: suppressed — already verified or locked",
+			"email", in.Email,
+			"email_verified", user.EmailVerified,
+			"is_locked", user.IsLocked,
+		)
 		return authshared.OTPIssuanceResult{}, nil
 	}
 
@@ -133,5 +146,9 @@ func (s *Service) ResendVerification(ctx context.Context, in ResendInput) (auths
 		return authshared.OTPIssuanceResult{}, fmt.Errorf("verification.ResendVerification: resend tx: %w", err)
 	}
 
+	slog.InfoContext(ctx, "verification.ResendVerification: OTP issued",
+		"user_id", uuid.UUID(user.ID).String(),
+		"email", in.Email,
+	)
 	return authshared.NewOTPIssuanceResult(user.ID, in.Email, raw), nil
 }

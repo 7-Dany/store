@@ -61,6 +61,10 @@ func toPermissionResponses(perms []Permission) []PermissionResponse {
 			ResourceType:  p.ResourceType,
 			Name:          p.Name,
 			Description:   p.Description,
+			Capabilities: PermissionCapabilitiesResponse{
+				ScopePolicy: p.Capabilities.ScopePolicy,
+				AccessTypes: p.Capabilities.AccessTypes,
+			},
 		}
 	}
 	return out
@@ -80,6 +84,10 @@ func toPermissionGroupResponses(groups []PermissionGroup) []PermissionGroupRespo
 				ResourceType:  m.ResourceType,
 				Name:          m.Name,
 				Description:   m.Description,
+				Capabilities: PermissionCapabilitiesResponse{
+					ScopePolicy: m.Capabilities.ScopePolicy,
+					AccessTypes: m.Capabilities.AccessTypes,
+				},
 			}
 		}
 		out[i] = PermissionGroupResponse{

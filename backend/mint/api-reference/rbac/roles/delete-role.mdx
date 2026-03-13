@@ -1,0 +1,97 @@
+---
+title: "Delete Role"
+description: "Deactivates a custom role, removing it from the system."
+api: "DELETE http://localhost:8080/admin/rbac/roles/{id}"
+---
+
+<ParamField path="id" type="string" required>
+  The UUID of the role to delete.
+</ParamField>
+
+## Behaviour
+
+Deletion is a soft-delete — the role is deactivated rather than permanently removed from the database. It will no longer appear in [`GET /admin/rbac/roles`](/api-reference/rbac/roles/list-roles) and cannot be assigned to users.
+
+System roles and the owner role cannot be deleted. Attempting to do so returns `409 Conflict`.
+
+<RequestExample>
+```bash Example
+curl -X DELETE http://localhost:8080/admin/rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c \
+  -H "Authorization: Bearer <token>"
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+```
+
+```json 409
+{
+  "code": "system_role_immutable",
+  "message": "system roles cannot be modified"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The role was deactivated successfully. No body is returned.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `rbac:manage` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    No role exists with the given ID, or the ID is not a valid UUID.
+
+    ```json
+    {
+      "code": "role_not_found",
+      "message": "role not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    The role is a system or owner role and cannot be deleted.
+
+    ```json
+    {
+      "code": "system_role_immutable",
+      "message": "system roles cannot be modified"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

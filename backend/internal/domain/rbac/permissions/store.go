@@ -46,6 +46,7 @@ func (s *Store) GetPermissions(ctx context.Context) ([]Permission, error) {
 			Name:          row.Name,
 			ResourceType:  row.ResourceType,
 			Description:   row.Description.String,
+			Capabilities:  buildCapabilities(string(row.ScopePolicy), row.AllowConditional, row.AllowRequest),
 		})
 	}
 	return perms, nil
@@ -74,6 +75,7 @@ func (s *Store) GetPermissionGroups(ctx context.Context) ([]PermissionGroup, err
 				Name:          m.Name,
 				ResourceType:  m.ResourceType,
 				Description:   m.Description.String,
+				Capabilities:  buildCapabilities(string(m.ScopePolicy), m.AllowConditional, m.AllowRequest),
 			})
 		}
 

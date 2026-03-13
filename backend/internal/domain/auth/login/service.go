@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
+
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 )
 
@@ -50,6 +52,8 @@ func NewService(store Storer) *Service {
 // itself limits exploitation, and the simpler guard order is easier to audit.
 // See login.md §2.2 for the full analysis.
 func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, error) {
+	slog.DebugContext(ctx, "login.Login: start", "identifier", in.Identifier, "ip", in.IPAddress)
+
 	// 1. Look up the user. On no-rows, fall through to a dummy bcrypt compare
 	// below so the timing is indistinguishable from a wrong-password attempt.
 	user, lookupErr := s.store.GetUserForLogin(ctx, in.Identifier)
@@ -77,6 +81,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 
 	// 4. Wrong password → increment failure counter, return ErrInvalidCredentials.
 	if pwErr != nil {
+		slog.DebugContext(ctx, "login.Login: wrong password", "user_id", uuid.UUID(user.ID).String())
 		if !errors.Is(pwErr, authshared.ErrInvalidCredentials) {
 			// Malformed hash is a data-integrity alert, not a user error.
 			return LoggedInSession{}, fmt.Errorf("login.Login: password check: %w", pwErr)
@@ -99,6 +104,10 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 	// with a Retry-After header rather than 423 (permanent admin lock).
 	if user.LoginLockedUntil != nil && user.LoginLockedUntil.After(time.Now()) {
 		retryAfter := time.Until(*user.LoginLockedUntil)
+		slog.DebugContext(ctx, "login.Login: guard rejected — time_locked",
+			"user_id", uuid.UUID(user.ID).String(),
+			"retry_after", retryAfter.Round(time.Second).String(),
+		)
 		return LoggedInSession{}, &authshared.LoginLockedError{RetryAfter: retryAfter}
 	}
 
@@ -106,6 +115,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 	// credential-stuffing and brute-force patterns remain detectable.
 	switch {
 	case user.IsLocked:
+		slog.DebugContext(ctx, "login.Login: guard rejected — account_locked", "user_id", uuid.UUID(user.ID).String())
 		// Security: WithoutCancel so audit write survives a client disconnect.
 		if auditErr := s.store.WriteLoginFailedAuditTx(
 			context.WithoutCancel(ctx),
@@ -118,6 +128,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 		}
 		return LoggedInSession{}, authshared.ErrAccountLocked
 	case !user.EmailVerified:
+		slog.DebugContext(ctx, "login.Login: guard rejected — email_not_verified", "user_id", uuid.UUID(user.ID).String())
 		if auditErr := s.store.WriteLoginFailedAuditTx(
 			context.WithoutCancel(ctx), user.ID, "email_not_verified",
 			in.IPAddress, in.UserAgent,
@@ -126,6 +137,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 		}
 		return LoggedInSession{}, authshared.ErrEmailNotVerified
 	case !user.IsActive:
+		slog.DebugContext(ctx, "login.Login: guard rejected — account_inactive", "user_id", uuid.UUID(user.ID).String())
 		if auditErr := s.store.WriteLoginFailedAuditTx(
 			context.WithoutCancel(ctx), user.ID, "account_inactive",
 			in.IPAddress, in.UserAgent,
@@ -150,6 +162,11 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 	if resetErr := s.store.ResetLoginFailuresTx(context.WithoutCancel(ctx), user.ID); resetErr != nil {
 		slog.ErrorContext(ctx, "login.Login: ResetLoginFailuresTx", "error", resetErr)
 	}
+
+	slog.InfoContext(ctx, "login.Login: success",
+		"user_id", uuid.UUID(user.ID).String(),
+		"session_id", uuid.UUID(session.SessionID).String(),
+	)
 
 	// 9. Propagate pending-deletion timestamp so the handler can include
 	// scheduled_deletion_at in the login response (D-04).

@@ -94,7 +94,7 @@
                   "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
                   "        }",
                   "        if (!body) { console.warn('[WARN] Could not decode email body.'); return; }",
-                  "        const match = body.match(/\\b(\\d{6})\\b/);",
+                  "        const match = body.match(/(?<!#)\\b(\\d{6})\\b/);",
                   "        if (!match) { console.warn('[WARN] No 6-digit OTP found in email body.'); return; }",
                   "        pm.collectionVariables.set('lgn_code', match[1]);",
                   "        console.log('[INFO] OTP stored in collection variable \"lgn_code\":', match[1]);",

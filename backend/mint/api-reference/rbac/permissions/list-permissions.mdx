@@ -13,6 +13,8 @@ api: "GET http://localhost:8080/api/v1/admin/permissions"
 
 **Description is optional** — The `description` field is omitted from each permission object when no description has been set.
 
+**Capabilities are always present** — Every permission object includes a `capabilities` field describing which `access_type` and `scope` values are valid for grants of that permission. Use this to drive the grant form in admin UIs — do not hard-code the allowed values client-side.
+
 <ResponseExample>
 ```json 200
 {
@@ -21,14 +23,23 @@ api: "GET http://localhost:8080/api/v1/admin/permissions"
       "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
       "canonical_name": "rbac:read",
       "resource_type": "rbac",
-      "name": "RBAC Read",
-      "description": "View roles, permissions, and user role assignments."
+      "name": "read",
+      "description": "List roles, permissions, user assignments, and audit logs.",
+      "capabilities": {
+        "scope_policy": "none",
+        "access_types": ["direct", "denied"]
+      }
     },
     {
       "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5c",
-      "canonical_name": "user:read",
-      "resource_type": "user",
-      "name": "User Read"
+      "canonical_name": "product:manage",
+      "resource_type": "product",
+      "name": "manage",
+      "description": "Create/update/delete products.",
+      "capabilities": {
+        "scope_policy": "any",
+        "access_types": ["direct", "conditional", "request", "denied"]
+      }
     }
   ]
 }
@@ -53,7 +64,20 @@ api: "GET http://localhost:8080/api/v1/admin/permissions"
 
 <AccordionGroup>
   <Accordion title="200 — OK">
-    Returns the full list of active permissions. The `description` field is omitted when empty. The array is always present — an empty catalogue returns `[]` rather than `null`.
+    Returns the full list of active permissions ordered by `canonical_name`. The `description` field is omitted when empty. The array is always present — an empty catalogue returns `[]` rather than `null`.
+
+    Each permission object includes a `capabilities` field:
+
+    | Field | Type | Description |
+    |---|---|---|
+    | `capabilities.scope_policy` | string | `"none"` \| `"own"` \| `"all"` \| `"any"` — which scope values are valid for grants of this permission |
+    | `capabilities.access_types` | string[] | Ordered list of `access_type` values this permission allows. Always contains `"direct"` and `"denied"`. Contains `"conditional"` when `allow_conditional = true`. Contains `"request"` when `allow_request = true`. |
+
+    **UI guidance for `scope_policy`:**
+    - `"none"` — hide the scope field; it has no meaning for this permission (service normalises scope to `"all"` automatically)
+    - `"own"` — pre-fill scope as `"own"` and render read-only
+    - `"all"` — pre-fill scope as `"all"` and render read-only
+    - `"any"` — show a scope selector with both `"own"` and `"all"` options
 
     ```json
     {
@@ -62,8 +86,12 @@ api: "GET http://localhost:8080/api/v1/admin/permissions"
           "id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
           "canonical_name": "rbac:read",
           "resource_type": "rbac",
-          "name": "RBAC Read",
-          "description": "View roles, permissions, and user role assignments."
+          "name": "read",
+          "description": "List roles, permissions, user assignments, and audit logs.",
+          "capabilities": {
+            "scope_policy": "none",
+            "access_types": ["direct", "denied"]
+          }
         }
       ]
     }

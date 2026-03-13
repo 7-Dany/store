@@ -1,0 +1,202 @@
+---
+title: "Add Role Permission"
+description: "Assigns a permission to a role."
+api: "POST http://localhost:8080/admin/rbac/roles/{id}/permissions"
+---
+
+<ParamField path="id" type="string" required>
+  The UUID of the role to assign the permission to.
+</ParamField>
+
+<ParamField body="permission_id" type="string" required>
+  The UUID of the permission to assign.
+</ParamField>
+
+<ParamField body="access_type" type="string" required>
+  Controls how the permission is applied. Must be one of:
+
+  <Expandable title="values">
+    - `direct` — the permission is always granted, no further checks required
+    - `conditional` — the permission is granted only when the `conditions` object evaluates to true
+    - `request` — the user must explicitly request access; access is not automatic
+    - `denied` — explicitly blocks this permission even if another role would grant it
+  </Expandable>
+</ParamField>
+
+<ParamField body="scope" type="string" required>
+  Limits which resources the permission applies to. Must be one of:
+
+  <Expandable title="values">
+    - `own` — the user may only act on resources they own
+    - `all` — the user may act on any resource of this type
+  </Expandable>
+</ParamField>
+
+<ParamField body="granted_reason" type="string" required>
+  A short explanation of why this permission is being granted. Used for auditing — make it clear and specific (e.g. `"Support team needs to view all orders"`).
+</ParamField>
+
+<ParamField body="conditions" type="object">
+  A JSON object that holds additional constraints for `conditional` access type grants. Defaults to `{}` when omitted.
+</ParamField>
+
+## Behaviour
+
+Adds a permission grant to the role. The caller's identity is recorded alongside the grant for audit purposes. If `conditions` is not provided it defaults to an empty object (`{}`).
+
+Before calling this endpoint, read the permission's `capabilities` field from [`GET /admin/rbac/permissions`](/api-reference/rbac/permissions/list-permissions) to determine which `access_type` and `scope` values are valid. Passing values outside what the permission allows returns `422`.
+
+To understand the full grant workflow, see the [Permission Setup Guide](/guides/rbac/permissions-setup-guide).
+
+<RequestExample>
+```json Example
+{
+  "permission_id": "019a1b2c-3d4e-5f60-a7b8-c9d0e1f2a3b4",
+  "access_type": "direct",
+  "scope": "all",
+  "granted_reason": "Support team needs full read access to orders."
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+```
+
+```json 404
+{
+  "code": "permission_not_found",
+  "message": "permission not found"
+}
+```
+
+```json 409
+{
+  "code": "grant_already_exists",
+  "message": "this permission is already granted to the role — remove it first to change access_type or scope"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "access_type must be one of: direct, conditional, request, denied"
+}
+```
+
+```json 422
+{
+  "code": "access_type_not_allowed",
+  "message": "access_type is not permitted for this permission"
+}
+```
+
+```json 422
+{
+  "code": "scope_not_allowed",
+  "message": "scope is not permitted for this permission"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The permission was successfully assigned to the role. No body is returned.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `rbac:manage` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    The role or the permission could not be found. Check both IDs.
+
+    ```json
+    {
+      "code": "role_not_found",
+      "message": "role not found"
+    }
+    ```
+
+    ```json
+    {
+      "code": "permission_not_found",
+      "message": "permission not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    The permission is already granted to this role. Remove the existing grant first using
+    [`DELETE /admin/rbac/roles/{id}/permissions/{perm_id}`](/api-reference/rbac/roles/remove-role-permission)
+    before re-adding with a different `access_type` or `scope`.
+
+    ```json
+    {
+      "code": "grant_already_exists",
+      "message": "this permission is already granted to the role — remove it first to change access_type or scope"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    A required field is missing, invalid, or not permitted by the permission's capability flags.
+
+    **`validation_error`** — a field is missing or its value is not in the allowed set:
+    ```json
+    {
+      "code": "validation_error",
+      "message": "access_type must be one of: direct, conditional, request, denied"
+    }
+    ```
+
+    **`access_type_not_allowed`** — the permission's capability flags do not allow this `access_type`. For example, passing `"conditional"` for a permission whose `capabilities.access_types` does not include `"conditional"`:
+    ```json
+    {
+      "code": "access_type_not_allowed",
+      "message": "access_type is not permitted for this permission"
+    }
+    ```
+
+    **`scope_not_allowed`** — the `scope` value conflicts with the permission's `scope_policy`. For example, passing `scope: "own"` for a permission with `scope_policy: "all"`:
+    ```json
+    {
+      "code": "scope_not_allowed",
+      "message": "scope is not permitted for this permission"
+    }
+    ```
+
+    Check `capabilities.scope_policy` and `capabilities.access_types` from [`GET /admin/rbac/permissions`](/api-reference/rbac/permissions/list-permissions) before building the grant request.
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

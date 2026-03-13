@@ -22,20 +22,21 @@
 #   e2e/profile/identities.json         → GET /me/identities (requires JWT)
 #   e2e/rbac/bootstrap.json             → POST /owner/bootstrap
 #   e2e/rbac/permissions.json           → GET /admin/permissions + GET /admin/permissions/groups (requires rbac:read)
+#   e2e/rbac/roles.json                 → CRUD /admin/rbac/roles + /admin/rbac/roles/{id}/permissions (requires rbac:read + rbac:manage)
 #
 # Individual targets   — run a single collection:
 #   e2e-health, e2e-register, e2e-verify-email, e2e-login, e2e-session,
 #   e2e-unlock, e2e-password, e2e-set-password, e2e-me, e2e-sessions,
 #   e2e-revoke-session, e2e-update-profile, e2e-username, e2e-email,
 #   e2e-delete-account, e2e-identities, e2e-oauth-google, e2e-oauth-telegram,
-#   e2e-rbac-bootstrap, e2e-rbac-permissions
+#   e2e-rbac-bootstrap, e2e-rbac-permissions, e2e-rbac-roles
 #
 # Group targets        — run a folder of collections in order:
 #   e2e-auth           — register + verify-email + login + session + unlock + password
 #   e2e-oauth          — oauth-google + oauth-telegram
 #   e2e-profile        — me + sessions + revoke-session + update-profile +
 #                        set-password + username + email + delete-account + identities
-#   e2e-rbac           — rbac-bootstrap + rbac-permissions
+#   e2e-rbac           — rbac-bootstrap + rbac-permissions + rbac-roles
 #
 # Suite target         — run everything at once:
 #   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile + e2e-rbac
@@ -172,6 +173,12 @@ _F_BSTRP_MAIN      := --folder "setup" --folder "auth-guard" --folder "validatio
 # without re-issuing. No Redis flush needed.
 _F_PERMS_MAIN      := --folder "setup" --folder "auth-guard" --folder "rbac-guard" --folder "owner-bootstrap" --folder "happy-path"
 
+# rbac/roles (no rate limiter — single invocation)
+# owner-bootstrap promotes the setup user to owner mid-run so the same JWT
+# covers rbac-guard (403) and all subsequent folders (200/201/204).
+# No Redis flush needed.
+_F_ROLES_MAIN      := --folder "setup" --folder "auth-guard" --folder "rbac-guard" --folder "owner-bootstrap" --folder "happy-path" --folder "not-found" --folder "validation" --folder "immutable-guard"
+
 # ── PHONY ─────────────────────────────────────────────────────────────────────
 .PHONY: e2e-install \
         e2e e2e-health \
@@ -182,7 +189,7 @@ _F_PERMS_MAIN      := --folder "setup" --folder "auth-guard" --folder "rbac-guar
         e2e-delete-account e2e-identities \
         e2e-oauth-google e2e-oauth-telegram \
         e2e-profile e2e-auth e2e-oauth \
-        e2e-rbac e2e-rbac-bootstrap e2e-rbac-permissions \
+        e2e-rbac e2e-rbac-bootstrap e2e-rbac-permissions e2e-rbac-roles \
         _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
 
 # ── Tooling ───────────────────────────────────────────────────────────────────
@@ -279,9 +286,10 @@ e2e-profile: _e2e-check-env ## Run all profile E2E collections in order (require
 	@$(MAKE) e2e-identities
 	@$(call _e2e_ok,[e2e] profile suite passed)
 
-e2e-rbac: _e2e-check-env ## Run all RBAC E2E collections in order (bootstrap + permissions)
+e2e-rbac: _e2e-check-env ## Run all RBAC E2E collections in order (bootstrap + permissions + roles)
 	@$(MAKE) e2e-rbac-bootstrap
 	@$(MAKE) e2e-rbac-permissions
+	@$(MAKE) e2e-rbac-roles
 	@$(call _e2e_ok,[e2e] rbac suite passed)
 
 # ── health ────────────────────────────────────────────────────────────────────
@@ -507,6 +515,18 @@ e2e-oauth-telegram: _e2e-check-env ## Run Telegram OAuth E2E (callback + link + 
 	@$(MAKE) _e2e-kv-clean
 	$(call newman-run,$(E2E_OAUTH)/telegram.json,$(_F_TELEGRAM_RL_CB),1)
 	@$(call _e2e_ok,[e2e] oauth-telegram suite passed)
+
+# ── rbac/roles ───────────────────────────────────────────────────────────────
+
+# No rate limiter on admin routes — single invocation, no Redis flush needed.
+# owner-bootstrap runs mid-collection (promotes the test user to owner so both
+# RBAC guards pass); the same JWT is reused for all subsequent folders.
+e2e-rbac-roles: _e2e-check-env ## Run CRUD /admin/rbac/roles E2E (requires rbac:read + rbac:manage)
+	@$(call _e2e_info,[e2e] --- CRUD /admin/rbac/roles ---)
+	@$(MAKE) _e2e-clean
+	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + rbac-guard + owner-bootstrap + happy-path + not-found + validation + immutable-guard (single invocation))
+	$(call newman-run,$(E2E_RBAC)/roles.json,$(_F_ROLES_MAIN),$(E2E_DELAY))
+	@$(call _e2e_ok,[e2e] rbac-roles suite passed)
 
 # ── rbac/bootstrap ────────────────────────────────────────────────────────────
 

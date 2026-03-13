@@ -225,9 +225,10 @@ WHERE  rp.role_id  = @role_id::uuid
   AND  p.is_active = TRUE
 ORDER  BY p.canonical_name;
 
--- name: AddRolePermission :exec
--- ON CONFLICT DO NOTHING: idempotent — adding a permission the role already has is a no-op.
--- To update access_type/scope on an existing grant, remove + re-add from the service layer.
+-- name: AddRolePermission :execrows
+-- ON CONFLICT (role_id, permission_id) DO NOTHING: returns 0 when the grant
+-- already exists. The service maps 0 rows → ErrGrantAlreadyExists → 409.
+-- To update access_type/scope on an existing grant, remove it first then re-add.
 INSERT INTO role_permissions (
     role_id, permission_id, granted_by, granted_reason,
     access_type, scope, conditions
@@ -247,14 +248,31 @@ ON CONFLICT (role_id, permission_id) DO NOTHING;
 DELETE FROM role_permissions
 WHERE role_id = @role_id::uuid AND permission_id = @permission_id::uuid;
 
+-- name: SetActingUser :exec
+-- Sets rbac.acting_user for the current transaction so audit triggers
+-- (fn_audit_role_permissions, etc.) record the correct deletion actor.
+-- set_config(name, value, is_local=true) is equivalent to SET LOCAL and
+-- accepts a parameterized value, unlike the SET statement.
+SELECT set_config('rbac.acting_user', @user_id::text, true);
+
 
 /* ── Permissions ───────────────────────────────────────────────────────────── */
 
 -- name: GetPermissions :many
-SELECT id, canonical_name, name, resource_type, description, is_active, created_at
+SELECT id, canonical_name, name, resource_type, description,
+       scope_policy, allow_conditional, allow_request,
+       is_active, created_at
 FROM   permissions
 WHERE  is_active = TRUE
 ORDER  BY canonical_name;
+
+-- name: GetPermissionByID :one
+-- Returns the capability flags for a single permission by primary key.
+-- Used by AddRolePermission to validate access_type and scope before inserting.
+SELECT id, canonical_name, scope_policy, allow_conditional, allow_request
+FROM   permissions
+WHERE  id        = @id::uuid
+  AND  is_active = TRUE;
 
 -- name: GetPermissionByCanonicalName :one
 SELECT id, canonical_name, name, resource_type, description, is_active
@@ -269,7 +287,8 @@ WHERE  is_active = TRUE
 ORDER  BY display_order, name;
 
 -- name: GetPermissionGroupMembers :many
-SELECT p.id, p.canonical_name, p.name, p.resource_type, p.description
+SELECT p.id, p.canonical_name, p.name, p.resource_type, p.description,
+       p.scope_policy, p.allow_conditional, p.allow_request
 FROM   permission_group_members pgm
 JOIN   permissions p ON p.id = pgm.permission_id
 WHERE  pgm.group_id = @group_id::uuid

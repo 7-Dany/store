@@ -10,6 +10,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/roles"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/userpermissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/userroles"
 )
 
@@ -40,5 +41,6 @@ func adminRoutes(ctx context.Context, deps *app.Deps) *chi.Mux {
 	permissions.Routes(ctx, r, deps)
 	roles.Routes(ctx, r, deps)    // Phase 6
 	userroles.Routes(ctx, r, deps)
+	userpermissions.Routes(ctx, r, deps) // Phase 10
 	return r
 }

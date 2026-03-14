@@ -1,0 +1,100 @@
+---
+title: "Revoke User Permission"
+description: "Revokes a direct permission grant from a user."
+api: "DELETE http://localhost:8080/admin/rbac/users/{user_id}/permissions/{grant_id}"
+---
+
+<ParamField path="user_id" type="string" required>
+  The UUID of the user whose permission grant should be revoked.
+</ParamField>
+
+<ParamField path="grant_id" type="string" required>
+  The UUID of the specific grant to revoke. Obtained from the `id` field in the [`GET /admin/rbac/users/{user_id}/permissions`](/api-reference/rbac/user-permissions/list-user-permissions) response.
+</ParamField>
+
+## Behaviour
+
+Hard-deletes the identified direct permission grant. After revocation the user immediately loses the permission — there is no grace period.
+
+The grant must belong to the specified `user_id`. Attempting to revoke a grant that either does not exist or belongs to a different user returns a `404`.
+
+Revocation is executed with a detached context so a client disconnect mid-request cannot leave the grant in an active state.
+
+<ResponseExample>
+```json 204
+// 204 No Content — empty body
+```
+
+```json 404
+{
+  "code": "grant_not_found",
+  "message": "permission grant not found"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "missing or invalid access token"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "forbidden"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The grant was successfully revoked. The user no longer holds this direct permission.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `rbac:grant_user_permission` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    The `grant_id` does not exist, belongs to a different user, or either UUID is invalid.
+
+    ```json
+    {
+      "code": "grant_not_found",
+      "message": "permission grant not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

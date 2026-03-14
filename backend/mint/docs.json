@@ -56,9 +56,7 @@
           {
             "group": "RBAC",
             "icon": "shield-halved",
-            "pages": [
-              "guides/rbac/permissions-setup-guide"
-            ]
+            "pages": ["guides/rbac/permissions-setup-guide"]
           }
         ]
       },
@@ -128,7 +126,10 @@
               "api-reference/rbac/roles/remove-role-permission",
               "api-reference/rbac/user-roles/get-user-role",
               "api-reference/rbac/user-roles/assign-role",
-              "api-reference/rbac/user-roles/remove-role"
+              "api-reference/rbac/user-roles/remove-role",
+              "api-reference/rbac/user-permissions/list-user-permissions",
+              "api-reference/rbac/user-permissions/grant-user-permission",
+              "api-reference/rbac/user-permissions/revoke-user-permission"
             ]
           },
           {

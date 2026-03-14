@@ -30,12 +30,12 @@ func GenerateAccessToken(userID, sessionID string, ttl time.Duration, secret str
 			Issuer:   Issuer,
 			Subject:  userID,
 			Audience: jwt.ClaimStrings{AudienceAccess},
-			// JTI is a raw UUID v4 with no type prefix. Access and refresh tokens share
-			// the same blocklist namespace; UUID v4 collision probability (~10^-37 at
-			// 10^9 tokens/s) makes cross-type collisions negligible. If prefixes are
-			// ever added here, BlockToken and IsTokenBlocked call sites must be updated
+			// JTI is a UUID v7 (time-ordered) with no type prefix. Access and refresh
+			// tokens share the same blocklist namespace; the timestamp prefix keeps
+			// blocklist keys naturally ordered by issuance time. If prefixes are ever
+			// added here, BlockToken and IsTokenBlocked call sites must be updated
 			// simultaneously.
-			ID:       uuid.NewString(),
+			ID:       uuid.Must(uuid.NewV7()).String(),
 			IssuedAt: jwt.NewNumericDate(now),
 			// NotBefore is intentionally omitted: tokens are valid immediately on
 			// issuance and the access TTL is short enough (default 15 min) that

@@ -95,7 +95,7 @@ CREATE TABLE job_paused_kinds (
  * reaches a terminal state.
  */
 CREATE TABLE jobs (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Handler type name used by the Dispatcher to route the job to the correct handler function.
  kind VARCHAR(100) NOT NULL,
@@ -258,7 +258,7 @@ COMMENT ON COLUMN jobs.priority IS
  * using idx_workers_stopped.
  */
 CREATE TABLE workers (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Hostname of the machine running this Dispatcher instance. Used for operational identification.
  host VARCHAR(255) NOT NULL,
@@ -336,7 +336,7 @@ COMMENT ON TABLE workers IS
  * enforced by chk_js_schedule_type.
  */
 CREATE TABLE job_schedules (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Unique human-readable name for this schedule (e.g. 'daily_report', 'hourly_cleanup').
  name VARCHAR(100) UNIQUE NOT NULL,

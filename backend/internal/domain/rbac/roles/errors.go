@@ -1,6 +1,10 @@
 package roles
 
-import "errors"
+import (
+	"errors"
+
+	rbacshared "github.com/7-Dany/store/backend/internal/domain/rbac/shared"
+)
 
 // ── Store / service sentinel errors ──────────────────────────────────────────
 
@@ -54,7 +58,9 @@ var ErrRoleNameConflict = errors.New("a role with this name already exists")
 // E.g. access_type = 'conditional' when allow_conditional = FALSE.
 var ErrAccessTypeNotAllowed = errors.New("access_type is not permitted for this permission")
 
-// ErrScopeNotAllowed is returned when AddRolePermission receives a scope value
-// that the permission's scope_policy does not permit.
-// E.g. scope = 'own' when scope_policy = 'all'.
-var ErrScopeNotAllowed = errors.New("scope is not permitted for this permission")
+// ErrScopeNotAllowed — see rbacshared.ErrScopeNotAllowed.
+// Both roles and userpermissions return the shared sentinel so callers can
+// use a single errors.Is check regardless of which package produced the error.
+// Kept here as an alias so existing callers inside the roles package compile
+// without modification.
+var ErrScopeNotAllowed = rbacshared.ErrScopeNotAllowed

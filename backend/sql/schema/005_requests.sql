@@ -126,7 +126,7 @@ COMMENT ON COLUMN request_type_schemas.json_schema IS
  * request_required_approvers by fn_sync_approvals_required (trigger in 006).
  */
 CREATE TABLE requests (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Discriminator: product_creation, vendor_withdrawal, permission_action, etc.
  -- Controls which JSON Schema is used to validate request_data.
@@ -236,7 +236,7 @@ COMMENT ON COLUMN requests.resolved_at IS
  * requests by transitioning to a terminal state, never by hard DELETE.
  */
 CREATE TABLE request_status_history (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- RESTRICT: prevents hard-deleting a request while status history exists.
  request_id UUID NOT NULL REFERENCES requests(id) ON DELETE RESTRICT,
@@ -354,7 +354,7 @@ COMMENT ON COLUMN request_required_approvers.conditions IS
  * approver submits two approval actions concurrently.
  */
 CREATE TABLE request_approvals (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- RESTRICT: prevents deleting the request while approval records exist.
  request_id UUID REFERENCES requests(id) ON DELETE RESTRICT,
@@ -411,7 +411,7 @@ COMMENT ON COLUMN request_approvals.role_used IS
  * read_at = NULL means unread in the user's in-app notification centre.
  */
 CREATE TABLE request_notifications (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- CASCADE: notifications are removed when the request or user is deleted.
  request_id UUID REFERENCES requests(id) ON DELETE CASCADE,
@@ -555,7 +555,7 @@ COMMENT ON COLUMN request_sla_config.approaching_threshold_percent IS
 
 -- Records a detected SLA breach for monitoring, on-call alerting, and reporting.
 CREATE TABLE request_sla_violations (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- CASCADE: violations are removed if the request is deleted (soft-delete preferred).
  request_id UUID REFERENCES requests(id) ON DELETE CASCADE,

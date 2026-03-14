@@ -24,20 +24,23 @@
 #   e2e/rbac/permissions.json           → GET /admin/permissions + GET /admin/permissions/groups (requires rbac:read)
 #   e2e/rbac/roles.json                 → CRUD /admin/rbac/roles + /admin/rbac/roles/{id}/permissions (requires rbac:read + rbac:manage)
 #   e2e/rbac/userroles.json              → GET/PUT/DELETE /admin/rbac/users/{user_id}/role (requires rbac:read + rbac:manage)
+#   e2e/rbac/userpermissions.json       → GET/POST/DELETE /admin/rbac/users/{user_id}/permissions (requires rbac:read + rbac:grant_user_perm)
 #
 # Individual targets   — run a single collection:
 #   e2e-health, e2e-register, e2e-verify-email, e2e-login, e2e-session,
 #   e2e-unlock, e2e-password, e2e-set-password, e2e-me, e2e-sessions,
 #   e2e-revoke-session, e2e-update-profile, e2e-username, e2e-email,
 #   e2e-delete-account, e2e-identities, e2e-oauth-google, e2e-oauth-telegram,
-#   e2e-rbac-bootstrap, e2e-rbac-permissions, e2e-rbac-roles, e2e-rbac-userroles
+#   e2e-rbac-bootstrap, e2e-rbac-permissions, e2e-rbac-roles, e2e-rbac-userroles,
+#   e2e-rbac-userpermissions
 #
 # Group targets        — run a folder of collections in order:
 #   e2e-auth           — register + verify-email + login + session + unlock + password
 #   e2e-oauth          — oauth-google + oauth-telegram
 #   e2e-profile        — me + sessions + revoke-session + update-profile +
 #                        set-password + username + email + delete-account + identities
-#   e2e-rbac           — rbac-bootstrap + rbac-permissions + rbac-roles + rbac-userroles
+#   e2e-rbac           — rbac-bootstrap + rbac-permissions + rbac-roles + rbac-userroles +
+#                        rbac-userpermissions
 #
 # Suite target         — run everything at once:
 #   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile + e2e-rbac
@@ -186,6 +189,12 @@ _F_ROLES_MAIN      := --folder "setup" --folder "auth-guard" --folder "rbac-guar
 # No Redis flush needed.
 _F_USERROLES_MAIN  := --folder "setup" --folder "auth-guard" --folder "rbac-guard" --folder "owner-bootstrap" --folder "happy-path" --folder "conflict-guard" --folder "not-found" --folder "validation"
 
+# rbac/userpermissions (no rate limiter — single invocation)
+# owner-bootstrap promotes the setup user to owner mid-run so the same JWT
+# covers rbac-guard (403) and all subsequent folders (200/201/204).
+# No Redis flush needed.
+_F_USERPERMS_MAIN  := --folder "setup" --folder "auth-guard" --folder "rbac-guard" --folder "owner-bootstrap" --folder "happy-path" --folder "not-found" --folder "validation" --folder "conflict"
+
 # ── PHONY ─────────────────────────────────────────────────────────────────────
 .PHONY: e2e-install \
         e2e e2e-health \
@@ -196,7 +205,8 @@ _F_USERROLES_MAIN  := --folder "setup" --folder "auth-guard" --folder "rbac-guar
         e2e-delete-account e2e-identities \
         e2e-oauth-google e2e-oauth-telegram \
         e2e-profile e2e-auth e2e-oauth \
-        e2e-rbac e2e-rbac-bootstrap e2e-rbac-permissions e2e-rbac-roles e2e-rbac-userroles \
+        e2e-rbac e2e-rbac-bootstrap e2e-rbac-permissions e2e-rbac-roles \
+        e2e-rbac-userroles e2e-rbac-userpermissions \
         _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
 
 # ── Tooling ───────────────────────────────────────────────────────────────────
@@ -239,7 +249,7 @@ endif
 #
 # Uses TEST_DATABASE_URL so e2e tests never touch the dev database.
 _e2e-db-clean:
-	@psql "$(TEST_DATABASE_URL)" -c "BEGIN; SET LOCAL rbac.skip_orphan_check = '1'; DELETE FROM user_roles WHERE user_id NOT IN (SELECT id FROM users); DELETE FROM user_permissions WHERE user_id NOT IN (SELECT id FROM users); CREATE TEMP TABLE _e2e_target (id UUID) ON COMMIT DROP; INSERT INTO _e2e_target SELECT id FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%' OR email LIKE '%+tgrl@%' OR email LIKE '%+delb@%' OR email LIKE '%+delvc@%' OR email LIKE '%+delvd@%' OR email LIKE '%+delrl@%' OR email LIKE '%+cncrl@%' OR id IN (SELECT user_id FROM user_identities WHERE provider = 'telegram' AND provider_uid IN ('99887766', '99887700', '99887744')); DELETE FROM user_roles WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM auth_audit_log WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_roles_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM role_permissions_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM permission_request_approvers_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM users WHERE id IN (SELECT id FROM _e2e_target); COMMIT;"
+	@psql "$(TEST_DATABASE_URL)" -c "BEGIN; SET LOCAL rbac.skip_orphan_check = '1'; DELETE FROM user_roles WHERE user_id NOT IN (SELECT id FROM users); DELETE FROM user_permissions WHERE user_id NOT IN (SELECT id FROM users); CREATE TEMP TABLE _e2e_target (id UUID) ON COMMIT DROP; INSERT INTO _e2e_target SELECT id FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%' OR email LIKE '%+tgrl@%' OR email LIKE '%+delb@%' OR email LIKE '%+delvc@%' OR email LIKE '%+delvd@%' OR email LIKE '%+delrl@%' OR email LIKE '%+cncrl@%' OR email LIKE '%+uptarget@%' OR id IN (SELECT user_id FROM user_identities WHERE provider = 'telegram' AND provider_uid IN ('99887766', '99887700', '99887744')); DELETE FROM user_roles WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM auth_audit_log WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_roles_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM role_permissions_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM permission_request_approvers_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM users WHERE id IN (SELECT id FROM _e2e_target); COMMIT;"
 	@echo "[e2e] DB cleaned (e2e users removed from test DB)"
 
 # Flush Redis DB 1 (the test server's rate-limiter and blocklist store).
@@ -293,11 +303,12 @@ e2e-profile: _e2e-check-env ## Run all profile E2E collections in order (require
 	@$(MAKE) e2e-identities
 	@$(call _e2e_ok,[e2e] profile suite passed)
 
-e2e-rbac: _e2e-check-env ## Run all RBAC E2E collections in order (bootstrap + permissions + roles + userroles)
+e2e-rbac: _e2e-check-env ## Run all RBAC E2E collections in order (bootstrap + permissions + roles + userroles + userpermissions)
 	@$(MAKE) e2e-rbac-bootstrap
 	@$(MAKE) e2e-rbac-permissions
 	@$(MAKE) e2e-rbac-roles
 	@$(MAKE) e2e-rbac-userroles
+	@$(MAKE) e2e-rbac-userpermissions
 	@$(call _e2e_ok,[e2e] rbac suite passed)
 
 # ── health ────────────────────────────────────────────────────────────────────
@@ -571,3 +582,18 @@ e2e-rbac-permissions: _e2e-check-env ## Run GET /admin/permissions + GET /admin/
 	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + rbac-guard + owner-bootstrap + happy-path (single invocation))
 	$(call newman-run,$(E2E_RBAC)/permissions.json,$(_F_PERMS_MAIN),$(E2E_DELAY))
 	@$(call _e2e_ok,[e2e] rbac-permissions suite passed)
+
+# ── rbac/userpermissions ──────────────────────────────────────────────────────
+
+# No rate limiter on admin routes — single invocation, no Redis flush needed.
+# owner-bootstrap runs mid-collection (promotes the acting user to owner so both
+# RBAC guards pass); the same JWT covers rbac-guard (403) and all subsequent
+# folders (200/201/204) without re-issuing.
+# The target user (+uptarget alias) is cleaned up by _e2e-db-clean via the
+# '%+uptarget@%' pattern added to the cleanup query.
+e2e-rbac-userpermissions: _e2e-check-env ## Run GET/POST/DELETE /admin/rbac/users/{user_id}/permissions E2E (requires rbac:read + rbac:grant_user_perm)
+	@$(call _e2e_info,[e2e] --- GET/POST/DELETE /admin/rbac/users/{user_id}/permissions ---)
+	@$(MAKE) _e2e-clean
+	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + rbac-guard + owner-bootstrap + happy-path + not-found + validation + conflict (single invocation))
+	$(call newman-run,$(E2E_RBAC)/userpermissions.json,$(_F_USERPERMS_MAIN),$(E2E_DELAY))
+	@$(call _e2e_ok,[e2e] rbac-userpermissions suite passed)

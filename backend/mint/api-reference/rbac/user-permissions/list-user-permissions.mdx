@@ -1,0 +1,126 @@
+---
+title: "List User Permissions"
+description: "Returns all active direct permission grants for a given user."
+api: "GET http://localhost:8080/admin/rbac/users/{user_id}/permissions"
+---
+
+<ParamField path="user_id" type="string" required>
+  The UUID of the user whose direct permission grants you want to retrieve.
+</ParamField>
+
+## Behaviour
+
+Returns all active (non-expired) direct permission grants assigned to the target user. Direct grants are distinct from role-inherited permissions — they are attached to the user individually and each carries its own scope, conditions, expiry, and audit trail.
+
+If the user does not exist or the UUID is invalid, a `404` is returned. An empty `permissions` array is returned when the user exists but holds no active direct grants.
+
+<ResponseExample>
+```json 200
+{
+  "permissions": [
+    {
+      "id": "03a1f2b3-4c5d-6e7f-8a9b-0c1d2e3f4a5b",
+      "canonical_name": "product:manage",
+      "name": "Manage Products",
+      "resource_type": "product",
+      "scope": "own",
+      "conditions": {},
+      "expires_at": "2024-09-01T00:00:00Z",
+      "granted_at": "2024-06-01T10:00:00Z",
+      "granted_reason": "Temporary access to manage own product listings."
+    }
+  ]
+}
+```
+
+```json 404
+{
+  "code": "user_not_found",
+  "message": "user not found"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "missing or invalid access token"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "forbidden"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    A list of all active direct permission grants for the user. Returns an empty `permissions` array when the user holds no active direct grants.
+
+    ```json
+    {
+      "permissions": [
+        {
+          "id": "03a1f2b3-4c5d-6e7f-8a9b-0c1d2e3f4a5b",
+          "canonical_name": "product:manage",
+          "name": "Manage Products",
+          "resource_type": "product",
+          "scope": "own",
+          "conditions": {},
+          "expires_at": "2024-09-01T00:00:00Z",
+          "granted_at": "2024-06-01T10:00:00Z",
+          "granted_reason": "Temporary access to manage own product listings."
+        }
+      ]
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `rbac:read` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    The `user_id` is not a valid UUID or does not correspond to an existing user.
+
+    ```json
+    {
+      "code": "user_not_found",
+      "message": "user not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

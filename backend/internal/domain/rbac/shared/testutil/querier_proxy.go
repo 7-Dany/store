@@ -41,6 +41,12 @@ type QuerierProxy struct {
 	FailGetUserRole    bool
 	FailRemoveUserRole bool
 
+	// ── user permissions ──────────────────────────────────────────────────────
+	FailGetPermissionByID    bool // used by GrantPermissionTx step 1
+	FailGetUserPermissions   bool
+	FailGrantUserPermission  bool
+	FailRevokeUserPermission bool
+
 	// ── roles ─────────────────────────────────────────────────────────────────
 	FailGetRoles             bool
 	FailGetRoleByID          bool
@@ -112,6 +118,13 @@ func (p *QuerierProxy) GetPermissionGroupMembers(ctx context.Context, groupID pg
 		return nil, ErrProxy
 	}
 	return p.Querier.GetPermissionGroupMembers(ctx, groupID)
+}
+
+func (p *QuerierProxy) GetPermissionByID(ctx context.Context, id pgtype.UUID) (db.GetPermissionByIDRow, error) {
+	if p.FailGetPermissionByID {
+		return db.GetPermissionByIDRow{}, ErrProxy
+	}
+	return p.Querier.GetPermissionByID(ctx, id)
 }
 
 func (p *QuerierProxy) GetRoles(ctx context.Context) ([]db.Role, error) {
@@ -189,6 +202,27 @@ func (p *QuerierProxy) RemoveUserRole(ctx context.Context, userID pgtype.UUID) (
 		return 0, ErrProxy
 	}
 	return p.Querier.RemoveUserRole(ctx, userID)
+}
+
+func (p *QuerierProxy) GetUserPermissions(ctx context.Context, userID pgtype.UUID) ([]db.GetUserPermissionsRow, error) {
+	if p.FailGetUserPermissions {
+		return nil, ErrProxy
+	}
+	return p.Querier.GetUserPermissions(ctx, userID)
+}
+
+func (p *QuerierProxy) GrantUserPermission(ctx context.Context, arg db.GrantUserPermissionParams) (db.GrantUserPermissionRow, error) {
+	if p.FailGrantUserPermission {
+		return db.GrantUserPermissionRow{}, ErrProxy
+	}
+	return p.Querier.GrantUserPermission(ctx, arg)
+}
+
+func (p *QuerierProxy) RevokeUserPermission(ctx context.Context, arg db.RevokeUserPermissionParams) (int64, error) {
+	if p.FailRevokeUserPermission {
+		return 0, ErrProxy
+	}
+	return p.Querier.RevokeUserPermission(ctx, arg)
 }
 
 func (p *QuerierProxy) SetActingUser(ctx context.Context, userID string) error {

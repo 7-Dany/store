@@ -8,6 +8,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/roles"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/userpermissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/userroles"
 )
 
@@ -215,6 +216,55 @@ func (f *UserRolesFakeServicer) AssignRole(ctx context.Context, targetUserID, ac
 func (f *UserRolesFakeServicer) RemoveRole(ctx context.Context, targetUserID, actingUserID string) error {
 	if f.RemoveRoleFn != nil {
 		return f.RemoveRoleFn(ctx, targetUserID, actingUserID)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UserPermissionsFakeServicer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// UserPermissionsFakeServicer is a hand-written implementation of userpermissions.Servicer
+// for handler unit tests. Set the Fn fields to control responses; leave nil
+// to return safe defaults.
+//
+// Defaults:
+//
+//	ListPermissionsFn  → ([]userpermissions.UserPermission{}, nil)
+//	GrantPermissionFn  → (userpermissions.UserPermission{}, nil)
+//	RevokePermissionFn → nil
+type UserPermissionsFakeServicer struct {
+	ListPermissionsFn  func(ctx context.Context, targetUserID string) ([]userpermissions.UserPermission, error)
+	GrantPermissionFn  func(ctx context.Context, targetUserID, actingUserID string, in userpermissions.GrantPermissionInput) (userpermissions.UserPermission, error)
+	RevokePermissionFn func(ctx context.Context, targetUserID, grantID, actingUserID string) error
+}
+
+// compile-time interface check.
+var _ userpermissions.Servicer = (*UserPermissionsFakeServicer)(nil)
+
+// ListPermissions delegates to ListPermissionsFn if set.
+// Default: returns ([]userpermissions.UserPermission{}, nil).
+func (f *UserPermissionsFakeServicer) ListPermissions(ctx context.Context, targetUserID string) ([]userpermissions.UserPermission, error) {
+	if f.ListPermissionsFn != nil {
+		return f.ListPermissionsFn(ctx, targetUserID)
+	}
+	return []userpermissions.UserPermission{}, nil
+}
+
+// GrantPermission delegates to GrantPermissionFn if set.
+// Default: returns (userpermissions.UserPermission{}, nil).
+func (f *UserPermissionsFakeServicer) GrantPermission(ctx context.Context, targetUserID, actingUserID string, in userpermissions.GrantPermissionInput) (userpermissions.UserPermission, error) {
+	if f.GrantPermissionFn != nil {
+		return f.GrantPermissionFn(ctx, targetUserID, actingUserID, in)
+	}
+	return userpermissions.UserPermission{}, nil
+}
+
+// RevokePermission delegates to RevokePermissionFn if set.
+// Default: returns nil.
+func (f *UserPermissionsFakeServicer) RevokePermission(ctx context.Context, targetUserID, grantID, actingUserID string) error {
+	if f.RevokePermissionFn != nil {
+		return f.RevokePermissionFn(ctx, targetUserID, grantID, actingUserID)
 	}
 	return nil
 }

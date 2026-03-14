@@ -8,6 +8,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/roles"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/userpermissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/userroles"
 )
 
@@ -269,6 +270,55 @@ func (f *UserRolesFakeStorer) AssignUserRoleTx(ctx context.Context, in userroles
 func (f *UserRolesFakeStorer) RemoveUserRole(ctx context.Context, userID [16]byte, actingUserID string) error {
 	if f.RemoveUserRoleFn != nil {
 		return f.RemoveUserRoleFn(ctx, userID, actingUserID)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UserPermissionsFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// UserPermissionsFakeStorer is a hand-written implementation of userpermissions.Storer
+// for service unit tests. Each method delegates to its Fn field if non-nil,
+// otherwise returns a safe default so tests only configure the fields they need.
+//
+// Defaults:
+//
+//	GetUserPermissionsFn → ([]userpermissions.UserPermission{}, nil)
+//	GrantPermissionTxFn  → (userpermissions.UserPermission{}, nil)
+//	RevokePermissionFn   → nil
+type UserPermissionsFakeStorer struct {
+	GetUserPermissionsFn func(ctx context.Context, userID [16]byte) ([]userpermissions.UserPermission, error)
+	GrantPermissionTxFn  func(ctx context.Context, in userpermissions.GrantPermissionTxInput) (userpermissions.UserPermission, error)
+	RevokePermissionFn   func(ctx context.Context, grantID, userID [16]byte, actingUserID string) error
+}
+
+// compile-time interface check.
+var _ userpermissions.Storer = (*UserPermissionsFakeStorer)(nil)
+
+// GetUserPermissions delegates to GetUserPermissionsFn if set.
+// Default: returns ([]userpermissions.UserPermission{}, nil).
+func (f *UserPermissionsFakeStorer) GetUserPermissions(ctx context.Context, userID [16]byte) ([]userpermissions.UserPermission, error) {
+	if f.GetUserPermissionsFn != nil {
+		return f.GetUserPermissionsFn(ctx, userID)
+	}
+	return []userpermissions.UserPermission{}, nil
+}
+
+// GrantPermissionTx delegates to GrantPermissionTxFn if set.
+// Default: returns (userpermissions.UserPermission{}, nil).
+func (f *UserPermissionsFakeStorer) GrantPermissionTx(ctx context.Context, in userpermissions.GrantPermissionTxInput) (userpermissions.UserPermission, error) {
+	if f.GrantPermissionTxFn != nil {
+		return f.GrantPermissionTxFn(ctx, in)
+	}
+	return userpermissions.UserPermission{}, nil
+}
+
+// RevokePermission delegates to RevokePermissionFn if set.
+// Default: returns nil.
+func (f *UserPermissionsFakeStorer) RevokePermission(ctx context.Context, grantID, userID [16]byte, actingUserID string) error {
+	if f.RevokePermissionFn != nil {
+		return f.RevokePermissionFn(ctx, grantID, userID, actingUserID)
 	}
 	return nil
 }

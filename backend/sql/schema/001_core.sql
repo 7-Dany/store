@@ -71,7 +71,7 @@ COMMENT ON TYPE one_time_token_type IS
  */
 CREATE TABLE users (
  -- Immutable surrogate primary key; generated on INSERT.
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Login identifier; nullable because OAuth-only accounts may have no email.
  -- Uniqueness among active accounts enforced by idx_users_email_active (partial index).
@@ -293,7 +293,7 @@ COMMENT ON COLUMN user_secrets.failed_change_password_attempts IS
  * user_identity_tokens so SELECT * here never returns ciphertext.
  */
 CREATE TABLE user_identities (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Foreign key to users; CASCADE means all identities are removed when the user is purged.
  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -428,7 +428,7 @@ COMMENT ON COLUMN user_identity_tokens.refresh_token_provider IS
  * OTP types (email_verification, password_reset, account_unlock, etc.) use 3.
  */
 CREATE TABLE one_time_tokens (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Identifies the flow this token belongs to; governs which constraints apply.
  token_type one_time_token_type NOT NULL,
@@ -626,7 +626,7 @@ COMMENT ON COLUMN one_time_tokens.metadata IS
  * using the app without logging out.
  */
 CREATE TABLE user_sessions (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Which user owns this session; cascades on user deletion.
  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -697,7 +697,9 @@ COMMENT ON COLUMN user_sessions.auth_provider IS
  */
 CREATE TABLE refresh_tokens (
  -- JWT ID; matches the 'jti' claim in the issued JWT.
- jti UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ -- UUID v7 so token rows land sequentially on the PK B-tree; also aligns
+ -- with the Go-side uuid.New7() call in token.GenerateRefreshToken.
+ jti UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Owner; cascades on user deletion so orphan tokens are never left behind.
  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -782,7 +784,7 @@ COMMENT ON COLUMN refresh_tokens.parent_jti IS
  * Rows older than 90 days are swept by the retention job using idx_aal_cleanup (ASC).
  */
 CREATE TABLE auth_audit_log (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- NULL when the associated user has been hard-purged; the event is still retained.
  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -844,7 +846,7 @@ COMMENT ON TABLE auth_audit_log IS
  * Rows in this table are append-only: all UPDATEs are blocked by trg_deny_purge_log_update.
  */
 CREATE TABLE account_purge_log (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
  user_id UUID NOT NULL, -- no FK: the users row is deleted in the same transaction
  purged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 

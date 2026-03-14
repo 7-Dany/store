@@ -1,6 +1,6 @@
-FROM pgvector/pgvector:pg17
+FROM pgvector/pgvector:pg18
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-    postgresql-17-pgtap \
+    postgresql-18-pgtap \
     && rm -rf /var/lib/apt/lists/*

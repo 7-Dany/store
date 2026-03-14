@@ -103,7 +103,7 @@ END $$;
  * system role (enforced by chk_roles_owner_must_be_system).
  */
 CREATE TABLE roles (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Unique human-readable name (e.g. 'admin', 'vendor'). Max 100 chars.
  name VARCHAR(100) UNIQUE NOT NULL,
@@ -155,7 +155,7 @@ CREATE INDEX idx_roles_active_name ON roles(name) WHERE is_active = TRUE;
  * application-side string construction on every permission lookup.
  */
 CREATE TABLE permissions (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Action verb part of the canonical name (create, read, update, delete, approve, export).
  name VARCHAR(100) NOT NULL,
@@ -229,7 +229,7 @@ COMMENT ON COLUMN permissions.canonical_name IS
  * Groups themselves confer no permissions — they are purely organisational.
  */
 CREATE TABLE permission_groups (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Unique machine-readable name (e.g. 'billing', 'content_management').
  name VARCHAR(100) UNIQUE NOT NULL,
@@ -447,7 +447,7 @@ COMMENT ON COLUMN role_permissions.granted_by IS
 -- Snapshots both before and after state so changes can be fully reconstructed.
 -- RESTRICT FKs on role and permission prevent deletion while audit history exists.
 CREATE TABLE role_permissions_audit (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Denormalised copies of the composite PK from role_permissions.
  role_id UUID NOT NULL,
@@ -565,7 +565,7 @@ COMMENT ON COLUMN user_roles.granted_by IS
  ───────────────────────────────────────────────────────────── */
 
 CREATE TABLE user_roles_audit (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  user_id UUID NOT NULL,
  role_id UUID NOT NULL,
@@ -625,7 +625,7 @@ COMMENT ON COLUMN user_roles_audit.previous_role_id IS
 CREATE TABLE user_permissions (
  -- Surrogate PK decouples identity from (user_id, permission_id), allowing clean
  -- re-grant after revocation without needing to DELETE the old row first.
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  -- Recipient of the grant. CASCADE on user deletion.
  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -701,7 +701,7 @@ COMMENT ON COLUMN user_permissions.scope IS
 
 -- This is the highest-risk RBAC table; every mutation is tracked unconditionally.
 CREATE TABLE user_permissions_audit (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  user_id UUID NOT NULL,
  permission_id UUID NOT NULL,
@@ -801,7 +801,7 @@ COMMENT ON COLUMN permission_request_approvers.min_required IS
 
 -- Changes to who-approves-what are high-risk RBAC mutations; immutable history is required.
 CREATE TABLE permission_request_approvers_audit (
- id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+ id UUID PRIMARY KEY DEFAULT uuidv7(),
 
  permission_id UUID NOT NULL,
  role_id UUID NOT NULL,

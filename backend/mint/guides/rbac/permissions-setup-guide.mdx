@@ -239,6 +239,83 @@ The same restrictions apply: you cannot remove your own role, and you cannot rem
 
 ---
 
+## Step 6 — Grant direct permissions to a user
+
+Sometimes a user needs access to a single permission that isn't covered by their role — but changing the role for every edge case isn't practical. Direct permission grants let you attach a specific permission directly to a user, independently of their role, for a fixed window of time.
+
+Direct grants are **always temporary**. Unlike role assignments, `expires_at` is required on every grant. Once the grant expires the user loses the permission — there is no grace period.
+
+### When to use direct grants
+
+Use direct grants for narrow, time-limited exceptions — not as a substitute for good role design. Good candidates:
+
+- A support agent who needs `user:manage` access for a single escalation this week, but whose role shouldn't permanently include it.
+- A vendor who temporarily needs `product:manage` with `scope: "all"` to help migrate another seller's catalogue.
+- Any situation where a one-off permission makes more sense than creating a whole new role.
+
+If you find yourself granting the same permission directly to many users, that's a signal to add it to their role instead.
+
+### Checking what a user already holds
+
+Before granting, use [`GET /admin/rbac/users/{user_id}/permissions`](/api-reference/rbac/user-permissions/list-user-permissions) to see every active direct grant the user currently holds. Each grant shows its `id`, the permission's `canonical_name`, `scope`, `conditions`, expiry, and the reason it was granted.
+
+```json
+{
+  "permissions": [
+    {
+      "id": "03a1f2b3-4c5d-6e7f-8a9b-0c1d2e3f4a5b",
+      "canonical_name": "product:manage",
+      "name": "Manage Products",
+      "resource_type": "product",
+      "scope": "own",
+      "conditions": {},
+      "expires_at": "2024-09-01T00:00:00Z",
+      "granted_at": "2024-06-01T10:00:00Z",
+      "granted_reason": "Temporary access to manage own product listings."
+    }
+  ]
+}
+```
+
+### Granting a direct permission
+
+Use [`POST /admin/rbac/users/{user_id}/permissions`](/api-reference/rbac/user-permissions/grant-user-permission). You must supply the `permission_id`, a `granted_reason`, and an `expires_at`. `scope` defaults to `"own"` if omitted.
+
+```json
+{
+  "permission_id": "<product:manage uuid>",
+  "granted_reason": "Temporary access to assist with catalogue migration — expires end of quarter.",
+  "expires_at": "2024-09-30T23:59:59Z",
+  "scope": "all"
+}
+```
+
+The expiry window is enforced server-side: minimum **5 minutes**, maximum **90 days** from the time of the request. Values outside that range are rejected with `422`.
+
+If the user already holds an active grant for the same permission, the API returns `409 permission_already_granted`. Revoke the existing grant first before re-granting with new parameters.
+
+### Privilege escalation prevention
+
+You can only grant permissions you hold yourself. If you attempt to grant a permission that is not in your own effective permission set, the API returns `403 privilege_escalation`. This applies regardless of your role — having `rbac:grant_user_permission` lets you perform grants, but not grants that exceed your own access.
+
+### Scope and conditions
+
+The same `scope_policy` rules from [Step 2](#understanding-permission-capabilities) apply to direct grants. Check the permission's `scope_policy` before deciding which scope to pass — an invalid scope returns `422 scope_not_allowed`.
+
+You may optionally pass a `conditions` object to attach constraints to the grant, following the same structure used for conditional role permissions.
+
+<Warning>
+  **Conditional grants in V1 — content is not yet validated.** The `conditions` object is stored and passed through, but its contents are not validated against a schema at grant time. Any well-formed JSON object is accepted. Full condition schema enforcement is planned for a future release.
+</Warning>
+
+### Revoking a direct grant
+
+Use [`DELETE /admin/rbac/users/{user_id}/permissions/{grant_id}`](/api-reference/rbac/user-permissions/revoke-user-permission) to remove a grant before its natural expiry. The `grant_id` comes from the `id` field in the list response. Revocation is immediate — the user loses the permission the moment the request succeeds.
+
+Revocation is safe against client disconnects: the operation runs on a detached context, so a dropped connection mid-request cannot leave the grant in an ambiguous state.
+
+---
+
 ## Keeping permissions clean
 
 A few practices that keep your permission setup manageable over time:

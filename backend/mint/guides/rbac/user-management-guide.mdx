@@ -1,0 +1,181 @@
+---
+title: "User Management Guide"
+icon: "users"
+description: "How to assign roles, grant temporary permissions, and lock or unlock user accounts."
+---
+
+This guide covers the day-to-day user management operations: assigning and removing roles, granting time-limited direct permissions for exceptions, and locking or unlocking accounts when needed.
+
+If you haven't set up your roles and permissions yet, start with the [Permission Setup Guide](/guides/rbac/permissions-setup-guide) first.
+
+---
+
+## Roles
+
+Each user holds **exactly one role** at a time. A role is a named collection of permissions — assigning a role to a user grants them everything that role allows. When you assign a new role it immediately replaces the previous one; there is no overlap.
+
+### Check a user's current role
+
+Before making any change, confirm what role the user currently holds with [`GET /admin/rbac/users/{user_id}/role`](/api-reference/rbac/user-roles/get-user-role).
+
+```json
+{
+  "user_id": "018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c",
+  "role_id": "029f5d4b-2c3e-8a5f-0d1b-3e4f5a6b7c8d",
+  "role_name": "Order Support Agent",
+  "is_owner_role": false,
+  "granted_reason": "Permanent assignment for full-time order support staff.",
+  "granted_at": "2024-06-01T10:00:00Z",
+  "expires_at": null
+}
+```
+
+`expires_at: null` means the assignment is permanent. A timestamp means it is temporary and will lapse at that time. A `404 user_role_not_found` means the user has no active role — either they were never assigned one, or a temporary assignment has expired.
+
+### Assign a role
+
+Use [`PUT /admin/rbac/users/{user_id}/role`](/api-reference/rbac/user-roles/assign-role). You must supply the `role_id` and a `granted_reason` that clearly explains why the role is being assigned — this is recorded in the audit trail.
+
+**Permanent assignment** — omit `expires_at`. The user keeps the role until it is explicitly changed or removed.
+
+```json
+{
+  "role_id": "029f5d4b-2c3e-8a5f-0d1b-3e4f5a6b7c8d",
+  "granted_reason": "Permanent assignment for full-time order support staff."
+}
+```
+
+**Temporary assignment** — supply `expires_at`. Once the timestamp passes the user has no role and loses access to all permission-guarded endpoints until a new assignment is made.
+
+```json
+{
+  "role_id": "029f5d4b-2c3e-8a5f-0d1b-3e4f5a6b7c8d",
+  "granted_reason": "Covering for primary manager during leave — expires end of month.",
+  "expires_at": "2024-07-31T23:59:59Z"
+}
+```
+
+The expiry must be between **5 minutes** and **90 days** from the time of the request. Values outside that range are rejected with `422`.
+
+**Restrictions:**
+- You cannot modify your own role (`409 cannot_modify_own_role`).
+- The owner role cannot be assigned through this endpoint (`409 cannot_reassign_owner`). Use the [bootstrap flow](/guides/rbac/permissions-setup-guide) for that.
+
+### Remove a role
+
+Use [`DELETE /admin/rbac/users/{user_id}/role`](/api-reference/rbac/user-roles/remove-role) to remove a user's current role. After removal the user has no role and is denied access to any permission-guarded endpoint.
+
+The same restrictions apply as for assignment: you cannot remove your own role, and you cannot remove the owner role through this endpoint.
+
+---
+
+## Direct permissions
+
+Sometimes a user needs access to a single permission that isn't covered by their role — but creating or changing a role for every edge case isn't practical. Direct grants let you attach a specific permission to a user independently of their role, for a fixed window of time.
+
+**Direct grants are always temporary.** `expires_at` is required on every grant. Once expired, the user loses the permission automatically — no manual cleanup needed.
+
+Use direct grants for narrow, time-limited exceptions. If you find yourself granting the same permission directly to many users, that's a signal to add it to their role instead.
+
+### Check what a user already holds
+
+Before granting, use [`GET /admin/rbac/users/{user_id}/permissions`](/api-reference/rbac/user-permissions/list-user-permissions) to see all active direct grants the user currently holds. This also gives you the `id` of each grant, which you need to revoke one.
+
+```json
+{
+  "permissions": [
+    {
+      "id": "03a1f2b3-4c5d-6e7f-8a9b-0c1d2e3f4a5b",
+      "canonical_name": "product:manage",
+      "name": "Manage Products",
+      "resource_type": "product",
+      "scope": "own",
+      "conditions": {},
+      "expires_at": "2024-09-01T00:00:00Z",
+      "granted_at": "2024-06-01T10:00:00Z",
+      "granted_reason": "Temporary access to manage own product listings."
+    }
+  ]
+}
+```
+
+An empty `permissions` array means the user holds no active direct grants. This does not include permissions they inherit from their role.
+
+### Grant a direct permission
+
+Use [`POST /admin/rbac/users/{user_id}/permissions`](/api-reference/rbac/user-permissions/grant-user-permission). You must supply `permission_id`, `granted_reason`, and `expires_at`. The `scope` field defaults to `"own"` if omitted — check the permission's `scope_policy` (from [`GET /admin/rbac/permissions`](/api-reference/rbac/permissions/list-permissions)) to confirm which scopes are valid before granting.
+
+```json
+{
+  "permission_id": "03a1f2b3-4c5d-6e7f-8a9b-0c1d2e3f4a5b",
+  "granted_reason": "Temporary access to assist with catalogue migration — expires end of quarter.",
+  "expires_at": "2024-09-30T23:59:59Z",
+  "scope": "all"
+}
+```
+
+**Things to know:**
+- The expiry must be between **5 minutes** and **90 days** from now.
+- You can only grant permissions you hold yourself. Attempting to grant a permission outside your own access returns `403 privilege_escalation`.
+- If the user already holds an active grant for the same permission, the request returns `409 permission_already_granted`. Revoke the existing grant first, then re-grant with the new parameters.
+
+<Warning id="conditional-grants">
+  **Conditional grants in V1 — content is not yet validated.** The `conditions` object is stored and passed to the handler, but its contents are not validated against a schema at grant time. Any well-formed JSON object is accepted. Full condition schema enforcement is planned for a future release.
+</Warning>
+
+### Revoke a direct grant
+
+Use [`DELETE /admin/rbac/users/{user_id}/permissions/{grant_id}`](/api-reference/rbac/user-permissions/revoke-user-permission) to remove a grant before its natural expiry. The `grant_id` is the `id` field from the list response. The user loses the permission immediately.
+
+---
+
+## Locking users
+
+There are two independent lock states a user can be in. Both prevent authentication — a user cannot log in while either is active.
+
+| Lock type | Set by | Cleared by |
+|---|---|---|
+| **Admin lock** | An admin via [`POST /admin/users/{user_id}/lock`](/api-reference/rbac/userlock/lock-user) | An admin via [`DELETE /admin/users/{user_id}/lock`](/api-reference/rbac/userlock/unlock-user) |
+| **Login lockout** | Automatically after too many failed login or password-reset attempts | Automatically once the 15-minute window expires |
+
+Use the admin lock when you need to suspend a user for a business reason (e.g. a fraud investigation). The login lockout is automated and does not require any action on your part.
+
+### Check lock status
+
+Use [`GET /admin/users/{user_id}/lock`](/api-reference/rbac/userlock/get-lock-status) to see both lock states at once.
+
+```json
+{
+  "user_id": "018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c",
+  "admin_locked": true,
+  "locked_by": "029f5d4b-2c3e-8a5f-0d1b-3e4f5a6b7c8d",
+  "locked_reason": "Suspended pending fraud investigation.",
+  "locked_at": "2024-06-01T10:00:00Z",
+  "is_locked": false,
+  "login_locked_until": null
+}
+```
+
+When no admin lock is active, `admin_locked` is `false` and `locked_by`, `locked_reason`, and `locked_at` are all `null`. When no login lockout is active, `is_locked` is `false` and `login_locked_until` is `null`.
+
+### Lock a user
+
+Use [`POST /admin/users/{user_id}/lock`](/api-reference/rbac/userlock/lock-user). You must supply a `reason` explaining why the account is being locked — this is recorded alongside who performed the action and when.
+
+```json
+{
+  "reason": "Suspended pending fraud investigation."
+}
+```
+
+**Restrictions:**
+- You cannot lock your own account (`409 cannot_lock_self`).
+- Owner accounts cannot be locked (`409 cannot_lock_owner`).
+
+The lock takes effect immediately. Any active sessions the user holds will fail to refresh once their access token expires.
+
+### Unlock a user
+
+Use [`DELETE /admin/users/{user_id}/lock`](/api-reference/rbac/userlock/unlock-user). No request body is required. The admin lock is cleared immediately and the user can authenticate again, provided no login lockout is also active.
+
+This operation is safe to call even if the user is not currently admin-locked — it succeeds silently.

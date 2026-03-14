@@ -56,7 +56,10 @@
           {
             "group": "RBAC",
             "icon": "shield-halved",
-            "pages": ["guides/rbac/permissions-setup-guide"]
+            "pages": [
+              "guides/rbac/permissions-setup-guide",
+              "guides/rbac/user-management-guide"
+            ]
           }
         ]
       },

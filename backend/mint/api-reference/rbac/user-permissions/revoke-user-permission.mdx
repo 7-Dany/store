@@ -12,6 +12,10 @@ api: "DELETE http://localhost:8080/admin/rbac/users/{user_id}/permissions/{grant
   The UUID of the specific grant to revoke. Obtained from the `id` field in the [`GET /admin/rbac/users/{user_id}/permissions`](/api-reference/rbac/user-permissions/list-user-permissions) response.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:grant_user_permission`** permission.
+</Callout>
+
 ## Behaviour
 
 Hard-deletes the identified direct permission grant. After revocation the user immediately loses the permission — there is no grace period.

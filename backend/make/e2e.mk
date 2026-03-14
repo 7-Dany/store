@@ -20,7 +20,7 @@
 #   e2e/profile/email.json              → POST /email/request-change + POST /email/verify-current + POST /email/confirm-change (requires JWT)
 #   e2e/profile/delete-account.json     → DELETE /profile/me + POST /profile/me/cancel-deletion (requires JWT) + GET /profile/me/deletion-method (requires JWT)
 #   e2e/profile/identities.json         → GET /me/identities (requires JWT)
-#   e2e/rbac/bootstrap.json             → POST /owner/bootstrap
+#   e2e/rbac/owner.json                 → POST /owner/assign + POST /owner/transfer + POST /owner/transfer/accept + DELETE /owner/transfer
 #   e2e/rbac/permissions.json           → GET /admin/permissions + GET /admin/permissions/groups (requires rbac:read)
 #   e2e/rbac/roles.json                 → CRUD /admin/rbac/roles + /admin/rbac/roles/{id}/permissions (requires rbac:read + rbac:manage)
 #   e2e/rbac/userroles.json              → GET/PUT/DELETE /admin/rbac/users/{user_id}/role (requires rbac:read + rbac:manage)
@@ -31,7 +31,7 @@
 #   e2e-unlock, e2e-password, e2e-set-password, e2e-me, e2e-sessions,
 #   e2e-revoke-session, e2e-update-profile, e2e-username, e2e-email,
 #   e2e-delete-account, e2e-identities, e2e-oauth-google, e2e-oauth-telegram,
-#   e2e-rbac-bootstrap, e2e-rbac-permissions, e2e-rbac-roles, e2e-rbac-userroles,
+#   e2e-rbac-owner, e2e-rbac-permissions, e2e-rbac-roles, e2e-rbac-userroles,
 #   e2e-rbac-userpermissions
 #
 # Group targets        — run a folder of collections in order:
@@ -39,7 +39,7 @@
 #   e2e-oauth          — oauth-google + oauth-telegram
 #   e2e-profile        — me + sessions + revoke-session + update-profile +
 #                        set-password + username + email + delete-account + identities
-#   e2e-rbac           — rbac-bootstrap + rbac-permissions + rbac-roles + rbac-userroles +
+#   e2e-rbac           — rbac-owner + rbac-permissions + rbac-roles + rbac-userroles +
 #                        rbac-userpermissions
 #
 # Suite target         — run everything at once:
@@ -162,14 +162,14 @@ _F_GOOGLE_RL_CB    := --folder "rate-limiting-cb"
 _F_TELEGRAM_MAIN   := --folder "setup" --folder "callback-happy-path" --folder "callback-failures" --folder "validation" --folder "link-happy-path" --folder "link-failures" --folder "unlink-happy-path" --folder "unlink-failures" --folder "auth-failures" --folder "rate-limiting-lnk" --folder "rate-limiting-unlk"
 _F_TELEGRAM_RL_CB  := --folder "rate-limiting-cb"
 
-# rbac/bootstrap (JWT-gated rate-limiter — single invocation)
-# ALL folders share ONE invocation so bstrp_access_token (captured in setup/login)
-# persists across folders. The rate-limiting folder requires a valid JWT because
-# the bstrp:ip: limiter fires AFTER the JWTAuth middleware.
-# The main run assigns unique X-Forwarded-For IPs via the collection prerequest
-# counter, so the 127.0.0.1 bucket used by rate-limiting is never consumed by
-# earlier folders — no Redis flush is needed between them.
-_F_BSTRP_MAIN      := --folder "setup" --folder "auth-guard" --folder "validation" --folder "secret-guard" --folder "happy-path" --folder "owner-already-exists" --folder "rate-limiting"
+# rbac/owner (all rate-limiters in ONE invocation — Redis flushed once before the run)
+# All 19 folders share a single newman invocation so JWT tokens captured in setup
+# persist across the entire collection. IP-based limiters (asgn:ip:, xfra:ip:) use
+# unique X-Forwarded-For values via the collection prerequest counter so the
+# 127.0.0.1 bucket is untouched until each RL folder overrides _xff.
+# User-based limiters (xfr:usr:, xfrc:usr:) are JWT-gated and accumulate across
+# folders as documented in the collection description.
+_F_OWNER_MAIN      := --folder "setup" --folder "auth-guard" --folder "validation-assign" --folder "secret-guard" --folder "assign-happy-path" --folder "owner-already-exists" --folder "rbac-guard" --folder "validation-transfer" --folder "transfer-errors" --folder "transfer-initiate" --folder "transfer-already-pending" --folder "validation-accept" --folder "accept-invalid" --folder "transfer-cancel" --folder "cancel-not-found" --folder "rate-limiting-assign" --folder "rate-limiting-transfer" --folder "rate-limiting-accept" --folder "rate-limiting-cancel"
 
 # rbac/permissions (no rate limiter — single invocation)
 # owner-bootstrap promotes the setup user to owner mid-run; the RBAC middleware
@@ -205,7 +205,7 @@ _F_USERPERMS_MAIN  := --folder "setup" --folder "auth-guard" --folder "rbac-guar
         e2e-delete-account e2e-identities \
         e2e-oauth-google e2e-oauth-telegram \
         e2e-profile e2e-auth e2e-oauth \
-        e2e-rbac e2e-rbac-bootstrap e2e-rbac-permissions e2e-rbac-roles \
+        e2e-rbac e2e-rbac-owner e2e-rbac-permissions e2e-rbac-roles \
         e2e-rbac-userroles e2e-rbac-userpermissions \
         _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
 
@@ -249,8 +249,8 @@ endif
 #
 # Uses TEST_DATABASE_URL so e2e tests never touch the dev database.
 _e2e-db-clean:
-	@psql "$(TEST_DATABASE_URL)" -c "BEGIN; SET LOCAL rbac.skip_orphan_check = '1'; DELETE FROM user_roles WHERE user_id NOT IN (SELECT id FROM users); DELETE FROM user_permissions WHERE user_id NOT IN (SELECT id FROM users); CREATE TEMP TABLE _e2e_target (id UUID) ON COMMIT DROP; INSERT INTO _e2e_target SELECT id FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%' OR email LIKE '%+tgrl@%' OR email LIKE '%+delb@%' OR email LIKE '%+delvc@%' OR email LIKE '%+delvd@%' OR email LIKE '%+delrl@%' OR email LIKE '%+cncrl@%' OR email LIKE '%+uptarget@%' OR id IN (SELECT user_id FROM user_identities WHERE provider = 'telegram' AND provider_uid IN ('99887766', '99887700', '99887744')); DELETE FROM user_roles WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM auth_audit_log WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_roles_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM role_permissions_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM permission_request_approvers_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM users WHERE id IN (SELECT id FROM _e2e_target); COMMIT;"
-	@echo "[e2e] DB cleaned (e2e users removed from test DB)"
+	@psql "$(TEST_DATABASE_URL)" -c "BEGIN; SET LOCAL rbac.skip_orphan_check = '1'; DELETE FROM user_roles WHERE user_id NOT IN (SELECT id FROM users); DELETE FROM user_permissions WHERE user_id NOT IN (SELECT id FROM users); CREATE TEMP TABLE _e2e_target (id UUID) ON COMMIT DROP; INSERT INTO _e2e_target SELECT id FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%' OR email LIKE '%+tgrl@%' OR email LIKE '%+delb@%' OR email LIKE '%+delvc@%' OR email LIKE '%+delvd@%' OR email LIKE '%+delrl@%' OR email LIKE '%+cncrl@%' OR email LIKE '%+uptarget@%' OR email LIKE '%+urtarget@%' OR email LIKE '%+xfrtgt@%' OR id IN (SELECT user_id FROM user_identities WHERE provider = 'telegram' AND provider_uid IN ('99887766', '99887700', '99887744')); DELETE FROM user_roles WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM auth_audit_log WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_roles_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM role_permissions_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM permission_request_approvers_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM users WHERE id IN (SELECT id FROM _e2e_target); DELETE FROM role_permissions_audit WHERE role_id IN (SELECT id FROM roles WHERE name LIKE 'e2e-%' AND is_system_role = FALSE); DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE name LIKE 'e2e-%' AND is_system_role = FALSE); DELETE FROM roles WHERE name LIKE 'e2e-%' AND is_system_role = FALSE; COMMIT;"
+	@echo "[e2e] DB cleaned (e2e users and e2e test roles removed from test DB)"
 
 # Flush Redis DB 1 (the test server's rate-limiter and blocklist store).
 # WARNING: this wipes ALL keys in DB 1 — only use on a dedicated dev/CI Redis.
@@ -303,8 +303,8 @@ e2e-profile: _e2e-check-env ## Run all profile E2E collections in order (require
 	@$(MAKE) e2e-identities
 	@$(call _e2e_ok,[e2e] profile suite passed)
 
-e2e-rbac: _e2e-check-env ## Run all RBAC E2E collections in order (bootstrap + permissions + roles + userroles + userpermissions)
-	@$(MAKE) e2e-rbac-bootstrap
+e2e-rbac: _e2e-check-env ## Run all RBAC E2E collections in order (owner + permissions + roles + userroles + userpermissions)
+	@$(MAKE) e2e-rbac-owner
 	@$(MAKE) e2e-rbac-permissions
 	@$(MAKE) e2e-rbac-roles
 	@$(MAKE) e2e-rbac-userroles
@@ -559,17 +559,17 @@ e2e-rbac-userroles: _e2e-check-env ## Run GET/PUT/DELETE /admin/rbac/users/{user
 	$(call newman-run,$(E2E_RBAC)/userroles.json,$(_F_USERROLES_MAIN),$(E2E_DELAY))
 	@$(call _e2e_ok,[e2e] rbac-userroles suite passed)
 
-# ── rbac/bootstrap ────────────────────────────────────────────────────────────
+# ── rbac/owner ───────────────────────────────────────────────────────────────
 
-# Rate limit: burst=3, rate=3/(15*60) tok/s → Retry-After = ceil(900/3) = 300 s.
-# All folders share ONE invocation so bstrp_access_token (captured in setup/login)
-# persists in collection variables. Redis is flushed before rate-limiting.
-e2e-rbac-bootstrap: _e2e-check-env ## Run POST /owner/bootstrap E2E (all folders)
-	@$(call _e2e_info,[e2e] --- POST /owner/bootstrap ---)
+# All 19 folders run in ONE newman invocation; Redis is flushed once before the
+# run. IP-based limiters use unique X-Forwarded-For IPs from the collection
+# prerequest counter so 127.0.0.1 is only consumed by the RL folders themselves.
+e2e-rbac-owner: _e2e-check-env ## Run owner E2E (assign + transfer + accept + cancel — all folders)
+	@$(call _e2e_info,[e2e] --- POST /owner/assign + POST /owner/transfer + POST /owner/transfer/accept + DELETE /owner/transfer ---)
 	@$(MAKE) _e2e-clean
-	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + validation + secret-guard + happy-path + owner-already-exists + rate-limiting (single invocation))
-	$(call newman-run,$(E2E_RBAC)/bootstrap.json,$(_F_BSTRP_MAIN),$(E2E_DELAY))
-	@$(call _e2e_ok,[e2e] rbac-bootstrap suite passed)
+	@$(call _e2e_gray,[e2e] Running: all 19 folders in single invocation (Redis pre-flushed))
+	$(call newman-run,$(E2E_RBAC)/owner.json,$(_F_OWNER_MAIN),$(E2E_DELAY))
+	@$(call _e2e_ok,[e2e] rbac-owner suite passed)
 
 # ── rbac/permissions ──────────────────────────────────────────────────────────
 

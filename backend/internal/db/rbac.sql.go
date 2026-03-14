@@ -132,6 +132,7 @@ const CheckUserAccess = `-- name: CheckUserAccess :one
      User role
      User permissions (direct grants)
      User lock
+     Ownership transfer
 
    Security-sensitive admin-lock fields (admin_locked, admin_locked_by,
    admin_locked_reason, admin_locked_at, is_locked, login_locked_until)
@@ -265,6 +266,22 @@ func (q *Queries) CheckUserAccess(ctx context.Context, arg CheckUserAccessParams
 	return i, err
 }
 
+const ConsumeOwnershipTransferToken = `-- name: ConsumeOwnershipTransferToken :execrows
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE id      = $1::uuid
+  AND used_at IS NULL
+`
+
+// Marks the token as used. Returns rows-affected: 0 means already consumed (idempotency).
+func (q *Queries) ConsumeOwnershipTransferToken(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, ConsumeOwnershipTransferToken, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const CountActiveOwners = `-- name: CountActiveOwners :one
 
 SELECT COUNT(*) AS count
@@ -329,6 +346,25 @@ func (q *Queries) DeactivateRole(ctx context.Context, id pgtype.UUID) (int64, er
 	return result.RowsAffected(), nil
 }
 
+const DeletePendingOwnershipTransferToken = `-- name: DeletePendingOwnershipTransferToken :execrows
+DELETE FROM one_time_tokens
+WHERE  token_type                     = 'ownership_transfer'
+  AND  used_at                        IS NULL
+  AND  expires_at                     > NOW()
+  AND  metadata->>'initiated_by'      = $1::text
+`
+
+// Deletes the pending transfer token initiated by @initiated_by.
+// Scoped by metadata->>'initiated_by' so only the initiating owner's transfer is removed.
+// Returns rows-affected: 0 means no pending transfer found → ErrNoPendingTransfer.
+func (q *Queries) DeletePendingOwnershipTransferToken(ctx context.Context, initiatedBy string) (int64, error) {
+	result, err := q.db.Exec(ctx, DeletePendingOwnershipTransferToken, initiatedBy)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const GetActiveUserByID = `-- name: GetActiveUserByID :one
 SELECT id, email, is_active, email_verified
 FROM   users
@@ -370,6 +406,39 @@ func (q *Queries) GetOwnerRoleID(ctx context.Context) (uuid.UUID, error) {
 	var id uuid.UUID
 	err := row.Scan(&id)
 	return id, err
+}
+
+const GetPendingOwnershipTransferToken = `-- name: GetPendingOwnershipTransferToken :one
+SELECT id, user_id, code_hash, metadata
+FROM   one_time_tokens
+WHERE  token_type = 'ownership_transfer'
+  AND  used_at   IS NULL
+  AND  expires_at > NOW()
+ORDER  BY created_at DESC
+LIMIT  1
+FOR UPDATE
+`
+
+type GetPendingOwnershipTransferTokenRow struct {
+	ID       uuid.UUID   `db:"id" json:"id"`
+	UserID   pgtype.UUID `db:"user_id" json:"user_id"`
+	CodeHash pgtype.Text `db:"code_hash" json:"code_hash"`
+	Metadata []byte      `db:"metadata" json:"metadata"`
+}
+
+// Returns the active (unused, unexpired) ownership transfer token.
+// FOR UPDATE prevents concurrent accept/cancel races.
+// Returns pgx.ErrNoRows when no pending transfer exists.
+func (q *Queries) GetPendingOwnershipTransferToken(ctx context.Context) (GetPendingOwnershipTransferTokenRow, error) {
+	row := q.db.QueryRow(ctx, GetPendingOwnershipTransferToken)
+	var i GetPendingOwnershipTransferTokenRow
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.CodeHash,
+		&i.Metadata,
+	)
+	return i, err
 }
 
 const GetPermissionByCanonicalName = `-- name: GetPermissionByCanonicalName :one
@@ -920,6 +989,60 @@ func (q *Queries) GrantUserPermission(ctx context.Context, arg GrantUserPermissi
 	return i, err
 }
 
+const InsertOwnershipTransferToken = `-- name: InsertOwnershipTransferToken :one
+
+INSERT INTO one_time_tokens (
+    token_type,
+    user_id,
+    email,
+    code_hash,
+    expires_at,
+    metadata,
+    max_attempts
+)
+VALUES (
+    'ownership_transfer',
+    $1::uuid,
+    $2,
+    $3,
+    NOW() + INTERVAL '48 hours',
+    $4::jsonb,
+    1
+)
+RETURNING id, expires_at
+`
+
+type InsertOwnershipTransferTokenParams struct {
+	TargetUserID pgtype.UUID `db:"target_user_id" json:"target_user_id"`
+	TargetEmail  string      `db:"target_email" json:"target_email"`
+	CodeHash     pgtype.Text `db:"code_hash" json:"code_hash"`
+	Metadata     []byte      `db:"metadata" json:"metadata"`
+}
+
+type InsertOwnershipTransferTokenRow struct {
+	ID        uuid.UUID          `db:"id" json:"id"`
+	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+}
+
+// ── Ownership transfer ──────────────────────────────────────────────────────
+// Inserts a new pending ownership transfer token for @target_user_id.
+// token_type = 'ownership_transfer'; expires in 48 hours.
+// max_attempts = 1 (single accept attempt is all that's needed — token is consumed on success).
+// metadata carries {"initiated_by": "<owner_uuid>"} so cancel can scope the delete.
+// The caller must check for an existing pending token first and return
+// ErrTransferAlreadyPending if one exists (service layer guard).
+func (q *Queries) InsertOwnershipTransferToken(ctx context.Context, arg InsertOwnershipTransferTokenParams) (InsertOwnershipTransferTokenRow, error) {
+	row := q.db.QueryRow(ctx, InsertOwnershipTransferToken,
+		arg.TargetUserID,
+		arg.TargetEmail,
+		arg.CodeHash,
+		arg.Metadata,
+	)
+	var i InsertOwnershipTransferTokenRow
+	err := row.Scan(&i.ID, &i.ExpiresAt)
+	return i, err
+}
+
 const LockUser = `-- name: LockUser :exec
 
 
@@ -1009,6 +1132,18 @@ SELECT set_config('rbac.acting_user', $1::text, true)
 // accepts a parameterized value, unlike the SET statement.
 func (q *Queries) SetActingUser(ctx context.Context, userID string) error {
 	_, err := q.db.Exec(ctx, SetActingUser, userID)
+	return err
+}
+
+const SetSkipEscalationCheck = `-- name: SetSkipEscalationCheck :exec
+SELECT set_config('rbac.skip_escalation_check', '1', true)
+`
+
+// Suppresses fn_prevent_owner_role_escalation for the duration of the current
+// transaction. SET LOCAL means the setting is automatically cleared at transaction end.
+// Called as the FIRST statement in AcceptTransferTx before any role mutations.
+func (q *Queries) SetSkipEscalationCheck(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, SetSkipEscalationCheck)
 	return err
 }
 

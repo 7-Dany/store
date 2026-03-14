@@ -174,10 +174,23 @@ const (
 	// user submits an incorrect OTP code during the email-deletion flow (Path B-2).
 	EventAccountDeletionOTPFailed EventType = "account_deletion_otp_failed"
 
-	// EventOwnerBootstrapped is emitted by BootstrapOwnerTx when the first owner
-	// role assignment is successfully committed. This is an irreversible
-	// privilege escalation and must always be present in the audit trail.
-	EventOwnerBootstrapped EventType = "owner_bootstrapped"
+	// EventOwnerAssigned is emitted by AssignOwnerTx when the first owner role
+	// assignment is successfully committed via POST /owner/assign. This is an
+	// irreversible privilege escalation and must always be present in the audit trail.
+	EventOwnerAssigned EventType = "owner_assigned"
+
+	// EventOwnerTransferInitiated is emitted when the current owner initiates an
+	// ownership transfer to a target user. Written with context.WithoutCancel.
+	EventOwnerTransferInitiated EventType = "owner_transfer_initiated"
+
+	// EventOwnerTransferAccepted is emitted when the target user accepts ownership.
+	// The metadata field contains previous_owner_id and new_owner_id.
+	// Written with context.WithoutCancel inside AcceptTransferTx.
+	EventOwnerTransferAccepted EventType = "owner_transfer_accepted"
+
+	// EventOwnerTransferCancelled is emitted when the initiating owner cancels the
+	// pending transfer. Written with context.WithoutCancel.
+	EventOwnerTransferCancelled EventType = "owner_transfer_cancelled"
 )
 
 // AllEvents returns a slice of every audit event constant defined in this package.
@@ -223,6 +236,9 @@ func AllEvents() []EventType {
 		EventAccountDeletionOTPRequested,
 		EventAccountDeletionCancelled,
 		EventAccountDeletionOTPFailed,
-		EventOwnerBootstrapped,
+		EventOwnerAssigned,
+		EventOwnerTransferInitiated,
+		EventOwnerTransferAccepted,
+		EventOwnerTransferCancelled,
 	}
 }

@@ -67,6 +67,10 @@ func (h *Handler) CreateRole(w http.ResponseWriter, r *http.Request) {
 		Description: req.Description,
 	})
 	if err != nil {
+		if errors.Is(err, ErrRoleNameConflict) {
+			respond.Error(w, http.StatusConflict, "role_name_conflict", "a role with this name already exists")
+			return
+		}
 		slog.ErrorContext(r.Context(), "roles.CreateRole: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return

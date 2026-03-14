@@ -66,6 +66,8 @@ type Querier interface {
 	// Marks the token as used. The AND used_at IS NULL guard ensures idempotency:
 	// a race between two concurrent correct submissions cannot consume the same token twice.
 	ConsumeEmailVerificationToken(ctx context.Context, id pgtype.UUID) (int64, error)
+	// Marks the token as used. Returns rows-affected: 0 means already consumed (idempotency).
+	ConsumeOwnershipTransferToken(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Marks the token as used. AND used_at IS NULL ensures idempotency:
 	// a race between two concurrent reset submissions cannot consume the same token twice.
 	ConsumePasswordResetToken(ctx context.Context, id pgtype.UUID) (int64, error)
@@ -145,6 +147,10 @@ type Querier interface {
 	CreateUserSession(ctx context.Context, arg CreateUserSessionParams) (CreateUserSessionRow, error)
 	// Soft-deletes a non-system role. Zero rows → ErrSystemRoleImmutable → 409.
 	DeactivateRole(ctx context.Context, id pgtype.UUID) (int64, error)
+	// Deletes the pending transfer token initiated by @initiated_by.
+	// Scoped by metadata->>'initiated_by' so only the initiating owner's transfer is removed.
+	// Returns rows-affected: 0 means no pending transfer found → ErrNoPendingTransfer.
+	DeletePendingOwnershipTransferToken(ctx context.Context, initiatedBy string) (int64, error)
 	// Removes the linked identity for the given (user, provider) pair.
 	// Returns rows affected: 0 means the identity did not exist (idempotent).
 	// trg_prevent_orphan_on_identity_delete (002_core_functions.sql) will raise an
@@ -227,6 +233,10 @@ type Querier interface {
 	// Used by VerifyResetCode: no FOR UPDATE because the token is not consumed here.
 	// The consuming query (GetPasswordResetToken) uses FOR UPDATE separately.
 	GetPasswordResetTokenForVerify(ctx context.Context, email string) (GetPasswordResetTokenForVerifyRow, error)
+	// Returns the active (unused, unexpired) ownership transfer token.
+	// FOR UPDATE prevents concurrent accept/cancel races.
+	// Returns pgx.ErrNoRows when no pending transfer exists.
+	GetPendingOwnershipTransferToken(ctx context.Context) (GetPendingOwnershipTransferTokenRow, error)
 	GetPermissionByCanonicalName(ctx context.Context, canonicalName pgtype.Text) (GetPermissionByCanonicalNameRow, error)
 	// Returns the capability flags for a single permission by primary key.
 	// Used by AddRolePermission to validate access_type and scope before inserting.
@@ -395,6 +405,14 @@ type Querier interface {
 	// producing a cleaner Go API than pgtype.NullAuthProvider at every call site.
 	// If a future domain needs providerless events, add a separate InsertAuditLogNoProvider query.
 	InsertAuditLog(ctx context.Context, arg InsertAuditLogParams) error
+	// ── Ownership transfer ──────────────────────────────────────────────────────
+	// Inserts a new pending ownership transfer token for @target_user_id.
+	// token_type = 'ownership_transfer'; expires in 48 hours.
+	// max_attempts = 1 (single accept attempt is all that's needed — token is consumed on success).
+	// metadata carries {"initiated_by": "<owner_uuid>"} so cancel can scope the delete.
+	// The caller must check for an existing pending token first and return
+	// ErrTransferAlreadyPending if one exists (service layer guard).
+	InsertOwnershipTransferToken(ctx context.Context, arg InsertOwnershipTransferTokenParams) (InsertOwnershipTransferTokenRow, error)
 	// Writes a permanent compliance record of the purge to account_purge_log.
 	// account_purge_log has no FK to users so this row survives the subsequent DELETE.
 	// @metadata is a JSONB blob — callers pass {"deleted_at": "<RFC3339>"} at minimum.
@@ -494,6 +512,10 @@ type Querier interface {
 	// a concurrent set-password call that races past the service guard returns
 	// 0 rows affected, which the store maps to ErrPasswordAlreadySet.
 	SetPasswordHash(ctx context.Context, arg SetPasswordHashParams) (int64, error)
+	// Suppresses fn_prevent_owner_role_escalation for the duration of the current
+	// transaction. SET LOCAL means the setting is automatically cleared at transaction end.
+	// Called as the FIRST statement in AcceptTransferTx before any role mutations.
+	SetSkipEscalationCheck(ctx context.Context) error
 	// Updates users.email for the given active user.
 	// Returns rows affected so the store can distinguish:
 	//   23505 on idx_users_email_active → ErrEmailTaken (concurrent race past service guard)

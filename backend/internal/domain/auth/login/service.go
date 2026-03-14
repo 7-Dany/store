@@ -41,9 +41,10 @@ func NewService(store Storer) *Service {
 //
 // Guard order (applied after the password check passes):
 //  1. login_locked_until in the future → LoginLockedError    (HTTP 429 + Retry-After)
-//  2. is_locked                        → ErrAccountLocked    (HTTP 423)
-//  3. !email_verified                  → ErrEmailNotVerified (HTTP 403)
-//  4. !is_active                       → ErrAccountInactive  (HTTP 403)
+//  2. admin_locked                     → ErrAdminLocked      (HTTP 423 "admin_locked")
+//  3. is_locked                        → ErrAccountLocked    (HTTP 423 "account_locked")
+//  4. !email_verified                  → ErrEmailNotVerified (HTTP 403)
+//  5. !is_active                       → ErrAccountInactive  (HTTP 403)
 //
 // Security trade-off: the login_locked_until guard (step 1) runs AFTER the
 // password check passes. A user whose account is time-locked can confirm their
@@ -114,6 +115,20 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 	// 6. Guard checks. Each failure writes a login_failed audit row so that
 	// credential-stuffing and brute-force patterns remain detectable.
 	switch {
+	case user.AdminLocked:
+		// Admin-imposed lock checked before OTP lock: the unlock OTP flow cannot
+		// clear admin_locked, so surfacing this first gives the clearest guidance.
+		slog.DebugContext(ctx, "login.Login: guard rejected — admin_locked", "user_id", uuid.UUID(user.ID).String())
+		if auditErr := s.store.WriteLoginFailedAuditTx(
+			context.WithoutCancel(ctx),
+			user.ID,
+			"admin_locked",
+			in.IPAddress,
+			in.UserAgent,
+		); auditErr != nil {
+			slog.ErrorContext(ctx, "login.Login: write login_failed audit", "error", auditErr)
+		}
+		return LoggedInSession{}, authshared.ErrAdminLocked
 	case user.IsLocked:
 		slog.DebugContext(ctx, "login.Login: guard rejected — account_locked", "user_id", uuid.UUID(user.ID).String())
 		// Security: WithoutCancel so audit write survives a client disconnect.

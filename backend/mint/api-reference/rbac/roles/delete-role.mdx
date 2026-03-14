@@ -8,6 +8,10 @@ api: "DELETE http://localhost:8080/admin/rbac/roles/{id}"
   The UUID of the role to delete.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:manage`** permission.
+</Callout>
+
 ## Behaviour
 
 Deletion is a soft-delete — the role is deactivated rather than permanently removed from the database. It will no longer appear in [`GET /admin/rbac/roles`](/api-reference/rbac/roles/list-roles) and cannot be assigned to users.

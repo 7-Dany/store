@@ -67,6 +67,9 @@ func (s *Store) CreateRole(ctx context.Context, in CreateRoleInput) (Role, error
 		Description: pgtype.Text{String: in.Description, Valid: in.Description != ""},
 	})
 	if err != nil {
+		if s.IsUniqueViolation(err, "roles_name_key") {
+			return Role{}, ErrRoleNameConflict
+		}
 		return Role{}, fmt.Errorf("store.CreateRole: %w", err)
 	}
 	return mapDBRole(row), nil

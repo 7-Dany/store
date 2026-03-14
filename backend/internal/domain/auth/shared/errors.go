@@ -35,9 +35,15 @@ var ErrTooManyAttempts = errors.New("too many verification attempts")
 // ErrInvalidCode is returned when the supplied OTP does not match the stored hash.
 var ErrInvalidCode = errors.New("invalid verification code")
 
-// ErrAccountLocked is returned when a user presents a valid OTP but the account
-// has been locked by an admin. The handler returns HTTP 423.
-var ErrAccountLocked = errors.New("account locked — contact support")
+// ErrAccountLocked is returned when the account is OTP-locked (is_locked = TRUE)
+// and the handler returns HTTP 423. Distinct from ErrAdminLocked so clients can
+// show different guidance (self-unlock vs. contact support).
+var ErrAccountLocked = errors.New("account locked — please use the unlock flow")
+
+// ErrAdminLocked is returned when the account has been admin-locked
+// (admin_locked = TRUE). The user-facing unlock OTP flow cannot clear this;
+// only an admin action via the RBAC routes can. Handler returns HTTP 423.
+var ErrAdminLocked = errors.New("account locked by admin — contact support")
 
 // ErrEmailTaken is returned when the requested email address is already registered.
 var ErrEmailTaken = errors.New("email address is already registered")

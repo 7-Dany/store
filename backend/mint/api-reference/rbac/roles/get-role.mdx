@@ -8,6 +8,10 @@ api: "GET http://localhost:8080/admin/rbac/roles/{id}"
   The UUID of the role to retrieve.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:read`** permission.
+</Callout>
+
 <RequestExample>
 ```bash Example
 curl -X GET http://localhost:8080/admin/rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c \

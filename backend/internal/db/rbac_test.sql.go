@@ -70,6 +70,35 @@ func (q *Queries) CreatePermissionGroupForTest(ctx context.Context, name string)
 	return id, err
 }
 
+const CreateVerifiedActiveUserForTest = `-- name: CreateVerifiedActiveUserForTest :one
+WITH new_user AS (
+    INSERT INTO users (email, display_name, is_active, email_verified)
+    VALUES ($1, 'Test User', TRUE, TRUE)
+    RETURNING id
+),
+secrets AS (
+    INSERT INTO user_secrets (user_id, password_hash)
+    SELECT id, $2 FROM new_user
+)
+SELECT id FROM new_user
+`
+
+type CreateVerifiedActiveUserForTestParams struct {
+	Email        pgtype.Text `db:"email" json:"email"`
+	PasswordHash pgtype.Text `db:"password_hash" json:"password_hash"`
+}
+
+// Inserts a fully active and email-verified user, bypassing the OTP and registration flow.
+// Returns the new user's UUID.
+// Used by owner integration tests that need a ready-to-use user for AssignOwnerTx
+// and ownership-transfer operations.
+func (q *Queries) CreateVerifiedActiveUserForTest(ctx context.Context, arg CreateVerifiedActiveUserForTestParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, CreateVerifiedActiveUserForTest, arg.Email, arg.PasswordHash)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const DeactivateAllPermissionsForTest = `-- name: DeactivateAllPermissionsForTest :exec
 UPDATE permissions SET is_active = FALSE
 `
@@ -80,6 +109,28 @@ UPDATE permissions SET is_active = FALSE
 func (q *Queries) DeactivateAllPermissionsForTest(ctx context.Context) error {
 	_, err := q.db.Exec(ctx, DeactivateAllPermissionsForTest)
 	return err
+}
+
+const GetAuditLogEventCountForTest = `-- name: GetAuditLogEventCountForTest :one
+SELECT COUNT(*)
+FROM   auth_audit_log
+WHERE  user_id    = $1::uuid
+  AND  event_type = $2::text
+`
+
+type GetAuditLogEventCountForTestParams struct {
+	UserID    pgtype.UUID `db:"user_id" json:"user_id"`
+	EventType string      `db:"event_type" json:"event_type"`
+}
+
+// Returns the count of auth_audit_log entries matching the given user_id and event_type.
+// Used by owner integration tests to verify that store methods write the expected
+// audit entries.
+func (q *Queries) GetAuditLogEventCountForTest(ctx context.Context, arg GetAuditLogEventCountForTestParams) (int64, error) {
+	row := q.db.QueryRow(ctx, GetAuditLogEventCountForTest, arg.UserID, arg.EventType)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const GetLatestRolePermissionAuditEntry = `-- name: GetLatestRolePermissionAuditEntry :one
@@ -112,4 +163,22 @@ func (q *Queries) GetLatestRolePermissionAuditEntry(ctx context.Context, arg Get
 	var i GetLatestRolePermissionAuditEntryRow
 	err := row.Scan(&i.ChangedBy, &i.ChangedAt, &i.ChangeType)
 	return i, err
+}
+
+const GetUserRoleNameForTest = `-- name: GetUserRoleNameForTest :one
+SELECT r.name
+FROM   user_roles ur
+JOIN   roles r ON r.id = ur.role_id
+WHERE  ur.user_id = $1::uuid
+`
+
+// Returns the role name currently assigned to the given user (active assignment only).
+// Returns no-rows if the user has no role.
+// Used by owner integration tests to verify that AssignOwnerTx and AcceptTransferTx
+// set and clear the owner role on the correct users.
+func (q *Queries) GetUserRoleNameForTest(ctx context.Context, userID pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, GetUserRoleNameForTest, userID)
+	var name string
+	err := row.Scan(&name)
+	return name, err
 }

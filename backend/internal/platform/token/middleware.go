@@ -122,6 +122,28 @@ func Auth(secret string, blocklist kvstore.TokenBlocklist, userStore kvstore.Sto
 				// ErrNotFound → key absent → not blocked.
 			}
 
+			// 3c. Admin-lock key check — written by userlock.Service.LockUser and
+			// deleted by userlock.Service.UnlockUser. When present, all outstanding
+			// JWTs for the user are immediately rejected regardless of expiry.
+			// Fail closed on transient errors (same pattern as 3b).
+			if userStore != nil {
+				_, alErr := userStore.Get(r.Context(), "admin_lock:"+claims.Subject)
+				if alErr == nil {
+					// Key present — user is admin-locked; reject the token.
+					respond.Error(w, http.StatusUnauthorized, "token_revoked",
+						"access token has been revoked")
+					return
+				} else if !errors.Is(alErr, kvstore.ErrNotFound) {
+					// Transient error — fail closed.
+					slog.ErrorContext(r.Context(), "token.Auth: admin lock check error",
+						"user_id", claims.Subject, "error", alErr)
+					respond.Error(w, http.StatusUnauthorized, "token_revoked",
+						"access token has been revoked")
+					return
+				}
+				// ErrNotFound — not admin-locked, continue.
+			}
+
 			// 4. Inject claims into context and continue.
 			ctx := context.WithValue(r.Context(), contextKeyUserID, claims.Subject)
 			ctx = context.WithValue(ctx, contextKeySessionID, claims.SessionID)

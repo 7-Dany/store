@@ -54,5 +54,10 @@ func Registry() map[string]Entry {
 			SubjectFmt: "Delete your %s account",
 			HTML:       AccountDeletionOTPTemplate,
 		},
+		OwnerTransferKey: {
+			Key:        OwnerTransferKey,
+			SubjectFmt: "You have been invited to become the %s owner",
+			HTML:       OwnerTransferEmailTemplate,
+		},
 	}
 }

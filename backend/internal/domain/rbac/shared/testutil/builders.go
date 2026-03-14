@@ -95,6 +95,17 @@ func RunTestMain(m *testing.M, pool **pgxpool.Pool, maxConns int32) {
 	os.Exit(code)
 }
 
+// MustTokenHash returns a bcrypt hash of raw at bcrypt.MinCost.
+// Used in service unit tests that need a pre-hashed transfer token stored in
+// PendingTransferInfo.CodeHash without calling bcrypt at DefaultCost.
+func MustTokenHash(raw string) string {
+	h, err := bcrypt.GenerateFromPassword([]byte(raw), bcrypt.MinCost)
+	if err != nil {
+		panic("rbacsharedtest.MustTokenHash: " + err.Error())
+	}
+	return string(h)
+}
+
 // MustBeginTx begins a transaction on pool, registers a t.Cleanup that rolls it
 // back, and returns the raw pgx.Tx together with a *db.Queries bound to that
 // transaction.

@@ -25,12 +25,21 @@ var _ db.Querier = (*QuerierProxy)(nil)
 type QuerierProxy struct {
 	db.Querier // embedded — auto-forwards any method not explicitly overridden below
 
-	// ── bootstrap ────────────────────────────────────────────────────────────
+	// ── owner / bootstrap ────────────────────────────────────────────────────
 	FailCountActiveOwners bool
 	FailGetOwnerRoleID    bool
 	FailGetActiveUserByID bool
 	FailAssignUserRole    bool
 	FailInsertAuditLog    bool
+
+	// ── owner transfer ────────────────────────────────────────────────────────
+	FailGetPendingOwnershipTransferToken    bool
+	FailInsertOwnershipTransferToken        bool
+	FailDeletePendingOwnershipTransferToken bool
+	FailConsumeOwnershipTransferToken       bool
+	FailCheckUserAccess                     bool
+	FailSetSkipEscalationCheck              bool
+	FailRevokeAllUserRefreshTokens          bool
 
 	// ── permissions ───────────────────────────────────────────────────────────
 	FailGetPermissions            bool
@@ -57,12 +66,19 @@ type QuerierProxy struct {
 	FailGetRolePermissions   bool
 	FailAddRolePermission    bool
 	FailRemoveRolePermission bool
+
+	// ── user lock ─────────────────────────────────────────────────────────────
+	FailLockUser          bool
+	FailUnlockUser        bool
+	FailGetUserLockStatus bool
 }
 
 // NewQuerierProxy constructs a QuerierProxy backed by base.
 func NewQuerierProxy(base db.Querier) *QuerierProxy {
 	return &QuerierProxy{Querier: base}
 }
+
+// ── owner / bootstrap ─────────────────────────────────────────────────────────
 
 func (p *QuerierProxy) CountActiveOwners(ctx context.Context) (int64, error) {
 	if p.FailCountActiveOwners {
@@ -99,6 +115,59 @@ func (p *QuerierProxy) InsertAuditLog(ctx context.Context, arg db.InsertAuditLog
 	return p.Querier.InsertAuditLog(ctx, arg)
 }
 
+// ── owner transfer ────────────────────────────────────────────────────────────
+
+func (p *QuerierProxy) GetPendingOwnershipTransferToken(ctx context.Context) (db.GetPendingOwnershipTransferTokenRow, error) {
+	if p.FailGetPendingOwnershipTransferToken {
+		return db.GetPendingOwnershipTransferTokenRow{}, ErrProxy
+	}
+	return p.Querier.GetPendingOwnershipTransferToken(ctx)
+}
+
+func (p *QuerierProxy) InsertOwnershipTransferToken(ctx context.Context, arg db.InsertOwnershipTransferTokenParams) (db.InsertOwnershipTransferTokenRow, error) {
+	if p.FailInsertOwnershipTransferToken {
+		return db.InsertOwnershipTransferTokenRow{}, ErrProxy
+	}
+	return p.Querier.InsertOwnershipTransferToken(ctx, arg)
+}
+
+func (p *QuerierProxy) DeletePendingOwnershipTransferToken(ctx context.Context, initiatedBy string) (int64, error) {
+	if p.FailDeletePendingOwnershipTransferToken {
+		return 0, ErrProxy
+	}
+	return p.Querier.DeletePendingOwnershipTransferToken(ctx, initiatedBy)
+}
+
+func (p *QuerierProxy) ConsumeOwnershipTransferToken(ctx context.Context, id pgtype.UUID) (int64, error) {
+	if p.FailConsumeOwnershipTransferToken {
+		return 0, ErrProxy
+	}
+	return p.Querier.ConsumeOwnershipTransferToken(ctx, id)
+}
+
+func (p *QuerierProxy) CheckUserAccess(ctx context.Context, arg db.CheckUserAccessParams) (db.CheckUserAccessRow, error) {
+	if p.FailCheckUserAccess {
+		return db.CheckUserAccessRow{}, ErrProxy
+	}
+	return p.Querier.CheckUserAccess(ctx, arg)
+}
+
+func (p *QuerierProxy) SetSkipEscalationCheck(ctx context.Context) error {
+	if p.FailSetSkipEscalationCheck {
+		return ErrProxy
+	}
+	return p.Querier.SetSkipEscalationCheck(ctx)
+}
+
+func (p *QuerierProxy) RevokeAllUserRefreshTokens(ctx context.Context, arg db.RevokeAllUserRefreshTokensParams) error {
+	if p.FailRevokeAllUserRefreshTokens {
+		return ErrProxy
+	}
+	return p.Querier.RevokeAllUserRefreshTokens(ctx, arg)
+}
+
+// ── permissions ───────────────────────────────────────────────────────────────
+
 func (p *QuerierProxy) GetPermissions(ctx context.Context) ([]db.GetPermissionsRow, error) {
 	if p.FailGetPermissions {
 		return nil, ErrProxy
@@ -126,6 +195,8 @@ func (p *QuerierProxy) GetPermissionByID(ctx context.Context, id pgtype.UUID) (d
 	}
 	return p.Querier.GetPermissionByID(ctx, id)
 }
+
+// ── roles ─────────────────────────────────────────────────────────────────────
 
 func (p *QuerierProxy) GetRoles(ctx context.Context) ([]db.Role, error) {
 	if p.FailGetRoles {
@@ -190,6 +261,8 @@ func (p *QuerierProxy) RemoveRolePermission(ctx context.Context, arg db.RemoveRo
 	return p.Querier.RemoveRolePermission(ctx, arg)
 }
 
+// ── user roles ────────────────────────────────────────────────────────────────
+
 func (p *QuerierProxy) GetUserRole(ctx context.Context, userID pgtype.UUID) (db.GetUserRoleRow, error) {
 	if p.FailGetUserRole {
 		return db.GetUserRoleRow{}, ErrProxy
@@ -203,6 +276,8 @@ func (p *QuerierProxy) RemoveUserRole(ctx context.Context, userID pgtype.UUID) (
 	}
 	return p.Querier.RemoveUserRole(ctx, userID)
 }
+
+// ── user permissions ──────────────────────────────────────────────────────────
 
 func (p *QuerierProxy) GetUserPermissions(ctx context.Context, userID pgtype.UUID) ([]db.GetUserPermissionsRow, error) {
 	if p.FailGetUserPermissions {
@@ -227,4 +302,27 @@ func (p *QuerierProxy) RevokeUserPermission(ctx context.Context, arg db.RevokeUs
 
 func (p *QuerierProxy) SetActingUser(ctx context.Context, userID string) error {
 	return p.Querier.SetActingUser(ctx, userID)
+}
+
+// ── user lock ─────────────────────────────────────────────────────────────────
+
+func (p *QuerierProxy) LockUser(ctx context.Context, arg db.LockUserParams) error {
+	if p.FailLockUser {
+		return ErrProxy
+	}
+	return p.Querier.LockUser(ctx, arg)
+}
+
+func (p *QuerierProxy) UnlockUser(ctx context.Context, userID pgtype.UUID) error {
+	if p.FailUnlockUser {
+		return ErrProxy
+	}
+	return p.Querier.UnlockUser(ctx, userID)
+}
+
+func (p *QuerierProxy) GetUserLockStatus(ctx context.Context, userID pgtype.UUID) (db.GetUserLockStatusRow, error) {
+	if p.FailGetUserLockStatus {
+		return db.GetUserLockStatusRow{}, ErrProxy
+	}
+	return p.Querier.GetUserLockStatus(ctx, userID)
 }

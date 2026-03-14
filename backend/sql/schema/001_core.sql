@@ -46,7 +46,8 @@ CREATE TYPE one_time_token_type AS ENUM (
  'account_unlock', -- 6-digit OTP sent to lift an OTP brute-force lock
  'email_change_verify', -- step 1: OTP sent to the current address to confirm ownership
  'email_change_confirm',-- step 2: OTP sent to the new address to confirm the destination
- 'account_deletion' -- OTP sent to confirm the user's intent to delete their account (§B-3)
+ 'account_deletion', -- OTP sent to confirm the user's intent to delete their account (§B-3)
+ 'ownership_transfer' -- bcrypt-hashed token emailed to the transfer target to confirm store ownership handover
 );
 
 COMMENT ON TYPE one_time_token_type IS

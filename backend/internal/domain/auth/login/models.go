@@ -21,7 +21,8 @@ type LoginUser struct {
 	PasswordHash     string
 	IsActive         bool
 	EmailVerified    bool
-	IsLocked         bool
+	IsLocked         bool       // OTP brute-force lock (is_locked = TRUE); can self-unlock via OTP flow
+	AdminLocked      bool       // Admin-imposed lock (admin_locked = TRUE); only admin can clear
 	LoginLockedUntil *time.Time // nil = not time-locked
 	DeletedAt        *time.Time // non-nil if account is pending deletion (grace period active)
 }

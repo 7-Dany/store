@@ -7,11 +7,12 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/7-Dany/store/backend/internal/app"
-	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/owner"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/roles"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/userpermissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/userroles"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/userlock"
 )
 
 // Routes builds and returns the full rbac chi.Mux, mounting the /owner and
@@ -26,11 +27,11 @@ func Routes(ctx context.Context, deps *app.Deps) *chi.Mux {
 	return r
 }
 
-// ownerRoutes returns the /owner sub-router (unauthenticated).
+// ownerRoutes returns the /owner sub-router.
 func ownerRoutes(ctx context.Context, deps *app.Deps) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(chimiddleware.AllowContentType("application/json"))
-	bootstrap.Routes(ctx, r, deps)
+	owner.Routes(ctx, r, deps)
 	return r
 }
 
@@ -39,8 +40,9 @@ func adminRoutes(ctx context.Context, deps *app.Deps) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(chimiddleware.AllowContentType("application/json"))
 	permissions.Routes(ctx, r, deps)
-	roles.Routes(ctx, r, deps)    // Phase 6
+	roles.Routes(ctx, r, deps)
 	userroles.Routes(ctx, r, deps)
-	userpermissions.Routes(ctx, r, deps) // Phase 10
+	userpermissions.Routes(ctx, r, deps)
+	userlock.Routes(ctx, r, deps)
 	return r
 }

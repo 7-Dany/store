@@ -50,3 +50,38 @@ WHERE  role_id       = @role_id::uuid
   AND  change_type   = @change_type::audit_change_type_enum
 ORDER  BY changed_at DESC
 LIMIT  1;
+
+-- name: CreateVerifiedActiveUserForTest :one
+-- Inserts a fully active and email-verified user, bypassing the OTP and registration flow.
+-- Returns the new user's UUID.
+-- Used by owner integration tests that need a ready-to-use user for AssignOwnerTx
+-- and ownership-transfer operations.
+WITH new_user AS (
+    INSERT INTO users (email, display_name, is_active, email_verified)
+    VALUES (@email, 'Test User', TRUE, TRUE)
+    RETURNING id
+),
+secrets AS (
+    INSERT INTO user_secrets (user_id, password_hash)
+    SELECT id, @password_hash FROM new_user
+)
+SELECT id FROM new_user;
+
+-- name: GetUserRoleNameForTest :one
+-- Returns the role name currently assigned to the given user (active assignment only).
+-- Returns no-rows if the user has no role.
+-- Used by owner integration tests to verify that AssignOwnerTx and AcceptTransferTx
+-- set and clear the owner role on the correct users.
+SELECT r.name
+FROM   user_roles ur
+JOIN   roles r ON r.id = ur.role_id
+WHERE  ur.user_id = @user_id::uuid;
+
+-- name: GetAuditLogEventCountForTest :one
+-- Returns the count of auth_audit_log entries matching the given user_id and event_type.
+-- Used by owner integration tests to verify that store methods write the expected
+-- audit entries.
+SELECT COUNT(*)
+FROM   auth_audit_log
+WHERE  user_id    = @user_id::uuid
+  AND  event_type = @event_type::text;

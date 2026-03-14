@@ -8,6 +8,10 @@ api: "GET http://localhost:8080/admin/rbac/roles/{id}/permissions"
   The UUID of the role whose permissions you want to retrieve.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:read`** permission.
+</Callout>
+
 ## Behaviour
 
 Returns the full list of permission grants for the given role, including each permission's `access_type`, `scope`, and any `conditions` attached to the grant. The role must exist — a valid UUID that references no role returns `404`.

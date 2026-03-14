@@ -94,9 +94,13 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		respond.Error(w, http.StatusForbidden, "email_not_verified", err.Error())
 	case errors.Is(err, authshared.ErrAccountInactive):
 		respond.Error(w, http.StatusForbidden, "account_inactive", err.Error())
+	case errors.Is(err, authshared.ErrAdminLocked):
+		// Admin-imposed lock: 423 with a distinct code so clients know the OTP
+		// self-unlock flow will not work and the user must contact support.
+		respond.Error(w, http.StatusLocked, "admin_locked", err.Error())
 	case errors.Is(err, authshared.ErrAccountLocked):
-		// Security: 423 Locked distinguishes admin-enforced locks from
-		// time-based lockouts (429), enabling clients to show the correct UI.
+		// OTP brute-force lock: 423 so clients prompt the user to use the
+		// self-unlock flow.
 		respond.Error(w, http.StatusLocked, "account_locked", err.Error())
 	case errors.Is(err, authshared.ErrLoginLocked):
 		// Security: only *LoginLockedError carries RetryAfter. The plain

@@ -11,6 +11,7 @@
      User role
      User permissions (direct grants)
      User lock
+     Ownership transfer
 
    Security-sensitive admin-lock fields (admin_locked, admin_locked_by,
    admin_locked_reason, admin_locked_at, is_locked, login_locked_until)
@@ -395,3 +396,69 @@ FROM   users u
 JOIN   user_secrets us ON us.user_id = u.id
 WHERE  u.id         = @user_id::uuid
   AND  u.deleted_at IS NULL;
+
+
+/* ── Ownership transfer ────────────────────────────────────────────────────── */
+
+-- name: InsertOwnershipTransferToken :one
+-- Inserts a new pending ownership transfer token for @target_user_id.
+-- token_type = 'ownership_transfer'; expires in 48 hours.
+-- max_attempts = 1 (single accept attempt is all that's needed — token is consumed on success).
+-- metadata carries {"initiated_by": "<owner_uuid>"} so cancel can scope the delete.
+-- The caller must check for an existing pending token first and return
+-- ErrTransferAlreadyPending if one exists (service layer guard).
+INSERT INTO one_time_tokens (
+    token_type,
+    user_id,
+    email,
+    code_hash,
+    expires_at,
+    metadata,
+    max_attempts
+)
+VALUES (
+    'ownership_transfer',
+    @target_user_id::uuid,
+    @target_email,
+    @code_hash,
+    NOW() + INTERVAL '48 hours',
+    @metadata::jsonb,
+    1
+)
+RETURNING id, expires_at;
+
+-- name: GetPendingOwnershipTransferToken :one
+-- Returns the active (unused, unexpired) ownership transfer token.
+-- FOR UPDATE prevents concurrent accept/cancel races.
+-- Returns pgx.ErrNoRows when no pending transfer exists.
+SELECT id, user_id, code_hash, metadata
+FROM   one_time_tokens
+WHERE  token_type = 'ownership_transfer'
+  AND  used_at   IS NULL
+  AND  expires_at > NOW()
+ORDER  BY created_at DESC
+LIMIT  1
+FOR UPDATE;
+
+-- name: ConsumeOwnershipTransferToken :execrows
+-- Marks the token as used. Returns rows-affected: 0 means already consumed (idempotency).
+UPDATE one_time_tokens
+SET used_at = NOW()
+WHERE id      = @id::uuid
+  AND used_at IS NULL;
+
+-- name: DeletePendingOwnershipTransferToken :execrows
+-- Deletes the pending transfer token initiated by @initiated_by.
+-- Scoped by metadata->>'initiated_by' so only the initiating owner's transfer is removed.
+-- Returns rows-affected: 0 means no pending transfer found → ErrNoPendingTransfer.
+DELETE FROM one_time_tokens
+WHERE  token_type                     = 'ownership_transfer'
+  AND  used_at                        IS NULL
+  AND  expires_at                     > NOW()
+  AND  metadata->>'initiated_by'      = @initiated_by::text;
+
+-- name: SetSkipEscalationCheck :exec
+-- Suppresses fn_prevent_owner_role_escalation for the duration of the current
+-- transaction. SET LOCAL means the setting is automatically cleared at transaction end.
+-- Called as the FIRST statement in AcceptTransferTx before any role mutations.
+SELECT set_config('rbac.skip_escalation_check', '1', true);

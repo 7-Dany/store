@@ -1,0 +1,205 @@
+---
+title: "Assign Owner"
+authMethod: "bearer"
+description: "Bootstrap endpoint that grants the owner role to the authenticated caller by presenting the server bootstrap secret. Succeeds only when no active owner exists. This is a one-time operation — once an owner is assigned all subsequent calls return 409."
+api: "POST http://localhost:8080/api/v1/owner/assign"
+---
+
+<ParamField body="secret" type="string" required>
+  The bootstrap secret provided to you during system setup.
+</ParamField>
+
+## Behaviour
+
+**JWT required** — The caller must supply a valid `Authorization: Bearer` access token. The JWT sub claim determines which user receives the owner role.
+
+**Secret guard** — An incorrect secret returns `403 forbidden`. The response does not reveal whether an owner already exists.
+
+**Single-owner invariant** — If an active owner already exists, the endpoint returns `409 owner_already_exists`.
+
+**One-time path** — This endpoint is intended solely for the initial system bootstrap. Once an owner has been assigned, use the transfer flow ([`POST /owner/transfer`](/api-reference/rbac/owner/initiate-transfer)) to change ownership.
+
+**Caller eligibility** — The authenticated user must be active and email-verified. An inactive or unverified account returns `422`.
+
+## Rate Limiting
+
+**3 requests per 15 minutes per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "secret": "my-bootstrap-secret"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "user_id": "019ced76-22d1-7772-b124-2b2fa6808137",
+  "role_name": "owner",
+  "granted_at": "2026-03-14T12:00:00.000Z"
+}
+```
+
+```json 401
+{
+  "code": "missing_token",
+  "message": "missing or invalid access token"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "invalid secret"
+}
+```
+
+```json 409
+{
+  "code": "owner_already_exists",
+  "message": "an active owner already exists"
+}
+```
+
+```json 422
+{
+  "code": "validation_error",
+  "message": "secret is required"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="201 — Created">
+    The owner role was granted to the authenticated user. Returns the user ID, the role name, and the timestamp the grant was recorded.
+
+    ```json
+    {
+      "user_id": "019ced76-22d1-7772-b124-2b2fa6808137",
+      "role_name": "owner",
+      "granted_at": "2026-03-14T12:00:00.000Z"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    The request body is not valid JSON. Fix the JSON before retrying.
+
+    ```json
+    {
+      "code": "bad_request",
+      "message": "malformed JSON body"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/login/login) and include it in the request header.
+
+    ```json
+    {
+      "code": "missing_token",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The supplied secret was incorrect. Verify the value and retry.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "invalid secret"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    An active owner already exists. The owner role can only be held by one user at a time. To change ownership, the current owner must use the transfer flow.
+
+    ```json
+    {
+      "code": "owner_already_exists",
+      "message": "an active owner already exists"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="413 — Request Too Large">
+    The request body exceeds the maximum allowed size.
+
+    ```json
+    {
+      "code": "request_too_large",
+      "message": "request body too large"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    Returned for distinct scenarios. Check the `code` field to distinguish them.
+
+    **Missing secret** — The `secret` field was absent, empty, or whitespace-only:
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "secret is required"
+    }
+    ```
+
+    **Caller not active** — The authenticated user's account is not active:
+
+    ```json
+    {
+      "code": "user_not_active",
+      "message": "user account is not active"
+    }
+    ```
+
+    **Caller email not verified** — The authenticated user has not completed email verification:
+
+    ```json
+    {
+      "code": "email_not_verified",
+      "message": "user email address must be verified before being assigned owner"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 3 requests per 15 minutes. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected server-side error occurred. Contact your system administrator if this persists.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

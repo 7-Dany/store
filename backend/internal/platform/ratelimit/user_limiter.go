@@ -41,6 +41,17 @@ func NewUserRateLimiter(s kvstore.Store, keyPrefix string, rate, burst float64, 
 //	go limiter.StartCleanup(ctx)
 func (l *UserRateLimiter) StartCleanup(ctx context.Context) { l.startCleanup(ctx) }
 
+// RetryAfterSecs returns the Retry-After header value (seconds) for this limiter.
+func (l *UserRateLimiter) RetryAfterSecs() string { return l.retryAfterSecs }
+
+// Peek reports whether the given user ID currently has at least one token
+// available WITHOUT consuming a token. Use it to fast-fail before a
+// cheap idempotency check so that duplicate/no-op requests do not drain
+// the bucket. Always follow a successful Peek with a call to Allow.
+func (l *UserRateLimiter) Peek(ctx context.Context, userID string) bool {
+	return l.peek(ctx, l.keyPrefix+userID)
+}
+
 // Allow returns true if the given user ID has a token available.
 func (l *UserRateLimiter) Allow(ctx context.Context, userID string) bool {
 	return l.allow(ctx, l.keyPrefix+userID)

@@ -354,6 +354,31 @@ func (s *RedisStore) AtomicBackoffAllow(ctx context.Context, key string) (bool, 
 	return allowedInt == 1, time.Duration(remainingMs) * time.Millisecond, nil
 }
 
+// AtomicBucketPeek reports whether at least one token is available in the
+// bucket WITHOUT consuming it, by requesting 0 tokens from go-redis-rate.
+//
+// go-redis-rate's AllowN(n=0) returns the current remaining token count
+// without modifying bucket state, making it a true non-destructive read.
+func (s *RedisStore) AtomicBucketPeek(ctx context.Context, key string, rate, burst float64, _ time.Duration) (bool, error) {
+	b := int(math.Round(burst))
+	if b <= 0 {
+		b = 1
+	}
+	periodSec := float64(b) / rate
+	limit := redis_rate.Limit{
+		Rate:   b,
+		Burst:  b,
+		Period: time.Duration(periodSec * float64(time.Second)),
+	}
+	// AllowN with n=0: the Lua script never decrements the bucket, so this is
+	// a pure read. res.Remaining reflects current available tokens.
+	res, err := s.limiter.AllowN(ctx, key, limit, 0)
+	if err != nil {
+		return false, fmt.Errorf("kvstore.AtomicBucketPeek: redis allow peek: %w", err)
+	}
+	return res.Remaining >= 1, nil
+}
+
 // compile-time interface checks.
 var _ Store = (*RedisStore)(nil)
 var _ TokenBlocklist = (*RedisStore)(nil)

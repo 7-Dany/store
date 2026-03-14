@@ -8,6 +8,10 @@ api: "GET http://localhost:8080/admin/rbac/users/{user_id}/permissions"
   The UUID of the user whose direct permission grants you want to retrieve.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:read`** permission.
+</Callout>
+
 ## Behaviour
 
 Returns all active (non-expired) direct permission grants assigned to the target user. Direct grants are distinct from role-inherited permissions — they are attached to the user individually and each carries its own scope, conditions, expiry, and audit trail.

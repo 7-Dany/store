@@ -132,6 +132,49 @@ func (rl *rateLimiter) allow(ctx context.Context, key string) bool {
 	return allowed
 }
 
+// peek reports whether the bucket identified by key currently has at least one
+// token available, WITHOUT consuming a token or writing back to the store.
+//
+// It is intentionally non-atomic with respect to a subsequent allow call: the
+// gap is acceptable because peek is only used to fast-fail before a cheap
+// idempotency check; the definitive token consumption still happens in allow.
+//
+// For AtomicBucketStore (Redis) backends, peek delegates to AtomicBucketPeek
+// which uses go-redis-rate's AllowN(n=0) — a server-side read that never
+// modifies the bucket. For the in-memory path it takes the mutex and projects
+// the refilled count locally without writing.
+func (rl *rateLimiter) peek(ctx context.Context, key string) bool {
+	// ── Atomic server-side path (Redis) ──────────────────────────────────────
+	if atomic, ok := rl.store.(kvstore.AtomicBucketStore); ok {
+		available, err := atomic.AtomicBucketPeek(ctx, key, rl.rate, rl.burst, rl.idleTTL)
+		if err == nil {
+			return available
+		}
+		// Transient error: fall through to local path (fail-open, consistent
+		// with the allow fallback behaviour).
+		slog.WarnContext(ctx, "ratelimit: atomic peek error, falling back to local bucket",
+			"key", key, "error", err)
+	}
+
+	// ── Local mutex path (InMemoryStore or fallback on Redis error) ──────────
+	now := time.Now()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	b := bucketState{Tokens: rl.burst, LastRefil: now}
+	if raw, err := rl.store.Get(ctx, key); err == nil {
+		var loaded bucketState
+		if json.Unmarshal([]byte(raw), &loaded) == nil {
+			b = loaded
+		}
+	}
+
+	// Refill without writing — this is a read-only projection.
+	elapsed := now.Sub(b.LastRefil).Seconds()
+	tokens := min(rl.burst, b.Tokens+elapsed*rl.rate)
+	return tokens >= 1
+}
+
 // startCleanup delegates background eviction to the underlying store.
 // It blocks until ctx is cancelled; run it in a goroutine.
 func (rl *rateLimiter) startCleanup(ctx context.Context) {

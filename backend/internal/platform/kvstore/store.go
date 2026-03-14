@@ -96,6 +96,18 @@ type AtomicBucketStore interface {
 	// Returns (false, err) on a transient store error; callers should fall back
 	// to a less-strict path rather than failing open or closed.
 	AtomicBucketAllow(ctx context.Context, key string, rate, burst float64, idleTTL time.Duration) (bool, error)
+
+	// AtomicBucketPeek reports whether a token is currently available WITHOUT
+	// consuming one. It is the read-only counterpart of AtomicBucketAllow.
+	//
+	// Use it to fast-fail before a cheap idempotency check so that
+	// duplicate/no-op requests do not drain the bucket. Always follow a
+	// successful Peek with a call to AtomicBucketAllow to consume the token.
+	//
+	// Returns (true, nil)  when at least one token is available.
+	// Returns (false, nil) when the bucket is empty (caller should 429).
+	// Returns (false, err) on a transient store error.
+	AtomicBucketPeek(ctx context.Context, key string, rate, burst float64, idleTTL time.Duration) (bool, error)
 }
 
 // AtomicBackoffStore is an optional extension of Store for backends that can

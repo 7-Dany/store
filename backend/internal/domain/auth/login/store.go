@@ -63,7 +63,8 @@ func (s *Store) GetUserForLogin(ctx context.Context, identifier string) (LoginUs
 		PasswordHash:     row.PasswordHash.String,
 		IsActive:         row.IsActive,
 		EmailVerified:    row.EmailVerified,
-		IsLocked:         row.IsLocked || row.AdminLocked,
+		IsLocked:         row.IsLocked,
+		AdminLocked:      row.AdminLocked,
 		LoginLockedUntil: loginLockedUntil,
 	}, nil
 }

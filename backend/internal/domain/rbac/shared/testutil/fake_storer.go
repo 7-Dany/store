@@ -4,42 +4,59 @@ package rbacsharedtest
 
 import (
 	"context"
+	"time"
 
-	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/owner"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/roles"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/userlock"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/userpermissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/userroles"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BootstrapFakeStorer
+// OwnerFakeStorer
 // ─────────────────────────────────────────────────────────────────────────────
 
-// BootstrapFakeStorer is a hand-written implementation of bootstrap.Storer for
+// OwnerFakeStorer is a hand-written implementation of owner.Storer for
 // service unit tests. Each method delegates to its Fn field if non-nil,
 // otherwise returns a safe default so tests only configure the fields they need.
 //
-// Defaults are chosen so that the happy path succeeds without any configuration:
-//   - CountActiveOwners → (0, nil): no owner exists, service may proceed.
-//   - GetOwnerRoleID    → ([16]byte{}, nil): zero UUID, sufficient for unit tests.
-//   - GetActiveUserByID → (BootstrapUser{IsActive: true, EmailVerified: true}, nil):
-//     a valid, fully-verified user; avoids false guard failures in tests that do
-//     not care about user-state checks.
-//   - BootstrapOwnerTx  → (BootstrapResult{}, nil): zero result, nil error.
-type BootstrapFakeStorer struct {
-	CountActiveOwnersFn func(ctx context.Context) (int64, error)
-	GetOwnerRoleIDFn    func(ctx context.Context) ([16]byte, error)
-	GetActiveUserByIDFn func(ctx context.Context, userID [16]byte) (bootstrap.BootstrapUser, error)
-	BootstrapOwnerTxFn  func(ctx context.Context, in bootstrap.BootstrapTxInput) (bootstrap.BootstrapResult, error)
+// Defaults are chosen so that the assign-owner and transfer happy paths succeed
+// without any configuration:
+//   - CountActiveOwners        → (0, nil):   no owner exists, service proceeds.
+//   - GetOwnerRoleID           → ([16]byte{}, nil): zero UUID, sufficient for unit tests.
+//   - GetActiveUserByID        → (AssignOwnerUser{IsActive: true, EmailVerified: true}, nil)
+//   - AssignOwnerTx            → (AssignOwnerResult{}, nil)
+//   - GetTransferTargetUser    → (TransferTargetUser{IsActive: true, EmailVerified: true}, nil)
+//   - HasPendingTransferToken  → (false, nil): no pending transfer, may proceed.
+//   - InsertTransferToken      → ([16]byte{}, time.Now(), nil)
+//   - GetPendingTransferToken  → (PendingTransferInfo{}, nil)
+//   - DeletePendingTransferToken → nil
+//   - WriteInitiateAuditLog   → nil  (non-fatal in production; safe to no-op in tests)
+//   - WriteCancelAuditLog     → nil  (non-fatal in production; safe to no-op in tests)
+//   - AcceptTransferTx        → (time.Now(), nil)
+type OwnerFakeStorer struct {
+	CountActiveOwnersFn          func(ctx context.Context) (int64, error)
+	GetOwnerRoleIDFn             func(ctx context.Context) ([16]byte, error)
+	GetActiveUserByIDFn          func(ctx context.Context, userID [16]byte) (owner.AssignOwnerUser, error)
+	AssignOwnerTxFn              func(ctx context.Context, in owner.AssignOwnerTxInput) (owner.AssignOwnerResult, error)
+	GetTransferTargetUserFn      func(ctx context.Context, userID [16]byte) (owner.TransferTargetUser, error)
+	HasPendingTransferTokenFn    func(ctx context.Context) (bool, error)
+	InsertTransferTokenFn        func(ctx context.Context, targetUserID [16]byte, targetEmail, codeHash, initiatedBy string) ([16]byte, time.Time, error)
+	GetPendingTransferTokenFn    func(ctx context.Context) (owner.PendingTransferInfo, error)
+	DeletePendingTransferTokenFn func(ctx context.Context, initiatedBy string) error
+	WriteInitiateAuditLogFn      func(ctx context.Context, actingOwnerID [16]byte, targetUserID, ipAddress, userAgent string) error
+	WriteCancelAuditLogFn        func(ctx context.Context, actingOwnerID [16]byte, ipAddress, userAgent string) error
+	AcceptTransferTxFn           func(ctx context.Context, in owner.AcceptTransferTxInput) (time.Time, error)
 }
 
 // compile-time interface check.
-var _ bootstrap.Storer = (*BootstrapFakeStorer)(nil)
+var _ owner.Storer = (*OwnerFakeStorer)(nil)
 
 // CountActiveOwners delegates to CountActiveOwnersFn if set.
-// Default: returns (0, nil) — no active owner, service proceeds to the next step.
-func (f *BootstrapFakeStorer) CountActiveOwners(ctx context.Context) (int64, error) {
+// Default: returns (0, nil) — no active owner, service proceeds.
+func (f *OwnerFakeStorer) CountActiveOwners(ctx context.Context) (int64, error) {
 	if f.CountActiveOwnersFn != nil {
 		return f.CountActiveOwnersFn(ctx)
 	}
@@ -48,7 +65,7 @@ func (f *BootstrapFakeStorer) CountActiveOwners(ctx context.Context) (int64, err
 
 // GetOwnerRoleID delegates to GetOwnerRoleIDFn if set.
 // Default: returns a zero [16]byte and nil error.
-func (f *BootstrapFakeStorer) GetOwnerRoleID(ctx context.Context) ([16]byte, error) {
+func (f *OwnerFakeStorer) GetOwnerRoleID(ctx context.Context) ([16]byte, error) {
 	if f.GetOwnerRoleIDFn != nil {
 		return f.GetOwnerRoleIDFn(ctx)
 	}
@@ -56,22 +73,94 @@ func (f *BootstrapFakeStorer) GetOwnerRoleID(ctx context.Context) ([16]byte, err
 }
 
 // GetActiveUserByID delegates to GetActiveUserByIDFn if set.
-// Default: returns a fully-active, email-verified BootstrapUser so tests that
+// Default: returns a fully-active, email-verified AssignOwnerUser so tests that
 // do not configure this field never trip the is_active or email_verified guard.
-func (f *BootstrapFakeStorer) GetActiveUserByID(ctx context.Context, userID [16]byte) (bootstrap.BootstrapUser, error) {
+func (f *OwnerFakeStorer) GetActiveUserByID(ctx context.Context, userID [16]byte) (owner.AssignOwnerUser, error) {
 	if f.GetActiveUserByIDFn != nil {
 		return f.GetActiveUserByIDFn(ctx, userID)
 	}
-	return bootstrap.BootstrapUser{IsActive: true, EmailVerified: true}, nil
+	return owner.AssignOwnerUser{IsActive: true, EmailVerified: true}, nil
 }
 
-// BootstrapOwnerTx delegates to BootstrapOwnerTxFn if set.
-// Default: returns a zero BootstrapResult and nil error.
-func (f *BootstrapFakeStorer) BootstrapOwnerTx(ctx context.Context, in bootstrap.BootstrapTxInput) (bootstrap.BootstrapResult, error) {
-	if f.BootstrapOwnerTxFn != nil {
-		return f.BootstrapOwnerTxFn(ctx, in)
+// AssignOwnerTx delegates to AssignOwnerTxFn if set.
+// Default: returns a zero AssignOwnerResult and nil error.
+func (f *OwnerFakeStorer) AssignOwnerTx(ctx context.Context, in owner.AssignOwnerTxInput) (owner.AssignOwnerResult, error) {
+	if f.AssignOwnerTxFn != nil {
+		return f.AssignOwnerTxFn(ctx, in)
 	}
-	return bootstrap.BootstrapResult{}, nil
+	return owner.AssignOwnerResult{}, nil
+}
+
+// GetTransferTargetUser delegates to GetTransferTargetUserFn if set.
+// Default: returns a fully-active, email-verified, non-owner TransferTargetUser.
+func (f *OwnerFakeStorer) GetTransferTargetUser(ctx context.Context, userID [16]byte) (owner.TransferTargetUser, error) {
+	if f.GetTransferTargetUserFn != nil {
+		return f.GetTransferTargetUserFn(ctx, userID)
+	}
+	return owner.TransferTargetUser{IsActive: true, EmailVerified: true, IsOwner: false}, nil
+}
+
+// HasPendingTransferToken delegates to HasPendingTransferTokenFn if set.
+// Default: returns (false, nil) — no pending transfer, service may proceed.
+func (f *OwnerFakeStorer) HasPendingTransferToken(ctx context.Context) (bool, error) {
+	if f.HasPendingTransferTokenFn != nil {
+		return f.HasPendingTransferTokenFn(ctx)
+	}
+	return false, nil
+}
+
+// InsertTransferToken delegates to InsertTransferTokenFn if set.
+// Default: returns a zero token ID, a non-zero time.Now(), and nil error.
+func (f *OwnerFakeStorer) InsertTransferToken(ctx context.Context, targetUserID [16]byte, targetEmail, codeHash, initiatedBy string) ([16]byte, time.Time, error) {
+	if f.InsertTransferTokenFn != nil {
+		return f.InsertTransferTokenFn(ctx, targetUserID, targetEmail, codeHash, initiatedBy)
+	}
+	return [16]byte{}, time.Now(), nil
+}
+
+// GetPendingTransferToken delegates to GetPendingTransferTokenFn if set.
+// Default: returns a zero PendingTransferInfo and nil error.
+func (f *OwnerFakeStorer) GetPendingTransferToken(ctx context.Context) (owner.PendingTransferInfo, error) {
+	if f.GetPendingTransferTokenFn != nil {
+		return f.GetPendingTransferTokenFn(ctx)
+	}
+	return owner.PendingTransferInfo{}, nil
+}
+
+// DeletePendingTransferToken delegates to DeletePendingTransferTokenFn if set.
+// Default: returns nil.
+func (f *OwnerFakeStorer) DeletePendingTransferToken(ctx context.Context, initiatedBy string) error {
+	if f.DeletePendingTransferTokenFn != nil {
+		return f.DeletePendingTransferTokenFn(ctx, initiatedBy)
+	}
+	return nil
+}
+
+// WriteInitiateAuditLog delegates to WriteInitiateAuditLogFn if set.
+// Default: returns nil (non-fatal in production; safe to no-op in tests).
+func (f *OwnerFakeStorer) WriteInitiateAuditLog(ctx context.Context, actingOwnerID [16]byte, targetUserID, ipAddress, userAgent string) error {
+	if f.WriteInitiateAuditLogFn != nil {
+		return f.WriteInitiateAuditLogFn(ctx, actingOwnerID, targetUserID, ipAddress, userAgent)
+	}
+	return nil
+}
+
+// WriteCancelAuditLog delegates to WriteCancelAuditLogFn if set.
+// Default: returns nil (non-fatal in production; safe to no-op in tests).
+func (f *OwnerFakeStorer) WriteCancelAuditLog(ctx context.Context, actingOwnerID [16]byte, ipAddress, userAgent string) error {
+	if f.WriteCancelAuditLogFn != nil {
+		return f.WriteCancelAuditLogFn(ctx, actingOwnerID, ipAddress, userAgent)
+	}
+	return nil
+}
+
+// AcceptTransferTx delegates to AcceptTransferTxFn if set.
+// Default: returns time.Now() and nil error.
+func (f *OwnerFakeStorer) AcceptTransferTx(ctx context.Context, in owner.AcceptTransferTxInput) (time.Time, error) {
+	if f.AcceptTransferTxFn != nil {
+		return f.AcceptTransferTxFn(ctx, in)
+	}
+	return time.Now(), nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -319,6 +408,65 @@ func (f *UserPermissionsFakeStorer) GrantPermissionTx(ctx context.Context, in us
 func (f *UserPermissionsFakeStorer) RevokePermission(ctx context.Context, grantID, userID [16]byte, actingUserID string) error {
 	if f.RevokePermissionFn != nil {
 		return f.RevokePermissionFn(ctx, grantID, userID, actingUserID)
+	}
+	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UserLockFakeStorer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// UserLockFakeStorer is a hand-written implementation of userlock.Storer
+// for service unit tests.
+//
+// Defaults:
+//
+//	IsOwnerUserFn   → (false, nil)  — non-owner; lock guards pass
+//	GetLockStatusFn → (UserLockStatus{}, nil)
+//	LockUserTxFn    → nil
+//	UnlockUserFn    → nil
+type UserLockFakeStorer struct {
+	IsOwnerUserFn   func(ctx context.Context, userID [16]byte) (bool, error)
+	GetLockStatusFn func(ctx context.Context, userID [16]byte) (userlock.UserLockStatus, error)
+	LockUserTxFn    func(ctx context.Context, in userlock.LockUserTxInput) error
+	UnlockUserTxFn  func(ctx context.Context, userID [16]byte, actingUserID string) error
+}
+
+// compile-time interface check.
+var _ userlock.Storer = (*UserLockFakeStorer)(nil)
+
+// IsOwnerUser delegates to IsOwnerUserFn if set.
+// Default: returns (false, nil) — non-owner.
+func (f *UserLockFakeStorer) IsOwnerUser(ctx context.Context, userID [16]byte) (bool, error) {
+	if f.IsOwnerUserFn != nil {
+		return f.IsOwnerUserFn(ctx, userID)
+	}
+	return false, nil
+}
+
+// GetLockStatus delegates to GetLockStatusFn if set.
+// Default: returns (UserLockStatus{}, nil).
+func (f *UserLockFakeStorer) GetLockStatus(ctx context.Context, userID [16]byte) (userlock.UserLockStatus, error) {
+	if f.GetLockStatusFn != nil {
+		return f.GetLockStatusFn(ctx, userID)
+	}
+	return userlock.UserLockStatus{}, nil
+}
+
+// LockUserTx delegates to LockUserTxFn if set.
+// Default: returns nil.
+func (f *UserLockFakeStorer) LockUserTx(ctx context.Context, in userlock.LockUserTxInput) error {
+	if f.LockUserTxFn != nil {
+		return f.LockUserTxFn(ctx, in)
+	}
+	return nil
+}
+
+// UnlockUserTx delegates to UnlockUserTxFn if set.
+// Default: returns nil.
+func (f *UserLockFakeStorer) UnlockUserTx(ctx context.Context, userID [16]byte, actingUserID string) error {
+	if f.UnlockUserTxFn != nil {
+		return f.UnlockUserTxFn(ctx, userID, actingUserID)
 	}
 	return nil
 }

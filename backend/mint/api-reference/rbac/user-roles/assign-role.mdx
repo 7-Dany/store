@@ -30,6 +30,10 @@ api: "PUT http://localhost:8080/admin/rbac/users/{user_id}/role"
   </Expandable>
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:manage`** permission.
+</Callout>
+
 ## Behaviour
 
 Assigns a role to the target user, replacing any existing non-owner role assignment in a single operation. Each user can hold exactly one role at a time — this is enforced at the database level.

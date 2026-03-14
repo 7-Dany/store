@@ -8,17 +8,15 @@ api: "GET http://localhost:8080/admin/rbac/users/{user_id}/role"
   The UUID of the user whose role assignment you want to retrieve.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:read`** permission.
+</Callout>
+
 ## Behaviour
 
 Returns the user's current active role assignment. A role is considered active when it has not expired — permanent grants have no expiry, while temporary grants are active only until their expiry time passes.
 
 If the user has no active role assignment, a `404` is returned. This includes cases where a temporary role has expired but not yet been cleaned up.
-
-<RequestExample>
-```json Example
-{}
-```
-</RequestExample>
 
 <ResponseExample>
 ```json 200

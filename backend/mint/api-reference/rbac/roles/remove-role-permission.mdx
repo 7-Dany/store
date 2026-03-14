@@ -12,6 +12,10 @@ api: "DELETE http://localhost:8080/admin/rbac/roles/{id}/permissions/{perm_id}"
   The UUID of the permission to remove from the role.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:manage`** permission.
+</Callout>
+
 ## Behaviour
 
 Removes the specific permission grant from the role. If the role or permission grant cannot be found — including when either ID is not a valid UUID — the endpoint returns `404`.

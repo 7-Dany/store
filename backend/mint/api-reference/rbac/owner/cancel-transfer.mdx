@@ -1,0 +1,119 @@
+---
+title: "Cancel Ownership Transfer"
+authMethod: "bearer"
+description: "Cancels the current pending ownership transfer, invalidating the one-time token that was emailed to the target user. Only the current owner may call this endpoint."
+api: "DELETE http://localhost:8080/api/v1/owner/transfer"
+---
+
+## Behaviour
+
+**Owner-only** — The caller must hold the active owner role. Any authenticated user without this role receives `403`.
+
+**Invalidates the token** — The pending transfer token is invalidated, preventing the target user from accepting it. If a new transfer is needed, use [`POST /owner/transfer`](/api-reference/rbac/owner/initiate-transfer) to create a fresh one.
+
+**No body required** — This is a `DELETE` with no request body.
+
+**No pending transfer** — If no unexpired transfer exists for the calling owner, the endpoint returns `404 no_pending_transfer`.
+
+## Rate Limiting
+
+**10 requests per hour per authenticated user**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<ResponseExample>
+```json 204
+(empty body)
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "missing or invalid access token"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "owner role required"
+}
+```
+
+```json 404
+{
+  "code": "no_pending_transfer",
+  "message": "no pending ownership transfer found"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The pending transfer was successfully cancelled. The previously emailed token is now invalid. No response body is returned.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/login/login) and include it in the request header.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the owner role.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "owner role required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    There is no pending ownership transfer initiated by the calling owner. Either it was never created, it has already expired, or it was already accepted or cancelled.
+
+    ```json
+    {
+      "code": "no_pending_transfer",
+      "message": "no pending ownership transfer found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The authenticated user has exceeded 10 requests per hour. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected server-side error occurred. Contact your system administrator if this persists.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

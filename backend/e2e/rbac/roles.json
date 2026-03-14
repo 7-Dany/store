@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "rbac-roles-e2e",
-    "name": "RBAC – Roles (/admin/rbac/roles)",
-    "description": "E2E tests for the roles CRUD API and role-permission grant management.\n\nRoutes covered:\n  GET    /api/v1/admin/rbac/roles\n  POST   /api/v1/admin/rbac/roles\n  GET    /api/v1/admin/rbac/roles/{id}\n  PATCH  /api/v1/admin/rbac/roles/{id}\n  DELETE /api/v1/admin/rbac/roles/{id}\n  GET    /api/v1/admin/rbac/roles/{id}/permissions\n  POST   /api/v1/admin/rbac/roles/{id}/permissions\n  DELETE /api/v1/admin/rbac/roles/{id}/permissions/{perm_id}\n\nFolder execution order (orchestrated by make e2e-rbac):\n  1. setup            — register + Gmail OTP + verify-email + login\n                        (captures roles_access_token — plain user, no RBAC permissions yet)\n  2. auth-guard       — 401 on GET /roles and POST /roles with no Authorization header\n  3. rbac-guard       — 403 on rbac:read and rbac:manage routes with valid JWT but no permissions\n  4. owner-bootstrap  — POST /owner/bootstrap promotes the test user to owner\n                        (owner role grants rbac:read + rbac:manage; RBAC middleware reads DB\n                        per request — no re-login needed; the same token becomes effective)\n  5. happy-path       — full CRUD flow: list → create → get → update → list-perms →\n                        add-perm → list-perms-after → remove-perm → delete role\n  6. not-found        — 404 cases for all routes that accept an {id} URL param\n  7. validation       — 422/400/413 input-error cases for POST and PATCH routes\n  8. immutable-guard  — 409 when attempting to update or delete a system role\n\nGuard order (handler):\n  GET    routes: JWTAuth → RBAC.Require(rbac:read)   → handler\n  mutate routes: JWTAuth → RBAC.Require(rbac:manage) → handler\n\nThe admin router applies AllowContentType(\"application/json\") before JWTAuth, so POST/PATCH\nrequests in auth-guard must carry Content-Type: application/json to reach the 401 guard.\n\nEnvironment variables required:\n  bootstrap_secret   — must match BOOTSTRAP_SECRET in the running server's .env\n  gmail_test_email   — Gmail address for OTP receipt\n  gmail_access_token — OAuth2 token for Gmail API reads\n\nNotes on what is NOT covered here (covered by unit tests):\n  - DB / store errors → 500                    — handler_test.go, service_test.go\n  - UUID parse failure → ErrRoleNotFound       — service_test.go (invalid UUID string)\n  - Conditions JSON default '{}' applied        — service_test.go\n  - nil roles marshals as [] not null           — handler_test.go\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before each suite run.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "name": "RBAC \u2013 Roles (/admin/rbac/roles)",
+    "description": "E2E tests for the roles CRUD API and role-permission grant management.\n\nRoutes covered:\n  GET    /api/v1/admin/rbac/roles\n  POST   /api/v1/admin/rbac/roles\n  GET    /api/v1/admin/rbac/roles/{id}\n  PATCH  /api/v1/admin/rbac/roles/{id}\n  DELETE /api/v1/admin/rbac/roles/{id}\n  GET    /api/v1/admin/rbac/roles/{id}/permissions\n  POST   /api/v1/admin/rbac/roles/{id}/permissions\n  DELETE /api/v1/admin/rbac/roles/{id}/permissions/{perm_id}\n\nFolder execution order (orchestrated by make e2e-rbac):\n  1. setup            \u2014 register + Gmail OTP + verify-email + login\n                        (captures roles_access_token \u2014 plain user, no RBAC permissions yet)\n  2. auth-guard       \u2014 401 on GET /roles and POST /roles with no Authorization header\n  3. rbac-guard       \u2014 403 on rbac:read and rbac:manage routes with valid JWT but no permissions\n  4. owner-bootstrap  \u2014 POST /owner/assign promotes the test user to owner\n                        (owner role grants rbac:read + rbac:manage; RBAC middleware reads DB\n                        per request \u2014 no re-login needed; the same token becomes effective)\n  5. happy-path       \u2014 full CRUD flow: list \u2192 create \u2192 get \u2192 update \u2192 list-perms \u2192\n                        add-perm \u2192 list-perms-after \u2192 remove-perm \u2192 delete role\n  6. not-found        \u2014 404 cases for all routes that accept an {id} URL param\n  7. validation       \u2014 422/400/413 input-error cases for POST and PATCH routes\n  8. immutable-guard  \u2014 409 when attempting to update or delete a system role\n\nGuard order (handler):\n  GET    routes: JWTAuth \u2192 RBAC.Require(rbac:read)   \u2192 handler\n  mutate routes: JWTAuth \u2192 RBAC.Require(rbac:manage) \u2192 handler\n\nThe admin router applies AllowContentType(\"application/json\") before JWTAuth, so POST/PATCH\nrequests in auth-guard must carry Content-Type: application/json to reach the 401 guard.\n\nEnvironment variables required:\n  bootstrap_secret   \u2014 must match BOOTSTRAP_SECRET in the running server's .env\n  gmail_test_email   \u2014 Gmail address for OTP receipt\n  gmail_access_token \u2014 OAuth2 token for Gmail API reads\n\nNotes on what is NOT covered here (covered by unit tests):\n  - DB / store errors \u2192 500                    \u2014 handler_test.go, service_test.go\n  - UUID parse failure \u2192 ErrRoleNotFound       \u2014 service_test.go (invalid UUID string)\n  - Conditions JSON default '{}' applied        \u2014 service_test.go\n  - nil roles marshals as [] not null           \u2014 handler_test.go\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before each suite run.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -25,10 +25,10 @@
   "item": [
     {
       "name": "setup",
-      "description": "Registers the gmail_test_email user, fetches the OTP via Gmail API, verifies email, and logs in. Captures roles_access_token (plain user — no RBAC permissions yet). This same token is reused for rbac-guard (→ 403) and, after owner-bootstrap promotes the user, for all subsequent folders (→ 200/201/204). The RBAC middleware reads permissions from DB on each request so no re-login is needed after bootstrap.",
+      "description": "Registers the gmail_test_email user, fetches the OTP via Gmail API, verifies email, and logs in. Captures roles_access_token (plain user \u2014 no RBAC permissions yet). This same token is reused for rbac-guard (\u2192 403) and, after owner-bootstrap promotes the user, for all subsequent folders (\u2192 200/201/204). The RBAC middleware reads permissions from DB on each request so no re-login is needed after bootstrap.",
       "item": [
         {
-          "name": "POST /register → 201 (setup roles user)",
+          "name": "POST /register \u2192 201 (setup roles user)",
           "event": [
             {
               "listen": "prerequest",
@@ -37,7 +37,7 @@
                 "exec": [
                   "const email = pm.environment.get('gmail_test_email');",
                   "if (!email) {",
-                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
+                  "    console.error('[ERROR] gmail_test_email not set in environment \u2014 add it to environment.json.');",
                   "}",
                   "pm.collectionVariables.set('roles_email', email);",
                   "pm.collectionVariables.set('roles_password', 'P@ssw0rd1!');"
@@ -53,7 +53,7 @@
                   "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
                   "",
                   "const token = pm.variables.get('gmail_access_token');",
-                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
                   "",
                   "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
                   "const start = Date.now();",
@@ -67,7 +67,7 @@
                   "    header: { Authorization: 'Bearer ' + token }",
                   "}, (err, res) => {",
                   "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
-                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired \u2014 refresh at https://developers.google.com/oauthplayground'); return; }",
                   "    const msgs = res.json().messages;",
                   "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email found in Gmail.'); return; }",
                   "    pm.sendRequest({",
@@ -99,23 +99,40 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"RolesUser\", \"email\": \"{{roles_email}}\", \"password\": \"{{roles_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "register"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "register"
+              ]
             }
           }
         },
         {
-          "name": "POST /verify-email → 200 (consume OTP)",
+          "name": "POST /verify-email \u2192 200 (consume OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -124,7 +141,7 @@
                 "exec": [
                   "const code = pm.collectionVariables.get('roles_code');",
                   "if (!code) {",
-                  "    console.error('[ERROR] collection variable \"roles_code\" is empty — Gmail fetch did not complete.');",
+                  "    console.error('[ERROR] collection variable \"roles_code\" is empty \u2014 Gmail fetch did not complete.');",
                   "    console.error('        Check: gmail_access_token is set and not expired, --delay-request >= 8000.');",
                   "}"
                 ]
@@ -144,23 +161,40 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{roles_email}}\", \"code\": \"{{roles_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "verify-email"
+              ]
             }
           }
         },
         {
-          "name": "POST /login → 200 (capture roles_access_token)",
+          "name": "POST /login \u2192 200 (capture roles_access_token)",
           "event": [
             {
               "listen": "test",
@@ -171,7 +205,7 @@
                   "const body = pm.response.json();",
                   "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
                   "pm.collectionVariables.set('roles_access_token', body.access_token);",
-                  "console.log('[INFO] Captured roles_access_token (plain user — no RBAC permissions yet).');"
+                  "console.log('[INFO] Captured roles_access_token (plain user \u2014 no RBAC permissions yet).');"
                 ]
               }
             }
@@ -179,18 +213,35 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{roles_email}}\", \"password\": \"{{roles_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "auth",
+                "login"
+              ]
             }
           }
         }
@@ -201,14 +252,14 @@
       "description": "Verifies that the JWTAuth middleware rejects requests with no Authorization header before RBAC or handler logic is reached. Tests a representative read route (GET /roles) and a representative mutate route (POST /roles). POST carries Content-Type: application/json so the AllowContentType router middleware passes before JWTAuth fires.",
       "item": [
         {
-          "name": "GET /rbac/roles — no Authorization → 401",
+          "name": "GET /rbac/roles \u2014 no Authorization \u2192 401",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// JWTAuth fires before RBAC.Require — no token means 401 before any handler logic.",
+                  "// JWTAuth fires before RBAC.Require \u2014 no token means 401 before any handler logic.",
                   "pm.test('status is 401', () => pm.response.to.have.status(401));",
                   "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
                 ]
@@ -218,17 +269,28 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles — no Authorization → 401",
+          "name": "POST /rbac/roles \u2014 no Authorization \u2192 401",
           "event": [
             {
               "listen": "test",
@@ -236,7 +298,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "// AllowContentType passes (Content-Type: application/json present).",
-                  "// JWTAuth fires next — no token → 401 before RBAC or body decode.",
+                  "// JWTAuth fires next \u2014 no token \u2192 401 before RBAC or body decode.",
                   "pm.test('status is 401', () => pm.response.to.have.status(401));",
                   "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
                 ]
@@ -246,23 +308,41 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"name\": \"any\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         },
         {
-          "name": "DELETE /rbac/roles/{id}/permissions/{perm_id} — no Authorization → 401",
+          "name": "DELETE /rbac/roles/{id}/permissions/{perm_id} \u2014 no Authorization \u2192 401",
           "event": [
             {
               "listen": "test",
@@ -278,12 +358,26 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions/00000000-0000-0000-0000-000000000002",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions", "00000000-0000-0000-0000-000000000002"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001",
+                "permissions",
+                "00000000-0000-0000-0000-000000000002"
+              ]
             }
           }
         }
@@ -294,14 +388,14 @@
       "description": "Verifies that RBAC.Require rejects a valid JWT belonging to a plain user with no rbac:read or rbac:manage permission. The JWT is valid (from setup/login) but the user has not yet been bootstrapped as owner. Must return 403 before the handler is called. owner-bootstrap runs after this folder.",
       "item": [
         {
-          "name": "GET /rbac/roles — valid JWT, no rbac:read → 403",
+          "name": "GET /rbac/roles \u2014 valid JWT, no rbac:read \u2192 403",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// JWTAuth passes. RBAC.Require(rbac:read) fires next — user has no owner role → 403.",
+                  "// JWTAuth passes. RBAC.Require(rbac:read) fires next \u2014 user has no owner role \u2192 403.",
                   "pm.test('status is 403', () => pm.response.to.have.status(403));",
                   "pm.test('code is forbidden', () => pm.expect(pm.response.json().code).to.eql('forbidden'));"
                 ]
@@ -311,25 +405,39 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles — valid JWT, no rbac:manage → 403",
+          "name": "POST /rbac/roles \u2014 valid JWT, no rbac:manage \u2192 403",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// JWTAuth passes. RBAC.Require(rbac:manage) fires next → 403 before body decode.",
+                  "// JWTAuth passes. RBAC.Require(rbac:manage) fires next \u2192 403 before body decode.",
                   "pm.test('status is 403', () => pm.response.to.have.status(403));",
                   "pm.test('code is forbidden', () => pm.expect(pm.response.json().code).to.eql('forbidden'));"
                 ]
@@ -339,19 +447,40 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"name\": \"any\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         }
@@ -359,10 +488,10 @@
     },
     {
       "name": "owner-bootstrap",
-      "description": "Promotes the setup user to owner by calling POST /owner/bootstrap with the correct bootstrap_secret. The owner role carries all permissions including rbac:read and rbac:manage. RBAC.Require reads the DB on every request — no re-login is needed; the existing roles_access_token is sufficient for all subsequent requests.",
+      "description": "Promotes the setup user to owner by calling POST /owner/assign with the correct bootstrap_secret. The owner role carries all permissions including rbac:read and rbac:manage. RBAC.Require reads the DB on every request \u2014 no re-login is needed; the existing roles_access_token is sufficient for all subsequent requests.",
       "item": [
         {
-          "name": "POST /owner/bootstrap → 201 (grant owner role to roles user)",
+          "name": "POST /owner/bootstrap \u2192 201 (grant owner role to roles user)",
           "event": [
             {
               "listen": "prerequest",
@@ -371,11 +500,11 @@
                 "exec": [
                   "const token = pm.collectionVariables.get('roles_access_token');",
                   "if (!token) {",
-                  "    console.error('[ERROR] roles_access_token not set — setup/POST /login did not complete.');",
+                  "    console.error('[ERROR] roles_access_token not set \u2014 setup/POST /login did not complete.');",
                   "}",
                   "const secret = pm.environment.get('bootstrap_secret');",
                   "if (!secret) {",
-                  "    console.error('[ERROR] bootstrap_secret not set in environment — add it to environment.json.');",
+                  "    console.error('[ERROR] bootstrap_secret not set in environment \u2014 add it to environment.json.');",
                   "}"
                 ]
               }
@@ -387,7 +516,7 @@
                 "exec": [
                   "pm.test('status is 201', () => pm.response.to.have.status(201));",
                   "pm.test('role_name is owner', () => pm.expect(pm.response.json().role_name).to.eql('owner'));",
-                  "console.log('[INFO] roles user is now owner — RBAC.Require(rbac:read) and RBAC.Require(rbac:manage) will pass on subsequent requests.');"
+                  "console.log('[INFO] roles user is now owner \u2014 RBAC.Require(rbac:read) and RBAC.Require(rbac:manage) will pass on subsequent requests.');"
                 ]
               }
             }
@@ -395,19 +524,39 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "raw": "{\"secret\": \"{{bootstrap_secret}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/owner/bootstrap",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "owner", "bootstrap"]
+              "raw": "{{base_url}}/api/v1/owner/assign",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "owner",
+                "assign"
+              ]
             }
           }
         }
@@ -415,10 +564,10 @@
     },
     {
       "name": "happy-path",
-      "description": "Full CRUD flow authenticated as owner (rbac:read + rbac:manage granted by owner-bootstrap).\n\nExecution order:\n  1. GET /admin/permissions            — capture roles_perm_id for the AddRolePermission step\n  2. GET /rbac/roles                   — assert non-empty list; capture roles_system_role_id\n  3. POST /rbac/roles                  — create test role; capture roles_role_id\n  4. GET /rbac/roles/{id}              — assert created role shape\n  5. PATCH /rbac/roles/{id}            — update name + description\n  6. GET /rbac/roles/{id}/permissions  — assert empty list before adding\n  7. POST /rbac/roles/{id}/permissions — add a permission grant → 204\n  8. GET /rbac/roles/{id}/permissions  — assert list now contains one entry; capture roles_grant_perm_id\n  9. DELETE /rbac/roles/{id}/permissions/{perm_id} — remove the grant → 204\n  10. DELETE /rbac/roles/{id}          — delete the test role → 204",
+      "description": "Full CRUD flow authenticated as owner (rbac:read + rbac:manage granted by owner-bootstrap).\n\nExecution order:\n  1. GET /admin/permissions            \u2014 capture roles_perm_id for the AddRolePermission step\n  2. GET /rbac/roles                   \u2014 assert non-empty list; capture roles_system_role_id\n  3. POST /rbac/roles                  \u2014 create test role; capture roles_role_id\n  4. GET /rbac/roles/{id}              \u2014 assert created role shape\n  5. PATCH /rbac/roles/{id}            \u2014 update name + description\n  6. GET /rbac/roles/{id}/permissions  \u2014 assert empty list before adding\n  7. POST /rbac/roles/{id}/permissions \u2014 add a permission grant \u2192 204\n  8. GET /rbac/roles/{id}/permissions  \u2014 assert list now contains one entry; capture roles_grant_perm_id\n  9. DELETE /rbac/roles/{id}/permissions/{perm_id} \u2014 remove the grant \u2192 204\n  10. DELETE /rbac/roles/{id}          \u2014 delete the test role \u2192 204",
       "item": [
         {
-          "name": "GET /admin/permissions → 200 (capture roles_perm_id)",
+          "name": "GET /admin/permissions \u2192 200 (capture roles_perm_id)",
           "event": [
             {
               "listen": "test",
@@ -440,18 +589,31 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "GET /rbac/roles → 200 (list includes seeded roles; capture system role id)",
+          "name": "GET /rbac/roles \u2192 200 (list includes seeded roles; capture system role id)",
           "event": [
             {
               "listen": "test",
@@ -496,7 +658,7 @@
                   "    pm.collectionVariables.set('roles_system_role_id', systemRole.id);",
                   "    console.log('[INFO] Captured roles_system_role_id:', systemRole.id);",
                   "} else {",
-                  "    console.warn('[WARN] No system role found in list — immutable-guard tests will be skipped.');",
+                  "    console.warn('[WARN] No system role found in list \u2014 immutable-guard tests will be skipped.');",
                   "}",
                   "",
                   "pm.test('no Set-Cookie header', () => {",
@@ -510,18 +672,32 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles → 201 (create test role; capture roles_role_id)",
+          "name": "POST /rbac/roles \u2192 201 (create test role; capture roles_role_id)",
           "event": [
             {
               "listen": "test",
@@ -569,24 +745,45 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"name\": \"e2e-test-role\", \"description\": \"Created by E2E test suite\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         },
         {
-          "name": "GET /rbac/roles/{id} → 200 (get the created role)",
+          "name": "GET /rbac/roles/{id} \u2192 200 (get the created role)",
           "event": [
             {
               "listen": "prerequest",
@@ -594,7 +791,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "const id = pm.collectionVariables.get('roles_role_id');",
-                  "if (!id) { console.error('[ERROR] roles_role_id not set — POST /rbac/roles did not complete.'); }"
+                  "if (!id) { console.error('[ERROR] roles_role_id not set \u2014 POST /rbac/roles did not complete.'); }"
                 ]
               }
             },
@@ -622,18 +819,33 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "{{roles_role_id}}"
+              ]
             }
           }
         },
         {
-          "name": "PATCH /rbac/roles/{id} → 200 (update name and description)",
+          "name": "PATCH /rbac/roles/{id} \u2192 200 (update name and description)",
           "event": [
             {
               "listen": "test",
@@ -656,24 +868,46 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"name\": \"e2e-test-role-updated\", \"description\": \"Updated by E2E test suite\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "{{roles_role_id}}"
+              ]
             }
           }
         },
         {
-          "name": "GET /rbac/roles/{id}/permissions → 200 (empty before any grant)",
+          "name": "GET /rbac/roles/{id}/permissions \u2192 200 (empty before any grant)",
           "event": [
             {
               "listen": "test",
@@ -695,18 +929,34 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "{{roles_role_id}}",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles/{id}/permissions → 204 (add permission grant)",
+          "name": "POST /rbac/roles/{id}/permissions \u2192 204 (add permission grant)",
           "event": [
             {
               "listen": "prerequest",
@@ -715,7 +965,7 @@
                 "exec": [
                   "const permID = pm.collectionVariables.get('roles_perm_id');",
                   "if (!permID) {",
-                  "    console.error('[ERROR] roles_perm_id not set — GET /admin/permissions step did not complete.');",
+                  "    console.error('[ERROR] roles_perm_id not set \u2014 GET /admin/permissions step did not complete.');",
                   "}"
                 ]
               }
@@ -725,7 +975,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// 204 No Content — no body, no Set-Cookie.",
+                  "// 204 No Content \u2014 no body, no Set-Cookie.",
                   "pm.test('status is 204', () => pm.response.to.have.status(204));",
                   "pm.test('no Set-Cookie header', () => {",
                   "    pm.expect(pm.response.headers.get('Set-Cookie') || '').to.be.empty;",
@@ -737,24 +987,47 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"permission_id\": \"{{roles_perm_id}}\", \"access_type\": \"direct\", \"scope\": \"all\", \"granted_reason\": \"E2E test grant\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "{{roles_role_id}}",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "GET /rbac/roles/{id}/permissions → 200 (one entry after grant; capture roles_grant_perm_id)",
+          "name": "GET /rbac/roles/{id}/permissions \u2192 200 (one entry after grant; capture roles_grant_perm_id)",
           "event": [
             {
               "listen": "test",
@@ -794,18 +1067,34 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "{{roles_role_id}}",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "DELETE /rbac/roles/{id}/permissions/{perm_id} → 204 (remove the grant)",
+          "name": "DELETE /rbac/roles/{id}/permissions/{perm_id} \u2192 204 (remove the grant)",
           "event": [
             {
               "listen": "prerequest",
@@ -814,7 +1103,7 @@
                 "exec": [
                   "const permID = pm.collectionVariables.get('roles_grant_perm_id');",
                   "if (!permID) {",
-                  "    console.error('[ERROR] roles_grant_perm_id not set — GET /permissions after grant did not complete.');",
+                  "    console.error('[ERROR] roles_grant_perm_id not set \u2014 GET /permissions after grant did not complete.');",
                   "}"
                 ]
               }
@@ -835,18 +1124,35 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions/{{roles_grant_perm_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}", "permissions", "{{roles_grant_perm_id}}"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "{{roles_role_id}}",
+                "permissions",
+                "{{roles_grant_perm_id}}"
+              ]
             }
           }
         },
         {
-          "name": "DELETE /rbac/roles/{id} → 204 (delete the test role)",
+          "name": "DELETE /rbac/roles/{id} \u2192 204 (delete the test role)",
           "event": [
             {
               "listen": "test",
@@ -864,13 +1170,28 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_role_id}}"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "{{roles_role_id}}"
+              ]
             }
           }
         }
@@ -881,7 +1202,7 @@
       "description": "Verifies that routes accepting an {id} URL parameter return 404 with the correct code when the ID is a valid UUID that does not correspond to any row. Uses static UUIDs guaranteed not to exist after a clean DB run.",
       "item": [
         {
-          "name": "GET /rbac/roles/{id} — unknown role → 404 role_not_found",
+          "name": "GET /rbac/roles/{id} \u2014 unknown role \u2192 404 role_not_found",
           "event": [
             {
               "listen": "test",
@@ -897,18 +1218,33 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001"
+              ]
             }
           }
         },
         {
-          "name": "PATCH /rbac/roles/{id} — unknown role → 404 role_not_found",
+          "name": "PATCH /rbac/roles/{id} \u2014 unknown role \u2192 404 role_not_found",
           "event": [
             {
               "listen": "test",
@@ -924,24 +1260,46 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"name\": \"ghost-role\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001"
+              ]
             }
           }
         },
         {
-          "name": "DELETE /rbac/roles/{id} — unknown role → 404 role_not_found",
+          "name": "DELETE /rbac/roles/{id} \u2014 unknown role \u2192 404 role_not_found",
           "event": [
             {
               "listen": "test",
@@ -957,18 +1315,33 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001"
+              ]
             }
           }
         },
         {
-          "name": "GET /rbac/roles/{id}/permissions — unknown role → 404 role_not_found",
+          "name": "GET /rbac/roles/{id}/permissions \u2014 unknown role \u2192 404 role_not_found",
           "event": [
             {
               "listen": "test",
@@ -984,18 +1357,34 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles/{id}/permissions — unknown role → 404 role_not_found",
+          "name": "POST /rbac/roles/{id}/permissions \u2014 unknown role \u2192 404 role_not_found",
           "event": [
             {
               "listen": "test",
@@ -1011,24 +1400,47 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"permission_id\": \"{{roles_perm_id}}\", \"access_type\": \"direct\", \"scope\": \"all\", \"granted_reason\": \"test\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles/{id}/permissions — valid role, unknown permission → 404 permission_not_found",
+          "name": "POST /rbac/roles/{id}/permissions \u2014 valid role, unknown permission \u2192 404 permission_not_found",
           "event": [
             {
               "listen": "prerequest",
@@ -1080,24 +1492,47 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"permission_id\": \"00000000-0000-0000-0000-000000000002\", \"access_type\": \"direct\", \"scope\": \"all\", \"granted_reason\": \"test\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_temp_role_id}}/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_temp_role_id}}", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "{{roles_temp_role_id}}",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "DELETE /rbac/roles/{id}/permissions/{perm_id} — unknown grant → 404 role_permission_not_found",
+          "name": "DELETE /rbac/roles/{id}/permissions/{perm_id} \u2014 unknown grant \u2192 404 role_permission_not_found",
           "event": [
             {
               "listen": "test",
@@ -1113,13 +1548,30 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions/00000000-0000-0000-0000-000000000002",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions", "00000000-0000-0000-0000-000000000002"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001",
+                "permissions",
+                "00000000-0000-0000-0000-000000000002"
+              ]
             }
           }
         }
@@ -1127,10 +1579,10 @@
     },
     {
       "name": "validation",
-      "description": "Body decode and field validation cases for POST /rbac/roles, PATCH /rbac/roles/{id}, and POST /rbac/roles/{id}/permissions. All requests carry a valid JWT. Validation fires after RBAC.Require but before any service or DB call — no state is mutated.\n\nRules from validators.go:\n  createRole:        name required and trimmed; name <= 100 chars\n  updateRole:        at least one field (name or description) must be present; if name present, must be non-empty and <= 100 chars\n  addRolePermission: permission_id required; granted_reason required; access_type in {direct,conditional,request,denied}; scope in {own,all}; permission_id must be a valid UUID (handler rejects before service)",
+      "description": "Body decode and field validation cases for POST /rbac/roles, PATCH /rbac/roles/{id}, and POST /rbac/roles/{id}/permissions. All requests carry a valid JWT. Validation fires after RBAC.Require but before any service or DB call \u2014 no state is mutated.\n\nRules from validators.go:\n  createRole:        name required and trimmed; name <= 100 chars\n  updateRole:        at least one field (name or description) must be present; if name present, must be non-empty and <= 100 chars\n  addRolePermission: permission_id required; granted_reason required; access_type in {direct,conditional,request,denied}; scope in {own,all}; permission_id must be a valid UUID (handler rejects before service)",
       "item": [
         {
-          "name": "POST /rbac/roles — malformed JSON → 400",
+          "name": "POST /rbac/roles \u2014 malformed JSON \u2192 400",
           "event": [
             {
               "listen": "test",
@@ -1146,24 +1598,45 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{bad json",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles — empty body → 422 (name absent)",
+          "name": "POST /rbac/roles \u2014 empty body \u2192 422 (name absent)",
           "event": [
             {
               "listen": "test",
@@ -1179,24 +1652,45 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles — whitespace-only name → 422 (trimmed to empty)",
+          "name": "POST /rbac/roles \u2014 whitespace-only name \u2192 422 (trimmed to empty)",
           "event": [
             {
               "listen": "test",
@@ -1213,24 +1707,45 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"name\": \"   \"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles — name > 100 chars → 422",
+          "name": "POST /rbac/roles \u2014 name > 100 chars \u2192 422",
           "event": [
             {
               "listen": "prerequest",
@@ -1258,24 +1773,45 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"name\": \"placeholder\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles — body > 1 MiB → 413",
+          "name": "POST /rbac/roles \u2014 body > 1 MiB \u2192 413",
           "event": [
             {
               "listen": "prerequest",
@@ -1300,31 +1836,52 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles"
+              ]
             }
           }
         },
         {
-          "name": "PATCH /rbac/roles/{id} — no fields → 422 (at least one required)",
+          "name": "PATCH /rbac/roles/{id} \u2014 no fields \u2192 422 (at least one required)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// validateUpdateRole: both Name and Description nil → ErrNoUpdateFields.",
+                  "// validateUpdateRole: both Name and Description nil \u2192 ErrNoUpdateFields.",
                   "// Validation fires before any DB call so the unknown UUID does not trigger 404.",
                   "pm.test('status is 422', () => pm.response.to.have.status(422));",
                   "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
@@ -1335,31 +1892,53 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001"
+              ]
             }
           }
         },
         {
-          "name": "PATCH /rbac/roles/{id} — empty name → 422",
+          "name": "PATCH /rbac/roles/{id} \u2014 empty name \u2192 422",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Name is explicitly set to empty string — fails ErrNameEmpty.",
+                  "// Name is explicitly set to empty string \u2014 fails ErrNameEmpty.",
                   "// Validation fires before service so the unknown UUID does not trigger 404.",
                   "pm.test('status is 422', () => pm.response.to.have.status(422));",
                   "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
@@ -1370,24 +1949,46 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"name\": \"\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles/{id}/permissions — missing permission_id → 422",
+          "name": "POST /rbac/roles/{id}/permissions \u2014 missing permission_id \u2192 422",
           "event": [
             {
               "listen": "test",
@@ -1403,24 +2004,47 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"access_type\": \"direct\", \"scope\": \"all\", \"granted_reason\": \"test\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles/{id}/permissions — missing granted_reason → 422",
+          "name": "POST /rbac/roles/{id}/permissions \u2014 missing granted_reason \u2192 422",
           "event": [
             {
               "listen": "test",
@@ -1436,24 +2060,47 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"permission_id\": \"{{roles_perm_id}}\", \"access_type\": \"direct\", \"scope\": \"all\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles/{id}/permissions — invalid access_type → 422",
+          "name": "POST /rbac/roles/{id}/permissions \u2014 invalid access_type \u2192 422",
           "event": [
             {
               "listen": "test",
@@ -1470,24 +2117,47 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"permission_id\": \"{{roles_perm_id}}\", \"access_type\": \"superuser\", \"scope\": \"all\", \"granted_reason\": \"test\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles/{id}/permissions — invalid scope → 422",
+          "name": "POST /rbac/roles/{id}/permissions \u2014 invalid scope \u2192 422",
           "event": [
             {
               "listen": "test",
@@ -1504,31 +2174,54 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"permission_id\": \"{{roles_perm_id}}\", \"access_type\": \"direct\", \"scope\": \"global\", \"granted_reason\": \"test\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001",
+                "permissions"
+              ]
             }
           }
         },
         {
-          "name": "POST /rbac/roles/{id}/permissions — invalid UUID permission_id → 422",
+          "name": "POST /rbac/roles/{id}/permissions \u2014 invalid UUID permission_id \u2192 422",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// uuid.Parse(req.PermissionID) fails — handler returns 422 before calling service.",
+                  "// uuid.Parse(req.PermissionID) fails \u2014 handler returns 422 before calling service.",
                   "pm.test('status is 422', () => pm.response.to.have.status(422));",
                   "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
                 ]
@@ -1538,19 +2231,42 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"permission_id\": \"not-a-uuid\", \"access_type\": \"direct\", \"scope\": \"all\", \"granted_reason\": \"test\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "00000000-0000-0000-0000-000000000001", "permissions"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "00000000-0000-0000-0000-000000000001",
+                "permissions"
+              ]
             }
           }
         }
@@ -1558,10 +2274,10 @@
     },
     {
       "name": "immutable-guard",
-      "description": "Verifies that rbac.ErrSystemRoleImmutable maps to 409 system_role_immutable when attempting to update or delete a system role. Uses roles_system_role_id captured during happy-path/GET /rbac/roles. Both requests are safe to repeat — the role is never mutated.",
+      "description": "Verifies that rbac.ErrSystemRoleImmutable maps to 409 system_role_immutable when attempting to update or delete a system role. Uses roles_system_role_id captured during happy-path/GET /rbac/roles. Both requests are safe to repeat \u2014 the role is never mutated.",
       "item": [
         {
-          "name": "PATCH /rbac/roles/{system_role_id} → 409 system_role_immutable",
+          "name": "PATCH /rbac/roles/{system_role_id} \u2192 409 system_role_immutable",
           "event": [
             {
               "listen": "prerequest",
@@ -1570,7 +2286,7 @@
                 "exec": [
                   "const id = pm.collectionVariables.get('roles_system_role_id');",
                   "if (!id) {",
-                  "    console.warn('[WARN] roles_system_role_id not set — check happy-path/GET /rbac/roles captured a system role.');",
+                  "    console.warn('[WARN] roles_system_role_id not set \u2014 check happy-path/GET /rbac/roles captured a system role.');",
                   "}"
                 ]
               }
@@ -1581,9 +2297,9 @@
                 "type": "text/javascript",
                 "exec": [
                   "const id = pm.collectionVariables.get('roles_system_role_id');",
-                  "if (!id) { console.warn('[WARN] roles_system_role_id not set — test skipped.'); return; }",
+                  "if (!id) { console.warn('[WARN] roles_system_role_id not set \u2014 test skipped.'); return; }",
                   "",
-                  "// Service returns rbac.ErrSystemRoleImmutable → handler maps to 409.",
+                  "// Service returns rbac.ErrSystemRoleImmutable \u2192 handler maps to 409.",
                   "pm.test('status is 409', () => pm.response.to.have.status(409));",
                   "pm.test('code is system_role_immutable', () => pm.expect(pm.response.json().code).to.eql('system_role_immutable'));"
                 ]
@@ -1593,24 +2309,46 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"name\": \"hacked-system-role\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_system_role_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_system_role_id}}"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "{{roles_system_role_id}}"
+              ]
             }
           }
         },
         {
-          "name": "DELETE /rbac/roles/{system_role_id} → 409 system_role_immutable",
+          "name": "DELETE /rbac/roles/{system_role_id} \u2192 409 system_role_immutable",
           "event": [
             {
               "listen": "prerequest",
@@ -1619,7 +2357,7 @@
                 "exec": [
                   "const id = pm.collectionVariables.get('roles_system_role_id');",
                   "if (!id) {",
-                  "    console.warn('[WARN] roles_system_role_id not set — skipping immutable DELETE test.');",
+                  "    console.warn('[WARN] roles_system_role_id not set \u2014 skipping immutable DELETE test.');",
                   "}"
                 ]
               }
@@ -1630,7 +2368,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "const id = pm.collectionVariables.get('roles_system_role_id');",
-                  "if (!id) { console.warn('[WARN] roles_system_role_id not set — test skipped.'); return; }",
+                  "if (!id) { console.warn('[WARN] roles_system_role_id not set \u2014 test skipped.'); return; }",
                   "",
                   "pm.test('status is 409', () => pm.response.to.have.status(409));",
                   "pm.test('code is system_role_immutable', () => pm.expect(pm.response.json().code).to.eql('system_role_immutable'));"
@@ -1641,13 +2379,28 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{roles_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{roles_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_system_role_id}}",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "rbac", "roles", "{{roles_system_role_id}}"]
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "rbac",
+                "roles",
+                "{{roles_system_role_id}}"
+              ]
             }
           }
         }

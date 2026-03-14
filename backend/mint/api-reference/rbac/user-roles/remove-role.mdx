@@ -8,6 +8,10 @@ api: "DELETE http://localhost:8080/admin/rbac/users/{user_id}/role"
   The UUID of the user whose role assignment should be removed.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:manage`** permission.
+</Callout>
+
 ## Behaviour
 
 Removes the target user's current role assignment. After removal the user has no role and will be denied access to any permission-guarded endpoints.
@@ -17,12 +21,6 @@ Removes the target user's current role assignment. After removal the user has no
 **Owner role assignments cannot be removed through this endpoint.** If the target user holds the owner role, the request is rejected regardless of who is making it.
 
 **The last active owner cannot be removed.** At least one active owner must exist at all times. Attempting to remove the sole remaining owner will be rejected to prevent the system from becoming unmanageable.
-
-<RequestExample>
-```json Example
-{}
-```
-</RequestExample>
 
 <ResponseExample>
 ```json 204

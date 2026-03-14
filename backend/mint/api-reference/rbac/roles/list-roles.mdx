@@ -4,6 +4,10 @@ description: "Returns all active roles in the system."
 api: "GET http://localhost:8080/admin/rbac/roles"
 ---
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:read`** permission.
+</Callout>
+
 ## Behaviour
 
 Only active roles are returned. System roles and the owner role are included in the list alongside any custom roles you have created. Roles that have been deleted are not returned.

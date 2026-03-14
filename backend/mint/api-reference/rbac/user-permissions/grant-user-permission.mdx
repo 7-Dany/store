@@ -37,6 +37,10 @@ api: "POST http://localhost:8080/admin/rbac/users/{user_id}/permissions"
   An optional JSON object expressing additional constraints on the grant (e.g. rate limits or field-level restrictions). Stored as-is and evaluated at permission-check time. Defaults to `{}` when omitted.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:grant_user_permission`** permission.
+</Callout>
+
 ## Behaviour
 
 Grants a direct permission to the target user. Direct grants are independent of the user's role — they allow fine-grained, time-limited access to a single permission without changing the user's role assignment.

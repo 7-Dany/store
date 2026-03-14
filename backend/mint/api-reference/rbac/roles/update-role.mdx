@@ -21,6 +21,10 @@ api: "PATCH http://localhost:8080/admin/rbac/roles/{id}"
   New description for the role. Pass an empty string to clear it.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:manage`** permission.
+</Callout>
+
 ## Behaviour
 
 This is a partial update — only the fields you include are changed. At least one field (`name` or `description`) must be present in the request body.

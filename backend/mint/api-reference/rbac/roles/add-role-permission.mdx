@@ -45,6 +45,10 @@ api: "POST http://localhost:8080/admin/rbac/roles/{id}/permissions"
   A JSON object that holds additional constraints for `conditional` access type grants. Defaults to `{}` when omitted. Required to be non-empty when `access_type` is `conditional`.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:manage`** permission.
+</Callout>
+
 ## Behaviour
 
 Adds a permission grant to the role. The caller's identity is recorded alongside the grant for audit purposes. If `conditions` is not provided it defaults to an empty object (`{}`).
@@ -196,7 +200,7 @@ To understand the full grant workflow, see the [Permission Setup Guide](/guides/
     }
     ```
 
-    **`access_type_not_allowed`** — the permission's capability flags do not allow this `access_type`. For example, passing `"conditional"` for a permission whose `capabilities.access_types` does not include `"conditional"`:
+    **`access_type_not_allowed`** — the permission's capability flags do not allow this `access_type`:
     ```json
     {
       "code": "access_type_not_allowed",
@@ -204,7 +208,7 @@ To understand the full grant workflow, see the [Permission Setup Guide](/guides/
     }
     ```
 
-    **`scope_not_allowed`** — the `scope` value conflicts with the permission's `scope_policy`. For example, passing `scope: "own"` for a permission with `scope_policy: "all"`:
+    **`scope_not_allowed`** — the `scope` value conflicts with the permission's `scope_policy`:
     ```json
     {
       "code": "scope_not_allowed",

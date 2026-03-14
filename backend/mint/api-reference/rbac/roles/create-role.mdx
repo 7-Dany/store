@@ -17,6 +17,10 @@ api: "POST http://localhost:8080/admin/rbac/roles"
   A short explanation of what this role is for. Helps other admins understand the role's purpose at a glance.
 </ParamField>
 
+<Callout icon="key" color="#FFC107">
+  Requires the **`rbac:manage`** permission.
+</Callout>
+
 ## Behaviour
 
 Creates an active, non-system role. Newly created roles have no permissions — use [`POST /admin/rbac/roles/{id}/permissions`](/api-reference/rbac/roles/add-role-permission) to assign permissions after creation.

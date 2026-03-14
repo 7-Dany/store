@@ -1,0 +1,98 @@
+---
+title: "Unlock User"
+description: "Clears an admin lock on a user account, restoring their ability to log in."
+api: "DELETE http://localhost:8080/admin/users/{user_id}/lock"
+---
+
+<ParamField path="user_id" type="string" required>
+  The UUID of the user to unlock.
+</ParamField>
+
+<Callout icon="key" color="#FFC107">
+  Requires the **`user:lock`** permission.
+</Callout>
+
+## Behaviour
+
+Clears `admin_locked` and all associated metadata (locked_by, locked_reason, locked_at) from the target user account. Once unlocked the user can resume authenticating normally, provided no other lock condition (e.g. login lockout) is active.
+
+This operation is idempotent — unlocking a user who is not currently admin-locked succeeds silently (204) without error.
+
+<ResponseExample>
+```json 204
+// No response body — the admin lock was successfully cleared.
+```
+
+```json 404
+{
+  "code": "user_not_found",
+  "message": "user not found"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "missing or invalid access token"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "forbidden"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The admin lock was successfully cleared. No response body is returned.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `user:lock` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    The target user does not exist or has been deleted.
+
+    ```json
+    {
+      "code": "user_not_found",
+      "message": "user not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

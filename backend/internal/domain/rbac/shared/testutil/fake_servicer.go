@@ -5,34 +5,75 @@ package rbacsharedtest
 import (
 	"context"
 
-	"github.com/7-Dany/store/backend/internal/domain/rbac/bootstrap"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/owner"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/roles"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/userpermissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/userroles"
+	"github.com/7-Dany/store/backend/internal/domain/rbac/userlock"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
-// BootstrapFakeServicer
+// OwnerFakeServicer
 // ─────────────────────────────────────────────────────────────────────────────
 
-// BootstrapFakeServicer is a hand-written implementation of bootstrap.Servicer
-// for handler unit tests. Set BootstrapFn to control the response; leave it nil
-// to return a zero BootstrapResult and nil error.
-type BootstrapFakeServicer struct {
-	BootstrapFn func(ctx context.Context, in bootstrap.BootstrapInput) (bootstrap.BootstrapResult, error)
+// OwnerFakeServicer is a hand-written implementation of owner.Servicer for
+// handler unit tests. Set the Fn fields to control responses; leave nil to
+// return zero values and nil errors.
+type OwnerFakeServicer struct {
+	AssignOwnerFn      func(ctx context.Context, in owner.AssignOwnerInput) (owner.AssignOwnerResult, error)
+	HasPendingTransferFn func(ctx context.Context) (bool, error)
+	InitiateTransferFn func(ctx context.Context, in owner.InitiateInput) (owner.InitiateResult, string, error)
+	AcceptTransferFn   func(ctx context.Context, in owner.AcceptInput) (owner.AcceptResult, error)
+	CancelTransferFn   func(ctx context.Context, actingOwnerID [16]byte, ipAddress, userAgent string) error
 }
 
 // compile-time interface check.
-var _ bootstrap.Servicer = (*BootstrapFakeServicer)(nil)
+var _ owner.Servicer = (*OwnerFakeServicer)(nil)
 
-// Bootstrap delegates to BootstrapFn if set.
-// Default: returns (BootstrapResult{}, nil).
-func (f *BootstrapFakeServicer) Bootstrap(ctx context.Context, in bootstrap.BootstrapInput) (bootstrap.BootstrapResult, error) {
-	if f.BootstrapFn != nil {
-		return f.BootstrapFn(ctx, in)
+// AssignOwner delegates to AssignOwnerFn if set.
+// Default: returns (AssignOwnerResult{}, nil).
+func (f *OwnerFakeServicer) AssignOwner(ctx context.Context, in owner.AssignOwnerInput) (owner.AssignOwnerResult, error) {
+	if f.AssignOwnerFn != nil {
+		return f.AssignOwnerFn(ctx, in)
 	}
-	return bootstrap.BootstrapResult{}, nil
+	return owner.AssignOwnerResult{}, nil
+}
+
+// HasPendingTransfer delegates to HasPendingTransferFn if set.
+// Default: returns (false, nil).
+func (f *OwnerFakeServicer) HasPendingTransfer(ctx context.Context) (bool, error) {
+	if f.HasPendingTransferFn != nil {
+		return f.HasPendingTransferFn(ctx)
+	}
+	return false, nil
+}
+
+// InitiateTransfer delegates to InitiateTransferFn if set.
+// Default: returns (InitiateResult{}, "", nil).
+func (f *OwnerFakeServicer) InitiateTransfer(ctx context.Context, in owner.InitiateInput) (owner.InitiateResult, string, error) {
+	if f.InitiateTransferFn != nil {
+		return f.InitiateTransferFn(ctx, in)
+	}
+	return owner.InitiateResult{}, "", nil
+}
+
+// AcceptTransfer delegates to AcceptTransferFn if set.
+// Default: returns (AcceptResult{}, nil).
+func (f *OwnerFakeServicer) AcceptTransfer(ctx context.Context, in owner.AcceptInput) (owner.AcceptResult, error) {
+	if f.AcceptTransferFn != nil {
+		return f.AcceptTransferFn(ctx, in)
+	}
+	return owner.AcceptResult{}, nil
+}
+
+// CancelTransfer delegates to CancelTransferFn if set.
+// Default: returns nil.
+func (f *OwnerFakeServicer) CancelTransfer(ctx context.Context, actingOwnerID [16]byte, ipAddress, userAgent string) error {
+	if f.CancelTransferFn != nil {
+		return f.CancelTransferFn(ctx, actingOwnerID, ipAddress, userAgent)
+	}
+	return nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -267,4 +308,51 @@ func (f *UserPermissionsFakeServicer) RevokePermission(ctx context.Context, targ
 		return f.RevokePermissionFn(ctx, targetUserID, grantID, actingUserID)
 	}
 	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UserLockFakeServicer
+// ─────────────────────────────────────────────────────────────────────────────
+
+// UserLockFakeServicer implements userlock.Servicer for handler unit tests.
+//
+// Defaults:
+//
+//	LockUserFn      → nil  (returns nil error)
+//	UnlockUserFn    → nil  (returns nil error)
+//	GetLockStatusFn → (UserLockStatus{}, nil)
+type UserLockFakeServicer struct {
+	LockUserFn      func(ctx context.Context, targetUserID, actingUserID string, in userlock.LockUserInput) error
+	UnlockUserFn    func(ctx context.Context, targetUserID, actingUserID string) error
+	GetLockStatusFn func(ctx context.Context, targetUserID string) (userlock.UserLockStatus, error)
+}
+
+// compile-time interface check.
+var _ userlock.Servicer = (*UserLockFakeServicer)(nil)
+
+// LockUser delegates to LockUserFn if set.
+// Default: returns nil.
+func (f *UserLockFakeServicer) LockUser(ctx context.Context, targetUserID, actingUserID string, in userlock.LockUserInput) error {
+	if f.LockUserFn != nil {
+		return f.LockUserFn(ctx, targetUserID, actingUserID, in)
+	}
+	return nil
+}
+
+// UnlockUser delegates to UnlockUserFn if set.
+// Default: returns nil.
+func (f *UserLockFakeServicer) UnlockUser(ctx context.Context, targetUserID, actingUserID string) error {
+	if f.UnlockUserFn != nil {
+		return f.UnlockUserFn(ctx, targetUserID, actingUserID)
+	}
+	return nil
+}
+
+// GetLockStatus delegates to GetLockStatusFn if set.
+// Default: returns (UserLockStatus{}, nil).
+func (f *UserLockFakeServicer) GetLockStatus(ctx context.Context, targetUserID string) (userlock.UserLockStatus, error) {
+	if f.GetLockStatusFn != nil {
+		return f.GetLockStatusFn(ctx, targetUserID)
+	}
+	return userlock.UserLockStatus{}, nil
 }

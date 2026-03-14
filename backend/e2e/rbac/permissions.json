@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "rbac-permissions-e2e",
-    "name": "RBAC – Permissions (GET /admin/permissions, GET /admin/permissions/groups)",
-    "description": "E2E tests for:\n  GET /api/v1/admin/permissions\n  GET /api/v1/admin/permissions/groups\n\nFolder execution order:\n  1. setup            — register + Gmail OTP + verify-email + login\n                         (captures perms_access_token — plain user, no RBAC permissions yet)\n  2. auth-guard       — 401 on both routes with no Authorization header\n  3. rbac-guard       — 403 on both routes with valid JWT but no rbac:read (plain user)\n  4. owner-bootstrap  — POST /owner/bootstrap promotes the test user to owner\n                         (owner role grants rbac:read; Require middleware reads DB per request —\n                          no re-login needed; the same perms_access_token becomes effective)\n  5. happy-path       — 200 + body shape on both routes\n\nRoutes:\n  GET /api/v1/admin/permissions\n  GET /api/v1/admin/permissions/groups\nGuard order (both routes): JWTAuth → RBAC.Require(rbac:read) → handler\nNo rate limiter on admin routes (JWT-gated).\n\nEnvironment variables required:\n  bootstrap_secret   — must match BOOTSTRAP_SECRET in .env\n  gmail_test_email   — Gmail address for OTP receipt\n  gmail_access_token — OAuth2 token for Gmail API reads\n\nNotes on what is NOT covered here (covered by unit tests):\n  - DB/service error → 500              — handler_test.go\n  - nil result marshals as [] not null  — handler_test.go\n  - empty result marshals as [] not null — handler_test.go\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before each suite run.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "name": "RBAC \u2013 Permissions (GET /admin/permissions, GET /admin/permissions/groups)",
+    "description": "E2E tests for:\n  GET /api/v1/admin/permissions\n  GET /api/v1/admin/permissions/groups\n\nFolder execution order:\n  1. setup            \u2014 register + Gmail OTP + verify-email + login\n                         (captures perms_access_token \u2014 plain user, no RBAC permissions yet)\n  2. auth-guard       \u2014 401 on both routes with no Authorization header\n  3. rbac-guard       \u2014 403 on both routes with valid JWT but no rbac:read (plain user)\n  4. owner-bootstrap  \u2014 POST /owner/bootstrap promotes the test user to owner\n                         (owner role grants rbac:read; Require middleware reads DB per request \u2014\n                          no re-login needed; the same perms_access_token becomes effective)\n  5. happy-path       \u2014 200 + body shape on both routes\n\nRoutes:\n  GET /api/v1/admin/permissions\n  GET /api/v1/admin/permissions/groups\nGuard order (both routes): JWTAuth \u2192 RBAC.Require(rbac:read) \u2192 handler\nNo rate limiter on admin routes (JWT-gated).\n\nEnvironment variables required:\n  bootstrap_secret   \u2014 must match BOOTSTRAP_SECRET in .env\n  gmail_test_email   \u2014 Gmail address for OTP receipt\n  gmail_access_token \u2014 OAuth2 token for Gmail API reads\n\nNotes on what is NOT covered here (covered by unit tests):\n  - DB/service error \u2192 500              \u2014 handler_test.go\n  - nil result marshals as [] not null  \u2014 handler_test.go\n  - empty result marshals as [] not null \u2014 handler_test.go\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before each suite run.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -25,10 +25,10 @@
   "item": [
     {
       "name": "setup",
-      "description": "Registers the gmail_test_email user, fetches the OTP via Gmail API, verifies email, and logs in. Captures perms_access_token (plain user — no RBAC permissions yet). This same token is reused for rbac-guard (→ 403) and, after owner-bootstrap promotes the user, for happy-path (→ 200). The RBAC middleware reads permissions from DB on each request so no re-login is needed after bootstrap.",
+      "description": "Registers the gmail_test_email user, fetches the OTP via Gmail API, verifies email, and logs in. Captures perms_access_token (plain user \u2014 no RBAC permissions yet). This same token is reused for rbac-guard (\u2192 403) and, after owner-bootstrap promotes the user, for happy-path (\u2192 200). The RBAC middleware reads permissions from DB on each request so no re-login is needed after bootstrap.",
       "item": [
         {
-          "name": "POST /register → 201 (setup permissions user)",
+          "name": "POST /register \u2192 201 (setup permissions user)",
           "event": [
             {
               "listen": "prerequest",
@@ -37,7 +37,7 @@
                 "exec": [
                   "const email = pm.environment.get('gmail_test_email');",
                   "if (!email) {",
-                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
+                  "    console.error('[ERROR] gmail_test_email not set in environment \u2014 add it to environment.json.');",
                   "}",
                   "pm.collectionVariables.set('perms_email', email);",
                   "pm.collectionVariables.set('perms_password', 'P@ssw0rd1!');"
@@ -53,7 +53,7 @@
                   "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
                   "",
                   "const token = pm.variables.get('gmail_access_token');",
-                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
                   "",
                   "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
                   "const start = Date.now();",
@@ -67,7 +67,7 @@
                   "    header: { Authorization: 'Bearer ' + token }",
                   "}, (err, res) => {",
                   "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
-                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired \u2014 refresh at https://developers.google.com/oauthplayground'); return; }",
                   "    const msgs = res.json().messages;",
                   "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email found in Gmail.'); return; }",
                   "    pm.sendRequest({",
@@ -99,13 +99,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"PermsUser\", \"email\": \"{{perms_email}}\", \"password\": \"{{perms_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -115,7 +125,7 @@
           }
         },
         {
-          "name": "POST /verify-email → 200 (consume OTP)",
+          "name": "POST /verify-email \u2192 200 (consume OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -124,7 +134,7 @@
                 "exec": [
                   "const code = pm.collectionVariables.get('perms_code');",
                   "if (!code) {",
-                  "    console.error('[ERROR] collection variable \"perms_code\" is empty — Gmail fetch did not complete.');",
+                  "    console.error('[ERROR] collection variable \"perms_code\" is empty \u2014 Gmail fetch did not complete.');",
                   "    console.error('        Check: gmail_access_token is set and not expired, --delay-request >= 8000.');",
                   "}"
                 ]
@@ -144,13 +154,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{perms_email}}\", \"code\": \"{{perms_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/verify-email",
@@ -160,7 +180,7 @@
           }
         },
         {
-          "name": "POST /login → 200 (capture perms_access_token)",
+          "name": "POST /login \u2192 200 (capture perms_access_token)",
           "event": [
             {
               "listen": "test",
@@ -171,7 +191,7 @@
                   "const body = pm.response.json();",
                   "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
                   "pm.collectionVariables.set('perms_access_token', body.access_token);",
-                  "console.log('[INFO] Captured perms_access_token (plain user — no RBAC permissions yet).');"
+                  "console.log('[INFO] Captured perms_access_token (plain user \u2014 no RBAC permissions yet).');"
                 ]
               }
             }
@@ -179,13 +199,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{perms_email}}\", \"password\": \"{{perms_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -198,17 +228,17 @@
     },
     {
       "name": "auth-guard",
-      "description": "Verifies that the JWTAuth middleware rejects requests with no Authorization header on both routes before RBAC or handler logic is reached. GET routes carry no body — no Content-Type needed.",
+      "description": "Verifies that the JWTAuth middleware rejects requests with no Authorization header on both routes before RBAC or handler logic is reached. GET routes carry no body \u2014 no Content-Type needed.",
       "item": [
         {
-          "name": "GET /permissions — no Authorization → 401",
+          "name": "GET /permissions \u2014 no Authorization \u2192 401",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// JWTAuth fires first — no token means 401 before RBAC check.",
+                  "// JWTAuth fires first \u2014 no token means 401 before RBAC check.",
                   "pm.test('status is 401', () => pm.response.to.have.status(401));",
                   "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
                 ]
@@ -218,7 +248,10 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/permissions",
@@ -228,7 +261,7 @@
           }
         },
         {
-          "name": "GET /permissions/groups — no Authorization → 401",
+          "name": "GET /permissions/groups \u2014 no Authorization \u2192 401",
           "event": [
             {
               "listen": "test",
@@ -244,7 +277,10 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/permissions/groups",
@@ -260,15 +296,15 @@
       "description": "Verifies that RBAC.Require(rbac:read) rejects a valid JWT belonging to a plain user with no rbac:read permission. The JWT is valid (from setup/login) but the user has not yet been bootstrapped as owner. Must return 403 before the handler is called. owner-bootstrap runs after this folder.",
       "item": [
         {
-          "name": "GET /permissions — valid JWT, no rbac:read → 403",
+          "name": "GET /permissions \u2014 valid JWT, no rbac:read \u2192 403",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// JWTAuth passes (valid token). RBAC.Require(rbac:read) fires next —",
-                  "// user has no owner role and no explicit rbac:read grant → 403.",
+                  "// JWTAuth passes (valid token). RBAC.Require(rbac:read) fires next \u2014",
+                  "// user has no owner role and no explicit rbac:read grant \u2192 403.",
                   "pm.test('status is 403', () => pm.response.to.have.status(403));",
                   "pm.test('code is forbidden', () => pm.expect(pm.response.json().code).to.eql('forbidden'));"
                 ]
@@ -278,8 +314,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{perms_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{perms_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/permissions",
@@ -289,7 +331,7 @@
           }
         },
         {
-          "name": "GET /permissions/groups — valid JWT, no rbac:read → 403",
+          "name": "GET /permissions/groups \u2014 valid JWT, no rbac:read \u2192 403",
           "event": [
             {
               "listen": "test",
@@ -305,8 +347,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{perms_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{perms_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/permissions/groups",
@@ -319,10 +367,10 @@
     },
     {
       "name": "owner-bootstrap",
-      "description": "Promotes the setup user to owner by calling POST /owner/bootstrap with the correct bootstrap_secret. The owner role carries all permissions including rbac:read. RBAC.Require reads the DB on every request — no re-login is needed; the existing perms_access_token is sufficient for subsequent happy-path requests.",
+      "description": "Promotes the setup user to owner by calling POST /owner/bootstrap with the correct bootstrap_secret. The owner role carries all permissions including rbac:read. RBAC.Require reads the DB on every request \u2014 no re-login is needed; the existing perms_access_token is sufficient for subsequent happy-path requests.",
       "item": [
         {
-          "name": "POST /owner/bootstrap → 201 (grant owner role to perms user)",
+          "name": "POST /owner/bootstrap \u2192 201 (grant owner role to perms user)",
           "event": [
             {
               "listen": "prerequest",
@@ -331,11 +379,11 @@
                 "exec": [
                   "const token = pm.collectionVariables.get('perms_access_token');",
                   "if (!token) {",
-                  "    console.error('[ERROR] perms_access_token not set — setup/POST /login did not complete.');",
+                  "    console.error('[ERROR] perms_access_token not set \u2014 setup/POST /login did not complete.');",
                   "}",
                   "const secret = pm.environment.get('bootstrap_secret');",
                   "if (!secret) {",
-                  "    console.error('[ERROR] bootstrap_secret not set in environment — add it to environment.json.');",
+                  "    console.error('[ERROR] bootstrap_secret not set in environment \u2014 add it to environment.json.');",
                   "}"
                 ]
               }
@@ -347,7 +395,7 @@
                 "exec": [
                   "pm.test('status is 201', () => pm.response.to.have.status(201));",
                   "pm.test('role_name is owner', () => pm.expect(pm.response.json().role_name).to.eql('owner'));",
-                  "console.log('[INFO] perms user is now owner — RBAC.Require(rbac:read) will pass on subsequent requests.');"
+                  "console.log('[INFO] perms user is now owner \u2014 RBAC.Require(rbac:read) will pass on subsequent requests.');"
                 ]
               }
             }
@@ -355,19 +403,32 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{perms_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{perms_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"bootstrap_secret\": \"{{bootstrap_secret}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "raw": "{\"secret\": \"{{bootstrap_secret}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/owner/bootstrap",
+              "raw": "{{base_url}}/api/v1/owner/assign",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "owner", "bootstrap"]
+              "path": ["api", "v1", "owner", "assign"]
             }
           }
         }
@@ -378,7 +439,7 @@
       "description": "Authenticated as owner (rbac:read granted by owner-bootstrap). Both routes return 200 with the correct top-level key and array shape. Asserts that seeded permissions and groups are present. Each permission must have id, canonical_name, resource_type, name, and a capabilities object with scope_policy and access_types. Each group must have id, name, display_order, is_visible, and a members array where each member carries the same fields plus capabilities.",
       "item": [
         {
-          "name": "GET /permissions → 200 — permissions array with required fields",
+          "name": "GET /permissions \u2192 200 \u2014 permissions array with required fields",
           "event": [
             {
               "listen": "test",
@@ -452,8 +513,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{perms_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{perms_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/permissions",
@@ -463,7 +530,7 @@
           }
         },
         {
-          "name": "GET /permissions/groups → 200 — groups array with embedded members",
+          "name": "GET /permissions/groups \u2192 200 \u2014 groups array with embedded members",
           "event": [
             {
               "listen": "test",
@@ -528,8 +595,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{perms_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{perms_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/admin/permissions/groups",

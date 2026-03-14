@@ -113,7 +113,10 @@
             "group": "RBAC",
             "icon": "shield-halved",
             "pages": [
-              "api-reference/rbac/bootstrap/bootstrap",
+              "api-reference/rbac/owner/assign-owner",
+              "api-reference/rbac/owner/initiate-transfer",
+              "api-reference/rbac/owner/accept-transfer",
+              "api-reference/rbac/owner/cancel-transfer",
               "api-reference/rbac/permissions/list-permissions",
               "api-reference/rbac/permissions/list-permission-groups",
               "api-reference/rbac/roles/list-roles",
@@ -123,13 +126,22 @@
               "api-reference/rbac/roles/delete-role",
               "api-reference/rbac/roles/list-role-permissions",
               "api-reference/rbac/roles/add-role-permission",
-              "api-reference/rbac/roles/remove-role-permission",
+              "api-reference/rbac/roles/remove-role-permission"
+            ]
+          },
+          {
+            "group": "User Management",
+            "icon": "users",
+            "pages": [
               "api-reference/rbac/user-roles/get-user-role",
               "api-reference/rbac/user-roles/assign-role",
               "api-reference/rbac/user-roles/remove-role",
               "api-reference/rbac/user-permissions/list-user-permissions",
               "api-reference/rbac/user-permissions/grant-user-permission",
-              "api-reference/rbac/user-permissions/revoke-user-permission"
+              "api-reference/rbac/user-permissions/revoke-user-permission",
+              "api-reference/rbac/userlock/get-lock-status",
+              "api-reference/rbac/userlock/lock-user",
+              "api-reference/rbac/userlock/unlock-user"
             ]
           },
           {

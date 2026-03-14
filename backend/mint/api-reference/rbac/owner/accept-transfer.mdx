@@ -1,0 +1,177 @@
+---
+title: "Accept Ownership Transfer"
+description: "Accepts a pending ownership transfer using the one-time token sent to the target user's email. No authentication header is required — the token itself is the credential."
+api: "POST http://localhost:8080/api/v1/owner/transfer/accept"
+---
+
+<ParamField body="token" type="string" required>
+  The raw one-time transfer token delivered to the target user's email address. This token is single-use and expires at the time shown in the transfer initiation response.
+</ParamField>
+
+## Behaviour
+
+**No JWT required** — This endpoint is intentionally unauthenticated. The one-time token embedded in the emailed link serves as the full credential. Presenting a valid token is sufficient to complete the transfer.
+
+**Role swap** — On success, the target user is granted the owner role and the previous owner's role assignment is revoked. The system is never left without an active owner.
+
+**Token is single-use** — Once presented, the token cannot be reused. Retrying with the same token returns `410 token_invalid`.
+
+**Initiator eligibility re-checked** — If the user who initiated the transfer no longer holds the owner role at acceptance time, the endpoint returns `409 initiator_not_owner`.
+
+**Target eligibility re-checked** — The target user's account status and email verification are re-validated at acceptance time. If either has changed since initiation, the endpoint returns `422 user_not_eligible`.
+
+## Rate Limiting
+
+**10 requests per hour per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+{
+  "token": "oXq2Kv8mNpL1rTd9wYzA3bCeFs5gHuJi"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "new_owner_id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+  "previous_owner_id": "019a2b3c-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
+  "transferred_at": "2026-03-15T18:04:33.881Z"
+}
+```
+
+```json 410
+{
+  "code": "token_invalid",
+  "message": "transfer token is invalid, expired, or already used"
+}
+```
+
+```json 409
+{
+  "code": "initiator_not_owner",
+  "message": "initiating user no longer holds the owner role"
+}
+```
+
+```json 422
+{
+  "code": "user_not_eligible",
+  "message": "target user is no longer active or email-verified"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    Ownership has been transferred. The response confirms the new owner's ID, the previous owner's ID, and the exact timestamp the transfer was recorded.
+
+    ```json
+    {
+      "new_owner_id": "018f1a2b-3c4d-7e5f-8a9b-0c1d2e3f4a5b",
+      "previous_owner_id": "019a2b3c-4d5e-6f7a-8b9c-0d1e2f3a4b5c",
+      "transferred_at": "2026-03-15T18:04:33.881Z"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    The request body is not valid JSON. Fix the JSON before retrying.
+
+    ```json
+    {
+      "code": "bad_request",
+      "message": "malformed JSON body"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    The user who initiated the transfer no longer holds the owner role at the time of acceptance. The transfer cannot be completed. Contact the system administrator.
+
+    ```json
+    {
+      "code": "initiator_not_owner",
+      "message": "initiating user no longer holds the owner role"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="410 — Gone">
+    The supplied token is invalid, has expired, or has already been used. Tokens are single-use; if the transfer needs to proceed, the owner must re-initiate via [`POST /owner/transfer`](/api-reference/rbac/owner/initiate-transfer).
+
+    ```json
+    {
+      "code": "token_invalid",
+      "message": "transfer token is invalid, expired, or already used"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="413 — Request Too Large">
+    The request body exceeds the maximum allowed size.
+
+    ```json
+    {
+      "code": "request_too_large",
+      "message": "request body too large"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    Returned for two distinct scenarios. Check the `code` field to distinguish them.
+
+    **Missing token** — The `token` field was absent or blank:
+
+    ```json
+    {
+      "code": "validation_error",
+      "message": "token is required"
+    }
+    ```
+
+    **Target no longer eligible** — The target user's account is no longer active or their email is no longer verified:
+
+    ```json
+    {
+      "code": "user_not_eligible",
+      "message": "target user is no longer active or email-verified"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 10 requests per hour. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected server-side error occurred. Contact your system administrator if this persists.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

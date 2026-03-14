@@ -420,6 +420,7 @@ const (
 	OneTimeTokenTypeEmailChangeVerify  OneTimeTokenType = "email_change_verify"
 	OneTimeTokenTypeEmailChangeConfirm OneTimeTokenType = "email_change_confirm"
 	OneTimeTokenTypeAccountDeletion    OneTimeTokenType = "account_deletion"
+	OneTimeTokenTypeOwnershipTransfer  OneTimeTokenType = "ownership_transfer"
 )
 
 func (e *OneTimeTokenType) Scan(src interface{}) error {
@@ -465,7 +466,8 @@ func (e OneTimeTokenType) Valid() bool {
 		OneTimeTokenTypeAccountUnlock,
 		OneTimeTokenTypeEmailChangeVerify,
 		OneTimeTokenTypeEmailChangeConfirm,
-		OneTimeTokenTypeAccountDeletion:
+		OneTimeTokenTypeAccountDeletion,
+		OneTimeTokenTypeOwnershipTransfer:
 		return true
 	}
 	return false
@@ -480,6 +482,7 @@ func AllOneTimeTokenTypeValues() []OneTimeTokenType {
 		OneTimeTokenTypeEmailChangeVerify,
 		OneTimeTokenTypeEmailChangeConfirm,
 		OneTimeTokenTypeAccountDeletion,
+		OneTimeTokenTypeOwnershipTransfer,
 	}
 }
 

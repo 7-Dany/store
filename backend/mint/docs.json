@@ -1,11 +1,14 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "maple",
+  "theme": "almond",
   "name": "Store API",
+  "icons": {
+    "library": "tabler"
+  },
   "colors": {
-    "primary": "#FF7819",
-    "light": "#FF9038",
-    "dark": "#E07820"
+    "primary": "#00776F",
+    "light": "#00BBA7",
+    "dark": "#005F5A"
   },
   "api": {
     "playground": {
@@ -30,7 +33,7 @@
         "groups": [
           {
             "group": "Overview",
-            "icon": "book-open",
+            "icon": "books",
             "pages": ["guides/overview"]
           },
           {
@@ -55,7 +58,7 @@
           },
           {
             "group": "RBAC",
-            "icon": "shield-halved",
+            "icon": "shield-half",
             "pages": [
               "guides/rbac/permissions-setup-guide",
               "guides/rbac/user-management-guide"
@@ -68,12 +71,12 @@
         "groups": [
           {
             "group": "Overview",
-            "icon": "house",
+            "icon": "home",
             "pages": ["api-reference/overview"]
           },
           {
             "group": "Health",
-            "icon": "heart-pulse",
+            "icon": "activity",
             "pages": ["api-reference/health"]
           },
           {
@@ -96,7 +99,7 @@
           },
           {
             "group": "Google OAuth",
-            "icon": "google",
+            "icon": "brand-google",
             "pages": [
               "api-reference/oauth/google/initiate",
               "api-reference/oauth/google/callback",
@@ -105,7 +108,7 @@
           },
           {
             "group": "Telegram OAuth",
-            "icon": "telegram",
+            "icon": "brand-telegram",
             "pages": [
               "api-reference/oauth/telegram/callback",
               "api-reference/oauth/telegram/link",
@@ -114,7 +117,7 @@
           },
           {
             "group": "RBAC",
-            "icon": "shield-halved",
+            "icon": "shield-half",
             "pages": [
               "api-reference/rbac/owner/assign-owner",
               "api-reference/rbac/owner/initiate-transfer",
@@ -149,7 +152,7 @@
           },
           {
             "group": "Profile",
-            "icon": "circle-user",
+            "icon": "user-circle",
             "pages": [
               "api-reference/profile/me/me",
               "api-reference/profile/me/update-profile",

@@ -20,7 +20,7 @@ The API reference documents individual endpoints. Guides document the **flows** 
   </Card>
   <Card
     title="Session Lifecycle"
-    icon="arrows-rotate"
+    icon="refresh"
     href="/guides/auth/session-lifecycle"
   >
     Sign in, keep a session alive with token rotation, and sign out — including token reuse detection.
@@ -41,10 +41,17 @@ The API reference documents individual endpoints. Guides document the **flows** 
   </Card>
   <Card
     title="Google Sign-In Flow"
-    icon="google"
+    icon="brand-google"
     href="/guides/auth/google-oauth-flow"
   >
     Sign in, register, and link a Google account — including how to handle success and error redirects.
+  </Card>
+  <Card
+    title="Telegram Sign-In Flow"
+    icon="brand-telegram"
+    href="/guides/auth/telegram-oauth-flow"
+  >
+    Sign in, register, and link a Telegram account via the Login Widget.
   </Card>
 </CardGroup>
 
@@ -55,7 +62,7 @@ The API reference documents individual endpoints. Guides document the **flows** 
 <CardGroup cols={2}>
   <Card
     title="Email Change Flow"
-    icon="envelope"
+    icon="mail"
     href="/guides/profile/email-change-flow"
   >
     Prove ownership of the current and new address in three steps, then sign in with the updated email.
@@ -76,7 +83,7 @@ The API reference documents individual endpoints. Guides document the **flows** 
 <CardGroup cols={2}>
   <Card
     title="Permission Setup Guide"
-    icon="shield-halved"
+    icon="shield-half"
     href="/guides/rbac/permissions-setup-guide"
   >
     Create roles, find the right permissions, configure access types and scopes, and assign grants with a clear audit trail.

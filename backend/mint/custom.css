@@ -1,0 +1,60 @@
+/* ── Sidebar ─────────────────────────────────────────────────────────────────
+   Widen the sidebar so navigation items don't wrap to a second line.
+   --------------------------------------------------------------------------- */
+
+:root {
+  --sidebar-width: 17rem;
+}
+
+/* Direct sidebar width override */
+nav[class*="sidebar"],
+aside[class*="sidebar"],
+[class*="SidebarContainer"],
+[class*="sidebar-container"] {
+  min-width: 17rem !important;
+  width: 17rem !important;
+}
+
+/* ── Scrollbar ────────────────────────────────────────────────────────────────
+   Styled to match the frontend theme (mist/teal, oklch-based).
+   Webkit (Chrome, Edge, Safari) + Firefox.
+   --------------------------------------------------------------------------- */
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #00776F transparent;
+}
+
+/* Webkit — track */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Webkit — thumb */
+::-webkit-scrollbar-thumb {
+  background-color: #00BBA7;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #00776F;
+}
+
+/* Dark mode */
+.dark * {
+  scrollbar-color: #00776F transparent;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background-color: #005F5A;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background-color: #00776F;
+}

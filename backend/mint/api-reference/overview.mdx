@@ -53,21 +53,21 @@ The `canonical_name` is the exact value used in permission checks. The `scope_po
 #### rbac
 
 <AccordionGroup>
-  <Accordion title="rbac:read" icon="shield-halved">
+  <Accordion title="rbac:read" icon="shield-half">
     List roles, permissions, user assignments, and audit logs.
 
     **Scope policy:** `none` — scope is not applicable for this permission\
     **Allowed access types:** `direct`, `denied`
   </Accordion>
 
-  <Accordion title="rbac:manage" icon="shield-halved">
+  <Accordion title="rbac:manage" icon="shield-half">
     Create/update/soft-delete roles; add/remove role permissions; assign/remove user roles.
 
     **Scope policy:** `none` — scope is not applicable for this permission\
     **Allowed access types:** `direct`, `denied`
   </Accordion>
 
-  <Accordion title="rbac:grant_user_permission" icon="shield-halved">
+  <Accordion title="rbac:grant_user_permission" icon="shield-half">
     Grant/revoke time-limited direct permissions on individual users.
 
     **Scope policy:** `none` — scope is not applicable for this permission\
@@ -175,7 +175,7 @@ Looking for end-to-end flow walkthroughs instead of individual endpoints?
   <Card title="Registration Flow" icon="user-plus" href="/guides/auth/registration-flow">
     Register, verify email, and handle resend and cooldown paths.
   </Card>
-  <Card title="Session Lifecycle" icon="arrows-rotate" href="/guides/auth/session-lifecycle">
+  <Card title="Session Lifecycle" icon="refresh" href="/guides/auth/session-lifecycle">
     Sign in, rotate tokens, and sign out — including reuse detection.
   </Card>
   <Card title="Password Reset Flow" icon="key" href="/guides/auth/password-reset-flow">
@@ -184,19 +184,19 @@ Looking for end-to-end flow walkthroughs instead of individual endpoints?
   <Card title="Account Unlock Flow" icon="lock-open" href="/guides/auth/account-unlock-flow">
     Clear a login lockout with the two-step OTP unlock flow.
   </Card>
-  <Card title="Google Sign-In Flow" icon="google" href="/guides/auth/google-oauth-flow">
+  <Card title="Google Sign-In Flow" icon="brand-google" href="/guides/auth/google-oauth-flow">
     Sign in, register, and link a Google account — including redirect handling.
   </Card>
-  <Card title="Telegram Sign-In Flow" icon="telegram" href="/guides/auth/telegram-oauth-flow">
+  <Card title="Telegram Sign-In Flow" icon="brand-telegram" href="/guides/auth/telegram-oauth-flow">
     Sign in, register, and link a Telegram account via the Login Widget.
   </Card>
-  <Card title="Email Change Flow" icon="envelope" href="/guides/profile/email-change-flow">
+  <Card title="Email Change Flow" icon="mail" href="/guides/profile/email-change-flow">
     Prove ownership of the current and new address in three steps.
   </Card>
   <Card title="Delete Account Flow" icon="trash" href="/guides/profile/delete-account-flow">
     Choose a deletion method, confirm identity, and permanently close an account — including the cancellation window.
   </Card>
-  <Card title="Permission Setup Guide" icon="shield-halved" href="/guides/rbac/permissions-setup-guide">
+  <Card title="Permission Setup Guide" icon="shield-half" href="/guides/rbac/permissions-setup-guide">
     Create roles, assign permissions with the right access type and scope, and audit grants correctly.
   </Card>
   <Card title="User Management Guide" icon="users" href="/guides/rbac/user-management-guide">

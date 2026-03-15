@@ -29,7 +29,7 @@ There is no separate "register with Google" step — both sign-in and registrati
     Render a "Continue with Google" button that navigates the browser to the initiate endpoint:
 
     ```
-    GET http://localhost:8080/api/v1/oauth/google
+    GET /oauth/google
     ```
 
     Use a plain `<a href="...">` or `window.location.href` — do **not** use `fetch` or `XMLHttpRequest`. The server responds with a browser redirect to Google's sign-in page.
@@ -57,7 +57,7 @@ There is no separate "register with Google" step — both sign-in and registrati
     | Cookie | Readable by JS | Lifetime | Purpose |
     |---|---|---|---|
     | `oauth_access_token` | Yes | 30 seconds | Bootstrap the session in your frontend |
-    | `refresh_token` | No | 30 days | Silent token renewal via [`POST /refresh`](/api-reference/auth/session/refresh) |
+    | `refresh_token` | No | 30 days | Silent token renewal via [`POST /auth/refresh`](/api-reference/auth/session/refresh) |
 
     Read `oauth_access_token` immediately — it expires in 30 seconds and is only for bootstrapping. Store the access token value in memory and use it as `Authorization: Bearer <token>` for subsequent API calls. Schedule a proactive refresh before the 15-minute access token TTL expires.
 
@@ -117,11 +117,11 @@ An already signed-in user can connect their Google account to their profile. Onc
 
 ## Removing Google sign-in
 
-A signed-in user can disconnect their Google account via [`DELETE /oauth/google/unlink`](/api-reference/oauth/google/unlink).
+A signed-in user can disconnect their Google account via [`DELETE /oauth/google`](/api-reference/oauth/google/unlink).
 
 ```bash
 curl --request DELETE \
-  --url http://localhost:8080/api/v1/oauth/google/unlink \
+  --url /oauth/google \
   --header "Authorization: Bearer <access_token>"
 ```
 
@@ -132,7 +132,7 @@ curl --request DELETE \
 ```
 
 <Warning>
-  Google cannot be removed if it is the **only** sign-in method on the account. Direct the user to [set a password](/api-reference/profile/set-password/set-password) first, then try again. The API returns `422 last_auth_method` in this case.
+  Google cannot be removed if it is the **only** sign-in method on the account. Direct the user to [set a password](/api-reference/profile/password/set-password) first, then try again. The API returns `422 last_auth_method` in this case.
 </Warning>
 
 ---

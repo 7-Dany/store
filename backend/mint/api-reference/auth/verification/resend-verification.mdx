@@ -2,7 +2,7 @@
 title: "Resend Verification"
 authMethod: "none"
 description: "Issues a new email verification OTP, invalidating any previously unused tokens for the account."
-api: "POST http://localhost:8080/api/v1/auth/resend-verification"
+api: "POST /auth/verification/resend"
 ---
 
 <ParamField body="email" type="string" required>

@@ -3,47 +3,48 @@
 # One Newman collection per feature (each a flat JSON file):
 #   e2e/health/health.json              → GET /health
 #   e2e/auth/register.json              → POST /register
-#   e2e/auth/verify-email.json          → POST /verify-email + POST /resend-verification
+#   e2e/auth/verify-email.json          → POST /verification + POST /verification/resend
 #   e2e/auth/login.json                 → POST /login
 #   e2e/auth/session.json               → POST /refresh + POST /logout
-#   e2e/auth/unlock.json                → POST /request-unlock + POST /confirm-unlock
-#   e2e/auth/password-reset.json        → POST /forgot-password + POST /reset-password
-#   e2e/auth/change-password.json       → POST /change-password (requires JWT)
+#   e2e/auth/unlock.json                → POST /unlock + PUT /unlock
+#   e2e/auth/password-reset.json        → POST /password/reset + POST /password/reset/verify + PUT /password/reset
+#   e2e/auth/change-password.json       → PATCH /password (requires JWT)
 #   e2e/profile/me.json                 → GET /me (requires JWT)
-#   e2e/profile/sessions.json           → GET /sessions (requires JWT)
-#   e2e/profile/revoke-session.json     → DELETE /sessions/{id} (requires JWT)
+#   e2e/profile/sessions.json           → GET /me/sessions (requires JWT)
+#   e2e/profile/revoke-session.json     → DELETE /me/sessions/{id} (requires JWT)
 #   e2e/profile/update-profile.json     → PATCH /me (requires JWT)
-#   e2e/profile/set-password.json       → POST /set-password (requires JWT)
-#   e2e/profile/username.json           → GET /username/available + PATCH /me/username (requires JWT for PATCH)
+#   e2e/profile/set-password.json       → POST /me/password (requires JWT)
+#   e2e/profile/username.json           → GET /me/username/available + PATCH /me/username (requires JWT for PATCH)
 #   e2e/oauth/google.json               → GET /oauth/google + GET /oauth/google/callback + DELETE /oauth/google/unlink
 #   e2e/oauth/telegram.json             → POST /oauth/telegram/callback + POST /oauth/telegram/link + DELETE /oauth/telegram/unlink
-#   e2e/profile/email.json              → POST /email/request-change + POST /email/verify-current + POST /email/confirm-change (requires JWT)
-#   e2e/profile/delete-account.json     → DELETE /profile/me + POST /profile/me/cancel-deletion (requires JWT) + GET /profile/me/deletion-method (requires JWT)
+#   e2e/profile/email.json              → POST /me/email + POST /me/email/verify + PUT /me/email (requires JWT)
+#   e2e/profile/delete-account.json     → DELETE /profile/me + DELETE /profile/me/deletion + GET /profile/me/deletion (requires JWT)
 #   e2e/profile/identities.json         → GET /me/identities (requires JWT)
 #   e2e/rbac/owner.json                 → POST /owner/assign + POST /owner/transfer + POST /owner/transfer/accept + DELETE /owner/transfer
 #   e2e/rbac/permissions.json           → GET /admin/permissions + GET /admin/permissions/groups (requires rbac:read)
 #   e2e/rbac/roles.json                 → CRUD /admin/rbac/roles + /admin/rbac/roles/{id}/permissions (requires rbac:read + rbac:manage)
-#   e2e/rbac/userroles.json              → GET/PUT/DELETE /admin/rbac/users/{user_id}/role (requires rbac:read + rbac:manage)
-#   e2e/rbac/userpermissions.json       → GET/POST/DELETE /admin/rbac/users/{user_id}/permissions (requires rbac:read + rbac:grant_user_perm)
+#   e2e/admin/userroles.json            → GET/PUT/DELETE /admin/rbac/users/{user_id}/role (requires rbac:read + rbac:manage)
+#   e2e/admin/userpermissions.json      → GET/POST/DELETE /admin/rbac/users/{user_id}/permissions (requires rbac:read + rbac:grant_user_perm)
+#   e2e/admin/userlock.json             → POST/DELETE /admin/users/{user_id}/lock (requires rbac:manage)
 #
 # Individual targets   — run a single collection:
 #   e2e-health, e2e-register, e2e-verify-email, e2e-login, e2e-session,
 #   e2e-unlock, e2e-password, e2e-set-password, e2e-me, e2e-sessions,
 #   e2e-revoke-session, e2e-update-profile, e2e-username, e2e-email,
 #   e2e-delete-account, e2e-identities, e2e-oauth-google, e2e-oauth-telegram,
-#   e2e-rbac-owner, e2e-rbac-permissions, e2e-rbac-roles, e2e-rbac-userroles,
-#   e2e-rbac-userpermissions
+#   e2e-rbac-owner, e2e-rbac-permissions, e2e-rbac-roles,
+#   e2e-admin-userroles, e2e-admin-userpermissions, e2e-admin-userlock
 #
 # Group targets        — run a folder of collections in order:
 #   e2e-auth           — register + verify-email + login + session + unlock + password
 #   e2e-oauth          — oauth-google + oauth-telegram
 #   e2e-profile        — me + sessions + revoke-session + update-profile +
 #                        set-password + username + email + delete-account + identities
-#   e2e-rbac           — rbac-owner + rbac-permissions + rbac-roles + rbac-userroles +
-#                        rbac-userpermissions
+#   e2e-rbac           — rbac-owner + rbac-permissions + rbac-roles
+#   e2e-admin          — admin-userroles + admin-userpermissions + admin-userlock
 #
 # Suite target         — run everything at once:
-#   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile + e2e-rbac
+#   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile + e2e-rbac + e2e-admin
 #
 # Rate-limiting notes:
 #   Collections whose rate-limiters sit INSIDE the JWTAuth middleware group
@@ -72,6 +73,7 @@ E2E_AUTH     := $(E2E_DIR)/auth
 E2E_PROFILE  := $(E2E_DIR)/profile
 E2E_OAUTH    := $(E2E_DIR)/oauth
 E2E_RBAC     := $(E2E_DIR)/rbac
+E2E_ADMIN    := $(E2E_DIR)/admin
 E2E_DELAY    ?= 150
 
 # ── OS-aware printing ─────────────────────────────────────────────────────────
@@ -110,7 +112,7 @@ _F_VERIFY_MAIN     := --folder "setup" --folder "validation" --folder "happy-pat
 _F_VERIFY_RL       := --folder "rate-limiting"
 
 # auth/login
-_F_LOGIN_MAIN      := --folder "setup" --folder "validation" --folder "happy-path" --folder "failures" --folder "time-lock"
+_F_LOGIN_MAIN      := --folder "setup" --folder "validation" --folder "happy-path" --folder "failures"
 _F_LOGIN_RL        := --folder "rate-limiting"
 
 # auth/session (refresh + logout)
@@ -183,17 +185,23 @@ _F_PERMS_MAIN      := --folder "setup" --folder "auth-guard" --folder "rbac-guar
 # No Redis flush needed.
 _F_ROLES_MAIN      := --folder "setup" --folder "auth-guard" --folder "rbac-guard" --folder "owner-bootstrap" --folder "happy-path" --folder "not-found" --folder "validation" --folder "immutable-guard"
 
-# rbac/userroles (no rate limiter — single invocation)
+# admin/userroles (no rate limiter — single invocation)
 # owner-bootstrap promotes the setup user to owner mid-run so the same JWT
 # covers rbac-guard (403) and all subsequent folders (200/204).
 # No Redis flush needed.
 _F_USERROLES_MAIN  := --folder "setup" --folder "auth-guard" --folder "rbac-guard" --folder "owner-bootstrap" --folder "happy-path" --folder "conflict-guard" --folder "not-found" --folder "validation"
 
-# rbac/userpermissions (no rate limiter — single invocation)
+# admin/userpermissions (no rate limiter — single invocation)
 # owner-bootstrap promotes the setup user to owner mid-run so the same JWT
 # covers rbac-guard (403) and all subsequent folders (200/201/204).
 # No Redis flush needed.
 _F_USERPERMS_MAIN  := --folder "setup" --folder "auth-guard" --folder "rbac-guard" --folder "owner-bootstrap" --folder "happy-path" --folder "not-found" --folder "validation" --folder "conflict"
+
+# admin/userlock (no rate limiter — single invocation)
+# owner-bootstrap promotes the setup user to owner mid-run so the same JWT
+# covers rbac-guard (403) and all subsequent folders (200/204).
+# No Redis flush needed.
+_F_USERLOCK_MAIN   := --folder "setup" --folder "auth-guard" --folder "rbac-guard" --folder "owner-bootstrap" --folder "happy-path" --folder "conflict-guard" --folder "not-found" --folder "validation"
 
 # ── PHONY ─────────────────────────────────────────────────────────────────────
 .PHONY: e2e-install \
@@ -206,7 +214,7 @@ _F_USERPERMS_MAIN  := --folder "setup" --folder "auth-guard" --folder "rbac-guar
         e2e-oauth-google e2e-oauth-telegram \
         e2e-profile e2e-auth e2e-oauth \
         e2e-rbac e2e-rbac-owner e2e-rbac-permissions e2e-rbac-roles \
-        e2e-rbac-userroles e2e-rbac-userpermissions \
+        e2e-admin e2e-admin-userroles e2e-admin-userpermissions e2e-admin-userlock \
         _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
 
 # ── Tooling ───────────────────────────────────────────────────────────────────
@@ -249,7 +257,7 @@ endif
 #
 # Uses TEST_DATABASE_URL so e2e tests never touch the dev database.
 _e2e-db-clean:
-	@psql "$(TEST_DATABASE_URL)" -c "BEGIN; SET LOCAL rbac.skip_orphan_check = '1'; DELETE FROM user_roles WHERE user_id NOT IN (SELECT id FROM users); DELETE FROM user_permissions WHERE user_id NOT IN (SELECT id FROM users); CREATE TEMP TABLE _e2e_target (id UUID) ON COMMIT DROP; INSERT INTO _e2e_target SELECT id FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%' OR email LIKE '%+tgrl@%' OR email LIKE '%+delb@%' OR email LIKE '%+delvc@%' OR email LIKE '%+delvd@%' OR email LIKE '%+delrl@%' OR email LIKE '%+cncrl@%' OR email LIKE '%+uptarget@%' OR email LIKE '%+urtarget@%' OR email LIKE '%+xfrtgt@%' OR id IN (SELECT user_id FROM user_identities WHERE provider = 'telegram' AND provider_uid IN ('99887766', '99887700', '99887744')); DELETE FROM user_roles WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM auth_audit_log WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_roles_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM role_permissions_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM permission_request_approvers_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM users WHERE id IN (SELECT id FROM _e2e_target); DELETE FROM role_permissions_audit WHERE role_id IN (SELECT id FROM roles WHERE name LIKE 'e2e-%' AND is_system_role = FALSE); DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE name LIKE 'e2e-%' AND is_system_role = FALSE); DELETE FROM roles WHERE name LIKE 'e2e-%' AND is_system_role = FALSE; COMMIT;"
+	@psql "$(TEST_DATABASE_URL)" -c "BEGIN; SET LOCAL rbac.skip_orphan_check = '1'; DELETE FROM user_roles WHERE user_id NOT IN (SELECT id FROM users); DELETE FROM user_permissions WHERE user_id NOT IN (SELECT id FROM users); CREATE TEMP TABLE _e2e_target (id UUID) ON COMMIT DROP; INSERT INTO _e2e_target SELECT id FROM users WHERE email LIKE '%@e2e.test' OR email ~ '@xn--' OR email = '$(E2E_GMAIL_EMAIL)' OR email LIKE '%+spwrl@%' OR email LIKE '%+usrnrl@%' OR email LIKE '%+echgnew@%' OR email LIKE '%+echgfail@%' OR email LIKE '%+echgrlreq@%' OR email LIKE '%+echgrlvfy@%' OR email LIKE '%+echgrlcnf@%' OR email LIKE '%+goauthr@%' OR email LIKE '%+tgrl@%' OR email LIKE '%+delb@%' OR email LIKE '%+delvc@%' OR email LIKE '%+delvd@%' OR email LIKE '%+delrl@%' OR email LIKE '%+cncrl@%' OR email LIKE '%+uptarget@%' OR email LIKE '%+urtarget@%' OR email LIKE '%+ultarget@%' OR email LIKE '%+xfrtgt@%' OR id IN (SELECT user_id FROM user_identities WHERE provider = 'telegram' AND provider_uid IN ('99887766', '99887700', '99887744')); DELETE FROM user_roles WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM auth_audit_log WHERE user_id IN (SELECT id FROM _e2e_target); DELETE FROM user_roles_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM user_permissions_audit WHERE user_id IN (SELECT id FROM _e2e_target) OR changed_by IN (SELECT id FROM _e2e_target); DELETE FROM role_permissions_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM permission_request_approvers_audit WHERE changed_by IN (SELECT id FROM _e2e_target); DELETE FROM users WHERE id IN (SELECT id FROM _e2e_target); DELETE FROM role_permissions_audit WHERE role_id IN (SELECT id FROM roles WHERE name LIKE 'e2e-%' AND is_system_role = FALSE); DELETE FROM role_permissions WHERE role_id IN (SELECT id FROM roles WHERE name LIKE 'e2e-%' AND is_system_role = FALSE); DELETE FROM roles WHERE name LIKE 'e2e-%' AND is_system_role = FALSE; COMMIT;"
 	@echo "[e2e] DB cleaned (e2e users and e2e test roles removed from test DB)"
 
 # Flush Redis DB 1 (the test server's rate-limiter and blocklist store).
@@ -271,7 +279,7 @@ endif
 
 # ── Suite targets ─────────────────────────────────────────────────────────────
 
-e2e: e2e-health e2e-auth e2e-oauth e2e-profile e2e-rbac ## Run ALL e2e suites (health + auth + oauth + profile + rbac)
+e2e: e2e-health e2e-auth e2e-oauth e2e-profile e2e-rbac e2e-admin ## Run ALL e2e suites (health + auth + oauth + profile + rbac + admin)
 
 e2e-auth: _e2e-check-env ## Run all auth E2E collections in order (register → verify-email → login → session → unlock → password)
 	@$(MAKE) e2e-register
@@ -303,13 +311,17 @@ e2e-profile: _e2e-check-env ## Run all profile E2E collections in order (require
 	@$(MAKE) e2e-identities
 	@$(call _e2e_ok,[e2e] profile suite passed)
 
-e2e-rbac: _e2e-check-env ## Run all RBAC E2E collections in order (owner + permissions + roles + userroles + userpermissions)
+e2e-rbac: _e2e-check-env ## Run all RBAC E2E collections in order (owner + permissions + roles)
 	@$(MAKE) e2e-rbac-owner
 	@$(MAKE) e2e-rbac-permissions
 	@$(MAKE) e2e-rbac-roles
-	@$(MAKE) e2e-rbac-userroles
-	@$(MAKE) e2e-rbac-userpermissions
 	@$(call _e2e_ok,[e2e] rbac suite passed)
+
+e2e-admin: _e2e-check-env ## Run all admin E2E collections in order (userroles + userpermissions + userlock)
+	@$(MAKE) e2e-admin-userroles
+	@$(MAKE) e2e-admin-userpermissions
+	@$(MAKE) e2e-admin-userlock
+	@$(call _e2e_ok,[e2e] admin suite passed)
 
 # ── health ────────────────────────────────────────────────────────────────────
 
@@ -341,8 +353,8 @@ e2e-register: _e2e-check-env ## Run POST /register E2E (all folders including ra
 
 # ── auth/verify-email ─────────────────────────────────────────────────────────
 
-e2e-verify-email: _e2e-check-env ## Run POST /verify-email + POST /resend-verification E2E
-	@$(call _e2e_info,[e2e] --- POST /verify-email + POST /resend-verification ---)
+e2e-verify-email: _e2e-check-env ## Run POST /verification + POST /verification/resend E2E
+	@$(call _e2e_info,[e2e] --- POST /verification + POST /verification/resend ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: setup + validation + happy-path + anti-enumeration + resend-validation + resend-happy-path)
 	$(call newman-run,$(E2E_AUTH)/verify-email.json,$(_F_VERIFY_MAIN),$(E2E_DELAY))
@@ -356,7 +368,7 @@ e2e-verify-email: _e2e-check-env ## Run POST /verify-email + POST /resend-verifi
 e2e-login: _e2e-check-env ## Run POST /login E2E
 	@$(call _e2e_info,[e2e] --- POST /login ---)
 	@$(MAKE) _e2e-clean
-	@$(call _e2e_gray,[e2e] Running: setup + validation + happy-path + failures + time-lock)
+	@$(call _e2e_gray,[e2e] Running: setup + validation + happy-path + failures)
 	$(call newman-run,$(E2E_AUTH)/login.json,$(_F_LOGIN_MAIN),$(E2E_DELAY))
 	@$(call _e2e_gray,[e2e] Flushing Redis before rate-limiting...)
 	@$(MAKE) _e2e-kv-clean
@@ -377,8 +389,8 @@ e2e-session: _e2e-check-env ## Run POST /refresh + POST /logout E2E
 
 # ── auth/unlock ───────────────────────────────────────────────────────────────
 
-e2e-unlock: _e2e-check-env ## Run POST /request-unlock + POST /confirm-unlock E2E
-	@$(call _e2e_info,[e2e] --- POST /request-unlock + POST /confirm-unlock ---)
+e2e-unlock: _e2e-check-env ## Run POST /unlock + PUT /unlock E2E
+	@$(call _e2e_info,[e2e] --- POST /unlock + PUT /unlock ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: happy-path + validation + anti-enumeration)
 	$(call newman-run,$(E2E_AUTH)/unlock.json,$(_F_UNLOCK_MAIN),$(E2E_DELAY))
@@ -390,8 +402,8 @@ e2e-unlock: _e2e-check-env ## Run POST /request-unlock + POST /confirm-unlock E2
 
 # ── auth/password-reset + auth/change-password ────────────────────────────────
 
-e2e-password: _e2e-check-env ## Run POST /forgot-password + /reset-password + /change-password E2E
-	@$(call _e2e_info,[e2e] --- POST /forgot-password + POST /reset-password ---)
+e2e-password: _e2e-check-env ## Run POST /password/reset + POST /password/reset/verify + PUT /password/reset + PATCH /password E2E
+	@$(call _e2e_info,[e2e] --- POST /password/reset + POST /password/reset/verify + PUT /password/reset ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: setup + happy-path + anti-enumeration + validation)
 	$(call newman-run,$(E2E_AUTH)/password-reset.json,$(_F_PW_RESET_MAIN),$(E2E_DELAY))
@@ -422,8 +434,8 @@ e2e-me: _e2e-check-env ## Run GET /me E2E (requires JWT — all folders in one i
 # ── profile/sessions ──────────────────────────────────────────────────────────
 
 # NOTE: psess:ip: rate-limiter is JWT-gated — all folders run in one invocation.
-e2e-sessions: _e2e-check-env ## Run GET /sessions E2E (requires JWT — all folders in one invocation)
-	@$(call _e2e_info,[e2e] --- GET /sessions ---)
+e2e-sessions: _e2e-check-env ## Run GET /me/sessions E2E (requires JWT — all folders in one invocation)
+	@$(call _e2e_info,[e2e] --- GET /me/sessions ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: setup + happy-path + rate-limiting (single invocation))
 	$(call newman-run,$(E2E_PROFILE)/sessions.json,$(_F_PROFILE_TRIO),1)
@@ -431,8 +443,8 @@ e2e-sessions: _e2e-check-env ## Run GET /sessions E2E (requires JWT — all fold
 # ── profile/revoke-session ────────────────────────────────────────────────────
 
 # NOTE: rsess:ip: rate-limiter is JWT-gated — all folders run in one invocation.
-e2e-revoke-session: _e2e-check-env ## Run DELETE /sessions/{id} E2E (requires JWT — all folders in one invocation)
-	@$(call _e2e_info,[e2e] --- DELETE /sessions/{id} ---)
+e2e-revoke-session: _e2e-check-env ## Run DELETE /me/sessions/{id} E2E (requires JWT — all folders in one invocation)
+	@$(call _e2e_info,[e2e] --- DELETE /me/sessions/{id} ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: setup + happy-path + rate-limiting (single invocation))
 	$(call newman-run,$(E2E_PROFILE)/revoke-session.json,$(_F_PROFILE_TRIO),1)
@@ -450,8 +462,8 @@ e2e-update-profile: _e2e-check-env ## Run PATCH /me E2E (requires JWT — all fo
 # ── profile/set-password ──────────────────────────────────────────────────────
 
 # NOTE: rate-limiting-spw is JWT-gated — all folders run in one invocation.
-e2e-set-password: _e2e-check-env ## Run POST /set-password E2E (requires JWT — all folders in one invocation)
-	@$(call _e2e_info,[e2e] --- POST /set-password ---)
+e2e-set-password: _e2e-check-env ## Run POST /me/password E2E (requires JWT — all folders in one invocation)
+	@$(call _e2e_info,[e2e] --- POST /me/password ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: setup + failures + auth-failures + validation + rate-limiting-spw (single invocation))
 	$(call newman-run,$(E2E_PROFILE)/set-password.json,$(_F_SET_PW),1)
@@ -461,8 +473,8 @@ e2e-set-password: _e2e-check-env ## Run POST /set-password E2E (requires JWT —
 
 # NOTE: rate-limiting-uchg is JWT-gated (single invocation with main folders).
 #       rate-limiting-unav is unauthenticated — separate invocation after Redis flush.
-e2e-username: _e2e-check-env ## Run GET /username/available + PATCH /me/username E2E
-	@$(call _e2e_info,[e2e] --- GET /username/available + PATCH /me/username ---)
+e2e-username: _e2e-check-env ## Run GET /me/username/available + PATCH /me/username E2E
+	@$(call _e2e_info,[e2e] --- GET /me/username/available + PATCH /me/username ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: setup + happy-path + failures + auth-failures + validation + rate-limiting-uchg (single invocation))
 	$(call newman-run,$(E2E_PROFILE)/username.json,$(_F_USERNAME_MAIN),1)
@@ -475,8 +487,8 @@ e2e-username: _e2e-check-env ## Run GET /username/available + PATCH /me/username
 # ── profile/email ─────────────────────────────────────────────────────────────
 
 # NOTE: rate-limiting-req/vfy/cnf are JWT-gated — all folders run in one invocation.
-e2e-email: _e2e-check-env ## Run POST /email/request-change + verify-current + confirm-change E2E (requires JWT)
-	@$(call _e2e_info,[e2e] --- POST /email/request-change + verify-current + confirm-change ---)
+e2e-email: _e2e-check-env ## Run POST /me/email + POST /me/email/verify + PUT /me/email E2E (requires JWT)
+	@$(call _e2e_info,[e2e] --- POST /me/email + POST /me/email/verify + PUT /me/email ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: setup + happy-path + failures + auth-failures + validation + rate-limiting-req + rate-limiting-vfy + rate-limiting-cnf (single invocation))
 	$(call newman-run,$(E2E_PROFILE)/email.json,$(_F_EMAIL),1)
@@ -484,10 +496,10 @@ e2e-email: _e2e-check-env ## Run POST /email/request-change + verify-current + c
 
 # ── profile/delete-account ────────────────────────────────────────────────────
 
-# NOTE: del:usr: (3 req/1hr) and delc:usr: (5 req/10min) are JWT-gated.
+# NOTE: del:usr: (10 req/1hr) and delc:usr: (10 req/10min) are JWT-gated.
 #       All folders run in one invocation; Redis flushed once before the run.
-e2e-delete-account: _e2e-check-env ## Run DELETE /me + POST /me/cancel-deletion E2E (requires JWT — all folders in one invocation)
-	@$(call _e2e_info,[e2e] --- DELETE /profile/me + POST /profile/me/cancel-deletion ---)
+e2e-delete-account: _e2e-check-env ## Run DELETE /profile/me + DELETE /profile/me/deletion + GET /profile/me/deletion E2E (requires JWT — all folders in one invocation)
+	@$(call _e2e_info,[e2e] --- DELETE /profile/me + DELETE /profile/me/deletion + GET /profile/me/deletion ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: setup + happy-path-password + happy-path-cancel + happy-path-email-otp + telegram-guards + failures + auth-failures + validation + rate-limiting-del + rate-limiting-delc (single invocation))
 	$(call newman-run,$(E2E_PROFILE)/delete-account.json,$(_F_DEL_ACC),1)
@@ -535,30 +547,6 @@ e2e-oauth-telegram: _e2e-check-env ## Run Telegram OAuth E2E (callback + link + 
 	$(call newman-run,$(E2E_OAUTH)/telegram.json,$(_F_TELEGRAM_RL_CB),1)
 	@$(call _e2e_ok,[e2e] oauth-telegram suite passed)
 
-# ── rbac/roles ───────────────────────────────────────────────────────────────
-
-# No rate limiter on admin routes — single invocation, no Redis flush needed.
-# owner-bootstrap runs mid-collection (promotes the test user to owner so both
-# RBAC guards pass); the same JWT is reused for all subsequent folders.
-e2e-rbac-roles: _e2e-check-env ## Run CRUD /admin/rbac/roles E2E (requires rbac:read + rbac:manage)
-	@$(call _e2e_info,[e2e] --- CRUD /admin/rbac/roles ---)
-	@$(MAKE) _e2e-clean
-	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + rbac-guard + owner-bootstrap + happy-path + not-found + validation + immutable-guard (single invocation))
-	$(call newman-run,$(E2E_RBAC)/roles.json,$(_F_ROLES_MAIN),$(E2E_DELAY))
-	@$(call _e2e_ok,[e2e] rbac-roles suite passed)
-
-# ── rbac/userroles ───────────────────────────────────────────────────────────
-
-# No rate limiter on admin routes — single invocation, no Redis flush needed.
-# owner-bootstrap runs mid-collection (promotes the test user to owner so both
-# RBAC guards pass); the same JWT is reused for all subsequent folders.
-e2e-rbac-userroles: _e2e-check-env ## Run GET/PUT/DELETE /admin/rbac/users/{user_id}/role E2E (requires rbac:read + rbac:manage)
-	@$(call _e2e_info,[e2e] --- GET/PUT/DELETE /admin/rbac/users/{user_id}/role ---)
-	@$(MAKE) _e2e-clean
-	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + rbac-guard + owner-bootstrap + happy-path + conflict-guard + not-found + validation (single invocation))
-	$(call newman-run,$(E2E_RBAC)/userroles.json,$(_F_USERROLES_MAIN),$(E2E_DELAY))
-	@$(call _e2e_ok,[e2e] rbac-userroles suite passed)
-
 # ── rbac/owner ───────────────────────────────────────────────────────────────
 
 # All 19 folders run in ONE newman invocation; Redis is flushed once before the
@@ -583,17 +571,54 @@ e2e-rbac-permissions: _e2e-check-env ## Run GET /admin/permissions + GET /admin/
 	$(call newman-run,$(E2E_RBAC)/permissions.json,$(_F_PERMS_MAIN),$(E2E_DELAY))
 	@$(call _e2e_ok,[e2e] rbac-permissions suite passed)
 
-# ── rbac/userpermissions ──────────────────────────────────────────────────────
+# ── rbac/roles ───────────────────────────────────────────────────────────────
 
 # No rate limiter on admin routes — single invocation, no Redis flush needed.
-# owner-bootstrap runs mid-collection (promotes the acting user to owner so both
-# RBAC guards pass); the same JWT covers rbac-guard (403) and all subsequent
-# folders (200/201/204) without re-issuing.
+# owner-bootstrap runs mid-collection (promotes the test user to owner so both
+# RBAC guards pass); the same JWT is reused for all subsequent folders.
+e2e-rbac-roles: _e2e-check-env ## Run CRUD /admin/rbac/roles E2E (requires rbac:read + rbac:manage)
+	@$(call _e2e_info,[e2e] --- CRUD /admin/rbac/roles ---)
+	@$(MAKE) _e2e-clean
+	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + rbac-guard + owner-bootstrap + happy-path + not-found + validation + immutable-guard (single invocation))
+	$(call newman-run,$(E2E_RBAC)/roles.json,$(_F_ROLES_MAIN),$(E2E_DELAY))
+	@$(call _e2e_ok,[e2e] rbac-roles suite passed)
+
+# ── admin/userroles ───────────────────────────────────────────────────────────
+
+# No rate limiter on admin routes — single invocation, no Redis flush needed.
+# owner-bootstrap promotes the setup user to owner mid-run so the same JWT
+# covers rbac-guard (403) and all subsequent folders (200/204).
+e2e-admin-userroles: _e2e-check-env ## Run GET/PUT/DELETE /admin/rbac/users/{user_id}/role E2E (requires rbac:read + rbac:manage)
+	@$(call _e2e_info,[e2e] --- GET/PUT/DELETE /admin/rbac/users/{user_id}/role ---)
+	@$(MAKE) _e2e-clean
+	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + rbac-guard + owner-bootstrap + happy-path + conflict-guard + not-found + validation (single invocation))
+	$(call newman-run,$(E2E_ADMIN)/userroles.json,$(_F_USERROLES_MAIN),$(E2E_DELAY))
+	@$(call _e2e_ok,[e2e] admin-userroles suite passed)
+
+# ── admin/userpermissions ─────────────────────────────────────────────────────
+
+# No rate limiter on admin routes — single invocation, no Redis flush needed.
+# owner-bootstrap promotes the acting user to owner mid-run so the same JWT
+# covers rbac-guard (403) and all subsequent folders (200/201/204).
 # The target user (+uptarget alias) is cleaned up by _e2e-db-clean via the
 # '%+uptarget@%' pattern added to the cleanup query.
-e2e-rbac-userpermissions: _e2e-check-env ## Run GET/POST/DELETE /admin/rbac/users/{user_id}/permissions E2E (requires rbac:read + rbac:grant_user_perm)
+e2e-admin-userpermissions: _e2e-check-env ## Run GET/POST/DELETE /admin/rbac/users/{user_id}/permissions E2E (requires rbac:read + rbac:grant_user_perm)
 	@$(call _e2e_info,[e2e] --- GET/POST/DELETE /admin/rbac/users/{user_id}/permissions ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + rbac-guard + owner-bootstrap + happy-path + not-found + validation + conflict (single invocation))
-	$(call newman-run,$(E2E_RBAC)/userpermissions.json,$(_F_USERPERMS_MAIN),$(E2E_DELAY))
-	@$(call _e2e_ok,[e2e] rbac-userpermissions suite passed)
+	$(call newman-run,$(E2E_ADMIN)/userpermissions.json,$(_F_USERPERMS_MAIN),$(E2E_DELAY))
+	@$(call _e2e_ok,[e2e] admin-userpermissions suite passed)
+
+# ── admin/userlock ────────────────────────────────────────────────────────────
+
+# No rate limiter on admin routes — single invocation, no Redis flush needed.
+# owner-bootstrap promotes the setup user to owner mid-run so the same JWT
+# covers rbac-guard (403) and all subsequent folders (200/204).
+# The target user (+ultarget alias) is cleaned up by _e2e-db-clean via the
+# '%+ultarget@%' pattern in the cleanup query.
+e2e-admin-userlock: _e2e-check-env ## Run POST/DELETE /admin/users/{user_id}/lock E2E (requires rbac:manage)
+	@$(call _e2e_info,[e2e] --- POST/DELETE /admin/users/{user_id}/lock ---)
+	@$(MAKE) _e2e-clean
+	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + rbac-guard + owner-bootstrap + happy-path + conflict-guard + not-found + validation (single invocation))
+	$(call newman-run,$(E2E_ADMIN)/userlock.json,$(_F_USERLOCK_MAIN),$(E2E_DELAY))
+	@$(call _e2e_ok,[e2e] admin-userlock suite passed)

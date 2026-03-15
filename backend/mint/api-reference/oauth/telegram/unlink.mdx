@@ -1,7 +1,7 @@
 ---
 title: "Unlink Telegram Account"
 description: "Removes the Telegram sign-in connection from the caller's account."
-api: "DELETE http://localhost:8080/api/v1/oauth/telegram/unlink"
+api: "DELETE /oauth/telegram"
 authMethod: "bearer"
 ---
 
@@ -101,7 +101,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="409 — Conflict">
-    Telegram is the only way to access this account. Add a password via [`POST /set-password`](/api-reference/profile/set-password/set-password) or link another provider before unlinking.
+    Telegram is the only way to access this account. Add a password via [`POST /profile/me/password`](/api-reference/profile/password/set-password) or link another provider before unlinking.
 
     ```json
     {

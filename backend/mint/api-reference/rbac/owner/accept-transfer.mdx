@@ -1,7 +1,7 @@
 ---
 title: "Accept Transfer"
 description: "Accepts a pending ownership transfer using the one-time token sent to the target user's email. No authentication header is required — the token itself is the credential."
-api: "POST http://localhost:8080/api/v1/owner/transfer/accept"
+api: "PUT /rbac/owner/transfer"
 ---
 
 <ParamField body="token" type="string" required>
@@ -110,7 +110,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="410 — Gone">
-    The supplied token is invalid, has expired, or has already been used. Tokens are single-use; if the transfer needs to proceed, the owner must re-initiate via [`POST /owner/transfer`](/api-reference/rbac/owner/initiate-transfer).
+    The supplied token is invalid, has expired, or has already been used. Tokens are single-use; if the transfer needs to proceed, the owner must re-initiate via [`POST /rbac/owner/transfer`](/api-reference/rbac/owner/initiate-transfer).
 
     ```json
     {

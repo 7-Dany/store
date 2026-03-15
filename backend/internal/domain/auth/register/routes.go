@@ -1,3 +1,4 @@
+// Package register registers the POST /register endpoint.
 package register
 
 import (
@@ -5,6 +6,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/platform/mailer"
 	mailertemplates "github.com/7-Dany/store/backend/internal/platform/mailer/templates"
@@ -12,13 +14,18 @@ import (
 )
 
 // Routes registers the register endpoint on r.
-// Call from the auth root assembler:
+// Call from auth.Routes in internal/domain/auth/routes.go:
 //
 //	register.Routes(ctx, r, deps)
 //
-// Rate limits: burst=5, 5 req / 10 min per IP — deters mass account creation.
+// Rate limits:
+//   - POST /register: 5 req / 10 min per IP  ("reg:ip:")
+//
+// Middleware ordering:
+//
+//	POST /register: IPRateLimiter → handler.Register
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
-	// 5 req / 10 min per IP, burst=5 — deters mass account creation.
+	// 5 req / 10 min per IP — deters mass account creation at the network level.
 	// rate = 5 / (10 * 60) = 0.00833 tokens/sec.
 	limiter := ratelimit.NewIPRateLimiter(deps.KVStore, "reg:ip:", 5.0/(10*60), 5, 10*time.Minute)
 	go limiter.StartCleanup(ctx)

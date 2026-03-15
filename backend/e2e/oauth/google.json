@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "auth-oauth-google-e2e",
-    "name": "Auth – Google OAuth (GET /api/v1/oauth/google + callback + DELETE /api/v1/oauth/google/unlink)",
-    "description": "E2E tests for Google OAuth endpoints.\n\nFolder execution order (orchestrated by make e2e-oauth-google):\n\n  Invocation 1 (single Newman run — JWT token must survive across folders):\n    1. setup             — register gmail_test_email, fetch verification OTP from Gmail, verify email, login\n    2. initiate          — GET /oauth/google → 302 to Google; assert PKCE params; capture state UUID\n    3. callback-guards   — guard cases that do not require a real Google code (state/code missing or unknown)\n    4. unlink-failures   — auth failures + not_found for DELETE /unlink\n    5. rate-limiting-unl — register +goauthr alias, login, burst=5 exhaustion → 429 (Retry-After: 180)\n\n  Invocation 2 (after Redis flush — fresh goauth:init:ip: bucket):\n    6. rate-limiting-init — 20 warmups GET /oauth/google from 127.0.0.1 → 21st → 429 (Retry-After: 15)\n\n  Invocation 3 (after Redis flush — fresh goauth:cb:ip: bucket):\n    7. rate-limiting-cb   — 20 warmups GET /oauth/google/callback from 127.0.0.1 → 21st → 429 (Retry-After: 15)\n\nNOT covered here and why:\n  - Full callback happy path (login / register / email-match / link modes): Requires a real Google-issued\n    authorization code obtainable only through a browser OAuth flow. Covered by service_test.go T-12 to T-35\n    and store_test.go T-36 to T-38.\n  - Unlink happy path (T-39): Requires a user with a linked Google identity created via the real callback.\n    Covered by service_test.go T-39 and store_test.go T-51.\n  - last_auth_method guard (T-42, T-43): Requires a Google-only user (no password_hash). Covered by\n    service_test.go T-42 and handler_test.go T-43.\n  - oauth_access_token and refresh_token cookie flags (T-30, T-31, T-32): Covered by handler_test.go.\n  - Audit row content and DB-level metadata: Covered by store_test.go.\n  - context.WithoutCancel timing invariants (T-33, T-34, T-48): Covered by service_test.go.\n  - Individual field-level service errors: Covered by service_test.go.\n  - DB-level error injection via QuerierProxy: Covered by store_test.go.",
+    "name": "Auth – Google OAuth (GET /api/v1/oauth/google + callback + DELETE /api/v1/oauth/google)",
+    "description": "E2E tests for Google OAuth endpoints.\n\nFolder execution order (orchestrated by make e2e-oauth-google):\n\n  Invocation 1 (single Newman run — JWT token must survive across folders):\n    1. setup             — register gmail_test_email, fetch verification OTP from Gmail, verify email, login\n    2. initiate          — GET /oauth/google → 302 to Google; assert PKCE params; capture state UUID\n    3. callback-guards   — guard cases that do not require a real Google code (state/code missing or unknown)\n    4. unlink-failures   — auth failures + not_found for DELETE /oauth/google\n    5. rate-limiting-unl — register +goauthr alias, login, burst=5 exhaustion → 429 (Retry-After: 180)\n\n  Invocation 2 (after Redis flush — fresh goauth:init:ip: bucket):\n    6. rate-limiting-init — 20 warmups GET /oauth/google from 127.0.0.1 → 21st → 429 (Retry-After: 15)\n\n  Invocation 3 (after Redis flush — fresh goauth:cb:ip: bucket):\n    7. rate-limiting-cb   — 20 warmups GET /oauth/google/callback from 127.0.0.1 → 21st → 429 (Retry-After: 15)\n\nNOT covered here and why:\n  - Full callback happy path (login / register / email-match / link modes): Requires a real Google-issued\n    authorization code obtainable only through a browser OAuth flow. Covered by service_test.go T-12 to T-35\n    and store_test.go T-36 to T-38.\n  - Unlink happy path (T-39): Requires a user with a linked Google identity created via the real callback.\n    Covered by service_test.go T-39 and store_test.go T-51.\n  - last_auth_method guard (T-42, T-43): Requires a Google-only user (no password_hash). Covered by\n    service_test.go T-42 and handler_test.go T-43.\n  - oauth_access_token and refresh_token cookie flags (T-30, T-31, T-32): Covered by handler_test.go.\n  - Audit row content and DB-level metadata: Covered by store_test.go.\n  - context.WithoutCancel timing invariants (T-33, T-34, T-48): Covered by service_test.go.\n  - Individual field-level service errors: Covered by service_test.go.\n  - DB-level error injection via QuerierProxy: Covered by store_test.go.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -103,13 +103,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"GoauthSetup\", \"email\": \"{{goauth_email}}\", \"password\": \"{{goauth_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -119,7 +129,7 @@
           }
         },
         {
-          "name": "POST /verify-email → 200 (consume verification OTP)",
+          "name": "POST /verification → 200 (consume verification OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -148,18 +158,28 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{goauth_email}}\", \"code\": \"{{goauth_vfy_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -183,13 +203,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{goauth_email}}\", \"password\": \"{{goauth_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -206,7 +236,9 @@
       "item": [
         {
           "name": "GET /oauth/google (no auth) → 302 to Google",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -231,7 +263,10 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/google",
@@ -242,7 +277,9 @@
         },
         {
           "name": "GET /oauth/google (authenticated) → 302; capture state",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -274,8 +311,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{goauth_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{goauth_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/google",
@@ -292,7 +335,9 @@
       "item": [
         {
           "name": "GET /callback?error=access_denied → 302 oauth_cancelled",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -314,19 +359,29 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/google/callback?error=access_denied",
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "oauth", "google", "callback"],
-              "query": [{ "key": "error", "value": "access_denied" }]
+              "query": [
+                {
+                  "key": "error",
+                  "value": "access_denied"
+                }
+              ]
             }
           }
         },
         {
           "name": "GET /callback?code=fakecode (missing state) → 302 invalid_state",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -348,19 +403,29 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/google/callback?code=fakecode",
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "oauth", "google", "callback"],
-              "query": [{ "key": "code", "value": "fakecode" }]
+              "query": [
+                {
+                  "key": "code",
+                  "value": "fakecode"
+                }
+              ]
             }
           }
         },
         {
           "name": "GET /callback?state=00000000-0000-0000-0000-000000000000&code=fakecode → 302 invalid_state",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -382,22 +447,33 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/google/callback?state=00000000-0000-0000-0000-000000000000&code=fakecode",
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "oauth", "google", "callback"],
               "query": [
-                { "key": "state", "value": "00000000-0000-0000-0000-000000000000" },
-                { "key": "code", "value": "fakecode" }
+                {
+                  "key": "state",
+                  "value": "00000000-0000-0000-0000-000000000000"
+                },
+                {
+                  "key": "code",
+                  "value": "fakecode"
+                }
               ]
             }
           }
         },
         {
           "name": "GET /callback?state={{goauth_state_from_initiate}} (no code) → 302 invalid_state",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "prerequest",
@@ -435,13 +511,21 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/google/callback?state={{goauth_state_from_initiate}}",
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "oauth", "google", "callback"],
-              "query": [{ "key": "state", "value": "{{goauth_state_from_initiate}}" }]
+              "query": [
+                {
+                  "key": "state",
+                  "value": "{{goauth_state_from_initiate}}"
+                }
+              ]
             }
           }
         }
@@ -449,10 +533,10 @@
     },
     {
       "name": "unlink-failures",
-      "description": "Verifies that DELETE /api/v1/oauth/google/unlink correctly handles auth failures and the not_found domain error.\n\nUnlike initiate and callback, unlink returns JSON. No followRedirects override is needed.\n\nThe third request uses goauth_access_token (setup user). The setup user was registered via email+password and has no linked Google identity, so ErrIdentityNotFound is returned and the handler responds 404.\n\nNOTE: This folder consumes 1 slot of the goauth:unl:usr: bucket for the setup user's bucket.\nThe rate-limiting-unl folder uses a dedicated +goauthr alias user (goauth_rl_access_token) to guarantee a fresh burst=5 bucket.",
+      "description": "Verifies that DELETE /api/v1/oauth/google correctly handles auth failures and the not_found domain error.\n\nUnlike initiate and callback, unlink returns JSON. No followRedirects override is needed.\n\nThe third request uses goauth_access_token (setup user). The setup user was registered via email+password and has no linked Google identity, so ErrIdentityNotFound is returned and the handler responds 404.\n\nNOTE: This folder consumes 1 slot of the goauth:unl:usr: bucket for the setup user's bucket.\nThe rate-limiting-unl folder uses a dedicated +goauthr alias user (goauth_rl_access_token) to guarantee a fresh burst=5 bucket.",
       "item": [
         {
-          "name": "DELETE /unlink (no Authorization header) → 401 unauthorized",
+          "name": "DELETE /oauth/google (no Authorization header) → 401 unauthorized",
           "event": [
             {
               "listen": "test",
@@ -470,17 +554,20 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/google",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "google", "unlink"]
+              "path": ["api", "v1", "oauth", "google"]
             }
           }
         },
         {
-          "name": "DELETE /unlink (tampered token signature) → 401 unauthorized",
+          "name": "DELETE /oauth/google (tampered token signature) → 401 unauthorized",
           "event": [
             {
               "listen": "test",
@@ -502,17 +589,20 @@
                 "key": "Authorization",
                 "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/google",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "google", "unlink"]
+              "path": ["api", "v1", "oauth", "google"]
             }
           }
         },
         {
-          "name": "DELETE /unlink (valid JWT, no Google identity linked) → 404 not_found",
+          "name": "DELETE /oauth/google (valid JWT, no Google identity linked) → 404 not_found",
           "event": [
             {
               "listen": "test",
@@ -534,13 +624,19 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{goauth_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{goauth_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/google",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "google", "unlink"]
+              "path": ["api", "v1", "oauth", "google"]
             }
           }
         }
@@ -548,7 +644,7 @@
     },
     {
       "name": "rate-limiting-unl",
-      "description": "Verifies the goauth:unl:usr: user rate limiter for DELETE /unlink (burst=5, rate=5/15 min, Retry-After=180 s).\n\nWhy a dedicated user (goauth_rl_access_token):\n  The goauth:unl:usr: limiter is user-keyed. The unlink-failures folder consumed 1 slot from\n  goauth_access_token's bucket. To guarantee a fresh burst=5 bucket, this folder registers and logs\n  in as a dedicated gmail_test_email+goauthr alias user. Gmail delivers +goauthr mail to the same inbox;\n  the OTP fetch targets the alias with a to: filter.\n\nSequence:\n  rl-setup 1-3: register +goauthr alias → verify email (Gmail OTP) → login (store goauth_rl_access_token)\n  warmup 1-5:   not 429 (slots 1-5 consumed; each returns 404 not_found since the RL user has no\n                Google identity, but the rate limiter fires first so slots are consumed regardless)\n  6th request → 429 too_many_requests (bucket exhausted)\n\nRetry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
+      "description": "Verifies the goauth:unl:usr: user rate limiter for DELETE /oauth/google (burst=5, rate=5/15 min, Retry-After=180 s).\n\nWhy a dedicated user (goauth_rl_access_token):\n  The goauth:unl:usr: limiter is user-keyed. The unlink-failures folder consumed 1 slot from\n  goauth_access_token's bucket. To guarantee a fresh burst=5 bucket, this folder registers and logs\n  in as a dedicated gmail_test_email+goauthr alias user. Gmail delivers +goauthr mail to the same inbox;\n  the OTP fetch targets the alias with a to: filter.\n\nSequence:\n  rl-setup 1-3: register +goauthr alias → verify email (Gmail OTP) → login (store goauth_rl_access_token)\n  warmup 1-5:   not 429 (slots 1-5 consumed; each returns 404 not_found since the RL user has no\n                Google identity, but the rate limiter fires first so slots are consumed regardless)\n  6th request → 429 too_many_requests (bucket exhausted)\n\nRetry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
       "item": [
         {
           "name": "rl-setup 1/3 — POST /register → 201 (+goauthr alias user)",
@@ -625,13 +721,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"GoauthRL\", \"email\": \"{{goauth_rl_email}}\", \"password\": \"{{goauth_rl_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -641,7 +747,7 @@
           }
         },
         {
-          "name": "rl-setup 2/3 — POST /verify-email → 200 (+goauthr alias user)",
+          "name": "rl-setup 2/3 — POST /verification → 200 (+goauthr alias user)",
           "event": [
             {
               "listen": "prerequest",
@@ -668,18 +774,28 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{goauth_rl_email}}\", \"code\": \"{{goauth_rl_vfy_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -703,13 +819,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{goauth_rl_email}}\", \"password\": \"{{goauth_rl_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -737,13 +863,19 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{goauth_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/google",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "google", "unlink"]
+              "path": ["api", "v1", "oauth", "google"]
             }
           }
         },
@@ -763,13 +895,19 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{goauth_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/google",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "google", "unlink"]
+              "path": ["api", "v1", "oauth", "google"]
             }
           }
         },
@@ -789,13 +927,19 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{goauth_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/google",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "google", "unlink"]
+              "path": ["api", "v1", "oauth", "google"]
             }
           }
         },
@@ -815,13 +959,19 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{goauth_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/google",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "google", "unlink"]
+              "path": ["api", "v1", "oauth", "google"]
             }
           }
         },
@@ -841,13 +991,19 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{goauth_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/google",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "google", "unlink"]
+              "path": ["api", "v1", "oauth", "google"]
             }
           }
         },
@@ -875,13 +1031,19 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{goauth_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{goauth_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/google/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/google",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "google", "unlink"]
+              "path": ["api", "v1", "oauth", "google"]
             }
           }
         }
@@ -906,7 +1068,9 @@
       "item": [
         {
           "name": "warmup 1/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -923,7 +1087,12 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/google",
               "host": ["{{base_url}}"],
@@ -933,7 +1102,9 @@
         },
         {
           "name": "warmup 2/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -947,13 +1118,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 3/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -967,13 +1149,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 4/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -987,13 +1180,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 5/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1007,13 +1211,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 6/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1027,13 +1242,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 7/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1047,13 +1273,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 8/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1067,13 +1304,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 9/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1087,13 +1335,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 10/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1107,13 +1366,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 11/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1127,13 +1397,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 12/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1147,13 +1428,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 13/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1167,13 +1459,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 14/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1187,13 +1490,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 15/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1207,13 +1521,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 16/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1227,13 +1552,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 17/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1247,13 +1583,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 18/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1267,13 +1614,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 19/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1287,13 +1645,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "warmup 20/20 — consume slot (→ not 429, last allowed)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1307,13 +1676,24 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         },
         {
           "name": "21st request → 429 (goauth:init:ip: bucket exhausted)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1335,8 +1715,17 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google"]
+            }
           }
         }
       ]
@@ -1359,7 +1748,9 @@
       "item": [
         {
           "name": "warmup 1/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1376,18 +1767,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "oauth", "google", "callback"],
-              "query": [{ "key": "error", "value": "test" }]
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
             }
           }
         },
         {
           "name": "warmup 2/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1401,13 +1804,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 3/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1421,13 +1841,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 4/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1441,13 +1878,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 5/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1461,13 +1915,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 6/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1481,13 +1952,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 7/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1501,13 +1989,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 8/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1521,13 +2026,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 9/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1541,13 +2063,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 10/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1561,13 +2100,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 11/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1581,13 +2137,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 12/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1601,13 +2174,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 13/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1621,13 +2211,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 14/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1641,13 +2248,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 15/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1661,13 +2285,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 16/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1681,13 +2322,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 17/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1701,13 +2359,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 18/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1721,13 +2396,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 19/20 — consume slot (→ not 429)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1741,13 +2433,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "warmup 20/20 — consume slot (→ not 429, last allowed)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1761,13 +2470,30 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         },
         {
           "name": "21st request → 429 (goauth:cb:ip: bucket exhausted)",
-          "protocolProfileBehavior": { "followRedirects": false },
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
           "event": [
             {
               "listen": "test",
@@ -1789,8 +2515,23 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test", "host": ["{{base_url}}"], "path": ["api", "v1", "oauth", "google", "callback"], "query": [{ "key": "error", "value": "test" }] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/oauth/google/callback?error=test",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "oauth", "google", "callback"],
+              "query": [
+                {
+                  "key": "error",
+                  "value": "test"
+                }
+              ]
+            }
           }
         }
       ]

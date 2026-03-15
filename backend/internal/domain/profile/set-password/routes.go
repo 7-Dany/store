@@ -1,3 +1,4 @@
+// Package setpassword registers the POST /set-password endpoint.
 package setpassword
 
 import (
@@ -11,19 +12,16 @@ import (
 )
 
 // Routes registers the set-password endpoint on r.
-// Call from the profile domain assembler:
+// Call from profile.Routes in internal/domain/profile/routes.go:
 //
 //	setpassword.Routes(ctx, r, deps)
 //
-// Rate limit:
-//   - POST /set-password: 5 req / 15 min per authenticated user (spw:usr:)
+// Rate limits:
+//   - POST /me/password: 5 req / 15 min per user  ("spw:usr:")
 //
 // Middleware ordering:
 //
 //	JWTAuth → UserRateLimiter → handler.SetPassword
-//
-// The user rate limiter runs AFTER JWTAuth because it keys on the user ID
-// available only after token validation (see Stage 0 D-02 and Stage 4 design note).
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// 5 req / 15 min per user — limits brute-force probing of account state
 	// and prevents accidental repeated submissions.
@@ -43,6 +41,6 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 		// the request context. The UserRateLimiter reads from context, so it must
 		// come second.
 		r.Use(deps.JWTAuth)
-		r.With(setPasswordLimiter.Limit).Post("/set-password", h.SetPassword)
+		r.With(setPasswordLimiter.Limit).Post("/me/password", h.SetPassword)
 	})
 }

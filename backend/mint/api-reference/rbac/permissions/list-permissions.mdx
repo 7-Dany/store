@@ -2,7 +2,7 @@
 title: "List Permissions"
 authMethod: "bearer"
 description: "Returns all active RBAC permissions, ordered alphabetically by canonical name."
-api: "GET http://localhost:8080/api/v1/admin/permissions"
+api: "GET /rbac/permissions"
 ---
 
 <Callout icon="key" color="#FFC107">
@@ -11,7 +11,7 @@ api: "GET http://localhost:8080/api/v1/admin/permissions"
 
 ## Behaviour
 
-**Read-only catalogue** — This endpoint reflects whatever permissions are seeded in the database. It does not create, modify, or delete any permission records.
+**Read-only catalogue** — This endpoint returns the active permission catalogue. It does not create, modify, or delete any permission records.
 
 **Always returns an array** — The `permissions` key is always present in the response. An empty catalogue returns `[]` rather than `null`.
 
@@ -75,7 +75,7 @@ api: "GET http://localhost:8080/api/v1/admin/permissions"
     | Field | Type | Description |
     |---|---|---|
     | `capabilities.scope_policy` | string | `"none"` \| `"own"` \| `"all"` \| `"any"` — which scope values are valid for grants of this permission |
-    | `capabilities.access_types` | string[] | Ordered list of `access_type` values this permission allows. Always contains `"direct"` and `"denied"`. Contains `"conditional"` when `allow_conditional = true`. Contains `"request"` when `allow_request = true`. |
+    | `capabilities.access_types` | string[] | Ordered list of `access_type` values this permission allows. Always contains `"direct"` and `"denied"`. May also contain `"conditional"` and/or `"request"` depending on the permission. |
 
     **UI guidance for `scope_policy`:**
     - `"none"` — hide the scope field; it has no meaning for this permission (service normalises scope to `"all"` automatically)
@@ -103,7 +103,7 @@ api: "GET http://localhost:8080/api/v1/admin/permissions"
   </Accordion>
 
   <Accordion title="401 — Unauthorized">
-    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/login/login) and include it in the request header.
+    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/session/login) and include it in the request header.
 
     ```json
     {

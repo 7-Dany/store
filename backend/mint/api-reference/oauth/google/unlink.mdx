@@ -1,7 +1,7 @@
 ---
 title: "Unlink Google Account"
 description: "Removes the Google sign-in connection from the caller's account."
-api: "DELETE http://localhost:8080/api/v1/oauth/google/unlink"
+api: "DELETE /oauth/google"
 authMethod: "bearer"
 ---
 
@@ -109,7 +109,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="422 — Last Sign-In Method">
-    Google is the only way to access this account. Add a password via [`POST /set-password`](/api-reference/profile/set-password/set-password) or link another provider before unlinking Google.
+    Google is the only way to access this account. Add a password via [`POST /profile/me/password`](/api-reference/profile/password/set-password) or link another provider before unlinking Google.
 
     ```json
     {

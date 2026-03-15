@@ -1,3 +1,4 @@
+// Package google registers the GET /google, GET /google/callback, and DELETE /google/unlink endpoints.
 package google
 
 import (
@@ -11,28 +12,43 @@ import (
 )
 
 // Routes registers all Google OAuth endpoints on r.
-// Call from the oauth root assembler:
+// Call from oauth.Routes in internal/domain/oauth/routes.go:
 //
 //	google.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - GET    /google          (initiate) — 20 req / 5 min per IP
-//   - GET    /google/callback            — 20 req / 5 min per IP
-//   - DELETE /google/unlink              — 5 req / 15 min per authenticated user
+//   - GET    /google:          20 req / 5 min per IP    ("goauth:init:ip:")
+//   - GET    /google/callback: 20 req / 5 min per IP    ("goauth:cb:ip:")
+//   - DELETE /google:            5 req / 15 min per user  ("goauth:unl:usr:")
+//
+// Middleware ordering:
+//
+//	GET /google, /google/callback: IPRateLimiter → handler.{Method}
+//	DELETE /google:                JWTAuth → UserRateLimiter → handler.HandleUnlink
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// ── Rate limiters ─────────────────────────────────────────────────────────
+
+	// 20 req / 5 min per IP — permits rapid browser redirects and page refreshes
+	// during the OAuth flow without enabling state-store flooding from a single IP.
+	// rate = 20 / (5 * 60) ≈ 0.0667 tokens/sec.
 	initLimiter := ratelimit.NewIPRateLimiter(
 		deps.KVStore, "goauth:init:ip:",
 		20.0/(5*60), 20, 5*time.Minute,
 	)
 	go initLimiter.StartCleanup(ctx)
 
+	// 20 req / 5 min per IP — prevents callback-URL replay enumeration; matches
+	// the initiate limit so the two endpoints cannot be driven out of sync.
+	// rate = 20 / (5 * 60) ≈ 0.0667 tokens/sec.
 	cbLimiter := ratelimit.NewIPRateLimiter(
 		deps.KVStore, "goauth:cb:ip:",
 		20.0/(5*60), 20, 5*time.Minute,
 	)
 	go cbLimiter.StartCleanup(ctx)
 
+	// 5 req / 15 min per user — deters repeated unlink/relink cycling that could
+	// be used to probe account state or exhaust provider token quotas.
+	// rate = 5 / (15 * 60) ≈ 0.00556 tokens/sec.
 	unlinkLimiter := ratelimit.NewUserRateLimiter(
 		deps.KVStore, "goauth:unl:usr:",
 		5.0/(15*60), 5, 15*time.Minute,
@@ -74,6 +90,6 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// GET /google/callback — OAuth callback (IP-rate-limited; no auth required)
 	r.With(cbLimiter.Limit).Get("/google/callback", h.HandleCallback)
 
-	// DELETE /google/unlink — remove Google identity (JWT auth + user-rate-limited)
-	r.With(deps.JWTAuth, unlinkLimiter.Limit).Delete("/google/unlink", h.HandleUnlink)
+	// DELETE /google — remove Google identity (JWT auth + user-rate-limited)
+	r.With(deps.JWTAuth, unlinkLimiter.Limit).Delete("/google", h.HandleUnlink)
 }

@@ -1,3 +1,4 @@
+// Package username registers the GET /username/available and PATCH /me/username endpoints.
 package username
 
 import (
@@ -11,22 +12,18 @@ import (
 )
 
 // Routes registers the username availability and mutation endpoints on r.
-// Call from the profile domain assembler:
+// Call from profile.Routes in internal/domain/profile/routes.go:
 //
 //	username.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - GET  /username/available: 20 req / 1 min per IP  (unav:ip:)
-//   - PATCH /me/username:       5 req / 10 min per user (uchg:usr:)
+//   - GET   /me/username/available: 20 req / 1 min  per IP    ("unav:ip:")
+//   - PATCH /me/username:            5 req / 10 min per user  ("uchg:usr:")
 //
 // Middleware ordering:
 //
-//	GET  /username/available: IPRateLimiter → handler.Available
-//	PATCH /me/username:       JWTAuth → UserRateLimiter → handler.UpdateUsername
-//
-// The public availability endpoint uses an IP limiter (no user context).
-// The mutation runs the user limiter inside a JWTAuth group so it can key on the
-// authenticated user ID extracted by the JWT middleware (Stage 0 D-12).
+//	GET   /me/username/available: IPRateLimiter → handler.Available
+//	PATCH /me/username:           JWTAuth → UserRateLimiter → handler.UpdateUsername
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// 20 req / 1 min per IP — allows live frontend type-ahead without enabling
 	// bulk username enumeration. rate = 20/60 ≈ 0.333 tokens/sec.
@@ -49,7 +46,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	h := NewHandler(svc)
 
 	// Public: availability check — no JWT required.
-	r.With(availLimiter.Limit).Get("/username/available", h.Available)
+	r.With(availLimiter.Limit).Get("/me/username/available", h.Available)
 
 	// Authenticated: username mutation.
 	// JWTAuth validates the access token and injects the user ID into the

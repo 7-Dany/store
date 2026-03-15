@@ -1,7 +1,7 @@
 ---
 title: "Update Username"
 description: "Sets or replaces the authenticated user's username."
-api: "PATCH http://localhost:8080/api/v1/profile/me/username"
+api: "PATCH /profile/me/username"
 authMethod: "bearer"
 ---
 
@@ -119,7 +119,7 @@ This limit is keyed on the user ID from the access token, not the IP address. Cl
   </Accordion>
 
   <Accordion title="409 — Conflict">
-    The requested username is already registered to another account. Use [`GET /username/available`](/api-reference/profile/username/username-available) to check availability before calling this endpoint.
+    The requested username is already registered to another account. Use [`GET /profile/me/username/available`](/api-reference/profile/username/username-available) to check availability before calling this endpoint.
 
     ```json
     {

@@ -2,7 +2,7 @@
 title: "Request Unlock"
 authMethod: "none"
 description: "Sends a 6-digit unlock code to the account's email address so the owner can clear a login lockout."
-api: "POST http://localhost:8080/api/v1/auth/request-unlock"
+api: "POST /auth/unlock"
 ---
 
 <ParamField body="email" type="string" required>
@@ -20,11 +20,11 @@ An unlock code is only issued when **all** of the following are true:
 - The account is currently locked due to too many failed login or OTP attempts.
 - No unexpired unlock token is already pending for the account — a second request within the cooldown window is silently suppressed to prevent inbox flooding.
 
-This flow covers lockouts caused by repeated failed login or verification attempts. Accounts locked by an administrator require a separate process — see `PATCH /api/v1/admin/users/{id}/unlock` (planned).
+This flow covers lockouts caused by repeated failed login or verification attempts. Accounts locked by an administrator require a separate process — see [`DELETE /admin/users/{user_id}/lock`](/api-reference/admin/userlock/unlock-user).
 
 ## Rate Limiting
 
-**3 requests per 10 minutes per IP address.** This limit is shared with [`POST /confirm-unlock`](/api-reference/auth/unlock/confirm-unlock) — requests to either endpoint count against the same bucket.
+**3 requests per 10 minutes per IP address.** This limit is shared with [`PUT /auth/unlock`](/api-reference/auth/unlock/confirm-unlock) — requests to either endpoint count against the same limit.
 
 Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
 
@@ -101,7 +101,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="429 — Rate Limited">
-    The IP address has exhausted the shared `unlk:ip:` rate limit bucket (3 requests per 10 minutes, shared with `POST /confirm-unlock`). Check the `Retry-After` response header for how many seconds to wait before retrying.
+    The IP address has exceeded the shared rate limit (3 requests per 10 minutes, shared with [`PUT /auth/unlock`](/api-reference/auth/unlock/confirm-unlock)). Check the `Retry-After` response header for how many seconds to wait before retrying.
 
     ```json
     {

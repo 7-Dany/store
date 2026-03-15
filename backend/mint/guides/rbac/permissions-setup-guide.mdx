@@ -40,7 +40,7 @@ Save the `id` from the response — you'll need it in the next steps.
 
 Before assigning permissions, you need the `permission_id` for each one you want to grant. Use [`GET /admin/rbac/permissions`](/api-reference/rbac/permissions/list-permissions) to browse available permissions and note down the IDs.
 
-Each permission has a `canonical_name` (e.g. `rbac:read`, `user:manage`) that describes exactly what it controls. Use these names to identify the right permissions for your role.
+Each permission has a `canonical_name` (e.g. `rbac:read`, `user:manage`) that describes exactly what it controls. Use these names to identify the right permissions for your role. See the [Permissions reference](/api-reference/general/permissions) for the full list of canonical names, scope policies, and allowed access types.
 
 ---
 
@@ -131,7 +131,7 @@ A simple `direct` grant for a permission with `scope_policy: "none"` (no scope f
 }
 ```
 
-A `request`-type grant for `job_queue:configure`, which has `allow_request = true` and `scope_policy: "none"`:
+A `request`-type grant for `job_queue:configure`, which has `scope_policy: "none"`:
 
 ```json
 {
@@ -142,7 +142,7 @@ A `request`-type grant for `job_queue:configure`, which has `allow_request = tru
 }
 ```
 
-A `conditional` grant for `product:manage`, which has `scope_policy: "any"` and `allow_conditional = true`:
+A `conditional` grant for `product:manage`, which has `scope_policy: "any"`:
 
 ```json
 {

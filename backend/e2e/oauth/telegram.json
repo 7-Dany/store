@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "auth-oauth-telegram-e2e",
-    "name": "Auth – Telegram OAuth (POST /api/v1/oauth/telegram/callback + /link + DELETE /unlink)",
-    "description": "E2E tests for Telegram OAuth endpoints.\n\nFolder execution order (orchestrated by make e2e-oauth-telegram):\n\n  Invocation 1 (single Newman run — JWT tokens must survive across folders):\n    1. setup                — register gmail_test_email, fetch verification OTP, verify email, login → tg_access_token\n    2. callback-happy-path  — new user callback (ID 99887766) → 201 + access_token body; same ID again → 200\n    3. callback-failures    — invalid HMAC, auth_date 90 000 s old, auth_date 120 s in future, id=0, malformed JSON\n    4. validation           — POST /callback body > 1 MiB → 413; POST /link body > 1 MiB → 413\n    5. link-happy-path      — POST /link (ID 99887700) with tg_access_token → 204; verify via GET /profile/me/identities\n    6. link-failures        — already linked (409), invalid HMAC (401), expired auth_date (401), malformed JSON (400)\n    7. unlink-happy-path    — DELETE /unlink with tg_access_token → 204 (setup user has password; last-auth-method guard does not fire)\n    8. unlink-failures      — provider_not_linked (404); last_auth_method (409) using Telegram-only user from callback-happy-path\n    9. auth-failures        — POST /link no Authorization → 401; DELETE /unlink no Authorization → 401\n   10. rate-limiting-lnk   — dedicated +tgrl alias; rl-setup (register+verify+login); rl-link (ID 99887744 → 204, slot 1);\n                              warmup 2-5 (already-linked 409, slots 2-5); 6th → 429 (Retry-After: 900)\n   11. rate-limiting-unlk  — use tg_rl_access_token; warmup 1 (204, slot 1); warmup 2-5 (404, slots 2-5); 6th → 429 (Retry-After: 900)\n\n  Invocation 2 (after Redis flush — fresh tgcb:ip: bucket):\n   12. rate-limiting-cb    — 10 POST /callback with invalid HMAC from 127.0.0.1 (slots 1-10); 11th → 429 (Retry-After: 6)\n\nNOT covered here and why:\n  - Account locked → 423 (T-07): creating a locked account requires admin tooling not yet in E2E suite. Covered by handler_test.go.\n  - Account inactive → 403 (T-08): same reason. Covered by handler_test.go.\n  - Provider UID race / provider_uid_taken on new-user callback (T-10): requires concurrent requests; covered by handler_test.go.\n  - Audit row content and metadata: covered by store_test.go.\n  - context.WithoutCancel invariants: covered by service_test.go.\n  - DB-level error injection: covered by integration tests.\n  - Individual field-validation variants beyond id=0: covered by handler_test.go.\n  - Refresh token cookie HttpOnly flag: covered by handler_test.go.\n  - MintTokens failure path: covered by handler_test.go.",
+    "name": "Auth – Telegram OAuth (POST /api/v1/oauth/telegram/callback + PUT /oauth/telegram + DELETE /oauth/telegram)",
+    "description": "E2E tests for Telegram OAuth endpoints.\n\nFolder execution order (orchestrated by make e2e-oauth-telegram):\n\n  Invocation 1 (single Newman run — JWT tokens must survive across folders):\n    1. setup                — register gmail_test_email, fetch verification OTP, verify email, login → tg_access_token\n    2. callback-happy-path  — new user callback (ID 99887766) → 201 + access_token body; same ID again → 200\n    3. callback-failures    — invalid HMAC, auth_date 90 000 s old, auth_date 120 s in future, id=0, malformed JSON\n    4. validation           — POST /callback body > 1 MiB → 413; PUT /oauth/telegram body > 1 MiB → 413\n    5. link-happy-path      — PUT /oauth/telegram (ID 99887700) with tg_access_token → 204; verify via GET /profile/me/identities\n    6. link-failures        — already linked (409), invalid HMAC (401), expired auth_date (401), malformed JSON (400)\n    7. unlink-happy-path    — DELETE /oauth/telegram with tg_access_token → 204 (setup user has password; last-auth-method guard does not fire)\n    8. unlink-failures      — provider_not_linked (404); last_auth_method (409) using Telegram-only user from callback-happy-path\n    9. auth-failures        — PUT /oauth/telegram no Authorization → 401; DELETE /oauth/telegram no Authorization → 401\n   10. rate-limiting-lnk   — dedicated +tgrl alias; rl-setup (register+verify+login); rl-link (ID 99887744 → 204, slot 1);\n                              warmup 2-5 (already-linked 409, slots 2-5); 6th → 429 (Retry-After: 900)\n   11. rate-limiting-unlk  — use tg_rl_access_token; warmup 1 (204, slot 1); warmup 2-5 (404, slots 2-5); 6th → 429 (Retry-After: 900)\n\n  Invocation 2 (after Redis flush — fresh tgcb:ip: bucket):\n   12. rate-limiting-cb    — 10 POST /callback with invalid HMAC from 127.0.0.1 (slots 1-10); 11th → 429 (Retry-After: 6)\n\nNOT covered here and why:\n  - Account locked → 423 (T-07): creating a locked account requires admin tooling not yet in E2E suite. Covered by handler_test.go.\n  - Account inactive → 403 (T-08): same reason. Covered by handler_test.go.\n  - Provider UID race / provider_uid_taken on new-user callback (T-10): requires concurrent requests; covered by handler_test.go.\n  - Audit row content and metadata: covered by store_test.go.\n  - context.WithoutCancel invariants: covered by service_test.go.\n  - DB-level error injection: covered by integration tests.\n  - Individual field-validation variants beyond id=0: covered by handler_test.go.\n  - Refresh token cookie HttpOnly flag: covered by handler_test.go.\n  - MintTokens failure path: covered by handler_test.go.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -101,13 +101,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"TgSetup\", \"email\": \"{{tg_email}}\", \"password\": \"{{tg_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -117,7 +127,7 @@
           }
         },
         {
-          "name": "POST /verify-email → 200 (consume verification OTP)",
+          "name": "POST /verification → 200 (consume verification OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -146,18 +156,28 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{tg_email}}\", \"code\": \"{{tg_vfy_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -181,13 +201,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{tg_email}}\", \"password\": \"{{tg_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -247,13 +277,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_callback_id}}, \"first_name\": \"TgNewUser\", \"auth_date\": {{tg_auth_date}}, \"hash\": \"{{tg_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -299,13 +339,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_callback_id}}, \"first_name\": \"TgNewUser\", \"auth_date\": {{tg_auth_date}}, \"hash\": \"{{tg_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -339,13 +389,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 99887766, \"first_name\": \"Test\", \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -390,13 +450,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_callback_id}}, \"auth_date\": {{tg_stale_date}}, \"hash\": \"{{tg_stale_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -441,13 +511,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_callback_id}}, \"auth_date\": {{tg_future_date}}, \"hash\": \"{{tg_future_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -474,13 +554,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 0, \"auth_date\": 1700000000, \"hash\": \"invalid\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -506,13 +596,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "not-valid-json",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -525,7 +625,7 @@
     },
     {
       "name": "validation",
-      "description": "Verifies that MaxBytesReader rejects oversized request bodies with 413 for both POST /oauth/telegram/callback and POST /oauth/telegram/link.",
+      "description": "Verifies that MaxBytesReader rejects oversized request bodies with 413 for both POST /oauth/telegram/callback and PUT /oauth/telegram.",
       "item": [
         {
           "name": "POST /oauth/telegram/callback (body > 1 MiB) → 413",
@@ -554,13 +654,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"x\", \"first_name\": \"{{_large_body_pad}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -570,7 +680,7 @@
           }
         },
         {
-          "name": "POST /oauth/telegram/link (body > 1 MiB) → 413",
+          "name": "PUT /oauth/telegram (body > 1 MiB) → 413",
           "event": [
             {
               "listen": "test",
@@ -584,21 +694,34 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"x\", \"first_name\": \"{{_large_body_pad}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         }
@@ -606,10 +729,10 @@
     },
     {
       "name": "link-happy-path",
-      "description": "Links Telegram ID 99887700 to the setup user (tg_access_token). POST /link returns 204. Then GET /profile/me/identities confirms the identity row was written.",
+      "description": "Links Telegram ID 99887700 to the setup user (tg_access_token). PUT /oauth/telegram returns 204. Then GET /profile/me/identities confirms the identity row was written.",
       "item": [
         {
-          "name": "POST /oauth/telegram/link (ID 99887700) → 204 (Telegram linked to setup user)",
+          "name": "PUT /oauth/telegram (ID 99887700) → 204 (Telegram linked to setup user)",
           "event": [
             {
               "listen": "prerequest",
@@ -642,21 +765,34 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_link_id}}, \"first_name\": \"TgLinkUser\", \"auth_date\": {{tg_link_auth_date}}, \"hash\": \"{{tg_link_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
@@ -683,8 +819,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -697,10 +839,10 @@
     },
     {
       "name": "link-failures",
-      "description": "Verifies guard paths for POST /oauth/telegram/link.",
+      "description": "Verifies guard paths for PUT /oauth/telegram.",
       "item": [
         {
-          "name": "POST /oauth/telegram/link (already linked) → 409 provider_already_linked",
+          "name": "PUT /oauth/telegram (already linked) → 409 provider_already_linked",
           "event": [
             {
               "listen": "prerequest",
@@ -732,26 +874,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_link_id}}, \"auth_date\": {{tg_link_auth_date}}, \"hash\": \"{{tg_link_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "POST /oauth/telegram/link (invalid HMAC) → 401 invalid_signature",
+          "name": "PUT /oauth/telegram (invalid HMAC) → 401 invalid_signature",
           "event": [
             {
               "listen": "test",
@@ -766,26 +921,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 99887766, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "POST /oauth/telegram/link (auth_date expired) → 401 auth_date_expired",
+          "name": "PUT /oauth/telegram (auth_date expired) → 401 auth_date_expired",
           "event": [
             {
               "listen": "prerequest",
@@ -816,26 +984,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_link_id}}, \"auth_date\": {{tg_link_stale_date}}, \"hash\": \"{{tg_link_stale_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "POST /oauth/telegram/link (malformed JSON) → 400",
+          "name": "PUT /oauth/telegram (malformed JSON) → 400",
           "event": [
             {
               "listen": "test",
@@ -848,21 +1029,34 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{tg_cb_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_cb_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "not-valid-json",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         }
@@ -870,10 +1064,10 @@
     },
     {
       "name": "unlink-happy-path",
-      "description": "Verifies DELETE /oauth/telegram/unlink succeeds for the setup user (password present → last-auth-method guard does not fire). After this the setup user has no Telegram identity, exercised by provider_not_linked in unlink-failures.",
+      "description": "Verifies DELETE /oauth/telegram succeeds for the setup user (password present → last-auth-method guard does not fire). After this the setup user has no Telegram identity, exercised by provider_not_linked in unlink-failures.",
       "item": [
         {
-          "name": "DELETE /oauth/telegram/unlink → 204 (Telegram unlinked from setup user)",
+          "name": "DELETE /oauth/telegram → 204 (Telegram unlinked from setup user)",
           "event": [
             {
               "listen": "test",
@@ -891,13 +1085,19 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         }
@@ -905,10 +1105,10 @@
     },
     {
       "name": "unlink-failures",
-      "description": "Verifies guard paths for DELETE /oauth/telegram/unlink.\n\nprovider_not_linked: setup user's Telegram identity was removed by unlink-happy-path.\n\nlast_auth_method: the Telegram-only user (ID 99887766) from callback-happy-path has no password and no other auth method. Uses tg_cb_access_token.",
+      "description": "Verifies guard paths for DELETE /oauth/telegram.\n\nprovider_not_linked: setup user's Telegram identity was removed by unlink-happy-path.\n\nlast_auth_method: the Telegram-only user (ID 99887766) from callback-happy-path has no password and no other auth method. Uses tg_cb_access_token.",
       "item": [
         {
-          "name": "DELETE /oauth/telegram/unlink (no Telegram identity) → 404 provider_not_linked",
+          "name": "DELETE /oauth/telegram (no Telegram identity) → 404 provider_not_linked",
           "event": [
             {
               "listen": "test",
@@ -926,18 +1126,24 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{tg_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{tg_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "DELETE /oauth/telegram/unlink (Telegram-only user, no password) → 409 last_auth_method",
+          "name": "DELETE /oauth/telegram (Telegram-only user, no password) → 409 last_auth_method",
           "event": [
             {
               "listen": "prerequest",
@@ -972,12 +1178,15 @@
                 "key": "Authorization",
                 "value": "Bearer {{tg_cb_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         }
@@ -985,10 +1194,10 @@
     },
     {
       "name": "auth-failures",
-      "description": "Verifies that POST /oauth/telegram/link and DELETE /oauth/telegram/unlink reject requests without a valid Authorization header. Both endpoints sit inside the JWTAuth middleware group.",
+      "description": "Verifies that PUT /oauth/telegram and DELETE /oauth/telegram reject requests without a valid Authorization header. Both endpoints sit inside the JWTAuth middleware group.",
       "item": [
         {
-          "name": "POST /oauth/telegram/link (no Authorization header) → 401 missing_token",
+          "name": "PUT /oauth/telegram (no Authorization header) → 401 missing_token",
           "event": [
             {
               "listen": "test",
@@ -1003,25 +1212,35 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 99887766, \"auth_date\": 1700000000, \"hash\": \"invalid\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "DELETE /oauth/telegram/unlink (no Authorization header) → 401 missing_token",
+          "name": "DELETE /oauth/telegram (no Authorization header) → 401 missing_token",
           "event": [
             {
               "listen": "test",
@@ -1037,11 +1256,16 @@
           ],
           "request": {
             "method": "DELETE",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         }
@@ -1049,7 +1273,7 @@
     },
     {
       "name": "rate-limiting-lnk",
-      "description": "Verifies the tglnk:usr: user rate limiter for POST /oauth/telegram/link (burst=5, rate=5/15 min, Retry-After=900 s).\n\nWhy a dedicated +tgrl user: tglnk:usr: is user-keyed. link-happy-path and link-failures consumed slots from tg_access_token. To guarantee a clean bucket, this folder registers a dedicated +tgrl alias.\n\nSequence:\n  rl-setup 1-3: register +tgrl → verify email (Gmail OTP) → login → tg_rl_access_token\n  rl-link:      POST /link ID 99887744 → 204 (slot 1)\n  warmup 2-5:   POST /link same ID → 409 provider_already_linked (slots 2-5 still charged)\n  6th request → 429 (Retry-After: 900)",
+      "description": "Verifies the tglnk:usr: user rate limiter for PUT /oauth/telegram (burst=5, rate=5/15 min, Retry-After=900 s).\n\nWhy a dedicated +tgrl user: tglnk:usr: is user-keyed. link-happy-path and link-failures consumed slots from tg_access_token. To guarantee a clean bucket, this folder registers a dedicated +tgrl alias.\n\nSequence:\n  rl-setup 1-3: register +tgrl → verify email (Gmail OTP) → login → tg_rl_access_token\n  rl-link:      PUT /oauth/telegram ID 99887744 → 204 (slot 1)\n  warmup 2-5:   PUT /oauth/telegram same ID → 409 provider_already_linked (slots 2-5 still charged)\n  6th request → 429 (Retry-After: 900)",
       "item": [
         {
           "name": "rl-setup 1/3 — POST /register → 201 (+tgrl alias user)",
@@ -1122,13 +1346,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"TgRL\", \"email\": \"{{tg_rl_email}}\", \"password\": \"{{tg_rl_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -1138,7 +1372,7 @@
           }
         },
         {
-          "name": "rl-setup 2/3 — POST /verify-email → 200 (+tgrl alias user)",
+          "name": "rl-setup 2/3 — POST /verification → 200 (+tgrl alias user)",
           "event": [
             {
               "listen": "prerequest",
@@ -1165,18 +1399,28 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{tg_rl_email}}\", \"code\": \"{{tg_rl_vfy_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -1200,13 +1444,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{tg_rl_email}}\", \"password\": \"{{tg_rl_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -1216,7 +1470,7 @@
           }
         },
         {
-          "name": "rl-link — POST /oauth/telegram/link (ID 99887744) → 204 (slot 1)",
+          "name": "rl-link — PUT /oauth/telegram (ID 99887744) → 204 (slot 1)",
           "event": [
             {
               "listen": "prerequest",
@@ -1247,29 +1501,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
               {
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "warmup 2/5 — POST /oauth/telegram/link → 409 already_linked (slot 2)",
+          "name": "warmup 2/5 — PUT /oauth/telegram → 409 already_linked (slot 2)",
           "event": [
             {
               "listen": "prerequest",
@@ -1299,29 +1563,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
               {
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "warmup 3/5 — POST /oauth/telegram/link → 409 already_linked (slot 3)",
+          "name": "warmup 3/5 — PUT /oauth/telegram → 409 already_linked (slot 3)",
           "event": [
             {
               "listen": "prerequest",
@@ -1350,29 +1624,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
               {
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "warmup 4/5 — POST /oauth/telegram/link → 409 already_linked (slot 4)",
+          "name": "warmup 4/5 — PUT /oauth/telegram → 409 already_linked (slot 4)",
           "event": [
             {
               "listen": "prerequest",
@@ -1401,29 +1685,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
               {
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "warmup 5/5 — POST /oauth/telegram/link → 409 already_linked (slot 5, last allowed)",
+          "name": "warmup 5/5 — PUT /oauth/telegram → 409 already_linked (slot 5, last allowed)",
           "event": [
             {
               "listen": "prerequest",
@@ -1452,24 +1746,34 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
               {
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
@@ -1510,24 +1814,34 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
               {
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": {{tg_rl_id}}, \"auth_date\": {{tg_rl_auth_date}}, \"hash\": \"{{tg_rl_hash}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/link",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "link"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         }
@@ -1535,10 +1849,10 @@
     },
     {
       "name": "rate-limiting-unlk",
-      "description": "Verifies the tgunlk:usr: user rate limiter for DELETE /oauth/telegram/unlink (burst=5, rate=5/15 min, Retry-After=900 s).\n\nUses tg_rl_access_token. After rate-limiting-lnk, the RL user still has Telegram ID 99887744 linked.\n\nSequence:\n  warmup 1/5: DELETE /unlink → 204 (Telegram unlinked, tgunlk:usr: slot 1 consumed)\n  warmup 2-5: DELETE /unlink → 404 provider_not_linked (slots 2-5; 404 still charges the limiter)\n  6th request → 429 (Retry-After: 900)",
+      "description": "Verifies the tgunlk:usr: user rate limiter for DELETE /oauth/telegram (burst=5, rate=5/15 min, Retry-After=900 s).\n\nUses tg_rl_access_token. After rate-limiting-lnk, the RL user still has Telegram ID 99887744 linked.\n\nSequence:\n  warmup 1/5: DELETE /oauth/telegram → 204 (Telegram unlinked, tgunlk:usr: slot 1 consumed)\n  warmup 2-5: DELETE /oauth/telegram → 404 provider_not_linked (slots 2-5; 404 still charges the limiter)\n  6th request → 429 (Retry-After: 900)",
       "item": [
         {
-          "name": "warmup 1/5 — DELETE /oauth/telegram/unlink → 204 (slot 1)",
+          "name": "warmup 1/5 — DELETE /oauth/telegram → 204 (slot 1)",
           "event": [
             {
               "listen": "test",
@@ -1558,17 +1872,20 @@
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "warmup 2/5 — DELETE /oauth/telegram/unlink → 404 not_linked (slot 2)",
+          "name": "warmup 2/5 — DELETE /oauth/telegram → 404 not_linked (slot 2)",
           "event": [
             {
               "listen": "test",
@@ -1588,17 +1905,20 @@
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "warmup 3/5 — DELETE /oauth/telegram/unlink → 404 not_linked (slot 3)",
+          "name": "warmup 3/5 — DELETE /oauth/telegram → 404 not_linked (slot 3)",
           "event": [
             {
               "listen": "test",
@@ -1617,17 +1937,20 @@
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "warmup 4/5 — DELETE /oauth/telegram/unlink → 404 not_linked (slot 4)",
+          "name": "warmup 4/5 — DELETE /oauth/telegram → 404 not_linked (slot 4)",
           "event": [
             {
               "listen": "test",
@@ -1646,17 +1969,20 @@
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
         {
-          "name": "warmup 5/5 — DELETE /oauth/telegram/unlink → 404 not_linked (slot 5, last allowed)",
+          "name": "warmup 5/5 — DELETE /oauth/telegram → 404 not_linked (slot 5, last allowed)",
           "event": [
             {
               "listen": "test",
@@ -1675,12 +2001,15 @@
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         },
@@ -1711,12 +2040,15 @@
                 "key": "Authorization",
                 "value": "Bearer {{tg_rl_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/oauth/telegram/unlink",
+              "raw": "{{base_url}}/api/v1/oauth/telegram",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "oauth", "telegram", "unlink"]
+              "path": ["api", "v1", "oauth", "telegram"]
             }
           }
         }
@@ -1755,13 +2087,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -1786,13 +2128,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -1817,13 +2169,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -1848,13 +2210,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -1879,13 +2251,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -1910,13 +2292,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -1941,13 +2333,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -1972,13 +2374,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -2003,13 +2415,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -2034,13 +2456,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",
@@ -2072,13 +2504,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"id\": 1, \"auth_date\": 1700000000, \"hash\": \"0000000000000000000000000000000000000000000000000000000000000000\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/oauth/telegram/callback",

@@ -1,0 +1,54 @@
+---
+title: "Health Check"
+authMethod: "none"
+description: "Returns server status. No authentication required."
+api: "GET /health"
+---
+
+No request body or parameters needed.
+
+## Rate Limiting
+
+**3 requests per minute per IP address**.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
+
+<ResponseExample>
+```json 200
+{
+  "status": "ok"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The server is running and healthy.
+
+    ```json
+    {
+      "status": "ok"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded the rate limit of 3 requests per minute. Check the `Retry-After` response header for how many seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

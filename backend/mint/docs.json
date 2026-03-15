@@ -16,7 +16,7 @@
       "proxy": false
     },
     "mdx": {
-      "server": "http://localhost:8080",
+      "server": "http://localhost:8080/api/v1",
       "auth": {
         "method": "bearer"
       }
@@ -26,10 +26,17 @@
       "languages": ["curl", "c++", "go", "javascript", "python", "php"]
     }
   },
+  "interaction": {
+    "drilldown": false
+  },
+  "styling": {
+    "eyebrows": "breadcrumbs"
+  },
   "navigation": {
     "tabs": [
       {
         "tab": "Guides",
+        "icon": "books",
         "groups": [
           {
             "group": "Overview",
@@ -68,106 +75,243 @@
       },
       {
         "tab": "API Reference",
+        "icon": "terminal",
         "groups": [
           {
             "group": "Overview",
             "icon": "home",
-            "pages": ["api-reference/overview"]
-          },
-          {
-            "group": "Health",
-            "icon": "activity",
-            "pages": ["api-reference/health"]
+            "pages": [
+              {
+                "group": "General",
+                "icon": "list-tree",
+                "expanded": false,
+                "pages": [
+                  "api-reference/general/overview",
+                  "api-reference/general/errors",
+                  "api-reference/general/permissions",
+                  "api-reference/general/guides"
+                ]
+              },
+              {
+                "group": "Stats",
+                "icon": "chart-bar",
+                "expanded": false,
+                "pages": ["api-reference/stats/health"]
+              }
+            ]
           },
           {
             "group": "Auth",
             "icon": "lock",
             "pages": [
-              "api-reference/auth/register/register",
-              "api-reference/auth/verification/verify-email",
-              "api-reference/auth/verification/resend-verification",
-              "api-reference/auth/login/login",
-              "api-reference/auth/session/refresh",
-              "api-reference/auth/session/logout",
-              "api-reference/auth/unlock/request-unlock",
-              "api-reference/auth/unlock/confirm-unlock",
-              "api-reference/auth/password/forgot-password",
-              "api-reference/auth/password/verify-reset-code",
-              "api-reference/auth/password/reset-password",
-              "api-reference/auth/password/change-password"
+              {
+                "group": "Registration",
+                "icon": "user-plus",
+                "expanded": false,
+                "pages": ["api-reference/auth/registration/register"]
+              },
+              {
+                "group": "Session",
+                "icon": "login",
+                "expanded": false,
+                "pages": [
+                  "api-reference/auth/session/login",
+                  "api-reference/auth/session/refresh",
+                  "api-reference/auth/session/logout"
+                ]
+              },
+              {
+                "group": "Verification",
+                "icon": "mail-check",
+                "expanded": false,
+                "pages": [
+                  "api-reference/auth/verification/verify-email",
+                  "api-reference/auth/verification/resend-verification"
+                ]
+              },
+              {
+                "group": "Unlock",
+                "icon": "lock-open",
+                "expanded": false,
+                "pages": [
+                  "api-reference/auth/unlock/request-unlock",
+                  "api-reference/auth/unlock/confirm-unlock"
+                ]
+              },
+              {
+                "group": "Password",
+                "icon": "key",
+                "expanded": false,
+                "pages": [
+                  "api-reference/auth/password/forgot-password",
+                  "api-reference/auth/password/verify-reset-code",
+                  "api-reference/auth/password/reset-password",
+                  "api-reference/auth/password/change-password"
+                ]
+              }
             ]
           },
           {
-            "group": "Google OAuth",
-            "icon": "brand-google",
+            "group": "OAuth",
+            "icon": "login-2",
             "pages": [
-              "api-reference/oauth/google/initiate",
-              "api-reference/oauth/google/callback",
-              "api-reference/oauth/google/unlink"
-            ]
-          },
-          {
-            "group": "Telegram OAuth",
-            "icon": "brand-telegram",
-            "pages": [
-              "api-reference/oauth/telegram/callback",
-              "api-reference/oauth/telegram/link",
-              "api-reference/oauth/telegram/unlink"
+              {
+                "group": "Google",
+                "icon": "brand-google",
+                "expanded": false,
+                "pages": [
+                  "api-reference/oauth/google/initiate",
+                  "api-reference/oauth/google/callback",
+                  "api-reference/oauth/google/unlink"
+                ]
+              },
+              {
+                "group": "Telegram",
+                "icon": "brand-telegram",
+                "expanded": false,
+                "pages": [
+                  "api-reference/oauth/telegram/callback",
+                  "api-reference/oauth/telegram/link",
+                  "api-reference/oauth/telegram/unlink"
+                ]
+              }
             ]
           },
           {
             "group": "RBAC",
             "icon": "shield-half",
             "pages": [
-              "api-reference/rbac/owner/assign-owner",
-              "api-reference/rbac/owner/initiate-transfer",
-              "api-reference/rbac/owner/accept-transfer",
-              "api-reference/rbac/owner/cancel-transfer",
-              "api-reference/rbac/permissions/list-permissions",
-              "api-reference/rbac/permissions/list-permission-groups",
-              "api-reference/rbac/roles/list-roles",
-              "api-reference/rbac/roles/get-role",
-              "api-reference/rbac/roles/create-role",
-              "api-reference/rbac/roles/update-role",
-              "api-reference/rbac/roles/delete-role",
-              "api-reference/rbac/roles/list-role-permissions",
-              "api-reference/rbac/roles/add-role-permission",
-              "api-reference/rbac/roles/remove-role-permission"
+              {
+                "group": "Owner",
+                "icon": "crown",
+                "expanded": false,
+                "pages": [
+                  "api-reference/rbac/owner/assign-owner",
+                  "api-reference/rbac/owner/initiate-transfer",
+                  "api-reference/rbac/owner/accept-transfer",
+                  "api-reference/rbac/owner/cancel-transfer"
+                ]
+              },
+              {
+                "group": "Permissions",
+                "icon": "list-check",
+                "expanded": false,
+                "pages": [
+                  "api-reference/rbac/permissions/list-permissions",
+                  "api-reference/rbac/permissions/permission-groups"
+                ]
+              },
+              {
+                "group": "Roles",
+                "icon": "id-badge",
+                "expanded": false,
+                "pages": [
+                  "api-reference/rbac/roles/list-roles",
+                  "api-reference/rbac/roles/get-role",
+                  "api-reference/rbac/roles/create-role",
+                  "api-reference/rbac/roles/update-role",
+                  "api-reference/rbac/roles/delete-role",
+                  "api-reference/rbac/roles/list-role-permissions",
+                  "api-reference/rbac/roles/add-role-permission",
+                  "api-reference/rbac/roles/remove-role-permission"
+                ]
+              }
             ]
           },
           {
-            "group": "User Management",
-            "icon": "users",
+            "group": "Admin",
+            "icon": "shield-lock",
             "pages": [
-              "api-reference/rbac/user-roles/get-user-role",
-              "api-reference/rbac/user-roles/assign-role",
-              "api-reference/rbac/user-roles/remove-role",
-              "api-reference/rbac/user-permissions/list-user-permissions",
-              "api-reference/rbac/user-permissions/grant-user-permission",
-              "api-reference/rbac/user-permissions/revoke-user-permission",
-              "api-reference/rbac/userlock/get-lock-status",
-              "api-reference/rbac/userlock/lock-user",
-              "api-reference/rbac/userlock/unlock-user"
+              {
+                "group": "User Roles",
+                "icon": "id-badge",
+                "expanded": false,
+                "pages": [
+                  "api-reference/admin/user-roles/get-user-role",
+                  "api-reference/admin/user-roles/assign-role",
+                  "api-reference/admin/user-roles/remove-role"
+                ]
+              },
+              {
+                "group": "User Permissions",
+                "icon": "list-check",
+                "expanded": false,
+                "pages": [
+                  "api-reference/admin/user-permissions/list-user-permissions",
+                  "api-reference/admin/user-permissions/grant-user-permission",
+                  "api-reference/admin/user-permissions/revoke-user-permission"
+                ]
+              },
+              {
+                "group": "User Lock",
+                "icon": "lock",
+                "expanded": false,
+                "pages": [
+                  "api-reference/admin/userlock/get-lock-status",
+                  "api-reference/admin/userlock/lock-user",
+                  "api-reference/admin/userlock/unlock-user"
+                ]
+              }
             ]
           },
           {
             "group": "Profile",
             "icon": "user-circle",
             "pages": [
-              "api-reference/profile/me/me",
-              "api-reference/profile/me/update-profile",
-              "api-reference/profile/me/identities",
-              "api-reference/profile/session/sessions",
-              "api-reference/profile/session/revoke-session",
-              "api-reference/profile/username/update-username",
-              "api-reference/profile/username/username-available",
-              "api-reference/profile/email/request-change",
-              "api-reference/profile/email/verify-current",
-              "api-reference/profile/email/confirm-change",
-              "api-reference/profile/set-password/set-password",
-              "api-reference/profile/delete-account/deletion-method",
-              "api-reference/profile/delete-account/delete-account",
-              "api-reference/profile/delete-account/cancel-deletion"
+              {
+                "group": "Account",
+                "icon": "user",
+                "expanded": false,
+                "pages": [
+                  "api-reference/profile/account/me",
+                  "api-reference/profile/account/update-profile",
+                  "api-reference/profile/account/identities"
+                ]
+              },
+              {
+                "group": "Sessions",
+                "icon": "devices",
+                "expanded": false,
+                "pages": [
+                  "api-reference/profile/session/sessions",
+                  "api-reference/profile/session/revoke-session"
+                ]
+              },
+              {
+                "group": "Username",
+                "icon": "at",
+                "expanded": false,
+                "pages": [
+                  "api-reference/profile/username/update-username",
+                  "api-reference/profile/username/username-available"
+                ]
+              },
+              {
+                "group": "Email",
+                "icon": "mail",
+                "expanded": false,
+                "pages": [
+                  "api-reference/profile/email/request-change",
+                  "api-reference/profile/email/verify-current",
+                  "api-reference/profile/email/confirm-change"
+                ]
+              },
+              {
+                "group": "Password",
+                "icon": "key",
+                "expanded": false,
+                "pages": ["api-reference/profile/password/set-password"]
+              },
+              {
+                "group": "Deletion",
+                "icon": "trash",
+                "expanded": false,
+                "pages": [
+                  "api-reference/profile/deletion/deletion-method",
+                  "api-reference/profile/deletion/delete-account",
+                  "api-reference/profile/deletion/cancel-deletion"
+                ]
+              }
             ]
           }
         ]

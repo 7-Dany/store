@@ -1,7 +1,7 @@
 ---
 title: "Remove Permission"
 description: "Removes a permission grant from a role."
-api: "DELETE http://localhost:8080/admin/rbac/roles/{id}/permissions/{perm_id}"
+api: "DELETE /rbac/roles/{id}/permissions/{perm_id}"
 ---
 
 <ParamField path="id" type="string" required>
@@ -23,7 +23,7 @@ Removes the specific permission grant from the role. If the role or permission g
 <RequestExample>
 ```bash Example
 curl -X DELETE \
-  http://localhost:8080/admin/rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c/permissions/019a1b2c-3d4e-5f60-a7b8-c9d0e1f2a3b4 \
+  /rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c/permissions/019a1b2c-3d4e-5f60-a7b8-c9d0e1f2a3b4 \
   -H "Authorization: Bearer <token>"
 ```
 </RequestExample>

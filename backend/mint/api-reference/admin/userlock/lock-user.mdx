@@ -1,0 +1,152 @@
+---
+title: "Lock User"
+description: "Admin-locks a user account, preventing them from logging in."
+api: "POST /admin/users/{user_id}/lock"
+---
+
+<ParamField path="user_id" type="string" required>
+  The UUID of the user to lock.
+</ParamField>
+
+<ParamField body="reason" type="string" required>
+  A business justification for the lock action. Required for accountability.
+
+  <Expandable title="requirements">
+    - Cannot be empty or whitespace
+  </Expandable>
+</ParamField>
+
+<Callout icon="key" color="#FFC107">
+  Requires the **`user:lock`** permission.
+</Callout>
+
+## Behaviour
+
+Admin-locks the target user account, recording who performed the action, the reason, and when. A locked account cannot authenticate — login attempts are rejected with a `423 Account Locked` response until an admin explicitly unlocks the account via [`DELETE /admin/users/{user_id}/lock`](/api-reference/admin/userlock/unlock-user).
+
+**Self-locking is not allowed.** You cannot lock your own account.
+
+**Owner accounts cannot be locked.** If the target user holds the owner role, the request is rejected regardless of the acting user's permissions.
+
+<RequestExample>
+```json Example
+{
+  "reason": "Suspended pending fraud investigation."
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+// No response body — the account was successfully locked.
+```
+
+```json 409
+{
+  "code": "cannot_lock_self",
+  "message": "you cannot lock your own account"
+}
+```
+
+```json 422
+{
+  "code": "reason_required",
+  "message": "reason is required"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "missing or invalid access token"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "forbidden"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The user account was successfully locked. No response body is returned.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `user:lock` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    The target user does not exist or has been deleted.
+
+    ```json
+    {
+      "code": "user_not_found",
+      "message": "user not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    Returned in two cases: attempting to lock your own account, or attempting to lock a user who holds the owner role.
+
+    ```json
+    {
+      "code": "cannot_lock_self",
+      "message": "you cannot lock your own account"
+    }
+    ```
+
+    ```json
+    {
+      "code": "cannot_lock_owner",
+      "message": "owner accounts cannot be admin-locked"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="422 — Validation Error">
+    The `reason` field is missing or blank.
+
+    ```json
+    {
+      "code": "reason_required",
+      "message": "reason is required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

@@ -2,7 +2,7 @@
 title: "Assign Owner"
 authMethod: "bearer"
 description: "Bootstrap endpoint that grants the owner role to the authenticated caller by presenting the server bootstrap secret. Succeeds only when no active owner exists. This is a one-time operation — once an owner is assigned all subsequent calls return 409."
-api: "POST http://localhost:8080/api/v1/owner/assign"
+api: "PUT /rbac/owner/assign"
 ---
 
 <ParamField body="secret" type="string" required>
@@ -11,13 +11,13 @@ api: "POST http://localhost:8080/api/v1/owner/assign"
 
 ## Behaviour
 
-**JWT required** — The caller must supply a valid `Authorization: Bearer` access token. The JWT sub claim determines which user receives the owner role.
+**JWT required** — The caller must supply a valid `Authorization: Bearer` access token. The authenticated user receives the owner role.
 
 **Secret guard** — An incorrect secret returns `403 forbidden`. The response does not reveal whether an owner already exists.
 
 **Single-owner invariant** — If an active owner already exists, the endpoint returns `409 owner_already_exists`.
 
-**One-time path** — This endpoint is intended solely for the initial system bootstrap. Once an owner has been assigned, use the transfer flow ([`POST /owner/transfer`](/api-reference/rbac/owner/initiate-transfer)) to change ownership.
+**One-time path** — This endpoint is intended solely for the initial system bootstrap. Once an owner has been assigned, use the transfer flow ([`POST /rbac/owner/transfer`](/api-reference/rbac/owner/initiate-transfer)) to change ownership.
 
 **Caller eligibility** — The authenticated user must be active and email-verified. An inactive or unverified account returns `422`.
 
@@ -107,7 +107,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="401 — Unauthorized">
-    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/login/login) and include it in the request header.
+    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/session/login) and include it in the request header.
 
     ```json
     {

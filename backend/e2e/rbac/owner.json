@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "rbac-owner-e2e",
-    "name": "RBAC – Owner (POST /api/v1/owner/assign + transfer routes)",
-    "description": "E2E tests for the owner domain: POST /assign, POST /transfer, POST /transfer/accept, DELETE /transfer.\n\nFolder execution order (orchestrated by make e2e-rbac-owner):\n  1.  setup                    — register two users (owner + +xfrtgt target), verify both via Gmail OTP, login both\n  2.  auth-guard               — 401 without Authorization header (JWT guard; assign / initiate / cancel)\n  3.  validation-assign        — 422/400/413 input errors for POST /assign\n  4.  secret-guard             — 403 wrong secret for POST /assign\n  5.  assign-happy-path        — 201 POST /assign (User A becomes owner)\n  6.  owner-already-exists     — 409 repeat POST /assign\n  7.  rbac-guard               — 403 POST /transfer + DELETE /transfer when caller is not owner\n  8.  validation-transfer      — 422/400 input errors for POST /transfer\n  9.  transfer-errors          — 404 unknown target + 409 self-transfer\n  10. transfer-initiate        — 201 POST /transfer (User A → User B, captures transfer_id)\n  11. transfer-already-pending — 409 second POST /transfer while one is active\n  12. validation-accept        — 422/400 input errors for POST /transfer/accept\n  13. accept-invalid           — 410 POST /transfer/accept with bogus token (pending still alive)\n  14. transfer-cancel          — 204 DELETE /transfer\n  15. cancel-not-found         — 404 DELETE /transfer (nothing pending)\n  16. rate-limiting-assign     — asgn:ip: burst=3 → 4th → 429 (Retry-After: 300 s)\n  17. rate-limiting-transfer   — xfr:usr: 1 slot left after main flow → 2nd → 429 (Retry-After: 28800 s)\n  18. rate-limiting-accept     — xfra:ip: burst=10 → 11th → 429 (Retry-After: 360 s)\n  19. rate-limiting-cancel     — xfrc:usr: 8 slots left after main flow → 9th → 429 (Retry-After: 360 s)\n\nRoutes (from routes.go):\n  POST   /api/v1/owner/assign           — secret-gated initial owner assignment (JWT required)\n  POST   /api/v1/owner/transfer         — initiate ownership transfer (JWT + owner role)\n  POST   /api/v1/owner/transfer/accept  — accept transfer (no JWT; raw token is credential)\n  DELETE /api/v1/owner/transfer         — cancel pending transfer (JWT + owner role)\n\nRate limits:\n  asgn:ip:  — burst=3, rate=3/15 min per IP      → Retry-After: 300 s   (JWT-gated)\n  xfr:usr:  — burst=3, rate=3/24 h per user      → Retry-After: 28800 s (JWT-gated)\n  xfra:ip:  — burst=10, rate=10/1 h per IP       → Retry-After: 360 s   (no JWT)\n  xfrc:usr: — burst=10, rate=10/1 h per user     → Retry-After: 360 s   (JWT-gated)\n\nRate-limit accounting (all run in ONE newman invocation; Redis flushed before the run):\n  xfr:usr: consumed before rate-limiting-transfer: transfer-initiate(1) + transfer-already-pending(1) = 2; 1 remaining\n  xfrc:usr: consumed before rate-limiting-cancel:  transfer-cancel(1)   + cancel-not-found(1)          = 2; 8 remaining\n  asgn:ip: and xfra:ip: use unique X-Forwarded-For IPs for all non-RL folders (collection prerequest);\n  the 127.0.0.1 bucket is untouched until the matching RL folder overrides _xff.\n\nEnvironment variables required:\n  bootstrap_secret   — must match BOOTSTRAP_SECRET in .env\n  gmail_test_email   — Gmail address (owner user A); +xfrtgt alias is derived for User B\n  gmail_access_token — OAuth2 token for Gmail API reads\n  app_name           — matches APP_NAME in .env\n\nNotes on what is NOT covered here (covered by internal tests):\n  - accept happy path with real token  — raw token only arrives in User B's email; covered by store_test.go + service_test.go\n  - user_not_found for assign          — a valid JWT cannot be issued for a non-existent user\n  - user_not_active / not_verified for assign / transfer target — cannot create these states black-box and log in\n  - DB failures → 500                  — service_test.go\n  - All error responses carry code + JSON CT — handler_test.go",
+    "name": "RBAC \u2013 Owner (PUT /api/v1/rbac/owner/assign + transfer routes)",
+    "description": "E2E tests for the owner domain: PUT /assign, POST /transfer, PUT /transfer (accept), DELETE /transfer.\n\nFolder execution order (orchestrated by make e2e-rbac-owner):\n  1.  setup                    \u2014 register two users (owner + +xfrtgt target), verify both via Gmail OTP, login both\n  2.  auth-guard               \u2014 401 without Authorization header (JWT guard; assign / initiate / cancel)\n  3.  validation-assign        \u2014 422/400/413 input errors for PUT /assign\n  4.  secret-guard             \u2014 403 wrong secret for PUT /assign\n  5.  assign-happy-path        \u2014 201 PUT /assign (User A becomes owner)\n  6.  owner-already-exists     \u2014 409 repeat PUT /assign\n  7.  rbac-guard               \u2014 403 POST /transfer + DELETE /transfer when caller is not owner\n  8.  validation-transfer      \u2014 422/400 input errors for POST /transfer\n  9.  transfer-errors          \u2014 404 unknown target + 409 self-transfer\n  10. transfer-initiate        \u2014 201 POST /transfer (User A \u2192 User B, captures transfer_id)\n  11. transfer-already-pending \u2014 409 second POST /transfer while one is active\n  12. validation-accept        \u2014 422/400 input errors for PUT /rbac/owner/transfer (accept)\n  13. accept-invalid           \u2014 410 PUT /rbac/owner/transfer (accept) with bogus token (pending still alive)\n  14. transfer-cancel          \u2014 204 DELETE /transfer\n  15. cancel-not-found         \u2014 404 DELETE /transfer (nothing pending)\n  16. rate-limiting-assign     \u2014 asgn:ip: burst=3 \u2192 4th \u2192 429 (Retry-After: 300 s)\n  17. rate-limiting-transfer   \u2014 xfr:usr: 1 slot left after main flow \u2192 2nd \u2192 429 (Retry-After: 28800 s)\n  18. rate-limiting-accept     \u2014 xfra:ip: burst=10 \u2192 11th \u2192 429 (Retry-After: 360 s)\n  19. rate-limiting-cancel     \u2014 xfrc:usr: 8 slots left after main flow \u2192 9th \u2192 429 (Retry-After: 360 s)\n\nRoutes (from routes.go):\n  POST   /api/v1/rbac/owner/assign           \u2014 secret-gated initial owner assignment (JWT required)\n  POST   /api/v1/rbac/owner/transfer         \u2014 initiate ownership transfer (JWT + owner role)\n  POST   /api/v1/rbac/owner/transfer  \u2014 accept transfer (no JWT; raw token is credential)\n  DELETE /api/v1/rbac/owner/transfer         \u2014 cancel pending transfer (JWT + owner role)\n\nRate limits:\n  asgn:ip:  \u2014 burst=3, rate=3/15 min per IP      \u2192 Retry-After: 300 s   (JWT-gated)\n  xfr:usr:  \u2014 burst=3, rate=3/24 h per user      \u2192 Retry-After: 28800 s (JWT-gated)\n  xfra:ip:  \u2014 burst=10, rate=10/1 h per IP       \u2192 Retry-After: 360 s   (no JWT)\n  xfrc:usr: \u2014 burst=10, rate=10/1 h per user     \u2192 Retry-After: 360 s   (JWT-gated)\n\nRate-limit accounting (all run in ONE newman invocation; Redis flushed before the run):\n  xfr:usr: consumed before rate-limiting-transfer: transfer-initiate(1) + transfer-already-pending(1) = 2; 1 remaining\n  xfrc:usr: consumed before rate-limiting-cancel:  transfer-cancel(1)   + cancel-not-found(1)          = 2; 8 remaining\n  asgn:ip: and xfra:ip: use unique X-Forwarded-For IPs for all non-RL folders (collection prerequest);\n  the 127.0.0.1 bucket is untouched until the matching RL folder overrides _xff.\n\nEnvironment variables required:\n  bootstrap_secret   \u2014 must match BOOTSTRAP_SECRET in .env\n  gmail_test_email   \u2014 Gmail address (owner user A); +xfrtgt alias is derived for User B\n  gmail_access_token \u2014 OAuth2 token for Gmail API reads\n  app_name           \u2014 matches APP_NAME in .env\n\nNotes on what is NOT covered here (covered by internal tests):\n  - accept happy path with real token  \u2014 raw token only arrives in User B's email; covered by store_test.go + service_test.go\n  - user_not_found for assign          \u2014 a valid JWT cannot be issued for a non-existent user\n  - user_not_active / not_verified for assign / transfer target \u2014 cannot create these states black-box and log in\n  - DB failures \u2192 500                  \u2014 service_test.go\n  - All error responses carry code + JSON CT \u2014 handler_test.go",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -25,10 +25,10 @@
   "item": [
     {
       "name": "setup",
-      "description": "Registers User A (gmail_test_email → owner candidate) and User B (gmail_test_email+xfrtgt → transfer target), fetches OTPs from Gmail, verifies both accounts, logs both in, and captures tokens + IDs.",
+      "description": "Registers User A (gmail_test_email \u2192 owner candidate) and User B (gmail_test_email+xfrtgt \u2192 transfer target), fetches OTPs from Gmail, verifies both accounts, logs both in, and captures tokens + IDs.",
       "item": [
         {
-          "name": "POST /register → 201 (User A — owner candidate)",
+          "name": "POST /register \u2192 201 (User A \u2014 owner candidate)",
           "event": [
             {
               "listen": "prerequest",
@@ -51,7 +51,7 @@
                   "pm.test('message field present', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
                   "",
                   "const token = pm.variables.get('gmail_access_token');",
-                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
                   "",
                   "console.log('[INFO] Waiting 8 s for User A verification email...');",
                   "const start = Date.now(); while (Date.now() - start < 8000) {}",
@@ -63,7 +63,7 @@
                   "    method: 'GET', header: { Authorization: 'Bearer ' + token }",
                   "}, (err, res) => {",
                   "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
-                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired \u2014 refresh at https://developers.google.com/oauthplayground'); return; }",
                   "    const msgs = res.json().messages;",
                   "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email for User A.'); return; }",
                   "    pm.sendRequest({",
@@ -94,13 +94,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"OwnerUser\", \"email\": \"{{own_email}}\", \"password\": \"{{own_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -110,7 +120,7 @@
           }
         },
         {
-          "name": "POST /verify-email → 200 (User A)",
+          "name": "POST /verification \u2192 200 (User A)",
           "event": [
             {
               "listen": "prerequest",
@@ -118,7 +128,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "const code = pm.collectionVariables.get('own_code');",
-                  "if (!code) { console.error('[ERROR] own_code not set — User A Gmail fetch did not complete.'); }"
+                  "if (!code) { console.error('[ERROR] own_code not set \u2014 User A Gmail fetch did not complete.'); }"
                 ]
               }
             },
@@ -136,23 +146,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{own_email}}\", \"code\": \"{{own_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
         {
-          "name": "POST /login → 200 (User A — capture own_access_token)",
+          "name": "POST /login \u2192 200 (User A \u2014 capture own_access_token)",
           "event": [
             {
               "listen": "test",
@@ -170,13 +190,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{own_email}}\", \"password\": \"{{own_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -186,7 +216,7 @@
           }
         },
         {
-          "name": "GET /me → 200 (User A — capture own_id)",
+          "name": "GET /me \u2192 200 (User A \u2014 capture own_id)",
           "event": [
             {
               "listen": "test",
@@ -205,8 +235,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -216,7 +252,7 @@
           }
         },
         {
-          "name": "POST /register → 201 (User B — transfer target, +xfrtgt alias)",
+          "name": "POST /register \u2192 201 (User B \u2014 transfer target, +xfrtgt alias)",
           "event": [
             {
               "listen": "prerequest",
@@ -239,7 +275,7 @@
                   "pm.test('status is 201', () => pm.response.to.have.status(201));",
                   "",
                   "const token = pm.variables.get('gmail_access_token');",
-                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping User B Gmail fetch'); return; }",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping User B Gmail fetch'); return; }",
                   "",
                   "console.log('[INFO] Waiting 8 s for User B verification email...');",
                   "const start = Date.now(); while (Date.now() - start < 8000) {}",
@@ -282,13 +318,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"TransferTarget\", \"email\": \"{{own_target_email}}\", \"password\": \"{{own_target_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -298,7 +344,7 @@
           }
         },
         {
-          "name": "POST /verify-email → 200 (User B)",
+          "name": "POST /verification \u2192 200 (User B)",
           "event": [
             {
               "listen": "prerequest",
@@ -306,7 +352,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "const code = pm.collectionVariables.get('own_target_code');",
-                  "if (!code) { console.error('[ERROR] own_target_code not set — User B Gmail fetch did not complete.'); }"
+                  "if (!code) { console.error('[ERROR] own_target_code not set \u2014 User B Gmail fetch did not complete.'); }"
                 ]
               }
             },
@@ -324,23 +370,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{own_target_email}}\", \"code\": \"{{own_target_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
         {
-          "name": "POST /login → 200 (User B — capture own_target_access_token)",
+          "name": "POST /login \u2192 200 (User B \u2014 capture own_target_access_token)",
           "event": [
             {
               "listen": "test",
@@ -358,13 +414,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{own_target_email}}\", \"password\": \"{{own_target_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -374,7 +440,7 @@
           }
         },
         {
-          "name": "GET /me → 200 (User B — capture own_target_id)",
+          "name": "GET /me \u2192 200 (User B \u2014 capture own_target_id)",
           "event": [
             {
               "listen": "test",
@@ -393,8 +459,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{own_target_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_target_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -407,10 +479,52 @@
     },
     {
       "name": "auth-guard",
-      "description": "JWT middleware rejects requests without an Authorization header before any body or service logic is reached. Tests all three JWT-gated routes. Accept (/transfer/accept) is excluded — it has no JWT guard.",
+      "description": "JWT middleware rejects requests without an Authorization header before any body or service logic is reached. Tests all three JWT-gated routes. Accept (/rbac/owner/transfer) is excluded \u2014 it has no JWT guard.",
       "item": [
         {
-          "name": "POST /assign — no Authorization header → 401",
+          "name": "POST /assign \u2014 no Authorization header \u2192 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"{{bootstrap_secret}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
+          }
+        },
+        {
+          "name": "POST /transfer \u2014 no Authorization header \u2192 401",
           "event": [
             {
               "listen": "test",
@@ -426,39 +540,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": { "mode": "raw", "raw": "{\"secret\": \"{{bootstrap_secret}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
-          }
-        },
-        {
-          "name": "POST /transfer — no Authorization header → 401",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
-                  "pm.test('code is missing_token', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
-                ]
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
               }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
             ],
-            "body": { "mode": "raw", "raw": "{\"target_user_id\": \"00000000-0000-0000-0000-000000000000\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"target_user_id\": \"00000000-0000-0000-0000-000000000000\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         },
         {
-          "name": "DELETE /transfer — no Authorization header → 401",
+          "name": "DELETE /transfer \u2014 no Authorization header \u2192 401",
           "event": [
             {
               "listen": "test",
@@ -473,8 +581,17 @@
           ],
           "request": {
             "method": "DELETE",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
@@ -484,7 +601,7 @@
       "description": "Body decode and secret validation for POST /assign. All requests carry a valid JWT. Fires after auth but before the secret comparison and service call.",
       "item": [
         {
-          "name": "malformed JSON → 400",
+          "name": "malformed JSON \u2192 400",
           "event": [
             {
               "listen": "test",
@@ -498,18 +615,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{bad json", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
           }
         },
         {
-          "name": "empty body {} → 422 (secret absent)",
+          "name": "empty body {} \u2192 422 (secret absent)",
           "event": [
             {
               "listen": "test",
@@ -523,18 +661,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
           }
         },
         {
-          "name": "missing secret field → 422",
+          "name": "missing secret field \u2192 422",
           "event": [
             {
               "listen": "test",
@@ -548,18 +707,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"not_secret\": \"something\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"not_secret\": \"something\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
           }
         },
         {
-          "name": "empty secret → 422",
+          "name": "empty secret \u2192 422",
           "event": [
             {
               "listen": "test",
@@ -573,18 +753,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"secret\": \"\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
           }
         },
         {
-          "name": "whitespace-only secret → 422 (trimmed to empty)",
+          "name": "whitespace-only secret \u2192 422 (trimmed to empty)",
           "event": [
             {
               "listen": "test",
@@ -598,18 +799,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"secret\": \"   \"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"   \"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
           }
         },
         {
-          "name": "body > 1 MiB → 413",
+          "name": "body > 1 MiB \u2192 413",
           "event": [
             {
               "listen": "prerequest",
@@ -632,24 +854,45 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
           }
         }
       ]
     },
     {
       "name": "secret-guard",
-      "description": "Constant-time secret comparison. Valid JWT, well-formed body, wrong secret → 403. Fires before service or DB call.",
+      "description": "Constant-time secret comparison. Valid JWT, well-formed body, wrong secret \u2192 403. Fires before service or DB call.",
       "item": [
         {
-          "name": "wrong secret → 403 forbidden",
+          "name": "wrong secret \u2192 403 forbidden",
           "event": [
             {
               "listen": "test",
@@ -668,24 +911,45 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"secret\": \"this-is-the-wrong-secret\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"this-is-the-wrong-secret\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
           }
         }
       ]
     },
     {
       "name": "assign-happy-path",
-      "description": "Valid JWT + correct secret → 201. User A becomes the owner. Consumes the one-time slot.",
+      "description": "Valid JWT + correct secret \u2192 201. User A becomes the owner. Consumes the one-time slot.",
       "item": [
         {
-          "name": "POST /assign valid JWT + correct secret → 201",
+          "name": "POST /assign valid JWT + correct secret \u2192 201",
           "event": [
             {
               "listen": "test",
@@ -709,24 +973,45 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"secret\": \"{{bootstrap_secret}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"{{bootstrap_secret}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
           }
         }
       ]
     },
     {
       "name": "owner-already-exists",
-      "description": "Single-owner invariant: CountActiveOwners > 0 → 409 before any user lookup. Requires valid JWT + correct secret to reach the service layer.",
+      "description": "Single-owner invariant: CountActiveOwners > 0 \u2192 409 before any user lookup. Requires valid JWT + correct secret to reach the service layer.",
       "item": [
         {
-          "name": "same user, same secret → 409 owner_already_exists",
+          "name": "same user, same secret \u2192 409 owner_already_exists",
           "event": [
             {
               "listen": "test",
@@ -745,18 +1030,39 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"secret\": \"{{bootstrap_secret}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"{{bootstrap_secret}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
           }
         },
         {
-          "name": "repeated call → 409 (owner guard fires before secret comparison)",
+          "name": "repeated call \u2192 409 (owner guard fires before secret comparison)",
           "event": [
             {
               "listen": "test",
@@ -770,24 +1076,45 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"secret\": \"{{bootstrap_secret}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"{{bootstrap_secret}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
           }
         }
       ]
     },
     {
       "name": "rbac-guard",
-      "description": "User B is not the owner — POST /transfer and DELETE /transfer must return 403. Uses own_target_access_token.",
+      "description": "User B is not the owner \u2014 POST /transfer and DELETE /transfer must return 403. Uses own_target_access_token.",
       "item": [
         {
-          "name": "POST /transfer — non-owner JWT → 403 forbidden",
+          "name": "POST /transfer \u2014 non-owner JWT \u2192 403 forbidden",
           "event": [
             {
               "listen": "test",
@@ -803,16 +1130,37 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_target_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_target_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"target_user_id\": \"{{own_id}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"target_user_id\": \"{{own_id}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         },
         {
-          "name": "DELETE /transfer — non-owner JWT → 403 forbidden",
+          "name": "DELETE /transfer \u2014 non-owner JWT \u2192 403 forbidden",
           "event": [
             {
               "listen": "test",
@@ -828,10 +1176,20 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{own_target_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_target_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
@@ -841,7 +1199,7 @@
       "description": "Body decode and target_user_id validation for POST /transfer. All requests use the owner JWT. Fires after auth + RBAC guard but before service.",
       "item": [
         {
-          "name": "malformed JSON → 400",
+          "name": "malformed JSON \u2192 400",
           "event": [
             {
               "listen": "test",
@@ -857,16 +1215,37 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{bad json", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         },
         {
-          "name": "empty body {} → 422 (target_user_id absent)",
+          "name": "empty body {} \u2192 422 (target_user_id absent)",
           "event": [
             {
               "listen": "test",
@@ -882,16 +1261,37 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         },
         {
-          "name": "empty target_user_id → 422",
+          "name": "empty target_user_id \u2192 422",
           "event": [
             {
               "listen": "test",
@@ -907,16 +1307,37 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"target_user_id\": \"\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"target_user_id\": \"\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         },
         {
-          "name": "invalid UUID target_user_id → 422",
+          "name": "invalid UUID target_user_id \u2192 422",
           "event": [
             {
               "listen": "test",
@@ -932,22 +1353,43 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"target_user_id\": \"not-a-uuid\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"target_user_id\": \"not-a-uuid\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
     },
     {
       "name": "transfer-errors",
-      "description": "Service-layer errors for POST /transfer: unknown target UUID → 404, self-transfer → 409.",
+      "description": "Service-layer errors for POST /transfer: unknown target UUID \u2192 404, self-transfer \u2192 409.",
       "item": [
         {
-          "name": "unknown target UUID → 404 user_not_found",
+          "name": "unknown target UUID \u2192 404 user_not_found",
           "event": [
             {
               "listen": "test",
@@ -963,16 +1405,37 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"target_user_id\": \"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"target_user_id\": \"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         },
         {
-          "name": "self-transfer (target = own_id) → 409 cannot_transfer_to_self",
+          "name": "self-transfer (target = own_id) \u2192 409 cannot_transfer_to_self",
           "event": [
             {
               "listen": "test",
@@ -988,12 +1451,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"target_user_id\": \"{{own_id}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"target_user_id\": \"{{own_id}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
@@ -1003,7 +1487,7 @@
       "description": "Happy path for POST /transfer. User A (owner) initiates transfer to User B. Captures transfer_id. xfr:usr: count: 1.",
       "item": [
         {
-          "name": "POST /transfer → 201 (User A → User B)",
+          "name": "POST /transfer \u2192 201 (User A \u2192 User B)",
           "event": [
             {
               "listen": "test",
@@ -1027,22 +1511,43 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"target_user_id\": \"{{own_target_id}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"target_user_id\": \"{{own_target_id}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
     },
     {
       "name": "transfer-already-pending",
-      "description": "HasPendingTransferToken returns true while a transfer is active → 409. xfr:usr: count: 2.",
+      "description": "HasPendingTransferToken returns true while a transfer is active \u2192 409. xfr:usr: count: 2.",
       "item": [
         {
-          "name": "POST /transfer while transfer pending → 409 transfer_already_pending",
+          "name": "POST /transfer while transfer pending \u2192 409 transfer_already_pending",
           "event": [
             {
               "listen": "test",
@@ -1058,22 +1563,43 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"target_user_id\": \"{{own_target_id}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"target_user_id\": \"{{own_target_id}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
     },
     {
       "name": "validation-accept",
-      "description": "Body decode and token field validation for POST /transfer/accept. No JWT required.",
+      "description": "Body decode and token field validation for PUT /rbac/owner/transfer (accept). No JWT required.",
       "item": [
         {
-          "name": "malformed JSON → 400",
+          "name": "malformed JSON \u2192 400",
           "event": [
             {
               "listen": "test",
@@ -1087,17 +1613,35 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{bad json", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         },
         {
-          "name": "empty body {} → 422 (token absent)",
+          "name": "empty body {} \u2192 422 (token absent)",
           "event": [
             {
               "listen": "test",
@@ -1111,17 +1655,35 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         },
         {
-          "name": "empty string token → 422",
+          "name": "empty string token \u2192 422",
           "event": [
             {
               "listen": "test",
@@ -1135,23 +1697,41 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"token\": \"\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
     },
     {
       "name": "accept-invalid",
-      "description": "Pending transfer exists but token does not match the stored bcrypt hash → 410 token_invalid. Token remains unconsumed.",
+      "description": "Pending transfer exists but token does not match the stored bcrypt hash \u2192 410 token_invalid. Token remains unconsumed.",
       "item": [
         {
-          "name": "POST /transfer/accept bogus token → 410 token_invalid",
+          "name": "PUT /rbac/owner/transfer (accept) bogus token \u2192 410 token_invalid",
           "event": [
             {
               "listen": "test",
@@ -1159,8 +1739,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "// GetPendingTransferToken succeeds (transfer is still active).",
-                  "// bcrypt.CompareHashAndPassword fails for the bogus token → ErrTransferTokenInvalid → 410.",
-                  "// The token is NOT consumed — pending transfer remains active for transfer-cancel.",
+                  "// bcrypt.CompareHashAndPassword fails for the bogus token \u2192 ErrTransferTokenInvalid \u2192 410.",
+                  "// The token is NOT consumed \u2014 pending transfer remains active for transfer-cancel.",
                   "pm.test('status is 410', () => pm.response.to.have.status(410));",
                   "pm.test('code is token_invalid', () => pm.expect(pm.response.json().code).to.eql('token_invalid'));"
                 ]
@@ -1168,23 +1748,41 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
     },
     {
       "name": "transfer-cancel",
-      "description": "Owner cancels the pending transfer → 204 No Content. xfrc:usr: count: 1.",
+      "description": "Owner cancels the pending transfer \u2192 204 No Content. xfrc:usr: count: 1.",
       "item": [
         {
-          "name": "DELETE /transfer → 204 (cancels pending transfer)",
+          "name": "DELETE /transfer \u2192 204 (cancels pending transfer)",
           "event": [
             {
               "listen": "test",
@@ -1200,20 +1798,30 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
     },
     {
       "name": "cancel-not-found",
-      "description": "No pending transfer exists (was just cancelled) → 404 no_pending_transfer. xfrc:usr: count: 2.",
+      "description": "No pending transfer exists (was just cancelled) \u2192 404 no_pending_transfer. xfrc:usr: count: 2.",
       "item": [
         {
-          "name": "DELETE /transfer (nothing pending) → 404 no_pending_transfer",
+          "name": "DELETE /transfer (nothing pending) \u2192 404 no_pending_transfer",
           "event": [
             {
               "listen": "test",
@@ -1229,17 +1837,27 @@
           "request": {
             "method": "DELETE",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
     },
     {
       "name": "rate-limiting-assign",
-      "description": "asgn:ip: limiter exhaustion (burst=3, rate=3/900s per IP → Retry-After=300s). Folder prerequest pins _xff to 127.0.0.1. 3 warmups (→ 409 owner_already_exists each). 4th → 429.",
+      "description": "asgn:ip: limiter exhaustion (burst=3, rate=3/900s per IP \u2192 Retry-After=300s). Folder prerequest pins _xff to 127.0.0.1. 3 warmups (\u2192 409 owner_already_exists each). 4th \u2192 429.",
       "event": [
         {
           "listen": "prerequest",
@@ -1251,22 +1869,142 @@
       ],
       "item": [
         {
-          "name": "warmup 1/3 — consume asgn:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"secret\": \"{{bootstrap_secret}}\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] } }
+          "name": "warmup 1/3 \u2014 consume asgn:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"{{bootstrap_secret}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
+          }
         },
         {
-          "name": "warmup 2/3 — consume asgn:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"secret\": \"{{bootstrap_secret}}\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] } }
+          "name": "warmup 2/3 \u2014 consume asgn:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"{{bootstrap_secret}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
+          }
         },
         {
-          "name": "warmup 3/3 — consume asgn:ip: last slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 3 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"secret\": \"{{bootstrap_secret}}\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] } }
+          "name": "warmup 3/3 \u2014 consume asgn:ip: last slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 3 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"{{bootstrap_secret}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
+          }
         },
         {
-          "name": "4th request → 429 (asgn:ip: 127.0.0.1 exhausted)",
+          "name": "4th request \u2192 429 (asgn:ip: 127.0.0.1 exhausted)",
           "event": [
             {
               "listen": "test",
@@ -1275,22 +2013,52 @@
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
                   "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
-                  "// rate = 3/(15*60) = 1/300 tok/s → Retry-After = ceil(300) = 300 s",
+                  "// rate = 3/(15*60) = 1/300 tok/s \u2192 Retry-After = ceil(300) = 300 s",
                   "pm.test('Retry-After is 300', () => pm.expect(pm.response.headers.get('Retry-After')).to.eql('300'));"
                 ]
               }
             }
           ],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"secret\": \"{{bootstrap_secret}}\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/assign", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "assign"] } }
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"secret\": \"{{bootstrap_secret}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
+            }
+          }
         }
       ]
     },
     {
       "name": "rate-limiting-transfer",
-      "description": "xfr:usr: limiter exhaustion (burst=3, rate=3/86400s per user → Retry-After=28800s). 2 slots consumed by transfer-initiate + transfer-already-pending. 1 remaining warmup (→ 201, creates a pending transfer), then 2nd → 429.",
+      "description": "xfr:usr: limiter exhaustion (burst=3, rate=3/86400s per user \u2192 Retry-After=28800s). 2 slots consumed by transfer-initiate + transfer-already-pending. 1 remaining warmup (\u2192 201, creates a pending transfer), then 2nd \u2192 429.",
       "item": [
         {
-          "name": "warmup 1/1 — consume last xfr:usr: slot (→ 201 new pending transfer)",
+          "name": "warmup 1/1 \u2014 consume last xfr:usr: slot (\u2192 201 new pending transfer)",
           "event": [
             {
               "listen": "test",
@@ -1307,16 +2075,37 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"target_user_id\": \"{{own_target_id}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"target_user_id\": \"{{own_target_id}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         },
         {
-          "name": "2nd request → 429 (xfr:usr: exhausted)",
+          "name": "2nd request \u2192 429 (xfr:usr: exhausted)",
           "event": [
             {
               "listen": "test",
@@ -1325,7 +2114,7 @@
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
                   "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
-                  "// rate = 3/86400 = 1/28800 tok/s → Retry-After = ceil(28800) = 28800 s",
+                  "// rate = 3/86400 = 1/28800 tok/s \u2192 Retry-After = ceil(28800) = 28800 s",
                   "pm.test('Retry-After is 28800', () => pm.expect(pm.response.headers.get('Retry-After')).to.eql('28800'));"
                 ]
               }
@@ -1334,19 +2123,40 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{own_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
-            "body": { "mode": "raw", "raw": "{\"target_user_id\": \"{{own_target_id}}\"}", "options": { "raw": { "language": "json" } } },
-            "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] }
+            "body": {
+              "mode": "raw",
+              "raw": "{\"target_user_id\": \"{{own_target_id}}\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
           }
         }
       ]
     },
     {
       "name": "rate-limiting-accept",
-      "description": "xfra:ip: limiter exhaustion (burst=10, rate=10/3600s per IP → Retry-After=360s). Folder prerequest pins _xff to 127.0.0.1. A pending transfer exists from RL-transfer warmup; bogus token → 410 on each warmup. 11th → 429.",
+      "description": "xfra:ip: limiter exhaustion (burst=10, rate=10/3600s per IP \u2192 Retry-After=360s). Folder prerequest pins _xff to 127.0.0.1. A pending transfer exists from RL-transfer warmup; bogus token \u2192 410 on each warmup. 11th \u2192 429.",
       "event": [
         {
           "listen": "prerequest",
@@ -1357,18 +2167,418 @@
         }
       ],
       "item": [
-        { "name": "warmup 1/10", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfra:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } } },
-        { "name": "warmup 2/10", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfra:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } } },
-        { "name": "warmup 3/10", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfra:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } } },
-        { "name": "warmup 4/10", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfra:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } } },
-        { "name": "warmup 5/10", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfra:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } } },
-        { "name": "warmup 6/10", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfra:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } } },
-        { "name": "warmup 7/10", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfra:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } } },
-        { "name": "warmup 8/10", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfra:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } } },
-        { "name": "warmup 9/10", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfra:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } } },
-        { "name": "warmup 10/10 — last allowed", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfra:ip: slot 10 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } } },
         {
-          "name": "11th request → 429 (xfra:ip: 127.0.0.1 exhausted)",
+          "name": "warmup 1/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfra:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfra:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfra:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfra:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfra:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 6/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfra:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 7/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfra:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 8/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfra:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 9/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfra:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 10/10 \u2014 last allowed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfra:ip: slot 10 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "11th request \u2192 429 (xfra:ip: 127.0.0.1 exhausted)",
           "event": [
             {
               "listen": "test",
@@ -1377,30 +2587,304 @@
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
                   "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
-                  "// rate = 10/3600 = 1/360 tok/s → Retry-After = ceil(360) = 360 s",
+                  "// rate = 10/3600 = 1/360 tok/s \u2192 Retry-After = ceil(360) = 360 s",
                   "pm.test('Retry-After is 360', () => pm.expect(pm.response.headers.get('Retry-After')).to.eql('360'));"
                 ]
               }
             }
           ],
-          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/owner/transfer/accept", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer", "accept"] } }
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"token\": \"dGhpcy1pcy1kZWZpbml0ZWx5LW5vdC10aGUtcmVhbC10b2tlbg\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
         }
       ]
     },
     {
       "name": "rate-limiting-cancel",
-      "description": "xfrc:usr: limiter exhaustion (burst=10, rate=10/3600s per user → Retry-After=360s). 2 slots consumed by transfer-cancel + cancel-not-found. 8 remaining. Warmup 1 cancels the pending transfer from RL-transfer (→ 204); warmups 2-8 → 404; 9th → 429.",
+      "description": "xfrc:usr: limiter exhaustion (burst=10, rate=10/3600s per user \u2192 Retry-After=360s). 2 slots consumed by transfer-cancel + cancel-not-found. 8 remaining. Warmup 1 cancels the pending transfer from RL-transfer (\u2192 204); warmups 2-8 \u2192 404; 9th \u2192 429.",
       "item": [
-        { "name": "warmup 1/8 — consume xfrc:usr: slot (→ 204 cancels RL pending)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfrc:usr: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "DELETE", "header": [{ "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] } } },
-        { "name": "warmup 2/8 (→ 404)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfrc:usr: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "DELETE", "header": [{ "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] } } },
-        { "name": "warmup 3/8 (→ 404)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfrc:usr: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "DELETE", "header": [{ "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] } } },
-        { "name": "warmup 4/8 (→ 404)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfrc:usr: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "DELETE", "header": [{ "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] } } },
-        { "name": "warmup 5/8 (→ 404)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfrc:usr: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "DELETE", "header": [{ "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] } } },
-        { "name": "warmup 6/8 (→ 404)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfrc:usr: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "DELETE", "header": [{ "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] } } },
-        { "name": "warmup 7/8 (→ 404)", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfrc:usr: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "DELETE", "header": [{ "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] } } },
-        { "name": "warmup 8/8 — last allowed", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (xfrc:usr: slot 10 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "DELETE", "header": [{ "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] } } },
         {
-          "name": "9th request → 429 (xfrc:usr: exhausted)",
+          "name": "warmup 1/8 \u2014 consume xfrc:usr: slot (\u2192 204 cancels RL pending)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfrc:usr: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/8 (\u2192 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfrc:usr: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/8 (\u2192 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfrc:usr: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/8 (\u2192 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfrc:usr: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/8 (\u2192 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfrc:usr: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 6/8 (\u2192 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfrc:usr: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 7/8 (\u2192 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfrc:usr: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "warmup 8/8 \u2014 last allowed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (xfrc:usr: slot 10 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
+        },
+        {
+          "name": "9th request \u2192 429 (xfrc:usr: exhausted)",
           "event": [
             {
               "listen": "test",
@@ -1409,30 +2893,99 @@
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
                   "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
-                  "// rate = 10/3600 = 1/360 tok/s → Retry-After = ceil(360) = 360 s",
+                  "// rate = 10/3600 = 1/360 tok/s \u2192 Retry-After = ceil(360) = 360 s",
                   "pm.test('Retry-After is 360', () => pm.expect(pm.response.headers.get('Retry-After')).to.eql('360'));"
                 ]
               }
             }
           ],
-          "request": { "method": "DELETE", "header": [{ "key": "Authorization", "value": "Bearer {{own_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/owner/transfer", "host": ["{{base_url}}"], "path": ["api", "v1", "owner", "transfer"] } }
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{own_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/rbac/owner/transfer",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "transfer"]
+            }
+          }
         }
       ]
     }
   ],
   "variable": [
-    { "key": "_req_seq", "value": "0", "description": "Auto-incremented counter for generating unique X-Forwarded-For IPs." },
-    { "key": "_xff", "value": "", "description": "Current X-Forwarded-For value. Unique IP set by collection prerequest; overridden to 127.0.0.1 by IP-based RL folder prerequest." },
-    { "key": "own_email", "value": "", "description": "Set by setup from gmail_test_email. User A (owner candidate)." },
-    { "key": "own_password", "value": "", "description": "Password for User A." },
-    { "key": "own_code", "value": "", "description": "6-digit OTP for User A fetched from Gmail during setup/register." },
-    { "key": "own_access_token", "value": "", "description": "JWT access_token for User A. Required by all JWT-gated routes." },
-    { "key": "own_id", "value": "", "description": "user_id (UUID) for User A, captured from setup/GET /me." },
-    { "key": "own_target_email", "value": "", "description": "gmail_test_email+xfrtgt. Set by setup/register User B prerequest." },
-    { "key": "own_target_password", "value": "", "description": "Password for User B (transfer target)." },
-    { "key": "own_target_code", "value": "", "description": "6-digit OTP for User B fetched from Gmail during setup/register User B." },
-    { "key": "own_target_access_token", "value": "", "description": "JWT access_token for User B. Used in rbac-guard tests." },
-    { "key": "own_target_id", "value": "", "description": "user_id (UUID) for User B, captured from setup/GET /me User B." },
-    { "key": "own_transfer_id", "value": "", "description": "transfer_id UUID from POST /transfer response in transfer-initiate folder." }
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter for generating unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current X-Forwarded-For value. Unique IP set by collection prerequest; overridden to 127.0.0.1 by IP-based RL folder prerequest."
+    },
+    {
+      "key": "own_email",
+      "value": "",
+      "description": "Set by setup from gmail_test_email. User A (owner candidate)."
+    },
+    {
+      "key": "own_password",
+      "value": "",
+      "description": "Password for User A."
+    },
+    {
+      "key": "own_code",
+      "value": "",
+      "description": "6-digit OTP for User A fetched from Gmail during setup/register."
+    },
+    {
+      "key": "own_access_token",
+      "value": "",
+      "description": "JWT access_token for User A. Required by all JWT-gated routes."
+    },
+    {
+      "key": "own_id",
+      "value": "",
+      "description": "user_id (UUID) for User A, captured from setup/GET /me."
+    },
+    {
+      "key": "own_target_email",
+      "value": "",
+      "description": "gmail_test_email+xfrtgt. Set by setup/register User B prerequest."
+    },
+    {
+      "key": "own_target_password",
+      "value": "",
+      "description": "Password for User B (transfer target)."
+    },
+    {
+      "key": "own_target_code",
+      "value": "",
+      "description": "6-digit OTP for User B fetched from Gmail during setup/register User B."
+    },
+    {
+      "key": "own_target_access_token",
+      "value": "",
+      "description": "JWT access_token for User B. Used in rbac-guard tests."
+    },
+    {
+      "key": "own_target_id",
+      "value": "",
+      "description": "user_id (UUID) for User B, captured from setup/GET /me User B."
+    },
+    {
+      "key": "own_transfer_id",
+      "value": "",
+      "description": "transfer_id UUID from POST /transfer response in transfer-initiate folder."
+    }
   ]
 }

@@ -1,7 +1,7 @@
 ---
 title: "Telegram Callback"
 description: "Verifies and processes the payload from the Telegram Login Widget. Signs in a returning user or registers a new one."
-api: "POST http://localhost:8080/api/v1/oauth/telegram/callback"
+api: "POST /oauth/telegram/callback"
 authMethod: "none"
 ---
 
@@ -45,7 +45,7 @@ authMethod: "none"
 
 **Auth date freshness** — The `auth_date` must be within 5 minutes of the current server time. Stale payloads are rejected with `401 auth_date_expired`. Re-open the widget to get a fresh payload.
 
-**Token response** — On success, the server returns an `access_token` in the JSON body and sets an HttpOnly `refresh_token` cookie. The access token is valid for 15 minutes; use [`POST /refresh`](/api-reference/auth/session/refresh) to renew it silently using the cookie.
+**Token response** — On success, the server returns an `access_token` in the JSON body and sets an HttpOnly `refresh_token` cookie. The access token is valid for 15 minutes; use [`POST /auth/refresh`](/api-reference/auth/session/refresh) to renew it silently using the cookie.
 
 **New vs. returning user** — A new account returns `201 Created`; a returning sign-in returns `200 OK`. Use the status code to show a welcome screen for first-time users.
 

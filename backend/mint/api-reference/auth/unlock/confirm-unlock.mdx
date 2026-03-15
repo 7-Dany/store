@@ -2,7 +2,7 @@
 title: "Confirm Unlock"
 authMethod: "none"
 description: "Clears a login lockout by validating the 6-digit code sent to the account's email address."
-api: "POST http://localhost:8080/api/v1/auth/confirm-unlock"
+api: "PUT /auth/unlock"
 ---
 
 <ParamField body="email" type="string" required>
@@ -22,13 +22,13 @@ api: "POST http://localhost:8080/api/v1/auth/confirm-unlock"
 
 On success the account is fully unlocked and can log in immediately. The unlock code is consumed and cannot be reused.
 
-Too many wrong submissions will permanently invalidate the code — at that point even the correct code will be rejected. Request a new one via [`POST /request-unlock`](/api-reference/auth/unlock/request-unlock).
+Too many wrong submissions will permanently invalidate the code — at that point even the correct code will be rejected. Request a new one via [`POST /auth/unlock`](/api-reference/auth/unlock/request-unlock).
 
 All failure responses look identical regardless of the cause, so the server does not reveal whether an account or code exists.
 
 ## Rate Limiting
 
-**3 requests per 10 minutes per IP address.** This limit is shared with [`POST /request-unlock`](/api-reference/auth/unlock/request-unlock) — requests to either endpoint count against the same bucket.
+**3 requests per 10 minutes per IP address.** This limit is shared with [`POST /auth/unlock`](/api-reference/auth/unlock/request-unlock) — requests to either endpoint count against the same limit.
 
 Clients that exceed this limit will receive a `429 Too Many Requests` response with a `Retry-After` header indicating when they may retry.
 
@@ -106,7 +106,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="423 — Account Locked">
-    The account was locked by an administrator after the unlock token was issued. This type of lock cannot be cleared through the self-service unlock flow. Contact support or use `PATCH /api/v1/admin/users/{id}/unlock` (planned).
+    The account was locked by an administrator after the unlock token was issued. This type of lock cannot be cleared through the self-service unlock flow — contact support.
 
     ```json
     {
@@ -117,7 +117,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="429 — Too Many Attempts / Rate Limited">
-    Returned for two distinct reasons. The unlock token has received too many incorrect code submissions and is now permanently locked — request a fresh code via `POST /request-unlock`. Alternatively, the IP address has exhausted the shared `unlk:ip:` rate limit bucket (3 requests per 10 minutes, shared with `POST /request-unlock`). Check the `Retry-After` response header in both cases.
+    Returned for two distinct reasons. The unlock token has received too many incorrect code submissions and is now permanently locked — request a fresh code via [`POST /auth/unlock`](/api-reference/auth/unlock/request-unlock). Alternatively, the IP address has exceeded the shared rate limit (3 requests per 10 minutes, shared with [`POST /auth/unlock`](/api-reference/auth/unlock/request-unlock)). Check the `Retry-After` response header in both cases.
 
     ```json
     {

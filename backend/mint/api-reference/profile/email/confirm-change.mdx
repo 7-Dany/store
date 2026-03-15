@@ -1,12 +1,12 @@
 ---
 title: "Confirm Change"
 description: "Finalise an email-change by submitting the grant token and the OTP sent to the new address."
-api: "POST http://localhost:8080/me/email/confirm-change"
+api: "PUT /profile/me/email"
 ---
 
 <ParamField body="grant_token" type="string" required>
   The UUID grant token returned by
-  [`POST /me/email/verify-current`](/api-reference/profile/email/verify-current).
+  [`POST /profile/me/email/verify`](/api-reference/profile/email/verify-current).
   Valid for 10 minutes from issuance and single-use.
 </ParamField>
 
@@ -17,21 +17,20 @@ api: "POST http://localhost:8080/me/email/confirm-change"
 
 ## Behaviour
 
-On success the server atomically:
+On success the server:
 
 1. Validates and consumes the grant token and the new-address OTP.
 2. Swaps the account's email to the new address.
-3. Revokes **all active refresh tokens and sessions** for the account.
-4. Blocklists the caller's current access token (the JWT used for this request).
+3. Revokes all active sessions for the account.
+4. Invalidates the caller's current access token.
 5. Sends a notification email to the **old** address informing the user of the change.
 
-Because all sessions are revoked and the access token is blocklisted, the
+Because all sessions are revoked and the access token is invalidated, the
 client must log in again after a successful confirmation. Clients should
 redirect to the sign-in screen and discard any cached tokens.
 
-The email swap is guarded by a database-level unique constraint; if another
-account registers the target address between steps 1 and 3, the server returns
-`409 email_taken` and the flow must be restarted from step 1.
+If another account registers the target address between steps 1 and 3, the
+server returns `409 email_taken` and the flow must be restarted from step 1.
 
 ## Rate Limiting
 
@@ -100,7 +99,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   <Accordion title="409 — Conflict">
     The target email address was registered by another account between step 1
     and step 3. Restart the flow from
-    [`POST /me/email/request-change`](/api-reference/profile/email/request-change)
+    [`POST /profile/me/email`](/api-reference/profile/email/request-change)
     with a different address.
 
     ```json
@@ -160,7 +159,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
     **Too many OTP attempts** — the confirm token has been locked after
     exhausting the maximum number of incorrect code submissions. Restart the
-    flow from [`POST /me/email/request-change`](/api-reference/profile/email/request-change).
+    flow from [`POST /profile/me/email`](/api-reference/profile/email/request-change).
 
     ```json
     {

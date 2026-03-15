@@ -42,9 +42,9 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/health",
+              "raw": "{{base_url}}/api/v1/health",
               "host": ["{{base_url}}"],
-              "path": ["health"]
+              "path": ["api", "v1", "health"]
             }
           }
         },
@@ -66,9 +66,9 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/health",
+              "raw": "{{base_url}}/api/v1/health",
               "host": ["{{base_url}}"],
-              "path": ["health"]
+              "path": ["api", "v1", "health"]
             }
           }
         },

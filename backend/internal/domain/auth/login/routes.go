@@ -1,3 +1,4 @@
+// Package login registers the POST /login endpoint.
 package login
 
 import (
@@ -11,12 +12,16 @@ import (
 )
 
 // Routes registers the login endpoint on r.
-// Call from the auth root assembler:
+// Call from auth.Routes in internal/domain/auth/routes.go:
 //
 //	login.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - POST /login: 12 req / 15 min per IP
+//   - POST /login: 12 req / 15 min per IP  ("lgn:ip:")
+//
+// Middleware ordering:
+//
+//	POST /login: IPRateLimiter → handler.Login
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// 12 req / 15 min per IP — burst is set above the per-user lockout threshold
 	// (IncrementLoginFailures fires at 10 consecutive failures) so that the

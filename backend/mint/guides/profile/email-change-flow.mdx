@@ -11,17 +11,17 @@ Changing an email address takes three API calls and three UI screens. The user m
 ## Overview
 
 ```
-POST /me/email/request-change   →  OTP sent to current email
-POST /me/email/verify-current   →  current-email code  →  { grant_token }
-POST /me/email/confirm-change   →  grant_token + new-email code  →  200
-POST /login                     →  sign in with new address
+POST /profile/me/email          →  OTP sent to current email
+POST /profile/me/email/verify   →  current-email code  →  { grant_token }
+PUT  /profile/me/email          →  grant_token + new-email code  →  200
+POST /auth/login                →  sign in with new address
 ```
 
 ---
 
 ## Screen 1 — Enter new email address
 
-The user types the address they want to switch to. Send it to [`POST /me/email/request-change`](/api-reference/profile/email/request-change):
+The user types the address they want to switch to. Send it to [`POST /profile/me/email`](/api-reference/profile/email/request-change):
 
 ```json
 {
@@ -47,7 +47,7 @@ Tell the user to check their current inbox and advance to screen 2.
 
 ## Screen 2 — Enter the code from the current address
 
-The user checks their **current** inbox and enters the 6-digit code. Submit it to [`POST /me/email/verify-current`](/api-reference/profile/email/verify-current):
+The user checks their **current** inbox and enters the 6-digit code. Submit it to [`POST /profile/me/email/verify`](/api-reference/profile/email/verify-current):
 
 ```json
 {
@@ -72,7 +72,7 @@ Store the `grant_token` in your frontend state and advance the user to screen 3.
 
 ## Screen 3 — Enter the code from the new address
 
-The user checks their **new** inbox and enters the second 6-digit code. Submit it together with the grant token to [`POST /me/email/confirm-change`](/api-reference/profile/email/confirm-change):
+The user checks their **new** inbox and enters the second 6-digit code. Submit it together with the grant token to [`PUT /profile/me/email`](/api-reference/profile/email/confirm-change):
 
 ```json
 {
@@ -133,7 +133,7 @@ Redirect the user to your login screen. Their old email address no longer works 
 ## Full sequence
 
 <Steps>
-  <Step title="POST /me/email/request-change — Request an OTP to the current address">
+  <Step title="POST /profile/me/email — Request an OTP to the current address">
     Send the desired new email. The server validates it, checks availability, enforces the 2-minute cooldown, then sends a 6-digit OTP to the account's **current** address.
 
     ```json Request
@@ -149,7 +149,7 @@ Redirect the user to your login screen. Their old email address no longer works 
     ```
   </Step>
 
-  <Step title="POST /me/email/verify-current — Verify ownership of the current address">
+  <Step title="POST /profile/me/email/verify — Verify ownership of the current address">
     Submit the 6-digit code from the current inbox. The server consumes the verify token, sends a second OTP to the **new** address, and issues a short-lived grant token. Store `grant_token` in frontend state.
 
     ```json Request
@@ -168,7 +168,7 @@ Redirect the user to your login screen. Their old email address no longer works 
     <Note>The grant token expires in 10 minutes and is single-use. If the user takes too long on screen 3, restart from screen 1.</Note>
   </Step>
 
-  <Step title="POST /me/email/confirm-change — Verify ownership of the new address and commit">
+  <Step title="PUT /profile/me/email — Verify ownership of the new address and commit">
     Submit the grant token and the 6-digit code from the new inbox. The server atomically swaps the email, revokes all refresh tokens and sessions, and blocklists the caller's current access token.
 
     ```json Request
@@ -187,8 +187,8 @@ Redirect the user to your login screen. Their old email address no longer works 
     <Warning>All sessions are invalidated immediately. Discard all cached tokens on the client and redirect the user to the login screen.</Warning>
   </Step>
 
-  <Step title="POST /login — Sign in with the new address">
-    <Tooltip tip="POST /api/v1/auth/login — Authenticates with email or username + password. Returns a short-lived access token (15 min) and a long-lived refresh token (30 days) as an HttpOnly cookie.">[Redirect](/api-reference/auth/login/login)</Tooltip> the user to the login screen. Their new email address is now the active identifier.
+  <Step title="POST /auth/login — Sign in with the new address">
+    <Tooltip tip="POST /api/v1/auth/login — Authenticates with email or username + password. Returns a short-lived access token (15 min) and a long-lived refresh token (30 days) as an HttpOnly cookie.">[Redirect](/api-reference/auth/session/login)</Tooltip> the user to the login screen. Their new email address is now the active identifier.
 
     ```json Request
     {

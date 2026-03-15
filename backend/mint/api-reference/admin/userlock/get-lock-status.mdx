@@ -1,0 +1,143 @@
+---
+title: "Get Lock Status"
+description: "Returns the full lock state for a user, including both admin lock and login lockout."
+api: "GET /admin/users/{user_id}/lock"
+---
+
+<Info>
+  Requires the **`user:read`** permission.
+</Info>
+
+<ParamField path="user_id" type="string" required>
+  The UUID of the user whose lock status to retrieve.
+</ParamField>
+
+## Behaviour
+
+Returns two independent lock states for the target user. Both can be active simultaneously — a user cannot authenticate if either is active.
+
+### Admin Lock (`admin_locked`)
+
+Set explicitly by an admin via [`POST /admin/users/{user_id}/lock`](/api-reference/admin/userlock/lock-user). Persists until an admin clears it via [`DELETE /admin/users/{user_id}/lock`](/api-reference/admin/userlock/unlock-user). When active, `locked_by`, `locked_reason`, and `locked_at` are populated with the metadata from the lock action.
+
+### Login Lockout (`is_locked`, `login_locked_until`)
+
+Set automatically after too many failed attempts. Locks the account for **15 minutes** from the time of the triggering attempt. Each additional wrong attempt past the threshold extends the window by another 15 minutes. Clears automatically once the lockout time has passed — no admin action required.
+
+Triggered by either of:
+
+- **Wrong password** — 10 consecutive failed attempts at [`POST /auth/login`](/api-reference/auth/session/login)
+- **Wrong reset OTP** — too many incorrect code submissions at [`POST /auth/password/reset/verify`](/api-reference/auth/password/verify-reset-code)
+
+<ResponseExample>
+```json 200
+{
+  "user_id": "018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c",
+  "admin_locked": true,
+  "locked_by": "029f5d4b-2c3e-8a5f-0d1b-3e4f5a6b7c8d",
+  "locked_reason": "Suspended pending fraud investigation.",
+  "locked_at": "2024-06-01T10:00:00Z",
+  "is_locked": false,
+  "login_locked_until": null
+}
+```
+
+```json 404
+{
+  "code": "user_not_found",
+  "message": "user not found"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "missing or invalid access token"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "forbidden"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    Returns the lock state for the user. Fields `locked_by`, `locked_reason`, and `locked_at` are `null` when no admin lock is active. `login_locked_until` is `null` when no login lockout is active.
+
+    ```json
+    {
+      "user_id": "018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c",
+      "admin_locked": true,
+      "locked_by": "029f5d4b-2c3e-8a5f-0d1b-3e4f5a6b7c8d",
+      "locked_reason": "Suspended pending fraud investigation.",
+      "locked_at": "2024-06-01T10:00:00Z",
+      "is_locked": false,
+      "login_locked_until": null
+    }
+    ```
+
+    Unlocked user example:
+
+    ```json
+    {
+      "user_id": "018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c",
+      "admin_locked": false,
+      "locked_by": null,
+      "locked_reason": null,
+      "locked_at": null,
+      "is_locked": false,
+      "login_locked_until": null
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The request is missing a valid access token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "missing or invalid access token"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The authenticated user does not hold the `user:read` permission.
+
+    ```json
+    {
+      "code": "forbidden",
+      "message": "forbidden"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    The target user does not exist or has been deleted.
+
+    ```json
+    {
+      "code": "user_not_found",
+      "message": "user not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred on the server.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

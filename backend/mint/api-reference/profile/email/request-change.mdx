@@ -1,7 +1,7 @@
 ---
 title: "Request Change"
 description: "Start an email-change by sending a one-time code to the user's current email address."
-api: "POST http://localhost:8080/me/email/request-change"
+api: "POST /profile/me/email"
 ---
 
 <ParamField body="new_email" type="string" required>
@@ -21,8 +21,7 @@ A **2-minute cooldown** is enforced between requests. If a verify token was
 issued less than 2 minutes ago the server returns `429 cooldown_active` rather
 than issuing a new one.
 
-The new email address is checked for availability at request time as an
-early-exit optimisation. Uniqueness is re-enforced atomically in step 3.
+The new email address is checked for availability at request time. Uniqueness is re-enforced when the change is committed in step 3.
 
 ## Rate Limiting
 
@@ -72,7 +71,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 <AccordionGroup>
   <Accordion title="200 — OK">
     The OTP was generated and queued for delivery to the current email address.
-    Proceed to [`POST /me/email/verify-current`](/api-reference/profile/email/verify-current) once the code arrives.
+    Proceed to [`POST /profile/me/email/verify`](/api-reference/profile/email/verify-current) once the code arrives.
 
     ```json
     {

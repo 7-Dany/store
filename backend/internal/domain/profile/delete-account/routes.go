@@ -1,3 +1,4 @@
+// Package deleteaccount registers the DELETE /me, POST /me/cancel-deletion, and GET /me/deletion-method endpoints.
 package deleteaccount
 
 import (
@@ -10,15 +11,15 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/ratelimit"
 )
 
-// Routes registers DELETE /me and POST /me/cancel-deletion on r.
-// Call from the profile domain assembler:
+// Routes registers the DELETE /me, POST /me/cancel-deletion, and GET /me/deletion-method endpoints on r.
+// Call from profile.Routes in internal/domain/profile/routes.go:
 //
 //	deleteaccount.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - DELETE /me:               10 req / 1 hr  per user ("del:usr:")
-//   - POST /me/cancel-deletion: 10 req / 10 min per user ("delc:usr:")
-//   - GET /me/deletion-method:  10 req / 1 min per user ("delm:usr:")
+//   - DELETE /me:           10 req / 1 hr  per user ("del:usr:")
+//   - DELETE /me/deletion:  10 req / 10 min per user ("delc:usr:")
+//   - GET    /me/deletion:  10 req / 1 min per user ("delm:usr:")
 //
 // Middleware ordering:
 //
@@ -52,7 +53,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	r.Group(func(r chi.Router) {
 		r.Use(deps.JWTAuth)
 		r.With(deleteLimiter.Limit).Delete("/me", h.Delete)
-		r.With(cancelLimiter.Limit).Post("/me/cancel-deletion", h.CancelDeletion)
-		r.With(deletionMethodLimiter.Limit).Get("/me/deletion-method", h.DeletionMethod)
+		r.With(cancelLimiter.Limit).Delete("/me/deletion", h.CancelDeletion)
+		r.With(deletionMethodLimiter.Limit).Get("/me/deletion", h.DeletionMethod)
 	})
 }

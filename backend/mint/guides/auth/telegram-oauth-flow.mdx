@@ -96,7 +96,7 @@ There is no separate "register with Telegram" step — both use the same flow. I
     | `access_token` | Memory (JavaScript variable) | 15 minutes |
     | `refresh_token` | HttpOnly cookie (set automatically) | 30 days |
 
-    Use the access token as `Authorization: Bearer <token>` for all subsequent API calls. Schedule a proactive refresh before the 15-minute TTL expires via [`POST /refresh`](/api-reference/auth/session/refresh).
+    Use the access token as `Authorization: Bearer <token>` for all subsequent API calls. Schedule a proactive refresh before the 15-minute TTL expires via [`POST /auth/refresh`](/api-reference/auth/session/refresh).
   </Step>
 
   <Step title="Detect new users">
@@ -125,8 +125,8 @@ An already signed-in user can connect their Telegram account to their profile. O
 
     ```typescript
     async function linkTelegram(user: TelegramUser) {
-      const res = await fetch("/api/v1/oauth/telegram/link", {
-        method: "POST",
+      const res = await fetch("/api/v1/oauth/telegram", {
+        method: "PUT",
         headers: {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${accessToken}`,
@@ -158,28 +158,28 @@ An already signed-in user can connect their Telegram account to their profile. O
 
 ## Removing Telegram sign-in
 
-A signed-in user can disconnect their Telegram account via [`DELETE /oauth/telegram/unlink`](/api-reference/oauth/telegram/unlink).
+A signed-in user can disconnect their Telegram account via [`DELETE /oauth/telegram`](/api-reference/oauth/telegram/unlink).
 
 ```bash
 curl --request DELETE \
-  --url http://localhost:8080/api/v1/oauth/telegram/unlink \
+  --url /oauth/telegram \
   --header "Authorization: Bearer <access_token>"
 ```
 
 A `204 No Content` response confirms the identity was removed.
 
 <Warning>
-  Telegram cannot be removed if it is the **only** sign-in method on the account. Direct the user to [set a password](/api-reference/profile/set-password/set-password) or link another provider first. The API returns `409 last_auth_method` in this case.
+  Telegram cannot be removed if it is the **only** sign-in method on the account. Direct the user to [set a password](/api-reference/profile/password/set-password) or link another provider first. The API returns `409 last_auth_method` in this case.
 </Warning>
 
 ---
 
 ## Checking linked providers
 
-Use [`GET /me/identities`](/api-reference/profile/me/identities) to list all connected OAuth providers for the authenticated user. Use this to show or hide the link/unlink buttons in your settings UI.
+Use [`GET /profile/me/identities`](/api-reference/profile/account/identities) to list all connected OAuth providers for the authenticated user. Use this to show or hide the link/unlink buttons in your settings UI.
 
 ```typescript
-const res = await fetch("/api/v1/me/identities", {
+const res = await fetch("/api/v1/profile/me/identities", {
   headers: { "Authorization": `Bearer ${accessToken}` },
 });
 const { identities } = await res.json();

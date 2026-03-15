@@ -534,8 +534,9 @@ auth.Routes(ctx, deps)                              ← root assembler
 - The service does not construct its own store. The handler does not construct its own service.
 - JWT secrets are never stored on the service. They are passed by `routes.go` to the handler via `deps.JWTConfig`.
 - The mail queue lifetime is owned by `server/router.go`.
-- Every `routes.go` exports exactly one symbol: `Routes`. No other exported identifier lives in `routes.go`.
-- **Domain-level root assemblers** (e.g. `auth/routes.go`) have the signature `Routes(ctx context.Context, deps *app.Deps) *chi.Mux` — they return a `*chi.Mux` that the server mounts at a path prefix.
+- Domain-level root assemblers export two symbols: `Mount` and `Routes`. Feature sub-packages export only `Routes`.
+- **Domain-level `Mount`** has the signature `Mount(ctx context.Context, r chi.Router, deps *app.Deps)` — it owns the canonical path prefix and calls `r.Mount("/path", Routes(ctx, deps))`. This is the only symbol the server ever calls.
+- **Domain-level `Routes`** has the signature `Routes(ctx context.Context, deps *app.Deps) *chi.Mux` — it builds and returns the sub-router. Called by `Mount` and directly in tests.
 - **Feature sub-package `Routes`** have the signature `Routes(ctx context.Context, r chi.Router, deps *app.Deps)` — they register routes directly on the provided router and return nothing. This avoids the `chi.Mount("/", ...)` panic that occurs when multiple sub-packages are mounted at the same path.
 - Feature `routes.go` files construct their own rate limiters from `deps.KVStore` and start the cleanup goroutines. `deps` is the single source for all shared infrastructure — feature packages never import `config`.
 - Rate limiters are always created inside the feature's `Routes` function, not pre-built externally. This keeps each feature's limiter configuration co-located with its route registration.
@@ -1251,8 +1252,10 @@ Authenticated routes always extract identity via `token.UserIDFromContext(r.Cont
 > use the `Event{PastTense}` pattern.
 | Feature `Storer` | `Storer` | same name in every feature package |
 | Feature `Servicer` | `Servicer` | same name in every feature package |
-| Domain-level `Routes` function | `Routes(ctx context.Context, deps *app.Deps) *chi.Mux` | root assembler only — returns a mux to be mounted at a path prefix |
+| Domain-level `Mount` function | `Mount(ctx context.Context, r chi.Router, deps *app.Deps)` | root assembler only — owns the canonical path prefix; the only domain symbol the server ever calls |
+| Domain-level `Routes` function | `Routes(ctx context.Context, deps *app.Deps) *chi.Mux` | root assembler only — builds and returns the sub-router; called by `Mount` and in tests |
 | Feature sub-package `Routes` function | `Routes(ctx context.Context, r chi.Router, deps *app.Deps)` | registers routes directly on r; no return value |
+| Cross-namespace admin helper | `Register{Scope}Routes(ctx context.Context, r chi.Router, deps *app.Deps)` | only when a domain contributes to a URL tree it does not own (e.g. `rbac.RegisterAdminRoutes`); the server router owns the group |
 | Auth testutil package | `authsharedtest` | `internal/domain/auth/shared/testutil/` — one package for all auth features |
 | Auth testutil fake | `{Feature}FakeStorer` | `LoginFakeStorer`, `ProfileFakeStorer`, etc. — all in `authsharedtest` |
 | Auth testutil proxy | `QuerierProxy` | single struct in `authsharedtest` covering all features |
@@ -1292,9 +1295,14 @@ Use this checklist when extracting or verifying a feature sub-package.
 - [ ] `password.go` and `otp.go` do not exist — those live in `shared/`.
 
 **`routes.go`**
-- [ ] Exports exactly one symbol: `Routes`.
-- [ ] If this is a feature sub-package: signature is `Routes(ctx context.Context, r chi.Router, deps *app.Deps)` with no return value.
-- [ ] If this is a domain root assembler: signature is `Routes(ctx context.Context, deps *app.Deps) *chi.Mux`.
+- [ ] If this is a domain root assembler: exports exactly two symbols — `Mount` and `Routes`.
+- [ ] If this is a feature sub-package: exports exactly one symbol — `Routes`.
+- [ ] Domain-level `Mount` signature: `Mount(ctx context.Context, r chi.Router, deps *app.Deps)` — calls `r.Mount("/path", Routes(ctx, deps))`.
+- [ ] Domain-level `Routes` signature: `Routes(ctx context.Context, deps *app.Deps) *chi.Mux` — builds and returns the sub-router.
+- [ ] Feature sub-package `Routes` signature: `Routes(ctx context.Context, r chi.Router, deps *app.Deps)` with no return value.
+- [ ] **Exception:** a domain that contributes to a URL tree it does not own (e.g. `rbac` → `/admin`) may also export one `Register{Scope}Routes` helper; document the exception in the package comment.
+- [ ] If this exports `Register{Scope}Routes`: the caller (server/routes.go) owns the URL group and its middleware — the domain assembler must not create the group internally.
+- [ ] Domain `routes.go` never imports another domain package (ADR-010). If cross-domain wiring is needed, the server router performs it.
 - [ ] Rate limiters are constructed locally from `deps.KVStore` — not received as pre-built values.
 - [ ] `deps.JWTAuth` used directly as middleware where authentication is required.
 - [ ] Does not import `config`. All values come from `*app.Deps`.
@@ -1890,20 +1898,28 @@ implementation and [`docs/rules/auth.md §5.9`](rules/auth.md#59-section-separat
 
 ### 4.13 Routes Comments
 
-`Routes` gets a doc comment naming the endpoints it registers, listing the
-rate-limit policy, and showing the call pattern (tab-indented per godoc).
+`Mount` and `Routes` each get a doc comment. The call pattern shown in godoc
+uses tab-indented code blocks.
 
-Domain root assemblers return `*chi.Mux`:
+**Domain root assemblers** — `Mount` owns the path and calls `Routes`:
 
 ```go
+// Mount registers the auth sub-router at /auth on r.
+// Call from server/routes.go inside the /api/v1 route group:
+//
+//	auth.Mount(ctx, r, deps)
+func Mount(ctx context.Context, r chi.Router, deps *app.Deps) {
+	r.Mount("/auth", Routes(ctx, deps))
+}
+
 // Routes returns a self-contained chi sub-router for all /auth endpoints.
-// Mount at /api/v1/auth in the server router:
+// Called by Mount. Use directly in tests to exercise the full domain routing.
 //
 //	r.Mount("/auth", auth.Routes(ctx, deps))
 func Routes(ctx context.Context, deps *app.Deps) *chi.Mux { ... }
 ```
 
-Feature sub-packages accept a `chi.Router` and return nothing:
+**Feature sub-packages** accept a `chi.Router` and return nothing:
 
 ```go
 // Routes registers the login endpoint on r.
@@ -1912,19 +1928,52 @@ Feature sub-packages accept a `chi.Router` and return nothing:
 //	login.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - POST /login: 5 req / 15 min per IP
+//   - POST /login: 12 req / 15 min per IP
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) { ... }
 ```
+
+**Cross-namespace admin helpers** (`Register{Scope}Routes`) show the full
+server-side call site so the reader can see the group they contribute to:
+
+```go
+// RegisterAdminRoutes registers the RBAC catalog endpoints on r.
+// Call from server/routes.go inside the /admin route group:
+//
+//	r.Route("/admin", func(r chi.Router) {
+//		r.Use(chimiddleware.AllowContentType("application/json"))
+//		rbacdomain.RegisterAdminRoutes(ctx, r, deps) // /roles/*, /permissions/*
+//		admindomain.Routes(ctx, r, deps)             // /users/*
+//	})
+func RegisterAdminRoutes(ctx context.Context, r chi.Router, deps *app.Deps) { ... }
+```
+
+**Package comment rules for `routes.go`:**
+- Every domain-level `routes.go` must have a package comment starting with
+  `// Package {name} assembles the {name} domain sub-router.`
+- Package comments must NOT carry call patterns or rate-limit tables — those
+  belong on the `Routes` (or `Register*`) func doc.
+- Feature sub-package `routes.go` package comments state what endpoints the
+  package registers, in one sentence:
+  ```go
+  // Package login registers the POST /login endpoint.
+  package login
+  ```
 
 Rate-limiter variables are unexported locals. Inline comments on each limiter
 construction call name the attack it defends against:
 
 ```go
-// 5 req / 15 min per IP — deters credential stuffing at the network level.
-// rate = 5 / (15 * 60) = 0.00556 tokens/sec.
-ipLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "lgn:ip:", 5.0/(15*60), 5, 15*time.Minute)
+// 12 req / 15 min per IP — burst kept above the per-user lockout threshold
+// so IP limiting never fires before the account lockout path is reachable.
+// rate = 12 / (15 * 60) = 0.01333 tokens/sec.
+ipLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "lgn:ip:", 12.0/(15*60), 12, 15*time.Minute)
 go ipLimiter.StartCleanup(ctx)
 ```
+
+**Import order in `routes.go`** follows the standard three-group rule:
+1. stdlib (`"context"`, `"net/http"`, `"time"`)
+2. third-party (`"github.com/go-chi/chi/v5"`, `"github.com/go-chi/chi/v5/middleware"`)
+3. internal (`"github.com/7-Dany/store/backend/internal/..."`)
 
 ---
 

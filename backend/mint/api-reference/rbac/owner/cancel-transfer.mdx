@@ -2,14 +2,14 @@
 title: "Cancel Transfer"
 authMethod: "bearer"
 description: "Cancels the current pending ownership transfer, invalidating the one-time token that was emailed to the target user. Only the current owner may call this endpoint."
-api: "DELETE http://localhost:8080/api/v1/owner/transfer"
+api: "DELETE /rbac/owner/transfer"
 ---
 
 ## Behaviour
 
 **Owner-only** — The caller must hold the active owner role. Any authenticated user without this role receives `403`.
 
-**Invalidates the token** — The pending transfer token is invalidated, preventing the target user from accepting it. If a new transfer is needed, use [`POST /owner/transfer`](/api-reference/rbac/owner/initiate-transfer) to create a fresh one.
+**Invalidates the token** — The pending transfer token is invalidated, preventing the target user from accepting it. If a new transfer is needed, use [`POST /rbac/owner/transfer`](/api-reference/rbac/owner/initiate-transfer) to create a fresh one.
 
 **No body required** — This is a `DELETE` with no request body.
 
@@ -63,7 +63,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="401 — Unauthorized">
-    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/login/login) and include it in the request header.
+    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/session/login) and include it in the request header.
 
     ```json
     {

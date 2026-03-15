@@ -75,13 +75,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\":\"IdentsUser\",\"email\":\"{{idents_email}}\",\"password\":\"{{idents_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -91,7 +101,7 @@
           }
         },
         {
-          "name": "POST /verify-email → 200",
+          "name": "POST /verification → 200",
           "event": [
             {
               "listen": "prerequest",
@@ -116,18 +126,28 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\":\"{{idents_email}}\",\"code\":\"{{idents_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -150,13 +170,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\":\"{{idents_email}}\",\"password\":\"{{idents_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -207,7 +237,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -238,7 +271,12 @@
           ],
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
               "host": ["{{base_url}}"],
@@ -263,8 +301,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer not.a.real.jwt" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer not.a.real.jwt"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -308,7 +352,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -337,7 +384,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -366,7 +416,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -395,7 +448,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -424,7 +480,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -453,7 +512,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -482,7 +544,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -511,7 +576,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -540,7 +608,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -569,7 +640,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -598,7 +672,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -627,7 +704,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -656,7 +736,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -685,7 +768,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -714,7 +800,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -743,7 +832,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -772,7 +864,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -801,7 +896,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -830,7 +928,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -859,7 +960,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -870,28 +974,157 @@
         },
         {
           "name": "warmup 21/25 — drain refill tokens (silent)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain request — absorbs any token refilled since burst was exhausted.\n// Bucket is already empty so this will 429; that is expected and ignored.\n// No assertion here — only the 26th request asserts 429."] } }],
-          "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{idents_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/me/identities", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "identities"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Drain request — absorbs any token refilled since burst was exhausted.\n// Bucket is already empty so this will 429; that is expected and ignored.\n// No assertion here — only the 26th request asserts 429."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
         },
         {
           "name": "warmup 22/25 — drain refill tokens (silent)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion, see slot 21 comment."] } }],
-          "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{idents_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/me/identities", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "identities"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["// Drain — no assertion, see slot 21 comment."]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
         },
         {
           "name": "warmup 23/25 — drain refill tokens (silent)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion, see slot 21 comment."] } }],
-          "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{idents_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/me/identities", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "identities"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["// Drain — no assertion, see slot 21 comment."]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
         },
         {
           "name": "warmup 24/25 — drain refill tokens (silent)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion, see slot 21 comment."] } }],
-          "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{idents_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/me/identities", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "identities"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["// Drain — no assertion, see slot 21 comment."]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
         },
         {
           "name": "warmup 25/25 — drain refill tokens (silent, bucket now reliably empty)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion. After this the bucket is reliably empty and the 26th request must 429."] } }],
-          "request": { "method": "GET", "header": [{ "key": "Authorization", "value": "Bearer {{idents_access_token}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/me/identities", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me", "identities"] } }
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Drain — no assertion. After this the bucket is reliably empty and the 26th request must 429."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{idents_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/identities",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "identities"]
+            }
+          }
         },
         {
           "name": "26th request → 429 (ident:ip: bucket exhausted)",
@@ -920,7 +1153,10 @@
                 "key": "Authorization",
                 "value": "Bearer {{idents_access_token}}"
               },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/identities",
@@ -948,7 +1184,11 @@
       "value": "",
       "description": "Set by setup from gmail_test_email."
     },
-    { "key": "idents_password", "value": "", "description": "Set by setup." },
+    {
+      "key": "idents_password",
+      "value": "",
+      "description": "Set by setup."
+    },
     {
       "key": "idents_code",
       "value": "",

@@ -1,7 +1,7 @@
 ---
 title: "Verify Current"
 description: "Submit the OTP sent to the current email address to prove ownership and receive a grant token."
-api: "POST http://localhost:8080/me/email/verify-current"
+api: "POST /profile/me/email/verify"
 ---
 
 <ParamField body="code" type="string" required>
@@ -18,9 +18,8 @@ On success the server:
 3. Issues a short-lived **grant token** (UUID string, 10-minute TTL) that must
    be presented in step 3 alongside the new-address OTP.
 
-The grant token ties the verified session to the specific user and target
-address. It is single-use; step 3 deletes it from the KV store immediately
-after a successful confirmation.
+The grant token is tied to the specific user and target address. It is
+single-use and is deleted immediately after a successful confirmation.
 
 OTP attempts are limited. Each wrong code increments a counter against the
 verify token; once the maximum is reached the token is locked and
@@ -69,7 +68,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 <AccordionGroup>
   <Accordion title="200 — OK">
     The OTP was accepted. `grant_token` must be passed to
-    [`POST /me/email/confirm-change`](/api-reference/profile/email/confirm-change)
+    [`PUT /profile/me/email`](/api-reference/profile/email/confirm-change)
     together with the code sent to the new address. `expires_in` is the
     remaining TTL of the grant token in seconds (always 600 at issuance).
 
@@ -132,7 +131,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
     **Too many OTP attempts** — the verify token has been locked after
     exhausting the maximum number of incorrect code submissions. Restart the
-    flow from [`POST /me/email/request-change`](/api-reference/profile/email/request-change).
+    flow from [`POST /profile/me/email`](/api-reference/profile/email/request-change).
 
     ```json
     {

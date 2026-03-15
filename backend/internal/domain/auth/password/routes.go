@@ -1,3 +1,4 @@
+// Package password registers the POST /forgot-password, /verify-reset-code, /reset-password, and /change-password endpoints.
 package password
 
 import (
@@ -14,15 +15,20 @@ import (
 )
 
 // Routes registers the password endpoints on r.
-// Call from the auth root assembler:
+// Call from auth.Routes in internal/domain/auth/routes.go:
 //
 //	password.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - POST /forgot-password:    3 req / 10 min per IP
-//   - POST /verify-reset-code:  5 req / 10 min per IP
-//   - POST /reset-password:     5 req / 10 min per IP
-//   - POST /change-password:    5 req / 15 min per IP
+//   - POST  /password/reset:        3 req / 10 min per IP  ("fpw:ip:")
+//   - POST  /password/reset/verify: 5 req / 10 min per IP  ("vpc:ip:")
+//   - PUT   /password/reset:        5 req / 10 min per IP  ("rpw:ip:")
+//   - PATCH /password:              5 req / 15 min per IP  ("cpw:ip:")
+//
+// Middleware ordering:
+//
+//	POST /password/reset, POST /password/reset/verify, PUT /password/reset: IPRateLimiter → handler.{Method}
+//	PATCH /password:                                                          IPRateLimiter → JWTAuth → handler.ChangePassword
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// 3 req / 10 min per IP — limits password-reset OTP flooding per network origin.
 	// rate = 3 / (10 * 60) = 0.005 tokens/sec.
@@ -69,9 +75,9 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 		10*time.Minute,  // grantTTL
 	)
 
-	ratelimit.RouteWithIP(r, http.MethodPost, "/forgot-password",   h.ForgotPassword, forgotLimiter)
-	ratelimit.RouteWithIP(r, http.MethodPost, "/verify-reset-code", h.VerifyResetCode, verifyLimiter)
-	ratelimit.RouteWithIP(r, http.MethodPost, "/reset-password",    h.ResetPassword,  resetLimiter)
+	ratelimit.RouteWithIP(r, http.MethodPost, "/password/reset",        h.ForgotPassword, forgotLimiter)
+	ratelimit.RouteWithIP(r, http.MethodPost, "/password/reset/verify", h.VerifyResetCode, verifyLimiter)
+	ratelimit.RouteWithIP(r, http.MethodPut,  "/password/reset",        h.ResetPassword,  resetLimiter)
 
 	r.Group(func(r chi.Router) {
 		// Rate limiter fires before auth so unauthenticated warmup requests still
@@ -79,6 +85,6 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 		// whether the token is valid.
 		r.Use(changePasswordLimiter.Limit)
 		r.Use(deps.JWTAuth)
-		r.Post("/change-password", h.ChangePassword)
+		r.Patch("/password", h.ChangePassword)
 	})
 }

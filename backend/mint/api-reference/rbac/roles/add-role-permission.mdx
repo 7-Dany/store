@@ -1,7 +1,7 @@
 ---
 title: "Add Role Permission"
 description: "Assigns a permission to a role."
-api: "POST http://localhost:8080/admin/rbac/roles/{id}/permissions"
+api: "POST /rbac/roles/{id}/permissions"
 ---
 
 <ParamField path="id" type="string" required>
@@ -53,9 +53,9 @@ api: "POST http://localhost:8080/admin/rbac/roles/{id}/permissions"
 
 Adds a permission grant to the role. The caller's identity is recorded alongside the grant for audit purposes. If `conditions` is not provided it defaults to an empty object (`{}`).
 
-Before calling this endpoint, read the permission's `capabilities` field from [`GET /admin/rbac/permissions`](/api-reference/rbac/permissions/list-permissions) to determine which `access_type` and `scope` values are valid for that permission. Passing values outside what the permission allows returns `422`.
+Before calling this endpoint, read the permission's `capabilities` field from [`GET /rbac/permissions`](/api-reference/rbac/permissions/list-permissions) to determine which `access_type` and `scope` values are valid for that permission. Passing values outside what the permission allows returns `422`.
 
-If the permission is already granted to the role, the endpoint returns `409 grant_already_exists` rather than silently updating the grant. To change the `access_type` or `scope` of an existing grant, remove it first with [`DELETE /admin/rbac/roles/{id}/permissions/{perm_id}`](/api-reference/rbac/roles/remove-role-permission), then re-add it with the new values.
+If the permission is already granted to the role, the endpoint returns `409 grant_already_exists` rather than silently updating the grant. To change the `access_type` or `scope` of an existing grant, remove it first with [`DELETE /rbac/roles/{id}/permissions/{perm_id}`](/api-reference/rbac/roles/remove-role-permission), then re-add it with the new values.
 
 To understand the full grant workflow, see the [Permission Setup Guide](/guides/rbac/permissions-setup-guide).
 
@@ -170,7 +170,7 @@ To understand the full grant workflow, see the [Permission Setup Guide](/guides/
 
   <Accordion title="409 — Conflict">
     The permission is already granted to this role. Remove the existing grant first using
-    [`DELETE /admin/rbac/roles/{id}/permissions/{perm_id}`](/api-reference/rbac/roles/remove-role-permission)
+    [`DELETE /rbac/roles/{id}/permissions/{perm_id}`](/api-reference/rbac/roles/remove-role-permission)
     before re-adding with a different `access_type` or `scope`.
 
     ```json
@@ -216,7 +216,7 @@ To understand the full grant workflow, see the [Permission Setup Guide](/guides/
     }
     ```
 
-    Check `capabilities.scope_policy` and `capabilities.access_types` from [`GET /admin/rbac/permissions`](/api-reference/rbac/permissions/list-permissions) before building the grant request.
+    Check `capabilities.scope_policy` and `capabilities.access_types` from [`GET /rbac/permissions`](/api-reference/rbac/permissions/list-permissions) before building the grant request.
   </Accordion>
 
   <Accordion title="500 — Internal Server Error">

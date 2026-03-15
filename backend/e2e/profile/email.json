@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "profile-email-change-e2e",
-    "name": "Profile \u2013 Email Change (POST /email/request-change + POST /email/verify-current + POST /email/confirm-change)",
-    "description": "E2E tests for the three-step email change flow.\n\nFolder execution order (single invocation via make e2e-email):\n  1. setup              \u2014 register gmail_test_email, fetch OTP, verify email, login \u2192 echg_access_token\n  2. happy-path         \u2014 step1 (request-change) \u2192 fetch step1 OTP \u2192 step2 (verify-current) \u2192 fetch step2 OTP \u2192 step3 (confirm-change) \u2192 re-login \u2192 GET /me confirm DB write\n  3. failures           \u2014 cooldown_active, same_email, email_taken, wrong-code, invalid_grant_token\n  4. auth-failures      \u2014 missing Authorization \u2192 401 on all 3 endpoints\n  5. validation         \u2014 body > 1 MiB \u2192 413; malformed JSON \u2192 400\n  6. rate-limiting-req  \u2014 echg:usr: burst=3; dedicated +echgrlreq alias user\n  7. rate-limiting-vfy  \u2014 echg:usr:vfy: burst=5; dedicated +echgrlvfy alias user + one step1 seed\n  8. rate-limiting-cnf  \u2014 echg:usr:cnf: burst=5; dedicated +echgrlcnf alias user, bad grant_token warmup\n\nAll rate-limiters are user-keyed (JWT available at every endpoint). Running all folders in a single\nNewman invocation preserves collection variables (echg_access_token, etc.) across folders.\nRedis is flushed once before the run (_e2e-clean); no mid-run flush is needed.\n\nVariable prefix: echg_\n\nNotes on what is NOT covered here and why:\n  - T-02\u2013T-04: individual new_email validation variants \u2192 handler_test.go\n  - T-03: code format variants \u2192 handler_test.go\n  - T-08: ErrUserNotFound \u2192 500 \u2192 handler_test.go\n  - T-09, T-20, T-21, T-38, T-39: context.WithoutCancel \u2192 service_test.go\n  - T-10: store error prefix wrapping \u2192 service_test.go\n  - T-11, T-12: DB-level token state \u2192 store_test.go\n  - T-19, T-33: wrong-code increment call count \u2192 service_test.go\n  - T-29: grant_token user_id mismatch \u2192 service_test.go\n  - T-34: ErrEmailTaken inside tx (race) \u2192 store_test.go T-41\n  - T-36, T-37: RevokeAllRefreshTokens + Blocklist called \u2192 confirmed indirectly by re-login test\n  - T-41: SetUserEmailZero \u2192 ErrUserNotFound \u2192 store_test.go\n\nAll test users use gmail_test_email or @e2e.test addresses so `make _e2e-db-clean` can wipe them.",
+    "name": "Profile \u2013 Email Change (POST /email + POST /email/verify + PUT /email)",
+    "description": "E2E tests for the three-step email change flow.\n\nFolder execution order (single invocation via make e2e-email):\n  1. setup              \u2014 register gmail_test_email, fetch OTP, verify email, login \u2192 echg_access_token\n  2. happy-path         \u2014 step1 (POST /email) \u2192 fetch step1 OTP \u2192 step2 (POST /email/verify) \u2192 fetch step2 OTP \u2192 step3 (PUT /email) \u2192 re-login \u2192 GET /me confirm DB write\n  3. failures           \u2014 cooldown_active, same_email, email_taken, wrong-code, invalid_grant_token\n  4. auth-failures      \u2014 missing Authorization \u2192 401 on all 3 endpoints\n  5. validation         \u2014 body > 1 MiB \u2192 413; malformed JSON \u2192 400\n  6. rate-limiting-req  \u2014 echg:usr: burst=3; dedicated +echgrlreq alias user\n  7. rate-limiting-vfy  \u2014 echg:usr:vfy: burst=5; dedicated +echgrlvfy alias user + one step1 seed\n  8. rate-limiting-cnf  \u2014 echg:usr:cnf: burst=5; dedicated +echgrlcnf alias user, bad grant_token warmup\n\nAll rate-limiters are user-keyed (JWT available at every endpoint). Running all folders in a single\nNewman invocation preserves collection variables (echg_access_token, etc.) across folders.\nRedis is flushed once before the run (_e2e-clean); no mid-run flush is needed.\n\nVariable prefix: echg_\n\nNotes on what is NOT covered here and why:\n  - T-02\u2013T-04: individual new_email validation variants \u2192 handler_test.go\n  - T-03: code format variants \u2192 handler_test.go\n  - T-08: ErrUserNotFound \u2192 500 \u2192 handler_test.go\n  - T-09, T-20, T-21, T-38, T-39: context.WithoutCancel \u2192 service_test.go\n  - T-10: store error prefix wrapping \u2192 service_test.go\n  - T-11, T-12: DB-level token state \u2192 store_test.go\n  - T-19, T-33: wrong-code increment call count \u2192 service_test.go\n  - T-29: grant_token user_id mismatch \u2192 service_test.go\n  - T-34: ErrEmailTaken inside tx (race) \u2192 store_test.go T-41\n  - T-36, T-37: RevokeAllRefreshTokens + Blocklist called \u2192 confirmed indirectly by re-login test\n  - T-41: SetUserEmailZero \u2192 ErrUserNotFound \u2192 store_test.go\n\nAll test users use gmail_test_email or @e2e.test addresses so `make _e2e-db-clean` can wipe them.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -127,7 +127,7 @@
           }
         },
         {
-          "name": "POST /verify-email \u2192 200 (consume verification OTP)",
+          "name": "POST /verification \u2192 200 (consume verification OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -174,9 +174,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -229,10 +229,10 @@
     },
     {
       "name": "happy-path",
-      "description": "Covers the complete three-step email-change wire path for the primary user.\n\nNew email target: +echgnew Gmail alias (same inbox, different to: address).\n\nOrder:\n  step1 (request-change \u2192 200) \u2192 fetch step1 OTP from Gmail \u2192\n  step2 (verify-current \u2192 200) \u2192 fetch step2 OTP from Gmail \u2192\n  step3 (confirm-change \u2192 200) \u2192\n  re-login with new email \u2192 GET /me confirm DB write.\n\nAfter step3, echg_access_token is blocklisted. All subsequent auth uses echg_access_token_v2.\n\nNOT covered here:\n  - Token revocation side-effects (T-36, T-37): confirmed indirectly by re-login success.\n  - DB-level KV state (T-11, T-23): covered by store_test.go.",
+      "description": "Covers the complete three-step email-change wire path for the primary user.\n\nNew email target: +echgnew Gmail alias (same inbox, different to: address).\n\nOrder:\n  step1 (POST /email \u2192 200) \u2192 fetch step1 OTP from Gmail \u2192\n  step2 (POST /email/verify \u2192 200) \u2192 fetch step2 OTP from Gmail \u2192\n  step3 (PUT /email \u2192 200) \u2192\n  re-login with new email \u2192 GET /me confirm DB write.\n\nAfter step3, echg_access_token is blocklisted. All subsequent auth uses echg_access_token_v2.\n\nNOT covered here:\n  - Token revocation side-effects (T-36, T-37): confirmed indirectly by re-login success.\n  - DB-level KV state (T-11, T-23): covered by store_test.go.",
       "item": [
         {
-          "name": "POST /email/request-change \u2192 200 (step 1 \u2014 send OTP to current email)",
+          "name": "POST /email \u2192 200 (step 1 \u2014 send OTP to current email)",
           "event": [
             {
               "listen": "prerequest",
@@ -331,14 +331,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "POST /email/verify-current \u2192 200 (step 2 \u2014 confirm OTP, receive grant_token)",
+          "name": "POST /email/verify \u2192 200 (step 2 \u2014 confirm OTP, receive grant_token)",
           "event": [
             {
               "listen": "prerequest",
@@ -437,14 +437,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+              "path": ["api", "v1", "profile", "me", "email", "verify"]
             }
           }
         },
         {
-          "name": "POST /email/confirm-change \u2192 200 (step 3 \u2014 update email, revoke all tokens)",
+          "name": "PUT /email \u2192 200 (step 3 \u2014 update email, revoke all tokens)",
           "event": [
             {
               "listen": "prerequest",
@@ -476,7 +476,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -501,9 +501,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
@@ -695,7 +695,7 @@
           }
         },
         {
-          "name": "fail-setup 2/3 \u2014 POST /verify-email \u2192 200 (+echgfail alias user)",
+          "name": "fail-setup 2/3 \u2014 POST /verification \u2192 200 (+echgfail alias user)",
           "event": [
             {
               "listen": "prerequest",
@@ -739,9 +739,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -837,7 +837,7 @@
           }
         },
         {
-          "name": "POST /email/request-change \u2192 422 same_email (T-05)",
+          "name": "POST /email \u2192 422 same_email (T-05)",
           "event": [
             {
               "listen": "test",
@@ -879,14 +879,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "POST /email/request-change \u2192 409 email_taken (T-06)",
+          "name": "POST /email \u2192 409 email_taken (T-06)",
           "event": [
             {
               "listen": "test",
@@ -928,14 +928,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "POST /email/request-change \u2192 200 (seed cooldown \u2014 3rd and final echg:usr: slot)",
+          "name": "POST /email \u2192 200 (seed cooldown \u2014 3rd and final echg:usr: slot)",
           "event": [
             {
               "listen": "test",
@@ -976,21 +976,21 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "POST /email/request-change \u2192 429 cooldown_active or too_many_requests (T-07)",
+          "name": "POST /email \u2192 429 cooldown_active or too_many_requests (T-07)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-07 \u2014 second request-change within 2-minute cooldown window \u2192 429 cooldown_active.",
+                  "// T-07 \u2014 second POST /email within 2-minute cooldown window \u2192 429 cooldown_active.",
                   "// WHY BOTH ACCEPTED: echg:usr: burst=3 is now exhausted (3 slots consumed above).",
                   "// The 4th request hits echg:usr: rate limiter \u2192 429 too_many_requests.",
                   "// The cooldown guard also fires, returning 429 cooldown_active.",
@@ -1030,14 +1030,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "POST /email/verify-current \u2192 422 wrong code (T-18/T-19 representative)",
+          "name": "POST /email/verify \u2192 422 wrong code (T-18/T-19 representative)",
           "event": [
             {
               "listen": "test",
@@ -1079,14 +1079,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+              "path": ["api", "v1", "profile", "me", "email", "verify"]
             }
           }
         },
         {
-          "name": "POST /email/confirm-change \u2192 422 invalid_grant_token (T-28)",
+          "name": "PUT /email \u2192 422 invalid_grant_token (T-28)",
           "event": [
             {
               "listen": "test",
@@ -1103,7 +1103,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1128,9 +1128,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         }
@@ -1141,7 +1141,7 @@
       "description": "Verifies that the JWTAuth middleware guards all three email-change endpoints.\nNo Authorization header \u2192 401 on all three. JWT middleware fires before rate limiters \u2014 no slots consumed.",
       "item": [
         {
-          "name": "POST /email/request-change \u2192 401 missing Authorization",
+          "name": "POST /email \u2192 401 missing Authorization",
           "event": [
             {
               "listen": "test",
@@ -1177,14 +1177,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "POST /email/verify-current \u2192 401 missing Authorization",
+          "name": "POST /email/verify \u2192 401 missing Authorization",
           "event": [
             {
               "listen": "test",
@@ -1219,14 +1219,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+              "path": ["api", "v1", "profile", "me", "email", "verify"]
             }
           }
         },
         {
-          "name": "POST /email/confirm-change \u2192 401 missing Authorization",
+          "name": "PUT /email \u2192 401 missing Authorization",
           "event": [
             {
               "listen": "test",
@@ -1240,7 +1240,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1261,9 +1261,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         }
@@ -1271,10 +1271,10 @@
     },
     {
       "name": "validation",
-      "description": "Infrastructure-level request validation. Tests body > 1 MiB and malformed JSON on POST /email/request-change only \u2014 the same MaxBytesReader / DecodeJSON path is shared by all three handlers.\n\nUses echg_access_token_v2. echg:usr: bucket may be exhausted from failures folder (3 slots) \u2014 the 413 test therefore accepts 429 as well since rate limiter fires before MaxBytesReader.",
+      "description": "Infrastructure-level request validation. Tests body > 1 MiB and malformed JSON on POST /email only \u2014 the same MaxBytesReader / DecodeJSON path is shared by all three handlers.\n\nUses echg_access_token_v2. echg:usr: bucket may be exhausted from failures folder (3 slots) \u2014 the 413 test therefore accepts 429 as well since rate limiter fires before MaxBytesReader.",
       "item": [
         {
-          "name": "POST /email/request-change \u2192 413 body > 1 MiB",
+          "name": "POST /email \u2192 413 body > 1 MiB",
           "event": [
             {
               "listen": "prerequest",
@@ -1329,14 +1329,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "POST /email/request-change \u2192 400 malformed JSON",
+          "name": "POST /email \u2192 400 malformed JSON",
           "event": [
             {
               "listen": "test",
@@ -1379,9 +1379,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         }
@@ -1389,7 +1389,7 @@
     },
     {
       "name": "rate-limiting-req",
-      "description": "Verifies the echg:usr: per-user rate limiter for POST /email/request-change (burst=3, rate=3/10 min).\n\nWhy a dedicated user (+echgrlreq alias):\n  echg_access_token_v2's echg:usr: bucket was exhausted by the failures + validation folders\n  (3 slots consumed). A fresh user with a fresh bucket is required for a reliable burst=3 \u2192 429 trigger.\n\nWarmup notes:\n  Slot 1: succeeds (\u2192 200, no cooldown yet).\n  Slot 2: the same-target request-change fires within 2 min of slot 1 \u2192 429 cooldown_active (from service).\n    The test accepts 429 cooldown_active OR 200 (if targets differ) \u2014 it must NOT be 429 too_many_requests.\n  Slot 3: same as slot 2.\n  Slot 4: echg:usr: bucket exhausted \u2192 429 too_many_requests (rate limiter fires before service guards).\n\nRetry-After = ceil(1 / (3/600)) = ceil(200) = 200 seconds.",
+      "description": "Verifies the echg:usr: per-user rate limiter for POST /email (burst=3, rate=3/10 min).\n\nWhy a dedicated user (+echgrlreq alias):\n  echg_access_token_v2's echg:usr: bucket was exhausted by the failures + validation folders\n  (3 slots consumed). A fresh user with a fresh bucket is required for a reliable burst=3 \u2192 429 trigger.\n\nWarmup notes:\n  Slot 1: succeeds (\u2192 200, no cooldown yet).\n  Slot 2: the same-target POST /email fires within 2 min of slot 1 \u2192 429 cooldown_active (from service).\n    The test accepts 429 cooldown_active OR 200 (if targets differ) \u2014 it must NOT be 429 too_many_requests.\n  Slot 3: same as slot 2.\n  Slot 4: echg:usr: bucket exhausted \u2192 429 too_many_requests (rate limiter fires before service guards).\n\nRetry-After = ceil(1 / (3/600)) = ceil(200) = 200 seconds.",
       "event": [
         {
           "listen": "prerequest",
@@ -1504,7 +1504,7 @@
           }
         },
         {
-          "name": "rl-req-setup 2/3 \u2014 POST /verify-email \u2192 200 (+echgrlreq alias user)",
+          "name": "rl-req-setup 2/3 \u2014 POST /verification \u2192 200 (+echgrlreq alias user)",
           "event": [
             {
               "listen": "prerequest",
@@ -1550,9 +1550,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -1602,7 +1602,7 @@
           }
         },
         {
-          "name": "warmup 1/3 \u2014 POST /email/request-change \u2192 not 429 (echg:usr: slot 1 \u2014 first call succeeds)",
+          "name": "warmup 1/3 \u2014 POST /email \u2192 not 429 (echg:usr: slot 1 \u2014 first call succeeds)",
           "event": [
             {
               "listen": "test",
@@ -1642,14 +1642,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "warmup 2/3 \u2014 POST /email/request-change \u2192 not 429 too_many_requests (echg:usr: slot 2)",
+          "name": "warmup 2/3 \u2014 POST /email \u2192 not 429 too_many_requests (echg:usr: slot 2)",
           "event": [
             {
               "listen": "test",
@@ -1694,14 +1694,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "warmup 3/3 \u2014 POST /email/request-change \u2192 not 429 too_many_requests (echg:usr: slot 3 \u2014 last)",
+          "name": "warmup 3/3 \u2014 POST /email \u2192 not 429 too_many_requests (echg:usr: slot 3 \u2014 last)",
           "event": [
             {
               "listen": "test",
@@ -1746,9 +1746,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
@@ -1799,9 +1799,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         }
@@ -1809,7 +1809,7 @@
     },
     {
       "name": "rate-limiting-vfy",
-      "description": "Verifies the echg:usr:vfy: per-user rate limiter for POST /email/verify-current (burst=5, rate=5/15 min).\n\nStrategy: one step1 call seeds a verify token for the +echgrlvfy user; then five POST /email/verify-current calls with code '000000' each pass the rate limiter (slot consumed) and return 422 validation_error (wrong code). The 6th fires the RL and returns 429 too_many_requests.\n\nRetry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
+      "description": "Verifies the echg:usr:vfy: per-user rate limiter for POST /email/verify (burst=5, rate=5/15 min).\n\nStrategy: one step1 call seeds a verify token for the +echgrlvfy user; then five POST /email/verify calls with code '000000' each pass the rate limiter (slot consumed) and return 422 validation_error (wrong code). The 6th fires the RL and returns 429 too_many_requests.\n\nRetry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
       "event": [
         {
           "listen": "prerequest",
@@ -1917,7 +1917,7 @@
           }
         },
         {
-          "name": "rl-vfy-setup 2/3 \u2014 POST /verify-email \u2192 200 (+echgrlvfy alias user)",
+          "name": "rl-vfy-setup 2/3 \u2014 POST /verification \u2192 200 (+echgrlvfy alias user)",
           "event": [
             {
               "listen": "prerequest",
@@ -1961,9 +1961,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -2013,7 +2013,7 @@
           }
         },
         {
-          "name": "seed verify token \u2014 POST /email/request-change \u2192 200 (active OTP now in DB)",
+          "name": "seed verify token \u2014 POST /email \u2192 200 (active OTP now in DB)",
           "event": [
             {
               "listen": "test",
@@ -2021,7 +2021,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "// Seeds a pending email_change_verify token for +echgrlvfy user.",
-                  "// Warmup verify-current calls will find this token and return 422 (wrong code 000000).",
+                  "// Warmup POST /email/verify calls will find this token and return 422 (wrong code 000000).",
                   "pm.test('status is 200 (verify token seeded)', () => pm.response.to.have.status(200));"
                 ]
               }
@@ -2053,14 +2053,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/request-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "request-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "warmup 1/5 \u2014 POST /email/verify-current \u2192 not 429 (echg:usr:vfy: slot 1)",
+          "name": "warmup 1/5 \u2014 POST /email/verify \u2192 not 429 (echg:usr:vfy: slot 1)",
           "event": [
             {
               "listen": "test",
@@ -2099,14 +2099,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+              "path": ["api", "v1", "profile", "me", "email", "verify"]
             }
           }
         },
         {
-          "name": "warmup 2/5 \u2014 POST /email/verify-current \u2192 not 429 (echg:usr:vfy: slot 2)",
+          "name": "warmup 2/5 \u2014 POST /email/verify \u2192 not 429 (echg:usr:vfy: slot 2)",
           "event": [
             {
               "listen": "test",
@@ -2144,14 +2144,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+              "path": ["api", "v1", "profile", "me", "email", "verify"]
             }
           }
         },
         {
-          "name": "warmup 3/5 \u2014 POST /email/verify-current \u2192 not 429 (echg:usr:vfy: slot 3)",
+          "name": "warmup 3/5 \u2014 POST /email/verify \u2192 not 429 (echg:usr:vfy: slot 3)",
           "event": [
             {
               "listen": "test",
@@ -2189,14 +2189,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+              "path": ["api", "v1", "profile", "me", "email", "verify"]
             }
           }
         },
         {
-          "name": "warmup 4/5 \u2014 POST /email/verify-current \u2192 not 429 (echg:usr:vfy: slot 4)",
+          "name": "warmup 4/5 \u2014 POST /email/verify \u2192 not 429 (echg:usr:vfy: slot 4)",
           "event": [
             {
               "listen": "test",
@@ -2234,14 +2234,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+              "path": ["api", "v1", "profile", "me", "email", "verify"]
             }
           }
         },
         {
-          "name": "warmup 5/5 \u2014 POST /email/verify-current \u2192 not 429 (echg:usr:vfy: slot 5 \u2014 last)",
+          "name": "warmup 5/5 \u2014 POST /email/verify \u2192 not 429 (echg:usr:vfy: slot 5 \u2014 last)",
           "event": [
             {
               "listen": "test",
@@ -2279,9 +2279,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+              "path": ["api", "v1", "profile", "me", "email", "verify"]
             }
           }
         },
@@ -2332,9 +2332,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/verify-current",
+              "raw": "{{base_url}}/api/v1/profile/me/email/verify",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "verify-current"]
+              "path": ["api", "v1", "profile", "me", "email", "verify"]
             }
           }
         }
@@ -2342,7 +2342,7 @@
     },
     {
       "name": "rate-limiting-cnf",
-      "description": "Verifies the echg:usr:cnf: per-user rate limiter for POST /email/confirm-change (burst=5, rate=5/15 min).\n\nStrategy: no valid grant_token needed. Five POST /email/confirm-change requests with a random nil-UUID grant_token each pass the rate limiter (slot consumed) and return 422 invalid_grant_token (KV lookup fails). The 6th fires the RL and returns 429 too_many_requests.\n\nRetry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
+      "description": "Verifies the echg:usr:cnf: per-user rate limiter for PUT /email (burst=5, rate=5/15 min).\n\nStrategy: no valid grant_token needed. Five PUT /email requests with a random nil-UUID grant_token each pass the rate limiter (slot consumed) and return 422 invalid_grant_token (KV lookup fails). The 6th fires the RL and returns 429 too_many_requests.\n\nRetry-After = ceil(1 / (5/900)) = ceil(180) = 180 seconds.",
       "event": [
         {
           "listen": "prerequest",
@@ -2450,7 +2450,7 @@
           }
         },
         {
-          "name": "rl-cnf-setup 2/3 \u2014 POST /verify-email \u2192 200 (+echgrlcnf alias user)",
+          "name": "rl-cnf-setup 2/3 \u2014 POST /verification \u2192 200 (+echgrlcnf alias user)",
           "event": [
             {
               "listen": "prerequest",
@@ -2494,9 +2494,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -2546,7 +2546,7 @@
           }
         },
         {
-          "name": "warmup 1/5 \u2014 POST /email/confirm-change \u2192 not 429 (echg:usr:cnf: slot 1)",
+          "name": "warmup 1/5 \u2014 PUT /email \u2192 not 429 (echg:usr:cnf: slot 1)",
           "event": [
             {
               "listen": "test",
@@ -2560,7 +2560,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -2585,14 +2585,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "warmup 2/5 \u2014 POST /email/confirm-change \u2192 not 429 (echg:usr:cnf: slot 2)",
+          "name": "warmup 2/5 \u2014 PUT /email \u2192 not 429 (echg:usr:cnf: slot 2)",
           "event": [
             {
               "listen": "test",
@@ -2605,7 +2605,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -2630,14 +2630,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "warmup 3/5 \u2014 POST /email/confirm-change \u2192 not 429 (echg:usr:cnf: slot 3)",
+          "name": "warmup 3/5 \u2014 PUT /email \u2192 not 429 (echg:usr:cnf: slot 3)",
           "event": [
             {
               "listen": "test",
@@ -2650,7 +2650,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -2675,14 +2675,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "warmup 4/5 \u2014 POST /email/confirm-change \u2192 not 429 (echg:usr:cnf: slot 4)",
+          "name": "warmup 4/5 \u2014 PUT /email \u2192 not 429 (echg:usr:cnf: slot 4)",
           "event": [
             {
               "listen": "test",
@@ -2695,7 +2695,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -2720,14 +2720,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
         {
-          "name": "warmup 5/5 \u2014 POST /email/confirm-change \u2192 not 429 (echg:usr:cnf: slot 5 \u2014 last)",
+          "name": "warmup 5/5 \u2014 PUT /email \u2192 not 429 (echg:usr:cnf: slot 5 \u2014 last)",
           "event": [
             {
               "listen": "test",
@@ -2740,7 +2740,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -2765,9 +2765,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         },
@@ -2793,7 +2793,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -2818,9 +2818,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/me/email/confirm-change",
+              "raw": "{{base_url}}/api/v1/profile/me/email",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me", "email", "confirm-change"]
+              "path": ["api", "v1", "profile", "me", "email"]
             }
           }
         }
@@ -2856,7 +2856,7 @@
     {
       "key": "echg_access_token",
       "value": "",
-      "description": "Access token for primary user after initial login. Valid until step 3 (confirm-change) blocklists it."
+      "description": "Access token for primary user after initial login. Valid until step 3 (PUT /email) blocklists it."
     },
     {
       "key": "echg_new_email",
@@ -2871,7 +2871,7 @@
     {
       "key": "echg_grant_token",
       "value": "",
-      "description": "Grant token returned by verify-current (step 2). Stored by happy-path/step2 test script. Used in step 3 body."
+      "description": "Grant token returned by POST /email/verify (step 2). Stored by happy-path/step2 test script. Used in step 3 body."
     },
     {
       "key": "echg_step2_code",

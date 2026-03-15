@@ -2,7 +2,7 @@
 title: "Verify Email"
 authMethod: "none"
 description: "Confirms ownership of the registered email address using the 6-digit OTP sent at registration."
-api: "POST http://localhost:8080/api/v1/auth/verify-email"
+api: "POST /auth/verification"
 ---
 
 <ParamField body="email" type="string" required>
@@ -22,15 +22,13 @@ api: "POST http://localhost:8080/api/v1/auth/verify-email"
 
 Submitting the correct OTP marks the account as verified and consumes the token so it cannot be replayed. If the account is already verified the endpoint returns `200` with a distinct message — it is safe to call more than once.
 
-**OTP lifetime** — The code is valid for **15 minutes** from the time it was issued (either at registration or via [`POST /resend-verification`](/api-reference/auth/verification/resend-verification)). After expiry the token is rejected and the user must request a fresh code.
+**OTP lifetime** — The code is valid for **15 minutes** from the time it was issued (either at registration or via [`POST /auth/verification/resend`](/api-reference/auth/verification/resend-verification)). After expiry the token is rejected and the user must request a fresh code.
 
-Wrong codes are tracked per-token. Once the attempt ceiling is reached the token is permanently locked and any further submission — including a correct code — returns `429`. A new OTP must be requested via [`POST /resend-verification`](/api-reference/auth/verification/resend-verification).
-
-An exponential backoff gate operates independently per IP. If the IP has accumulated enough failures it will be blocked before the request reaches the database.
+Wrong codes are tracked per-token. Once the attempt ceiling is reached the token is permanently locked and any further submission — including a correct code — returns `429`. A new OTP must be requested via [`POST /auth/verification/resend`](/api-reference/auth/verification/resend-verification).
 
 <AccordionGroup>
   <Accordion title="Frontend implementation">
-    Start a 15:00 countdown the moment the code is sent (registration or resend). Disable the verify submit button when the timer hits zero and replace it with a prompt to request a new code via [`POST /resend-verification`](/api-reference/auth/verification/resend-verification). There is no server-side notification when a token expires — the client must drive this entirely from the timer.
+    Start a 15:00 countdown the moment the code is sent (registration or resend). Disable the verify submit button when the timer hits zero and replace it with a prompt to request a new code via [`POST /auth/verification/resend`](/api-reference/auth/verification/resend-verification). There is no server-side notification when a token expires — the client must drive this entirely from the timer.
   </Accordion>
 </AccordionGroup>
 
@@ -129,7 +127,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="423 — Account Locked">
-    The account has been administratively locked and cannot be verified. Contact support or use `POST /request-unlock` if the unlock flow is available to you.
+    The account has been administratively locked and cannot be verified. Contact support or use [`POST /auth/unlock`](/api-reference/auth/unlock/request-unlock) if the unlock flow is available to you.
 
     ```json
     {
@@ -140,7 +138,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="429 — Too Many Attempts / Rate Limited">
-    Returned for two distinct reasons. The OTP has received too many incorrect submissions and the token is now permanently locked — request a fresh code via `POST /resend-verification`. Alternatively, the IP address has exceeded the endpoint rate limit or triggered the exponential backoff gate. Check the `Retry-After` response header in all cases.
+    Returned for two distinct reasons. The OTP has received too many incorrect submissions and the token is now permanently locked — request a fresh code via [`POST /auth/verification/resend`](/api-reference/auth/verification/resend-verification). Alternatively, the IP address has exceeded the endpoint rate limit or triggered the exponential backoff gate. Check the `Retry-After` response header in all cases.
 
     ```json
     {

@@ -1,3 +1,4 @@
+// Package telegram registers the POST /telegram/callback, POST /telegram/link, and DELETE /telegram/unlink endpoints.
 package telegram
 
 import (
@@ -11,14 +12,20 @@ import (
 )
 
 // Routes registers all Telegram OAuth endpoints on r.
-// Call from the oauth root assembler:
+// Call from oauth.Routes in internal/domain/oauth/routes.go:
 //
 //	telegram.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - POST   /telegram/callback — 10 req / 1 min per IP
-//   - POST   /telegram/link     — 5 req / 15 min per authenticated user
-//   - DELETE /telegram/unlink   — 5 req / 15 min per authenticated user
+//   - POST   /telegram/callback: 10 req / 1 min  per IP    ("tgcb:ip:")
+//   - PUT    /telegram:           5 req / 15 min per user   ("tglnk:usr:")
+//   - DELETE /telegram:           5 req / 15 min per user   ("tgunlk:usr:")
+//
+// Middleware ordering:
+//
+//	POST   /telegram/callback: IPRateLimiter → handler.HandleCallback
+//	PUT    /telegram:           JWTAuth → UserRateLimiter → handler.HandleLink
+//	DELETE /telegram:           JWTAuth → UserRateLimiter → handler.HandleUnlink
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// ── Rate limiters ─────────────────────────────────────────────────────────
 
@@ -62,9 +69,9 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// POST /telegram/callback — Telegram Login Widget callback (IP-rate-limited; public)
 	r.With(cbLimiter.Limit).Post("/telegram/callback", h.HandleCallback)
 
-	// POST /telegram/link — link Telegram identity (JWT auth + user-rate-limited)
-	r.With(deps.JWTAuth, linkLimiter.Limit).Post("/telegram/link", h.HandleLink)
+	// PUT /telegram — link Telegram identity (JWT auth + user-rate-limited)
+	r.With(deps.JWTAuth, linkLimiter.Limit).Put("/telegram", h.HandleLink)
 
-	// DELETE /telegram/unlink — remove Telegram identity (JWT auth + user-rate-limited)
-	r.With(deps.JWTAuth, unlinkLimiter.Limit).Delete("/telegram/unlink", h.HandleUnlink)
+	// DELETE /telegram — remove Telegram identity (JWT auth + user-rate-limited)
+	r.With(deps.JWTAuth, unlinkLimiter.Limit).Delete("/telegram", h.HandleUnlink)
 }

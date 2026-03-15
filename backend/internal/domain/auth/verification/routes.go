@@ -1,3 +1,4 @@
+// Package verification registers the POST /verify-email and POST /resend-verification endpoints.
 package verification
 
 import (
@@ -14,13 +15,17 @@ import (
 )
 
 // Routes registers the verification endpoints on r.
-// Call from the auth root assembler:
+// Call from auth.Routes in internal/domain/auth/routes.go:
 //
 //	verification.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - POST /verify-email:        5 req / 10 min per IP (burst=5)  +  exponential backoff after OTP failures
-//   - POST /resend-verification: 3 req / 10 min per IP (burst=3)
+//   - POST /verification:        5 req / 10 min per IP  ("vfy:ip:") + exponential backoff after OTP failures ("vfy:bo:")
+//   - POST /verification/resend: 3 req / 10 min per IP  ("rsnd:ip:")
+//
+// Middleware ordering:
+//
+//	POST /verification, /verification/resend: IPRateLimiter → handler.{Method}
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// 5 req / 10 min per IP, burst=5.
 	// rate = 5 / (10 * 60) = 0.00833 tokens/sec.
@@ -46,6 +51,6 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 		Timeout: deps.MailDeliveryTimeout,
 	})
 
-	ratelimit.RouteWithIP(r, http.MethodPost, "/verify-email", h.VerifyEmail, ipLimiter)
-	ratelimit.RouteWithIP(r, http.MethodPost, "/resend-verification", h.ResendVerification, resendLimiter)
+	ratelimit.RouteWithIP(r, http.MethodPost, "/verification", h.VerifyEmail, ipLimiter)
+	ratelimit.RouteWithIP(r, http.MethodPost, "/verification/resend", h.ResendVerification, resendLimiter)
 }

@@ -2,7 +2,7 @@
 title: "Initiate Transfer"
 authMethod: "bearer"
 description: "Starts an ownership transfer by generating a one-time token and emailing the target user an invitation. Only the current owner may call this endpoint. Only one pending transfer is allowed at a time."
-api: "POST http://localhost:8080/api/v1/owner/transfer"
+api: "POST /rbac/owner/transfer"
 ---
 
 <ParamField body="target_user_id" type="string" required>
@@ -13,7 +13,7 @@ api: "POST http://localhost:8080/api/v1/owner/transfer"
 
 **Owner-only** — The caller must hold the active owner role. Any authenticated user without this role receives `403`.
 
-**One pending transfer at a time** — If an unexpired, unconsumed transfer token already exists, the endpoint returns `409 transfer_already_pending`. Cancel the existing transfer with [`DELETE /owner/transfer`](/api-reference/rbac/owner/cancel-transfer) before initiating a new one.
+**One pending transfer at a time** — If an unexpired, unconsumed transfer token already exists, the endpoint returns `409 transfer_already_pending`. Cancel the existing transfer with [`DELETE /rbac/owner/transfer`](/api-reference/rbac/owner/cancel-transfer) before initiating a new one.
 
 **Email invitation** — On success, a one-time transfer token is generated and an invitation email is dispatched to the target user's address. The raw token is not exposed in the HTTP response; the target user must follow the emailed link to accept.
 
@@ -114,7 +114,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="401 — Unauthorized">
-    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/login/login) and include it in the request header.
+    No valid `Authorization: Bearer` access token was supplied. Obtain a token via [`POST /auth/login`](/api-reference/auth/session/login) and include it in the request header.
 
     ```json
     {
@@ -149,7 +149,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   <Accordion title="409 — Conflict">
     Returned for three distinct scenarios. Check the `code` field to distinguish them.
 
-    **Transfer already pending** — An unexpired transfer token already exists. Cancel it with [`DELETE /owner/transfer`](/api-reference/rbac/owner/cancel-transfer) first:
+    **Transfer already pending** — An unexpired transfer token already exists. Cancel it with [`DELETE /rbac/owner/transfer`](/api-reference/rbac/owner/cancel-transfer) first:
 
     ```json
     {

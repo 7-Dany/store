@@ -36,7 +36,7 @@ func NewHandler(svc Servicer) *Handler {
 	return &Handler{svc: svc}
 }
 
-// ListRoles handles GET /admin/rbac/roles.
+// ListRoles handles GET /admin/roles.
 func (h *Handler) ListRoles(w http.ResponseWriter, r *http.Request) {
 	roles, err := h.svc.ListRoles(r.Context())
 	if err != nil {
@@ -51,7 +51,7 @@ func (h *Handler) ListRoles(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, map[string]any{"roles": resp})
 }
 
-// CreateRole handles POST /admin/rbac/roles.
+// CreateRole handles POST /admin/roles.
 func (h *Handler) CreateRole(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, respond.MaxBodyBytes)
 	req, ok := respond.DecodeJSON[createRoleRequest](w, r)
@@ -78,7 +78,7 @@ func (h *Handler) CreateRole(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusCreated, toRoleResponse(role))
 }
 
-// GetRole handles GET /admin/rbac/roles/{id}.
+// GetRole handles GET /admin/roles/{id}.
 func (h *Handler) GetRole(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	role, err := h.svc.GetRole(r.Context(), id)
@@ -95,7 +95,7 @@ func (h *Handler) GetRole(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, toRoleResponse(role))
 }
 
-// UpdateRole handles PATCH /admin/rbac/roles/{id}.
+// UpdateRole handles PATCH /admin/roles/{id}.
 func (h *Handler) UpdateRole(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	r.Body = http.MaxBytesReader(w, r.Body, respond.MaxBodyBytes)
@@ -128,7 +128,7 @@ func (h *Handler) UpdateRole(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, toRoleResponse(role))
 }
 
-// DeleteRole handles DELETE /admin/rbac/roles/{id}.
+// DeleteRole handles DELETE /admin/roles/{id}.
 func (h *Handler) DeleteRole(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	err := h.svc.DeleteRole(r.Context(), id)
@@ -147,7 +147,7 @@ func (h *Handler) DeleteRole(w http.ResponseWriter, r *http.Request) {
 	respond.NoContent(w)
 }
 
-// ListRolePermissions handles GET /admin/rbac/roles/{id}/permissions.
+// ListRolePermissions handles GET /admin/roles/{id}/permissions.
 func (h *Handler) ListRolePermissions(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	perms, err := h.svc.ListRolePermissions(r.Context(), id)
@@ -168,7 +168,7 @@ func (h *Handler) ListRolePermissions(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, map[string]any{"permissions": resp})
 }
 
-// AddRolePermission handles POST /admin/rbac/roles/{id}/permissions.
+// AddRolePermission handles POST /admin/roles/{id}/permissions.
 func (h *Handler) AddRolePermission(w http.ResponseWriter, r *http.Request) {
 	userID, ok := h.mustUserID(w, r)
 	if !ok {
@@ -223,7 +223,7 @@ func (h *Handler) AddRolePermission(w http.ResponseWriter, r *http.Request) {
 	respond.NoContent(w)
 }
 
-// RemoveRolePermission handles DELETE /admin/rbac/roles/{id}/permissions/{perm_id}.
+// RemoveRolePermission handles DELETE /admin/roles/{id}/permissions/{perm_id}.
 // mustUserID extracts the authenticated caller whose ID is recorded in the audit trail.
 func (h *Handler) RemoveRolePermission(w http.ResponseWriter, r *http.Request) {
 	actingUserID, ok := h.mustUserID(w, r)

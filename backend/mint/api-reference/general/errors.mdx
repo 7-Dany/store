@@ -1,0 +1,191 @@
+---
+title: "Errors"
+description: "Every error code the API can return, with status codes and descriptions."
+icon: "circle-x"
+---
+
+All error responses share the same shape:
+
+```json
+{
+  "code": "error_code",
+  "message": "human readable description"
+}
+```
+
+Rate-limited responses also include a `Retry-After` header indicating how many seconds to wait before retrying.
+
+---
+
+## 400 Bad Request
+
+| Code | Description |
+| ---- | ----------- |
+| `bad_request` | Request body is malformed or not valid JSON. |
+
+---
+
+## 401 Unauthenticated
+
+| Code | Description |
+| ---- | ----------- |
+| `unauthorized` | Missing or invalid access token. |
+| `missing_token` | `Authorization: Bearer <token>` header is absent. |
+| `invalid_credentials` | Email or password is incorrect. |
+| `invalid_signature` | Telegram HMAC signature failed verification. |
+| `invalid_telegram_auth` | Telegram authentication payload is invalid or `auth_date` is older than 24 hours. |
+| `token_reuse_detected` | Refresh token has already been used — entire token family revoked. |
+| `token_revoked` | Access token has been explicitly revoked (e.g. after password reset or logout-all). |
+
+---
+
+## 403 Forbidden
+
+| Code | Description |
+| ---- | ----------- |
+| `forbidden` | Caller does not meet a hard requirement (e.g. missing bootstrap secret, owner role required). |
+| `email_not_verified` | Account exists but the email address has not been confirmed. |
+| `privilege_escalation` | Granter does not hold the permission they are trying to grant. |
+
+---
+
+## 404 Not Found
+
+| Code | Description |
+| ---- | ----------- |
+| `not_found` | Generic — the requested resource does not exist. |
+| `user_not_found` | Target user does not exist. |
+| `role_not_found` | Role does not exist. |
+| `permission_not_found` | Permission does not exist. |
+| `grant_not_found` | Permission grant does not exist. |
+| `role_permission_not_found` | Permission is not assigned to this role. |
+| `user_role_not_found` | User has no active role assignment. |
+| `provider_not_linked` | No OAuth identity of this provider is linked to the account. |
+| `no_pending_transfer` | No pending ownership transfer exists to accept or cancel. |
+
+---
+
+## 409 Conflict
+
+| Code | Description |
+| ---- | ----------- |
+| `email_taken` | An account with that email already exists. |
+| `username_taken` | Username is already claimed by another account. |
+| `owner_already_exists` | An active owner already exists — bootstrap can only run once. |
+| `user_is_already_owner` | Target user already holds the owner role. |
+| `transfer_already_pending` | An ownership transfer is already in progress. |
+| `initiator_not_owner` | The initiating user no longer holds the owner role. |
+| `cannot_transfer_to_self` | `target_user_id` matches the calling owner's own ID. |
+| `cannot_reassign_owner` | Owner role cannot be reassigned via this route. |
+| `last_owner_removal` | Cannot remove the last active owner. |
+| `grant_already_exists` | Permission is already assigned to this role. |
+| `permission_already_granted` | Permission is already directly granted to this user. |
+| `system_role_immutable` | System roles cannot be modified or deleted. |
+| `cannot_modify_own_role` | Caller cannot modify their own role assignment. |
+| `cannot_lock_self` | Caller cannot lock their own account. |
+| `cannot_lock_owner` | Owner accounts cannot be admin-locked. |
+| `provider_already_linked` | This OAuth identity is already linked to the account. |
+| `provider_uid_taken` | This OAuth identity is already linked to a different account. |
+| `already_pending_deletion` | Account is already scheduled for deletion. |
+| `not_pending_deletion` | Account is not scheduled for deletion — nothing to cancel. |
+
+---
+
+## 410 Gone
+
+| Code | Description |
+| ---- | ----------- |
+| `token_expired` | OTP or reset code has expired. |
+| `token_invalid` | Transfer token is invalid, expired, or already used. |
+
+---
+
+## 413 Request Too Large
+
+| Code | Description |
+| ---- | ----------- |
+| `request_too_large` | Request body exceeds the 1 MiB limit. |
+
+---
+
+## 415 Unsupported Media Type
+
+Returned when `Content-Type: application/json` is missing or incorrect. No `code` field is included in this response.
+
+---
+
+## 422 Validation Error
+
+| Code | Description |
+| ---- | ----------- |
+| `validation_error` | One or more fields failed validation. The `message` describes the specific rule. |
+| `invalid_code` | OTP code format is invalid or does not match the stored token. |
+| `invalid_grant_token` | Grant token is invalid or expired. |
+| `token_not_found` | No active OTP token exists — either never requested or already expired. |
+| `token_already_used` | OTP token has already been consumed. |
+| `same_email` | New email is the same as the current email. |
+| `same_username` | New username is the same as the current username. |
+| `last_auth_method` | Cannot unlink the only remaining sign-in method. |
+| `password_already_set` | Account already has a password — use change-password instead. |
+| `role_id_required` | `role_id` field is required. |
+| `permission_id_required` | `permission_id` field is required. |
+| `reason_required` | `reason` field is required. |
+| `granted_reason_required` | `granted_reason` field is required. |
+| `expires_at_required` | `expires_at` field is required. |
+| `expires_at_in_past` | `expires_at` must be a future timestamp. |
+| `access_type_not_allowed` | `access_type` value is not permitted for this permission. |
+| `scope_not_allowed` | `scope` value is not permitted for this permission. |
+| `conditional_requires_conditions` | `access_type` is `conditional` but `conditions` is empty or missing. |
+| `user_not_eligible` | Target user is no longer active or email-verified. |
+| `user_not_active` | Authenticated user's account is not active. |
+
+---
+
+## 423 Locked
+
+| Code | Description |
+| ---- | ----------- |
+| `account_locked` | Account has been admin-locked and cannot authenticate. |
+| `account_inactive` | Account has been suspended and cannot authenticate. |
+
+---
+
+## 429 Rate Limited
+
+All rate-limited responses include a `Retry-After` header.
+
+| Code | Description |
+| ---- | ----------- |
+| `too_many_requests` | Generic IP or user rate limit exceeded. |
+| `login_locked` | Too many consecutive failed login attempts. Contains `login_locked_until` with the unlock timestamp. |
+| `too_many_attempts` | Too many incorrect OTP submissions — token is locked until expiry. |
+| `cooldown_active` | A code was recently sent — wait before requesting another. |
+| `deletion_token_cooldown` | A deletion OTP was already sent and has not expired yet. |
+
+---
+
+## 500 Internal Server Error
+
+| Code | Description |
+| ---- | ----------- |
+| `internal_error` | Unexpected server-side error. |
+
+---
+
+## 503 Service Unavailable
+
+| Code | Description |
+| ---- | ----------- |
+| `mail_delivery_failed` | Action completed but the verification email could not be dispatched. The resource was still created — use the resend endpoint to retry. |
+
+---
+
+## OAuth-specific
+
+These codes appear only in OAuth flows and are delivered as query parameters on the error redirect URL rather than as JSON bodies.
+
+| Code | Description |
+| ---- | ----------- |
+| `invalid_state` | OAuth state parameter is missing, expired (10 min), or already used. |
+| `invalid_id_token` | Provider returned an ID token that could not be verified. |
+| `token_exchange_failed` | Could not exchange the authorisation code for tokens with the provider. |

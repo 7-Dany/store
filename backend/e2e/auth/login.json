@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "auth-login-e2e",
-    "name": "Auth – Login (POST /api/v1/auth/login)",
-    "description": "E2E tests for POST /api/v1/auth/login.\n\nFolder execution order (orchestrated by make e2e-login):\n  1. setup          — register a fresh user, fetch OTP from Gmail, verify email\n  2. validation     — 422/413 input-error cases (no setup required)\n  3. happy-path     — 200 + access_token body + refresh_token cookie checks\n  4. failures       — wrong password, unknown identifier, unverified account\n  5. rate-limiting  — IP limiter exhaustion: 5 warmups, 6th → 429\n\nAll test users use @e2e.test or the fixed gmail_test_email address.\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\n\nNotes on what is NOT covered here (already covered by internal tests):\n  - Cookie MaxAge derived from expires_at       — handler_test.go TestHandler_Login_CookieMaxAgeDerivedFromRefreshExpiry\n  - Secure flag when SecureCookies=true          — handler_test.go TestHandler_Login_CookieSecureTrue_WhenSecureCookiesEnabled\n  - Plain ErrLoginLocked without Retry-After     — handler_test.go\n  - Zero RetryAfter clamped to 1                 — handler_test.go\n  - Token mint failure → 500                     — handler_test.go TestHandler_Login_TokenMintError\n  - All error responses have code + JSON CT      — handler_test.go\n\nNotes on what is NOT covered here (requires special DB setup or seed scripts):\n  - Valid username + password → 200              — username not settable via public register API;\n                                                   store_test.go covers the DB lookup path.\n                                                   Needs a Makefile target that seeds a username row.\n  - Inactive account → 403 account_inactive      — requires UPDATE users SET is_active=false in DB.\n                                                   Add a seed script or Makefile target to cover this.\n  - Admin-locked → 423 account_locked            — requires UPDATE users SET is_locked=true in DB.\n                                                   Add a seed script or Makefile target to cover this.\n  - Time-locked → 429 login_locked + Retry-After — achievable by hammering wrong passwords until\n                                                   login_locked_until is set; depends on MaxLoginAttempts\n                                                   config. Defer until that constant is exposed in .env.",
+    "name": "Auth \u2013 Login (POST /api/v1/auth/login)",
+    "description": "E2E tests for POST /api/v1/auth/login.\n\nFolder execution order (orchestrated by make e2e-login):\n  1. setup          \u2014 register a fresh user, fetch OTP from Gmail, verify email\n  2. validation     \u2014 422/413 input-error cases (no setup required)\n  3. happy-path     \u2014 200 + access_token body + refresh_token cookie checks\n  4. failures       \u2014 wrong password, unknown identifier, unverified account\n  5. rate-limiting  \u2014 IP limiter exhaustion: 5 warmups, 6th \u2192 429\n\nAll test users use @e2e.test or the fixed gmail_test_email address.\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\n\nNotes on what is NOT covered here (already covered by internal tests):\n  - Cookie MaxAge derived from expires_at       \u2014 handler_test.go TestHandler_Login_CookieMaxAgeDerivedFromRefreshExpiry\n  - Secure flag when SecureCookies=true          \u2014 handler_test.go TestHandler_Login_CookieSecureTrue_WhenSecureCookiesEnabled\n  - Plain ErrLoginLocked without Retry-After     \u2014 handler_test.go\n  - Zero RetryAfter clamped to 1                 \u2014 handler_test.go\n  - Token mint failure \u2192 500                     \u2014 handler_test.go TestHandler_Login_TokenMintError\n  - All error responses have code + JSON CT      \u2014 handler_test.go\n\nNotes on what is NOT covered here (requires special DB setup or seed scripts):\n  - Valid username + password \u2192 200              \u2014 username not settable via public register API;\n                                                   store_test.go covers the DB lookup path.\n                                                   Needs a Makefile target that seeds a username row.\n  - Inactive account \u2192 403 account_inactive      \u2014 requires UPDATE users SET is_active=false in DB.\n                                                   Add a seed script or Makefile target to cover this.\n  - Admin-locked \u2192 423 account_locked            \u2014 requires UPDATE users SET is_locked=true in DB.\n                                                   Add a seed script or Makefile target to cover this.\n  - Time-locked \u2192 429 login_locked + Retry-After \u2014 achievable by hammering wrong passwords until\n                                                   login_locked_until is set; depends on MaxLoginAttempts\n                                                   config. Defer until that constant is exposed in .env.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -29,19 +29,16 @@
       "description": "Registers the gmail_test_email user, fetches the OTP from Gmail, and verifies the email. The happy-path and failures folders depend on lgn_happy_email / lgn_happy_password being set here and email_verified=true in the DB.",
       "item": [
         {
-          "name": "POST /register → 201 (setup user)",
+          "name": "POST /register \u2192 201 (setup user)",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Use the real Gmail address so the verification OTP lands in the inbox",
-                  "// that gmail_access_token can read. The address is cleaned by _e2e-db-clean",
-                  "// before each run so this register never 409 on re-runs.",
                   "const email = pm.environment.get('gmail_test_email');",
                   "if (!email) {",
-                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
+                  "    console.error('[ERROR] gmail_test_email not set in environment \u2014 add it to environment.json.');",
                   "}",
                   "pm.collectionVariables.set('lgn_happy_email', email);",
                   "pm.collectionVariables.set('lgn_happy_password', 'P@ssw0rd1!');"
@@ -56,12 +53,8 @@
                   "pm.test('status is 201', () => pm.response.to.have.status(201));",
                   "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
                   "",
-                  "// --- Gmail OTP fetch ---",
-                  "// Placed in the test script (not prerequest) because pm.sendRequest is async.",
-                  "// The callback executes during the --delay-request idle window before the",
-                  "// next request fires, so 'lgn_code' is set in time.",
                   "const token = pm.variables.get('gmail_access_token');",
-                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
                   "",
                   "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
                   "const start = Date.now();",
@@ -75,7 +68,7 @@
                   "    header: { Authorization: 'Bearer ' + token }",
                   "}, (err, res) => {",
                   "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
-                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
                   "    const msgs = res.json().messages;",
                   "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email found in Gmail.'); return; }",
                   "    pm.sendRequest({",
@@ -97,7 +90,7 @@
                   "        const match = body.match(/(?<!#)\\b(\\d{6})\\b/);",
                   "        if (!match) { console.warn('[WARN] No 6-digit OTP found in email body.'); return; }",
                   "        pm.collectionVariables.set('lgn_code', match[1]);",
-                  "        console.log('[INFO] OTP stored in collection variable \"lgn_code\":', match[1]);",
+                  "        console.log('[INFO] OTP stored in lgn_code:', match[1]);",
                   "    });",
                   "});"
                 ]
@@ -123,17 +116,16 @@
           }
         },
         {
-          "name": "POST /verify-email → 200 (consume OTP)",
+          "name": "POST /verification \u2192 200 (consume OTP)",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Validate that the Gmail fetch in the register test script completed.",
                   "const code = pm.collectionVariables.get('lgn_code');",
                   "if (!code) {",
-                  "    console.error('[ERROR] collection variable \"lgn_code\" is empty — Gmail fetch did not complete.');",
+                  "    console.error('[ERROR] lgn_code is empty \u2014 Gmail fetch did not complete.');",
                   "    console.error('        Check: gmail_access_token is set and not expired, --delay-request >= 8000.');",
                   "}"
                 ]
@@ -162,9 +154,9 @@
               "options": { "raw": { "language": "json" } }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         }
@@ -172,332 +164,49 @@
     },
     {
       "name": "validation",
-      "description": "All input-validation cases for POST /login. Validation fires before any DB lookup or service call, so no pre-existing user is required. Each case expects 422 validation_error (or 413 for oversized body). Validation rules from validators.go: identifier is required and must be ≤254 bytes after trimming; password is required. Password strength is intentionally NOT re-validated on login to avoid leaking enumeration info.",
+      "description": "All input-validation cases for POST /login.",
       "item": [
         {
-          "name": "malformed JSON → 400",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
-                  "pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.eql('bad_request'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{bad json",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          "name": "malformed JSON \u2192 400",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 400', () => pm.response.to.have.status(400));", "pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.eql('bad_request'));"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{bad json", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
         },
         {
-          "name": "empty body → 422",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          "name": "empty body \u2192 422",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422));", "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
         },
         {
-          "name": "missing identifier → 422",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"password\": \"P@ssw0rd1!\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          "name": "missing identifier \u2192 422",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422));", "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"password\": \"P@ssw0rd1!\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
         },
         {
-          "name": "empty identifier → 422",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"P@ssw0rd1!\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          "name": "empty identifier \u2192 422",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422));", "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"P@ssw0rd1!\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
         },
         {
-          "name": "whitespace-only identifier → 422 (trimmed to empty)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// validateLoginRequest trims the identifier before checking emptiness,",
-                  "// so '   ' becomes '' and must return 422 validation_error.",
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"   \", \"password\": \"P@ssw0rd1!\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          "name": "missing password \u2192 422",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 422', () => pm.response.to.have.status(422));", "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"user@e2e.test\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
         },
         {
-          "name": "identifier > 254 bytes → 422",
+          "name": "body > 1 MiB \u2192 413",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// maxIdentifierBytes = 254 (validators.go). 246 'a's + '@e2e.test' = 255 bytes.",
-                  "pm.variables.set('lgn_id_too_long', 'a'.repeat(246) + '@e2e.test');"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
-                ]
-              }
-            }
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["const pad = 'x'.repeat(1024 * 1024 + 1);", "pm.request.body.update({ mode: 'raw', raw: JSON.stringify({ identifier: 'bigbody@e2e.test', password: 'P@ssw0rd1!', _pad: pad }) });"] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 413', () => pm.response.to.have.status(413));"] } }
           ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_id_too_long}}\", \"password\": \"P@ssw0rd1!\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "missing password → 422",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"user@e2e.test\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "empty password → 422",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Password strength is NOT re-validated on login, but an empty password",
-                  "// is rejected by ErrPasswordEmpty before the service is ever called.",
-                  "pm.test('status is 422', () => pm.response.to.have.status(422));",
-                  "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.eql('validation_error'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"user@e2e.test\", \"password\": \"\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "body > 1 MiB → 413",
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Pad the body past the 1 MiB MaxBytesReader limit.",
-                  "// http.MaxBytesReader fires during json.Decoder.Decode and maps to 413.",
-                  "const pad = 'x'.repeat(1024 * 1024 + 1);",
-                  "pm.request.body.update({",
-                  "  mode: 'raw',",
-                  "  raw: JSON.stringify({ identifier: 'bigbody@e2e.test', password: 'P@ssw0rd1!', _pad: pad })",
-                  "});"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 413', () => pm.response.to.have.status(413));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
         }
       ]
     },
     {
       "name": "happy-path",
-      "description": "Uses the verified account created by the setup folder. Asserts that a successful login returns 200 with an access_token in the JSON body and a refresh_token Set-Cookie header with the required security attributes.",
+      "description": "Uses the verified account created by the setup folder.",
       "item": [
         {
-          "name": "POST /login valid email+password → 200 with access_token and refresh_token cookie",
+          "name": "POST /login valid email+password \u2192 200 with access_token and refresh_token cookie",
           "event": [
             {
               "listen": "test",
@@ -505,1234 +214,92 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
-                  "",
-                  "// Response body must carry access_token.",
                   "const body = pm.response.json();",
-                  "pm.test('access_token field present and non-empty', () => {",
-                  "    pm.expect(body).to.have.property('access_token');",
-                  "    pm.expect(body.access_token).to.be.a('string').and.not.empty;",
-                  "});",
-                  "",
-                  "// No credential fields should leak into the 200 body.",
+                  "pm.test('access_token field present and non-empty', () => { pm.expect(body).to.have.property('access_token'); pm.expect(body.access_token).to.be.a('string').and.not.empty; });",
                   "pm.test('body does not contain password field', () => pm.expect(body).to.not.have.property('password'));",
-                  "",
-                  "// Content-Type must be application/json.",
-                  "pm.test('Content-Type is application/json', () => {",
-                  "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
-                  "});",
-                  "",
-                  "// refresh_token cookie must be present in the Set-Cookie response header.",
-                  "// pm.response.cookies.get() does not expose HttpOnly / SameSite attributes,",
-                  "// so we parse the raw Set-Cookie header for the security attributes that",
-                  "// matter at the e2e boundary.",
                   "const setCookieHeader = pm.response.headers.get('Set-Cookie') || '';",
-                  "pm.test('Set-Cookie header present', () => pm.expect(setCookieHeader).to.not.be.empty);",
-                  "pm.test('refresh_token cookie present in Set-Cookie', () => {",
-                  "    pm.expect(setCookieHeader).to.include('refresh_token=');",
-                  "});",
-                  "pm.test('refresh_token cookie is HttpOnly', () => {",
-                  "    pm.expect(setCookieHeader.toLowerCase()).to.include('httponly');",
-                  "});",
-                  "pm.test('refresh_token cookie Path is /api/v1/auth', () => {",
-                  "    pm.expect(setCookieHeader).to.include('Path=/api/v1/auth');",
-                  "});",
-                  "pm.test('refresh_token cookie SameSite is Strict', () => {",
-                  "    pm.expect(setCookieHeader).to.include('SameSite=Strict');",
-                  "});",
-                  "pm.test('refresh_token cookie has positive Max-Age', () => {",
-                  "    const match = setCookieHeader.match(/Max-Age=(\\d+)/);",
-                  "    pm.expect(match).to.not.be.null;",
-                  "    pm.expect(parseInt(match[1], 10)).to.be.above(0);",
-                  "});",
-                  "",
-                  "// Stash the access_token for any downstream requests in this run.",
+                  "pm.test('refresh_token cookie present in Set-Cookie', () => { pm.expect(setCookieHeader).to.include('refresh_token='); });",
+                  "pm.test('refresh_token cookie is HttpOnly', () => { pm.expect(setCookieHeader.toLowerCase()).to.include('httponly'); });",
+                  "pm.test('refresh_token cookie Path is /api/v1/auth', () => { pm.expect(setCookieHeader).to.include('Path=/api/v1/auth'); });",
+                  "pm.test('refresh_token cookie SameSite is Strict', () => { pm.expect(setCookieHeader).to.include('SameSite=Strict'); });",
+                  "pm.test('refresh_token cookie has positive Max-Age', () => { const match = setCookieHeader.match(/Max-Age=(\\d+)/); pm.expect(match).to.not.be.null; pm.expect(parseInt(match[1], 10)).to.be.above(0); });",
                   "pm.collectionVariables.set('lgn_access_token', body.access_token);"
                 ]
               }
             }
           ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_happy_email}}\", \"password\": \"{{lgn_happy_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "POST /login identifier case-insensitive (UPPER@CASE) → 200",
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// validateLoginRequest lowercases the identifier when it contains '@'.",
-                  "// Sending the email in UPPERCASE must resolve to the same verified account.",
-                  "pm.variables.set('lgn_upper_email', (pm.collectionVariables.get('lgn_happy_email') || '').toUpperCase());"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 200 (email normalised to lowercase before lookup)', () => pm.response.to.have.status(200));",
-                  "pm.test('access_token present', () => pm.expect(pm.response.json().access_token).to.be.a('string').and.not.empty);"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_upper_email}}\", \"password\": \"{{lgn_happy_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "POST /login identifier with surrounding whitespace → 200 (trimmed before lookup)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// validateLoginRequest trims whitespace from identifier before service call.",
-                  "// '  email@...  ' must resolve to the same verified account.",
-                  "pm.test('status is 200 (identifier trimmed before service call)', () => pm.response.to.have.status(200));",
-                  "pm.test('access_token present', () => pm.expect(pm.response.json().access_token).to.be.a('string').and.not.empty);"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"  {{lgn_happy_email}}  \", \"password\": \"{{lgn_happy_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_happy_email}}\", \"password\": \"{{lgn_happy_password}}\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
         }
       ]
     },
     {
       "name": "failures",
-      "description": "Credential-failure and account-state failure paths. Wrong password and unknown identifier are tested together to verify the anti-enumeration contract (identical 401 body in both cases). Unverified account is tested using a freshly registered but unverified user — no email fetch or verification step needed.",
+      "description": "Credential-failure and account-state failure paths.",
       "item": [
         {
-          "name": "wrong password → 401 invalid_credentials",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Valid, verified user — but wrong password.",
-                  "// Service calls CheckPassword, it fails, IncrementLoginFailuresTx is called,",
-                  "// and ErrInvalidCredentials is returned.",
-                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
-                  "const body = pm.response.json();",
-                  "pm.test('code is invalid_credentials', () => pm.expect(body.code).to.eql('invalid_credentials'));",
-                  "pm.test('no access_token in body', () => pm.expect(body).to.not.have.property('access_token'));",
-                  "pm.test('no Set-Cookie header', () => {",
-                  "    const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "    pm.expect(sc).to.not.include('refresh_token=');",
-                  "});",
-                  "// Stash the body for the anti-enumeration check below.",
-                  "pm.collectionVariables.set('lgn_wrong_pw_body', JSON.stringify(body));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_happy_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          "name": "wrong password \u2192 401 invalid_credentials",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 401', () => pm.response.to.have.status(401));", "const body = pm.response.json();", "pm.test('code is invalid_credentials', () => pm.expect(body.code).to.eql('invalid_credentials'));", "pm.collectionVariables.set('lgn_wrong_pw_body', JSON.stringify(body));"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_happy_email}}\", \"password\": \"Wr0ng!Password\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
         },
         {
-          "name": "unknown identifier → 401 invalid_credentials (anti-enumeration)",
+          "name": "POST /register \u2192 201 (setup unverified user)",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Use a timestamped email guaranteed not to exist in DB.",
-                  "pm.variables.set('lgn_ghost_email', 'ghost-' + Date.now() + '@e2e.test');"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// No-rows path: GetUserForLogin returns ErrUserNotFound, service falls",
-                  "// through dummy bcrypt compare, then returns ErrInvalidCredentials.",
-                  "// Response must be IDENTICAL to the wrong-password case — no 404.",
-                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
-                  "const body = pm.response.json();",
-                  "pm.test('code is invalid_credentials', () => pm.expect(body.code).to.eql('invalid_credentials'));",
-                  "",
-                  "// Anti-enumeration: body shape must match the wrong-password response exactly.",
-                  "const prevBody = JSON.parse(pm.collectionVariables.get('lgn_wrong_pw_body') || '{}');",
-                  "pm.test('body shape identical to wrong-password 401 (anti-enumeration)', () => {",
-                  "    pm.expect(Object.keys(body).sort()).to.eql(Object.keys(prevBody).sort());",
-                  "    pm.expect(body.code).to.eql(prevBody.code);",
-                  "});"
-                ]
-              }
-            }
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["pm.collectionVariables.set('lgn_unverified_email', 'lgn-unvfy-' + Date.now() + '@e2e.test');", "pm.collectionVariables.set('lgn_unverified_password', 'P@ssw0rd1!');"] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 201', () => pm.response.to.have.status(201));"] } }
           ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_ghost_email}}\", \"password\": \"P@ssw0rd1!\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"display_name\": \"Unverified\", \"email\": \"{{lgn_unverified_email}}\", \"password\": \"{{lgn_unverified_password}}\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/register", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "register"] } }
         },
         {
-          "name": "POST /register → 201 (setup unverified user)",
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Register a fresh user but do NOT verify the email.",
-                  "// The next test uses this account to trigger the 403 email_not_verified path.",
-                  "// Timestamp-unique email so re-runs after _e2e-db-clean never 409.",
-                  "pm.collectionVariables.set('lgn_unverified_email', 'lgn-unvfy-' + Date.now() + '@e2e.test');",
-                  "pm.collectionVariables.set('lgn_unverified_password', 'P@ssw0rd1!');"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 201 (unverified user registered)', () => pm.response.to.have.status(201));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"display_name\": \"Unverified\", \"email\": \"{{lgn_unverified_email}}\", \"password\": \"{{lgn_unverified_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/register",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "register"]
-            }
-          }
-        },
-        {
-          "name": "unverified account → 403 email_not_verified",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// User registered but never called POST /verify-email.",
-                  "// Service guard: !user.EmailVerified → ErrEmailNotVerified → HTTP 403.",
-                  "// This also confirms the new user row has email_verified=false and is_active=true",
-                  "// (otherwise we'd see 403 account_inactive instead).",
-                  "pm.test('status is 403', () => pm.response.to.have.status(403));",
-                  "const body = pm.response.json();",
-                  "pm.test('code is email_not_verified', () => pm.expect(body.code).to.eql('email_not_verified'));",
-                  "pm.test('not account_locked (423) — is_locked=false on new users', () => {",
-                  "    pm.expect(pm.response.code).to.not.eql(423);",
-                  "});",
-                  "pm.test('no access_token in body', () => pm.expect(body).to.not.have.property('access_token'));",
-                  "pm.test('no refresh_token cookie set', () => {",
-                  "    const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "    pm.expect(sc).to.not.include('refresh_token=');",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_unverified_email}}\", \"password\": \"{{lgn_unverified_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "time-lock",
-      "description": "Verifies the time-based login lockout: 10 consecutive wrong passwords set login_locked_until = NOW() + 15 minutes (IncrementLoginFailures SQL). The 11th request with the CORRECT password returns 429 login_locked because the lockout check (service step 5) fires after the password check passes but before the email_verified guard (step 6). This means a plain @e2e.test user works — no Gmail OTP fetch or email verification required.\n\nIP strategy: the collection-level prerequest assigns a unique X-Forwarded-For IP per request, so the 11 requests in this folder never share an IP bucket and the lgn:ip: rate limiter (burst=5) is never hit. Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
-      "item": [
-        {
-          "name": "POST /register → 201 (setup time-lock user)",
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Timestamp-unique email so re-runs after _e2e-db-clean never 409.",
-                  "// No verification needed: the lockout guard fires after password check",
-                  "// passes (service step 5), before the email_verified check (step 6).",
-                  "pm.collectionVariables.set('lgn_timelock_email', 'lgn-timelock-' + Date.now() + '@e2e.test');",
-                  "pm.collectionVariables.set('lgn_timelock_password', 'P@ssw0rd1!');"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 201 (time-lock user registered)', () => pm.response.to.have.status(201));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"display_name\": \"TimeLock\", \"email\": \"{{lgn_timelock_email}}\", \"password\": \"{{lgn_timelock_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/register",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "register"]
-            }
-          }
-        },
-        {
-          "name": "wrong password 1/10 — increment counter (→ 401, not yet locked)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 401 (attempt 1/10, not locked yet)', () => pm.response.to.have.status(401));",
-                  "pm.test('code is invalid_credentials', () => pm.expect(pm.response.json().code).to.eql('invalid_credentials'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "wrong password 2/10 — increment counter (→ 401, not yet locked)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 401 (attempt 2/10, not locked yet)', () => pm.response.to.have.status(401));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "wrong password 3/10 — increment counter (→ 401, not yet locked)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 401 (attempt 3/10, not locked yet)', () => pm.response.to.have.status(401));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "wrong password 4/10 — increment counter (→ 401, not yet locked)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 401 (attempt 4/10, not locked yet)', () => pm.response.to.have.status(401));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "wrong password 5/10 — increment counter (→ 401, not yet locked)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 401 (attempt 5/10, not locked yet)', () => pm.response.to.have.status(401));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "wrong password 6/10 — increment counter (→ 401, not yet locked)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 401 (attempt 6/10, not locked yet)', () => pm.response.to.have.status(401));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "wrong password 7/10 — increment counter (→ 401, not yet locked)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 401 (attempt 7/10, not locked yet)', () => pm.response.to.have.status(401));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "wrong password 8/10 — increment counter (→ 401, not yet locked)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 401 (attempt 8/10, not locked yet)', () => pm.response.to.have.status(401));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "wrong password 9/10 — increment counter (→ 401, not yet locked)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 401 (attempt 9/10, not locked yet)', () => pm.response.to.have.status(401));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "wrong password 10/10 — threshold reached, login_locked_until set (→ 401)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// The 10th wrong password triggers IncrementLoginFailures in the DB:",
-                  "//   failed_login_attempts + 1 >= 10 → login_locked_until = NOW() + 15min",
-                  "// But this request still returns 401 — the lockout check (service step 5)",
-                  "// only fires on subsequent requests where the PASSWORD IS CORRECT.",
-                  "pm.test('status is 401 (10th wrong password — threshold hit, counter now at 10)', () => pm.response.to.have.status(401));",
-                  "pm.test('code is invalid_credentials (not login_locked — wrong pw path)', () => pm.expect(pm.response.json().code).to.eql('invalid_credentials'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"Wr0ng!Password\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "correct password after lockout → 429 login_locked + Retry-After",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Password is correct this time — service step 4 passes.",
-                  "// Step 5: login_locked_until is in the future → LoginLockedError → 429.",
-                  "// Step 6 (email_not_verified) is never reached — lockout fires first.",
-                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "const body = pm.response.json();",
-                  "pm.test('code is login_locked', () => pm.expect(body.code).to.eql('login_locked'));",
-                  "pm.test('Retry-After header present and positive', () => {",
-                  "    const ra = pm.response.headers.get('Retry-After');",
-                  "    pm.expect(ra).to.be.a('string').and.not.empty;",
-                  "    pm.expect(parseInt(ra, 10)).to.be.above(0);",
-                  "});",
-                  "pm.test('no access_token in body', () => pm.expect(body).to.not.have.property('access_token'));",
-                  "pm.test('no refresh_token cookie set', () => {",
-                  "    const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "    pm.expect(sc).to.not.include('refresh_token=');",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{lgn_timelock_email}}\", \"password\": \"{{lgn_timelock_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          "name": "unverified account \u2192 403 email_not_verified",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 403', () => pm.response.to.have.status(403));", "pm.test('code is email_not_verified', () => pm.expect(pm.response.json().code).to.eql('email_not_verified'));"] } }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"{{lgn_unverified_email}}\", \"password\": \"{{lgn_unverified_password}}\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
         }
       ]
     },
     {
       "name": "rate-limiting",
-      "description": "Verifies the lgn:ip: IP rate limiter (burst=12, rate=12/15min). The folder prerequest pins _xff to 127.0.0.1 so all requests share one bucket. 12 warmups drain the burst capacity; the 13th must return 429 with code=too_many_requests and Retry-After: 75 (ceil(1/rate) = ceil(75) = 75s). Requires TRUSTED_PROXIES=127.0.0.1/32 in .env and Redis flushed (make _e2e-kv-clean) before this folder.",
-      "event": [
-        {
-          "listen": "prerequest",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "// Override the collection-level unique IP so every request in this",
-              "// folder shares the 127.0.0.1 bucket and exhausts it together.",
-              "pm.collectionVariables.set('_xff', '127.0.0.1');"
-            ]
-          }
-        }
-      ],
+      "description": "Verifies the lgn:ip: IP rate limiter (burst=12, rate=12/15min).",
+      "event": [{ "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["pm.collectionVariables.set('_xff', '127.0.0.1');"] } }],
       "item": [
+        { "name": "warmup 1/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 2/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 3/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 4/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 5/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 6/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 7/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 8/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 9/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 10/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 10)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 11/12", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 11)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
+        { "name": "warmup 12/12 \u2014 last allowed", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 12 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } } },
         {
-          "name": "warmup 1/5 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
+          "name": "13th request \u2192 429 (lgn:ip: bucket exhausted)",
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
+                "pm.test('Retry-After is 75 (ceil(1 / (12/900)) = 75s)', () => { pm.expect(pm.response.headers.get('Retry-After')).to.eql('75'); });"
+              ]
             }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 2/5 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 3/5 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 4/5 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 5/12 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 6/12 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 7/12 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 8/12 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 9/12 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 10/12 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 10)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 11/12 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 11)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "warmup 12/12 — consume slot (→ not 429, last allowed)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgn:ip: slot 12 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
-        },
-        {
-          "name": "13th request → 429 (lgn:ip: bucket exhausted)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
-                  "pm.test('Retry-After is 75 (ceil(1 / (12/900)) = 75s)', () => {",
-                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('75');",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"lgn-rl@e2e.test\", \"password\": \"bad\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
-          }
+          }],
+          "request": { "method": "POST", "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }], "body": { "mode": "raw", "raw": "{\"identifier\": \"lgn-rl@e2e.test\", \"password\": \"bad\"}", "options": { "raw": { "language": "json" } } }, "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] } }
         }
       ]
     }
   ],
   "variable": [
-    {
-      "key": "_req_seq",
-      "value": "0",
-      "description": "Auto-incremented counter used by the collection prerequest to generate unique X-Forwarded-For IPs."
-    },
-    {
-      "key": "_xff",
-      "value": "",
-      "description": "Current X-Forwarded-For value. Set to a unique IP by the collection prerequest; overridden to 127.0.0.1 by the rate-limiting folder prerequest."
-    },
-    {
-      "key": "lgn_happy_email",
-      "value": "",
-      "description": "Set by setup folder from gmail_test_email environment variable. Reused by happy-path and failures folders."
-    },
-    {
-      "key": "lgn_happy_password",
-      "value": "",
-      "description": "Set by setup folder. Used for happy-path and wrong-password failure test."
-    },
-    {
-      "key": "lgn_code",
-      "value": "",
-      "description": "OTP fetched from Gmail. Set asynchronously by the setup/register test script during the --delay-request window."
-    },
-    {
-      "key": "lgn_access_token",
-      "value": "",
-      "description": "access_token from a successful login. Stored by the happy-path test for potential downstream use."
-    },
-    {
-      "key": "lgn_wrong_pw_body",
-      "value": "",
-      "description": "JSON-stringified body from the wrong-password 401. Used by the anti-enumeration check to assert identical shape from the unknown-identifier 401."
-    },
-    {
-      "key": "lgn_unverified_email",
-      "value": "",
-      "description": "Timestamp-unique email for the unverified-account failure test. Set by the failures/setup-unverified-user request."
-    },
-    {
-      "key": "lgn_unverified_password",
-      "value": "",
-      "description": "Password for lgn_unverified_email."
-    },
-    {
-      "key": "lgn_timelock_email",
-      "value": "",
-      "description": "Timestamp-unique email for the time-lock test. Set by the time-lock/setup request. No email verification needed — lockout fires before the email_verified guard."
-    },
-    {
-      "key": "lgn_timelock_password",
-      "value": "",
-      "description": "Password for lgn_timelock_email. Sent as the 11th request (correct password) to trigger 429 login_locked."
-    }
+    { "key": "_req_seq", "value": "0", "description": "Auto-incremented counter for unique X-Forwarded-For IPs." },
+    { "key": "_xff", "value": "", "description": "Current X-Forwarded-For value." },
+    { "key": "lgn_happy_email", "value": "", "description": "Set by setup folder from gmail_test_email." },
+    { "key": "lgn_happy_password", "value": "", "description": "Set by setup folder." },
+    { "key": "lgn_code", "value": "", "description": "OTP fetched from Gmail by setup/register test script." },
+    { "key": "lgn_access_token", "value": "", "description": "access_token from a successful login." },
+    { "key": "lgn_wrong_pw_body", "value": "", "description": "JSON body from wrong-password 401 for anti-enumeration check." },
+    { "key": "lgn_unverified_email", "value": "", "description": "Timestamp-unique email for unverified-account failure test." },
+    { "key": "lgn_unverified_password", "value": "", "description": "Password for lgn_unverified_email." }
   ]
 }

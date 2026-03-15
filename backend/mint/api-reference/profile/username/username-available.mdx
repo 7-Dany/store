@@ -2,7 +2,7 @@
 title: "Username Available"
 authMethod: "none"
 description: "Returns whether a given username is available to claim. Public endpoint — no authentication required."
-api: "GET http://localhost:8080/api/v1/profile/username/available"
+api: "GET /profile/me/username/available"
 ---
 
 <ParamField query="username" type="string" required>
@@ -20,7 +20,7 @@ api: "GET http://localhost:8080/api/v1/profile/username/available"
 
 **Always returns `200`** — On a valid username, `{"available": true}` or `{"available": false}` is returned regardless of whether the name is taken. The endpoint never distinguishes between a taken name and a non-existent one through HTTP status codes.
 
-**Point-in-time read** — Availability is checked at the moment of the request. A `true` response does not guarantee the username will still be free when [`PATCH /me/username`](/api-reference/profile/username/update-username) is called.
+**Point-in-time read** — Availability is checked at the moment of the request. A `true` response does not guarantee the username will still be free when [`PATCH /profile/me/username`](/api-reference/profile/username/update-username) is called.
 
 **Normalisation** — The server lowercases and trims whitespace from the candidate before querying, so `Alice` and `alice` resolve to the same check.
 

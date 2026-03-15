@@ -2,7 +2,7 @@
 title: "Verify Reset Code"
 authMethod: "none"
 description: "Validates a password-reset OTP and returns a short-lived grant token to authorize the password change."
-api: "POST http://localhost:8080/api/v1/auth/verify-reset-code"
+api: "POST /auth/password/reset/verify"
 ---
 
 <ParamField body="email" type="string" required>
@@ -25,11 +25,11 @@ api: "POST http://localhost:8080/api/v1/auth/verify-reset-code"
 
 ## Behaviour
 
-**Code is not consumed** — This endpoint validates the OTP without consuming it. The code remains valid and must be presented again (via the grant token) to [`POST /reset-password`](/api-reference/auth/password/reset-password). This allows the frontend to confirm the code on screen 2 before asking the user to choose a new password on screen 3.
+**Code is not consumed** — This endpoint validates the OTP without consuming it. The code remains valid and must be presented again (via the grant token) to [`PUT /auth/password/reset`](/api-reference/auth/password/reset-password). This allows the frontend to confirm the code on screen 2 before asking the user to choose a new password on screen 3.
 
-**Grant token** — On success a short-lived grant token is returned. It encodes the verified email and code and is stored server-side with a 10-minute TTL. Pass it directly to [`POST /reset-password`](/api-reference/auth/password/reset-password) — it is single-use and cannot be reused after a successful password reset.
+**Grant token** — On success a short-lived grant token is returned. It is stored server-side with a 10-minute TTL. Pass it directly to [`PUT /auth/password/reset`](/api-reference/auth/password/reset-password) — it is single-use and cannot be reused after a successful password reset.
 
-**Attempt tracking** — A wrong code still increments the per-token attempt counter. Too many wrong attempts lock the code and return `429`, at which point the user must restart from [`POST /forgot-password`](/api-reference/auth/password/forgot-password).
+**Attempt tracking** — A wrong code still increments the per-token attempt counter. Too many wrong attempts lock the code and return `429`, at which point the user must restart from [`POST /auth/password/reset`](/api-reference/auth/password/forgot-password).
 
 ## Rate Limiting
 
@@ -87,7 +87,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
 <AccordionGroup>
   <Accordion title="200 — OK">
-    The code is valid. A grant token is returned with a 10-minute TTL. Pass `reset_token` to `POST /reset-password` to complete the password change.
+    The code is valid. A grant token is returned with a 10-minute TTL. Pass `reset_token` to [`PUT /auth/password/reset`](/api-reference/auth/password/reset-password) to complete the password change.
 
     ```json
     {
@@ -109,7 +109,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   </Accordion>
 
   <Accordion title="410 — Gone">
-    The reset code has expired. Request a new code via `POST /forgot-password`.
+    The reset code has expired. Request a new code via [`POST /auth/password/reset`](/api-reference/auth/password/forgot-password).
 
     ```json
     {
@@ -144,7 +144,7 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
   <Accordion title="429 — Too Many Attempts">
     Returned for two distinct scenarios. Check the `Retry-After` response header in both cases.
 
-    **Wrong code threshold** — The code has been entered incorrectly too many times and is now locked. Request a fresh code via `POST /forgot-password`.
+    **Wrong code threshold** — The code has been entered incorrectly too many times and is now locked. Request a fresh code via [`POST /auth/password/reset`](/api-reference/auth/password/forgot-password).
 
     ```json
     {

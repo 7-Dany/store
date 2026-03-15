@@ -1,3 +1,4 @@
+// Package permissions registers the GET /permissions and GET /permissions/groups endpoints.
 package permissions
 
 import (
@@ -10,12 +11,15 @@ import (
 )
 
 // Routes registers GET /permissions and GET /permissions/groups on r.
-// Call from AdminRoutes in internal/domain/rbac/routes.go:
+// Call from rbac.Routes in internal/domain/rbac/routes.go:
 //
 //	permissions.Routes(ctx, r, deps)
 //
-// Both routes require a valid JWT and the rbac:read permission.
-// No additional rate limiter — admin routes are already JWT-gated.
+// Rate limits: none — access is controlled by the RBAC middleware on every route.
+//
+// Middleware ordering (both routes):
+//
+//	JWTAuth → RBAC.Require(PermRBACRead) → handler.{Method}
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	store := NewStore(deps.Pool)
 	svc := NewService(store)

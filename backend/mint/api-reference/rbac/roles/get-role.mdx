@@ -1,7 +1,7 @@
 ---
 title: "Get Role"
 description: "Returns a single role by its ID."
-api: "GET http://localhost:8080/admin/rbac/roles/{id}"
+api: "GET /rbac/roles/{id}"
 ---
 
 <ParamField path="id" type="string" required>
@@ -14,7 +14,7 @@ api: "GET http://localhost:8080/admin/rbac/roles/{id}"
 
 <RequestExample>
 ```bash Example
-curl -X GET http://localhost:8080/admin/rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c \
+curl -X GET /rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c \
   -H "Authorization: Bearer <token>"
 ```
 </RequestExample>

@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "auth-unlock-e2e",
-    "name": "Auth – Unlock (POST /api/v1/auth/request-unlock + POST /api/v1/auth/confirm-unlock)",
-    "description": "E2E tests for POST /api/v1/auth/request-unlock and POST /api/v1/auth/confirm-unlock.\n\nFolder execution order (orchestrated by make e2e-unlock):\n  1. happy-path        — setup (register, verify-email, trigger time-lock, request-unlock + Gmail OTP fetch)\n                          then: wrong OTP→422, correct OTP→200, login-after-unlock→200, replay→422, no-token→422\n  2. validation        — all 422/413 input-error cases for both /request-unlock and /confirm-unlock\n  3. anti-enumeration  — not-locked→202, unknown→202 for /request-unlock; unknown→422 for /confirm-unlock\n  4. rate-limiting     — shared unlk:ip: bucket (burst=3): 2×/request-unlock + 1×/confirm-unlock → 4th → 429\n\nAll test users use @e2e.test emails (or gmail_test_email) so `make _e2e-db-clean` can wipe them.\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\n\nNotes on what is NOT covered here and why:\n  - Admin-locked account (AdminLocked=true) → silent no-op: three distinct cases covered by service_test.go; HTTP surface is always 202.\n  - Both admin-locked and time-locked simultaneously: same reasoning — service_test.go covers it; API surface is identical.\n  - Token row created in account_unlock_tokens: covered by store_test.go TestRequestUnlockTx_Integration.\n  - unlock_requested audit row written: covered by same store integration test.\n  - Active token cooldown (no new OTP when one already exists): covered by service_test.go “active token exists — returns zero result nil error (cooldown)”.\n  - Mail delivery failure → 202: covered by handler_test.go “non-empty RawCode with failing mailer still returns 202”.\n  - Service-level error → 202: covered by handler_test.go “service error still returns 202 (anti-enumeration)”.\n  - Wrong OTP reaching max-attempts → 429: covered by service_test.go + handler_test.go “ErrTooManyAttempts returns 429”.\n  - Expired OTP → 422: requires time manipulation; covered by service_test.go “expired token returns ErrTokenExpired”.\n  - Account becomes admin-locked after OTP issued → 423: regression-tested in handler_test.go; requires post-issuance state mutation not practical in E2E.\n  - is_locked=false and failed_login_attempts=0 in DB after success: covered by store_test.go TestUnlockAccountTx_Integration (“clears lock”); indirectly confirmed by login-after-unlock step.\n  - account_unlocked audit row written: covered by same store integration test.\n  - Timing invariant (±100 ms): not reliably assertable in any CI environment; covered by unit-level “no panic” assertions on GetDummyOTPHash.",
+    "name": "Auth – Unlock (POST /api/v1/auth/unlock + PUT /api/v1/auth/unlock)",
+    "description": "E2E tests for POST /api/v1/auth/unlock and POST /api/v1/auth/unlock.\n\nFolder execution order (orchestrated by make e2e-unlock):\n  1. happy-path        — setup (register, verify-email, trigger time-lock, request-unlock + Gmail OTP fetch)\n                          then: wrong OTP→422, correct OTP→200, login-after-unlock→200, replay→422, no-token→422\n  2. validation        — all 422/413 input-error cases for both POST /unlock and PUT /unlock\n  3. anti-enumeration  — not-locked→202, unknown→202 for /unlock; unknown→422 for /unlock\n  4. rate-limiting     — shared unlk:ip: bucket (burst=3): 2×/unlock + 1×/unlock → 4th → 429\n\nAll test users use @e2e.test emails (or gmail_test_email) so `make _e2e-db-clean` can wipe them.\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\n\nNotes on what is NOT covered here and why:\n  - Admin-locked account (AdminLocked=true) → silent no-op: three distinct cases covered by service_test.go; HTTP surface is always 202.\n  - Both admin-locked and time-locked simultaneously: same reasoning — service_test.go covers it; API surface is identical.\n  - Token row created in account_unlock_tokens: covered by store_test.go TestRequestUnlockTx_Integration.\n  - unlock_requested audit row written: covered by same store integration test.\n  - Active token cooldown (no new OTP when one already exists): covered by service_test.go “active token exists — returns zero result nil error (cooldown)”.\n  - Mail delivery failure → 202: covered by handler_test.go “non-empty RawCode with failing mailer still returns 202”.\n  - Service-level error → 202: covered by handler_test.go “service error still returns 202 (anti-enumeration)”.\n  - Wrong OTP reaching max-attempts → 429: covered by service_test.go + handler_test.go “ErrTooManyAttempts returns 429”.\n  - Expired OTP → 422: requires time manipulation; covered by service_test.go “expired token returns ErrTokenExpired”.\n  - Account becomes admin-locked after OTP issued → 423: regression-tested in handler_test.go; requires post-issuance state mutation not practical in E2E.\n  - is_locked=false and failed_login_attempts=0 in DB after success: covered by store_test.go TestUnlockAccountTx_Integration (“clears lock”); indirectly confirmed by login-after-unlock step.\n  - account_unlocked audit row written: covered by same store integration test.\n  - Timing invariant (±100 ms): not reliably assertable in any CI environment; covered by unit-level “no panic” assertions on GetDummyOTPHash.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -26,7 +26,7 @@
   "item": [
     {
       "name": "happy-path",
-      "description": "Registers the gmail_test_email user, fetches the verification OTP from Gmail, verifies the email, triggers a time-lock via 10 consecutive wrong-password logins, calls POST /request-unlock and fetches the unlock OTP from Gmail.\n\nFollowed immediately by the confirm-unlock scenario sequence (order is critical):\n  1. wrong OTP (1 attempt, below max-attempts) → 422\n  2. correct OTP → 200\n  3. login after unlock → 200 (indirectly confirms login_locked_until=NULL in DB)\n  4. OTP replay (consumed code) → 422 (ErrTokenAlreadyUsed)\n  5. no active token (account unlocked) → 422 (ErrTokenNotFound)",
+      "description": "Registers the gmail_test_email user, fetches the verification OTP from Gmail, verifies the email, triggers a time-lock via 10 consecutive wrong-password logins, calls POST /unlock and fetches the unlock OTP from Gmail.\n\nFollowed immediately by the confirm-unlock scenario sequence (order is critical):\n  1. wrong OTP (1 attempt, below max-attempts) → 422\n  2. correct OTP → 200\n  3. login after unlock → 200 (indirectly confirms login_locked_until=NULL in DB)\n  4. OTP replay (consumed code) → 422 (ErrTokenAlreadyUsed)\n  5. no active token (account unlocked) → 422 (ErrTokenNotFound)",
       "item": [
         {
           "name": "POST /register → 201 (setup account)",
@@ -133,7 +133,7 @@
           }
         },
         {
-          "name": "POST /verify-email → 200 (consume verification OTP)",
+          "name": "POST /verification → 200 (consume verification OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -182,9 +182,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -268,7 +268,7 @@
           }
         },
         {
-          "name": "POST /request-unlock → 202 (issue unlock OTP, fetch from Gmail)",
+          "name": "POST /unlock → 202 (issue unlock OTP, fetch from Gmail)",
           "event": [
             {
               "listen": "prerequest",
@@ -361,14 +361,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
         {
-          "name": "POST /confirm-unlock → 422 (wrong OTP, 1 attempt, below max-attempts threshold)",
+          "name": "PUT /unlock → 422 (wrong OTP, 1 attempt, below max-attempts threshold)",
           "event": [
             {
               "listen": "prerequest",
@@ -400,7 +400,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -421,14 +421,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
         {
-          "name": "POST /confirm-unlock → 200 OK (correct OTP)",
+          "name": "PUT /unlock → 200 OK (correct OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -456,7 +456,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -477,9 +477,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -530,7 +530,7 @@
           }
         },
         {
-          "name": "POST /confirm-unlock → 422 (OTP replay — ErrTokenAlreadyUsed)",
+          "name": "PUT /unlock → 422 (OTP replay — ErrTokenAlreadyUsed)",
           "event": [
             {
               "listen": "test",
@@ -547,7 +547,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -568,14 +568,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
         {
-          "name": "POST /confirm-unlock → 422 (no active token after unlock — ErrTokenNotFound)",
+          "name": "PUT /unlock → 422 (no active token after unlock — ErrTokenNotFound)",
           "event": [
             {
               "listen": "test",
@@ -591,7 +591,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -612,9 +612,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         }
@@ -622,7 +622,7 @@
     },
     {
       "name": "validation",
-      "description": "All input-validation cases for both POST /request-unlock and POST /confirm-unlock. Validation fires before any DB lookup so non-existent emails are safe to use throughout.",
+      "description": "All input-validation cases for both POST /unlock and PUT /unlock. Validation fires before any DB lookup so non-existent emails are safe to use throughout.",
       "item": [
         {
           "name": "[request-unlock] missing email → 422",
@@ -660,9 +660,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -702,9 +702,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -744,9 +744,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -786,9 +786,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -838,9 +838,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -893,9 +893,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -935,9 +935,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -956,7 +956,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -977,9 +977,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -998,7 +998,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1019,9 +1019,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1040,7 +1040,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1061,9 +1061,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1092,7 +1092,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1113,9 +1113,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1134,7 +1134,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1155,9 +1155,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1176,7 +1176,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1197,9 +1197,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1218,7 +1218,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1239,9 +1239,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1260,7 +1260,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1281,9 +1281,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1302,7 +1302,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1323,9 +1323,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1357,7 +1357,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1378,9 +1378,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1399,7 +1399,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1420,9 +1420,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         }
@@ -1430,7 +1430,7 @@
     },
     {
       "name": "anti-enumeration",
-      "description": "Anti-enumeration contract:\n  /request-unlock: every path returns 202 + identical body regardless of account state.\n  /confirm-unlock: unknown email returns same 422 validation_error as the no-token case — no 404 ever returned.",
+      "description": "Anti-enumeration contract:\n  /unlock: every path returns 202 + identical body regardless of account state.\n  /unlock: unknown email returns same 422 validation_error as the no-token case — no 404 ever returned.",
       "item": [
         {
           "name": "[request-unlock] email exists, account not locked → 202 (anti-enumeration)",
@@ -1495,9 +1495,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1549,9 +1549,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1581,7 +1581,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1602,9 +1602,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         }
@@ -1612,7 +1612,7 @@
     },
     {
       "name": "rate-limiting",
-      "description": "Verifies the shared unlk:ip: rate limiter (burst=3, rate=3/10 min) that covers both /request-unlock and /confirm-unlock.\n\nThe folder prerequest overrides _xff to 127.0.0.1 so all requests share one bucket.\n\nSequence:\n  1. warmup 1/3 — POST /request-unlock  (slot 1)\n  2. warmup 2/3 — POST /request-unlock  (slot 2)\n  3. warmup 3/3 — POST /confirm-unlock  (slot 3, cross-endpoint consumption)\n  4. 4th request — POST /request-unlock → 429 (bucket exhausted)\n\nCovers both checklist items:\n  • 4th request from same IP within 10 min → 429 (unlk:ip: limit)\n  • 2× /request-unlock + 1× /confirm-unlock → 4th request (either endpoint) → 429",
+      "description": "Verifies the shared unlk:ip: rate limiter (burst=3, rate=3/10 min) that covers both /unlock and /unlock.\n\nThe folder prerequest overrides _xff to 127.0.0.1 so all requests share one bucket.\n\nSequence:\n  1. warmup 1/3 — POST /unlock  (slot 1)\n  2. warmup 2/3 — POST /unlock  (slot 2)\n  3. warmup 3/3 — PUT /unlock  (slot 3, cross-endpoint consumption)\n  4. 4th request — POST /unlock → 429 (bucket exhausted)\n\nCovers both checklist items:\n  • 4th request from same IP within 10 min → 429 (unlk:ip: limit)\n  • 2× /unlock + 1× /unlock → 4th request (either endpoint) → 429",
       "event": [
         {
           "listen": "prerequest",
@@ -1629,7 +1629,7 @@
       ],
       "item": [
         {
-          "name": "warmup 1/3 — POST /request-unlock (consume slot 1)",
+          "name": "warmup 1/3 — POST /unlock (consume slot 1)",
           "event": [
             {
               "listen": "test",
@@ -1663,14 +1663,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
         {
-          "name": "warmup 2/3 — POST /request-unlock (consume slot 2)",
+          "name": "warmup 2/3 — POST /unlock (consume slot 2)",
           "event": [
             {
               "listen": "test",
@@ -1704,14 +1704,14 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
         {
-          "name": "warmup 3/3 — POST /confirm-unlock (consume slot 3, cross-endpoint)",
+          "name": "warmup 3/3 — PUT /unlock (consume slot 3, cross-endpoint)",
           "event": [
             {
               "listen": "test",
@@ -1727,7 +1727,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -1748,9 +1748,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/confirm-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "confirm-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         },
@@ -1793,9 +1793,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/request-unlock",
+              "raw": "{{base_url}}/api/v1/auth/unlock",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "request-unlock"]
+              "path": ["api", "v1", "auth", "unlock"]
             }
           }
         }

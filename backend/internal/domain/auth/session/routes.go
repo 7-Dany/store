@@ -1,3 +1,4 @@
+// Package session registers the POST /refresh and POST /logout endpoints.
 package session
 
 import (
@@ -12,14 +13,20 @@ import (
 )
 
 // Routes registers the session endpoints on r.
-// Call from the auth root assembler:
+// Call from auth.Routes in internal/domain/auth/routes.go:
 //
 //	session.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - POST /refresh: 5 req  / 15 min per IP
-//   - POST /logout:  5 req / 1 min  per IP
+//   - POST /refresh: 5 req / 15 min per IP  ("rfsh:ip:")
+//   - POST /logout:  5 req / 1 min  per IP  ("lgout:ip:")
+//
+// Middleware ordering:
+//
+//	POST /refresh, /logout: IPRateLimiter → handler.{Method}
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
+	// 5 req / 15 min per IP — prevents token-refresh abuse from a single origin
+	// while allowing legitimate multi-tab browser sessions to refresh concurrently.
 	// rate = 5 / (15 * 60) = 0.00556 tokens/sec.
 	refreshLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "rfsh:ip:", 5.0/(15*60), 5, 15*time.Minute)
 	go refreshLimiter.StartCleanup(ctx)

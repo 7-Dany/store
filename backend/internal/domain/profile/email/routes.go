@@ -1,3 +1,4 @@
+// Package email registers the POST /me/email/request-change, /me/email/verify-current, and /me/email/confirm-change endpoints.
 package email
 
 import (
@@ -11,14 +12,14 @@ import (
 )
 
 // Routes registers the three email-change endpoints on r.
-// Call from the profile domain assembler:
+// Call from profile.Routes in internal/domain/profile/routes.go:
 //
 //	email.Routes(ctx, r, deps)
 //
-// Rate limits (all user-scoped — require JWTAuth to run first):
-//   - POST /email/request-change:  3 req / 10 min per user  ("echg:usr:")
-//   - POST /email/verify-current:  5 req / 15 min per user  ("echg:usr:vfy:")
-//   - POST /email/confirm-change:  5 req / 15 min per user  ("echg:usr:cnf:")
+// Rate limits:
+//   - POST /me/email:        3 req / 10 min per user  ("echg:usr:")
+//   - POST /me/email/verify: 5 req / 15 min per user  ("echg:usr:vfy:")
+//   - PUT  /me/email:        5 req / 15 min per user  ("echg:usr:cnf:")
 //
 // Middleware ordering (all three routes):
 //
@@ -57,8 +58,8 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// user ID from context, so they come after JWTAuth.
 	r.Group(func(r chi.Router) {
 		r.Use(deps.JWTAuth)
-		r.With(requestLimiter.Limit).Post("/me/email/request-change", h.RequestChange)
-		r.With(verifyLimiter.Limit).Post("/me/email/verify-current", h.VerifyCurrent)
-		r.With(confirmLimiter.Limit).Post("/me/email/confirm-change", h.ConfirmChange)
+		r.With(requestLimiter.Limit).Post("/me/email", h.RequestChange)
+		r.With(verifyLimiter.Limit).Post("/me/email/verify", h.VerifyCurrent)
+		r.With(confirmLimiter.Limit).Put("/me/email", h.ConfirmChange)
 	})
 }

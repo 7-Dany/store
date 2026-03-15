@@ -1,7 +1,7 @@
 ---
 title: "Logout"
 description: "Revokes the caller's refresh token, ends the session, and invalidates the access token."
-api: "POST http://localhost:8080/api/v1/auth/logout"
+api: "POST /auth/logout"
 authMethod: "none"
 ---
 
@@ -17,7 +17,7 @@ authMethod: "none"
   <Expandable title="curl example">
     ```bash
     curl --request POST \
-      --url http://localhost:8080/api/v1/auth/logout \
+      --url /auth/logout \
       --header "Cookie: refresh_token=<your_refresh_token>" \
       --header "Authorization: Bearer <your_access_token>"
     ```
@@ -35,9 +35,9 @@ authMethod: "none"
 
 **Always returns 204** — Logout is a best-effort, idempotent operation. Missing cookie, malformed or expired token, and internal errors all return `204 No Content` with an empty body. This design prevents leaking information about whether a session exists and ensures clients can always treat logout as successful.
 
-**Refresh token revocation** — The refresh token JTI from the cookie is revoked in the database and the session is ended. The `refresh_token` cookie is always cleared in the response (`Max-Age=0`), regardless of success or failure.
+**Refresh token revocation** — The refresh token from the cookie is revoked and the session is ended. The `refresh_token` cookie is always cleared in the response, regardless of success or failure.
 
-**Access token blocklisting** — If a valid, non-expired `Authorization: Bearer <token>` header is supplied, the access token's JTI is added to the blocklist in the KV store for its remaining TTL. This immediately invalidates the token for all endpoints protected by the auth middleware. If the header is absent, expired, or the KV store is unavailable, logout still completes — blocklisting is best-effort.
+**Access token blocklisting** — If a valid, non-expired `Authorization: Bearer <token>` header is supplied, the access token is added to a blocklist for its remaining TTL, immediately invalidating it across all protected endpoints. If the header is absent or expired, logout still completes — blocklisting is best-effort.
 
 **Per-device scope** — Logout only revokes the token family for the presenting device. Other active sessions for the same user are unaffected.
 

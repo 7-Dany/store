@@ -1,0 +1,48 @@
+---
+title: "Overview"
+description: "Base URL, authentication, and what's in this reference."
+icon: "book"
+---
+
+## Base URL
+
+```
+http://localhost:8080/api/v1
+```
+
+## Authentication
+
+Protected endpoints require a valid JWT access token in the `Authorization` header:
+
+```
+Authorization: Bearer <access_token>
+```
+
+Access tokens are short-lived (15 minutes). Use [`POST /auth/refresh`](/api-reference/auth/session/refresh) to obtain a new pair before expiry. See the [Session Lifecycle](/guides/auth/session-lifecycle) guide for the full token rotation flow.
+
+## Content type
+
+All requests that include a body must set:
+
+```
+Content-Type: application/json
+```
+
+Endpoints that require a body return `415 Unsupported Media Type` when this header is missing or incorrect.
+
+## What's in this reference
+
+<CardGroup cols={2}>
+  <Card title="Overview" icon="book" href="/api-reference/general/overview">
+      Base URL, authentication, and what’s in this reference.
+  </Card>
+  <Card title="Errors" icon="circle-x" href="/api-reference/general/errors">
+    Every error code the API can return, grouped by status.
+  </Card>
+  <Card title="Permissions" icon="shield-half" href="/api-reference/general/permissions">
+    All permission canonical names, scope policies, and access types.
+  </Card>
+  <Card title="Guides" icon="books" href="/api-reference/general/guides">
+    End-to-end flow walkthroughs for common use cases.
+  </Card>
+</CardGroup>

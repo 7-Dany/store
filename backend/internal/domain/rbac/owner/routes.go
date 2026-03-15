@@ -1,3 +1,4 @@
+// Package owner registers the PUT /owner/assign, POST /owner/transfer, PUT /owner/transfer, and DELETE /owner/transfer endpoints.
 package owner
 
 import (
@@ -10,22 +11,26 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/ratelimit"
 )
 
-// Routes registers all owner-domain routes on r:
-//
-//	POST   /assign                 — initial owner role assignment (secret-gated)
-//	POST   /transfer               — initiate ownership transfer
-//	POST   /transfer/accept        — accept transfer (unauthenticated; token is credential)
-//	DELETE /transfer               — cancel pending transfer
-//
-// Call from the owner sub-router assembler:
+// Routes registers all owner endpoints on r.
+// Call from rbac.Routes in internal/domain/rbac/routes.go:
 //
 //	owner.Routes(ctx, r, deps)
 //
 // Rate limits:
-//   - POST /assign:          3 req / 15 min per IP   (tight; one-time path)
-//   - POST /transfer:        3 req / 24 h per user   (high-stakes action)
-//   - POST /transfer/accept: 10 req / 1 h per IP     (token provides auth)
-//   - DELETE /transfer:      10 req / 1 h per user   (owner-only)
+//   - PUT    /owner/assign:   3 req / 15 min per IP    ("asgn:ip:")
+//   - POST   /owner/transfer: 3 req / 24 h   per user  ("xfr:usr:" — applied inside handler after validation)
+//   - PUT    /owner/transfer: 10 req / 1 h   per IP    ("xfra:ip:")
+//   - DELETE /owner/transfer: 10 req / 1 h   per user  ("xfrc:usr:")
+//
+// Middleware ordering:
+//
+//	PUT    /owner/assign:   JWTAuth → IPRateLimiter → handler.AssignOwner
+//	POST   /owner/transfer: JWTAuth → handler.InitiateTransfer
+//	PUT    /owner/transfer: IPRateLimiter → handler.AcceptTransfer
+//	DELETE /owner/transfer: JWTAuth → UserRateLimiter → handler.CancelTransfer
+//
+// Note: all paths are prefixed with /owner/ so they resolve to /rbac/owner/...
+// when mounted via rbac.Routes.
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	secret := deps.BootstrapSecret
 
@@ -68,7 +73,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// ── Assign owner (JWT required; IP rate-limited) ──────────────────────────
 	r.Group(func(r chi.Router) {
 		r.Use(deps.JWTAuth)
-		r.With(assignLimiter.Limit).Post("/assign", h.AssignOwner)
+		r.With(assignLimiter.Limit).Put("/owner/assign", h.AssignOwner)
 	})
 
 	// ── Transfer: initiate + cancel (JWT required; user rate-limited) ─────────
@@ -76,10 +81,10 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// malformed/invalid requests do not consume tokens from the per-user bucket.
 	r.Group(func(r chi.Router) {
 		r.Use(deps.JWTAuth)
-		r.Post("/transfer", h.InitiateTransfer)
-		r.With(cancelLimiter.Limit).Delete("/transfer", h.CancelTransfer)
+		r.Post("/owner/transfer", h.InitiateTransfer)
+		r.With(cancelLimiter.Limit).Delete("/owner/transfer", h.CancelTransfer)
 	})
 
 	// ── Transfer: accept (no JWT; IP rate-limited; token is credential) ───────
-	r.With(acceptLimiter.Limit).Post("/transfer/accept", h.AcceptTransfer)
+	r.With(acceptLimiter.Limit).Put("/owner/transfer", h.AcceptTransfer)
 }

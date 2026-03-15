@@ -11,9 +11,9 @@ Creating an account takes two API calls across two UI screens. This guide covers
 ## Overview
 
 ```
-POST /register         →  account created, OTP sent to email
-POST /verify-email     →  email + code  →  200 (account active)
-POST /login            →  sign in
+POST /auth/register      →  account created, OTP sent to email
+POST /auth/verification  →  email + code  →  200 (account active)
+POST /auth/login         →  sign in
 ```
 
 The account cannot be used to log in until the email address is verified. A 6-digit OTP with a configurable TTL (default 10 minutes) is sent to the address at registration.
@@ -23,7 +23,7 @@ The account cannot be used to log in until the email address is verified. A 6-di
 ## Full sequence
 
 <Steps>
-  <Step title="POST /register — Create the account">
+  <Step title="POST /auth/register — Create the account">
      Send display name, email, and password. The server creates the account, generates a verification OTP, and dispatches it to the provided address.
 
     ```json Request
@@ -40,14 +40,14 @@ The account cannot be used to log in until the email address is verified. A 6-di
     }
     ```
 
-    Show the message and advance to screen 2. The account exists but `email_verified = false` — the user cannot log in yet.
+    Show the message and advance to screen 2. The account exists but is not yet verified — the user cannot log in yet.
 
     <Warning>
       If the response is `503 mail_delivery_failed`, the account was created but the email could not be sent. Do not show an error — direct the user to screen 2 and tell them to use the resend option if no code arrives.
     </Warning>
   </Step>
 
-  <Step title="POST /verify-email — Submit the OTP">
+  <Step title="POST /auth/verification — Submit the OTP">
     The user enters the 6-digit code from their inbox. Submit it together with the email address.
 
     ```json Request
@@ -70,7 +70,7 @@ The account cannot be used to log in until the email address is verified. A 6-di
     </Note>
   </Step>
 
-  <Step title="POST /login — Sign in">
+  <Step title="POST /auth/login — Sign in">
     The verified account can now authenticate normally.
 
     ```json Request
@@ -86,7 +86,7 @@ The account cannot be used to log in until the email address is verified. A 6-di
 
 ## Resend path
 
-If the verification email doesn't arrive, or the OTP expires, the user can request a fresh code via [`POST /resend-verification`](/api-reference/auth/verification/resend-verification). This invalidates any outstanding unused tokens and sends a new one.
+If the verification email doesn't arrive, or the OTP expires, the user can request a fresh code via [`POST /auth/verification/resend`](/api-reference/auth/verification/resend-verification). This invalidates any outstanding unused tokens and sends a new one.
 
 ```json Request
 {

@@ -1,7 +1,7 @@
 ---
 title: "Delete Role"
 description: "Deactivates a custom role, removing it from the system."
-api: "DELETE http://localhost:8080/admin/rbac/roles/{id}"
+api: "DELETE /rbac/roles/{id}"
 ---
 
 <ParamField path="id" type="string" required>
@@ -14,13 +14,13 @@ api: "DELETE http://localhost:8080/admin/rbac/roles/{id}"
 
 ## Behaviour
 
-Deletion is a soft-delete — the role is deactivated rather than permanently removed from the database. It will no longer appear in [`GET /admin/rbac/roles`](/api-reference/rbac/roles/list-roles) and cannot be assigned to users.
+Deletion is a soft-delete — the role is deactivated rather than permanently removed from the database. It will no longer appear in [`GET /rbac/roles`](/api-reference/rbac/roles/list-roles) and cannot be assigned to users.
 
 System roles and the owner role cannot be deleted. Attempting to do so returns `409 Conflict`.
 
 <RequestExample>
 ```bash Example
-curl -X DELETE http://localhost:8080/admin/rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c \
+curl -X DELETE /rbac/roles/018e4c3a-1b2d-7f4e-9c0a-2d3e4f5a6b7c \
   -H "Authorization: Bearer <token>"
 ```
 </RequestExample>

@@ -1,7 +1,7 @@
 ---
 title: "Google OAuth Callback"
 description: "Handles the redirect from Google after the user completes sign-in. Browser-only — this URL is visited automatically, never called directly."
-api: "GET http://localhost:8080/api/v1/oauth/google/callback"
+api: "GET /oauth/google/callback"
 authMethod: "none"
 ---
 
@@ -82,7 +82,7 @@ These codes appear as `?error=<code>` on your error page URL.
 
     Two cookies are set on sign-in and registration (not on link):
     - `oauth_access_token` — short-lived (30 seconds), readable by your frontend to bootstrap the session.
-    - `refresh_token` — long-lived (30 days), HttpOnly, used for silent token renewal via [`POST /refresh`](/api-reference/auth/session/refresh).
+    - `refresh_token` — long-lived (30 days), HttpOnly, used for silent token renewal via [`POST /auth/refresh`](/api-reference/auth/session/refresh).
   </Accordion>
 
   <Accordion title="302 — Error Redirect">

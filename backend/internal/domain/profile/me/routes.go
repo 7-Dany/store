@@ -1,12 +1,4 @@
-// Package me registers GET /me and PATCH /me for the profile domain.
-// Call from the profile root assembler:
-//
-//	me.Routes(ctx, r, deps)
-//
-// Rate limits:
-//   - GET   /me:             10 req / 1 min per IP (pme:ip:)
-//   - PATCH /me:             10 req / 1 min per IP (prof:ip:)
-//   - GET   /me/identities:  20 req / 1 min per IP (ident:ip:)
+// Package me registers the GET /me, PATCH /me, and GET /me/identities endpoints.
 package me
 
 import (
@@ -20,6 +12,18 @@ import (
 )
 
 // Routes registers the GET /me, PATCH /me, and GET /me/identities endpoints on r.
+// Call from profile.Routes in internal/domain/profile/routes.go:
+//
+//	me.Routes(ctx, r, deps)
+//
+// Rate limits:
+//   - GET   /me:            10 req / 1 min per IP  ("pme:ip:")
+//   - PATCH /me:            10 req / 1 min per IP  ("prof:ip:")
+//   - GET   /me/identities: 20 req / 1 min per IP  ("ident:ip:")
+//
+// Middleware ordering (all routes):
+//
+//	JWTAuth → IPRateLimiter → handler.{Method}
 func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// 10 req / 1 min per IP — prevents bulk profile enumeration.
 	// rate = 10 / (1 * 60) ≈ 0.167 tokens/sec.

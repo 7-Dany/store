@@ -1,7 +1,7 @@
 ---
 title: "Create Role"
 description: "Creates a new custom role."
-api: "POST http://localhost:8080/admin/rbac/roles"
+api: "POST /rbac/roles"
 ---
 
 <ParamField body="name" type="string" required>
@@ -23,7 +23,7 @@ api: "POST http://localhost:8080/admin/rbac/roles"
 
 ## Behaviour
 
-Creates an active, non-system role. Newly created roles have no permissions — use [`POST /admin/rbac/roles/{id}/permissions`](/api-reference/rbac/roles/add-role-permission) to assign permissions after creation.
+Creates an active, non-system role. Newly created roles have no permissions — use [`POST /rbac/roles/{id}/permissions`](/api-reference/rbac/roles/add-role-permission) to assign permissions after creation.
 
 <RequestExample>
 ```json Example

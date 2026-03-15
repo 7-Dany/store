@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "profile-username-e2e",
-    "name": "Profile – Username (GET /username/available + PATCH /me/username)",
-    "description": "E2E tests for GET /api/v1/profile/username/available and PATCH /api/v1/profile/me/username.\n\nFolder execution order (orchestrated by make e2e-username):\n\nInvocation 1 (single run, --delay-request 1):\n  1. setup              — register gmail_test_email, fetch OTP, verify email, login → stores usrn_access_token\n  2. happy-path         — GET available=true; PATCH happy path to usrn_happypath; GET available=false; GET /me verify DB write\n  3. failures           — seed second user with taken username; same_username 422; username_taken 409; GET empty param 422\n  4. auth-failures      — missing Authorization → 401; tampered token → 401\n  5. validation         — body > 1 MiB → 413; malformed JSON → 422\n  6. rate-limiting-uchg — registers dedicated +usrnrl user (fresh uchg:usr: bucket);\n                          5 warmup PATCHes (each → 422 validation_error, slot consumed) → 6th → 429\n                          NOTE: runs in same invocation so usrn_rl_access_token is available.\n\nInvocation 2 (after Redis flush):\n  7. rate-limiting-unav — 20 warmup GETs (public, IP-keyed) → 21st → 429\n\nRate-limiter design notes:\n  uchg:usr: is user-keyed (PATCH /me/username, inside JWTAuth group). The failures and validation folders\n  consume 4 of the 5 uchg:usr: slots for usrn_access_token before rate-limiting-uchg runs. To guarantee\n  a fresh burst=5 bucket, rate-limiting-uchg registers a dedicated gmail_test_email+usrnrl alias user\n  (usrn_rl_access_token) — the same pattern used by rate-limiting-spw in set-password.json.\n  Gmail delivers +usrnrl mail to the same inbox; the OTP fetch targets the alias with a to: filter.\n  Warmup bodies send { \"username\": \"\" } to trigger 422 validation_error after the rate limiter —\n  this consumes a slot without needing the RL user to have an existing username.\n\n  unav:ip: is IP-keyed (GET /username/available, public endpoint). It runs in a separate invocation\n  after a Redis flush. Its folder prerequest pins _xff to 127.0.0.1 so the IP bucket starts empty.\n\nVariable prefix: usrn_\n\nNotes on what is NOT covered here and why:\n  - Individual validation variants (too short, too long, invalid charset, leading/trailing/consecutive\n    underscores): covered by handler_test.go TestHandler_Available and TestHandler_UpdateUsername.\n  - Audit row event type and DB-level metadata content: covered by store_test.go T-36.\n  - Same-username guard inside the DB transaction: covered by store_test.go T-35.\n  - Unique-violation race (TOCTOU): covered by store_test.go T-34.\n  - context.WithoutCancel absence: not applicable per Stage 0 §5 (not required).\n  - QuerierProxy error injection: covered by store_test.go T-37, T-38.\n  - Tampered JWT (T-30): JWT middleware responsibility; confirmed on wire via auth-failures folder.\n\nAll test users use gmail_test_email or @e2e.test addresses so `make _e2e-db-clean` can wipe them.",
+    "name": "Profile \u2013 Username (GET /username/available + PATCH /me/username)",
+    "description": "E2E tests for GET /api/v1/profile/me/username/available and PATCH /api/v1/profile/me/username.\n\nFolder execution order (orchestrated by make e2e-username):\n\nInvocation 1 (single run, --delay-request 1):\n  1. setup              \u2014 register gmail_test_email, fetch OTP, verify email, login \u2192 stores usrn_access_token\n  2. happy-path         \u2014 GET available=true; PATCH happy path to usrn_happypath; GET available=false; GET /me verify DB write\n  3. failures           \u2014 seed second user with taken username; same_username 422; username_taken 409; GET empty param 422\n  4. auth-failures      \u2014 missing Authorization \u2192 401; tampered token \u2192 401\n  5. validation         \u2014 body > 1 MiB \u2192 413; malformed JSON \u2192 422\n  6. rate-limiting-uchg \u2014 registers dedicated +usrnrl user (fresh uchg:usr: bucket);\n                          5 warmup PATCHes (each \u2192 422 validation_error, slot consumed) \u2192 6th \u2192 429\n                          NOTE: runs in same invocation so usrn_rl_access_token is available.\n\nInvocation 2 (after Redis flush):\n  7. rate-limiting-unav \u2014 20 warmup GETs (public, IP-keyed) \u2192 21st \u2192 429\n\nRate-limiter design notes:\n  uchg:usr: is user-keyed (PATCH /me/username, inside JWTAuth group). The failures and validation folders\n  consume 4 of the 5 uchg:usr: slots for usrn_access_token before rate-limiting-uchg runs. To guarantee\n  a fresh burst=5 bucket, rate-limiting-uchg registers a dedicated gmail_test_email+usrnrl alias user\n  (usrn_rl_access_token) \u2014 the same pattern used by rate-limiting-spw in set-password.json.\n  Gmail delivers +usrnrl mail to the same inbox; the OTP fetch targets the alias with a to: filter.\n  Warmup bodies send { \"username\": \"\" } to trigger 422 validation_error after the rate limiter \u2014\n  this consumes a slot without needing the RL user to have an existing username.\n\n  unav:ip: is IP-keyed (GET /username/available, public endpoint). It runs in a separate invocation\n  after a Redis flush. Its folder prerequest pins _xff to 127.0.0.1 so the IP bucket starts empty.\n\nVariable prefix: usrn_\n\nNotes on what is NOT covered here and why:\n  - Individual validation variants (too short, too long, invalid charset, leading/trailing/consecutive\n    underscores): covered by handler_test.go TestHandler_Available and TestHandler_UpdateUsername.\n  - Audit row event type and DB-level metadata content: covered by store_test.go T-36.\n  - Same-username guard inside the DB transaction: covered by store_test.go T-35.\n  - Unique-violation race (TOCTOU): covered by store_test.go T-34.\n  - context.WithoutCancel absence: not applicable per Stage 0 \u00a75 (not required).\n  - QuerierProxy error injection: covered by store_test.go T-37, T-38.\n  - Tampered JWT (T-30): JWT middleware responsibility; confirmed on wire via auth-failures folder.\n\nAll test users use gmail_test_email or @e2e.test addresses so `make _e2e-db-clean` can wipe them.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -28,7 +28,7 @@
       "description": "Registers the gmail_test_email user, fetches the verification OTP from Gmail, verifies the email, and logs in. Stores usrn_access_token for use by subsequent folders.",
       "item": [
         {
-          "name": "POST /register → 201 (setup account)",
+          "name": "POST /register \u2192 201 (setup account)",
           "event": [
             {
               "listen": "prerequest",
@@ -37,7 +37,7 @@
                 "exec": [
                   "const email = pm.environment.get('gmail_test_email');",
                   "if (!email) {",
-                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
+                  "    console.error('[ERROR] gmail_test_email not set in environment \u2014 add it to environment.json.');",
                   "}",
                   "pm.collectionVariables.set('usrn_email', email);",
                   "pm.collectionVariables.set('usrn_password', 'P@ssw0rd1!');"
@@ -54,7 +54,7 @@
                   "",
                   "// --- Gmail verification OTP fetch ---",
                   "const token = pm.variables.get('gmail_access_token');",
-                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
                   "",
                   "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
                   "const start = Date.now();",
@@ -69,7 +69,7 @@
                   "    header: { Authorization: 'Bearer ' + token }",
                   "}, (err, res) => {",
                   "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
-                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired — refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired \u2014 refresh at https://developers.google.com/oauthplayground'); return; }",
                   "    const msgs = res.json().messages;",
                   "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching verification email found in Gmail.'); return; }",
                   "    pm.sendRequest({",
@@ -101,13 +101,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"UsrnSetup\", \"email\": \"{{usrn_email}}\", \"password\": \"{{usrn_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -117,7 +127,7 @@
           }
         },
         {
-          "name": "POST /verify-email → 200 (consume verification OTP)",
+          "name": "POST /verification \u2192 200 (consume verification OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -126,7 +136,7 @@
                 "exec": [
                   "const code = pm.collectionVariables.get('usrn_vfy_code');",
                   "if (!code) {",
-                  "    console.error('[ERROR] usrn_vfy_code is empty — Gmail fetch in register step did not complete.');",
+                  "    console.error('[ERROR] usrn_vfy_code is empty \u2014 Gmail fetch in register step did not complete.');",
                   "    console.error('        Check: gmail_access_token is set, token not expired, --delay-request >= 8000.');",
                   "}"
                 ]
@@ -146,23 +156,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{usrn_email}}\", \"code\": \"{{usrn_vfy_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
         {
-          "name": "POST /login → 200 (store access token)",
+          "name": "POST /login \u2192 200 (store access token)",
           "event": [
             {
               "listen": "test",
@@ -181,13 +201,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{usrn_email}}\", \"password\": \"{{usrn_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -200,17 +230,17 @@
     },
     {
       "name": "happy-path",
-      "description": "Covers T-01 (GET available=true), the PATCH happy path (T-15), T-02 (GET available=false after PATCH), and a follow-up GET /me to confirm the DB write.\n\nOrder: GET available=true → PATCH to usrn_happypath → GET available=false (usrn_happypath is now taken) → GET /me verify.\n\nNOT covered here:\n  - store error → 500 (T-10): covered by handler_test.go.\n  - audit row content (T-36): covered by store_test.go.",
+      "description": "Covers T-01 (GET available=true), the PATCH happy path (T-15), T-02 (GET available=false after PATCH), and a follow-up GET /me to confirm the DB write.\n\nOrder: GET available=true \u2192 PATCH to usrn_happypath \u2192 GET available=false (usrn_happypath is now taken) \u2192 GET /me verify.\n\nNOT covered here:\n  - store error \u2192 500 (T-10): covered by handler_test.go.\n  - audit row content (T-36): covered by store_test.go.",
       "item": [
         {
-          "name": "GET /username/available?username=definitelynotused99 → 200 available=true (T-01)",
+          "name": "GET /username/available?username=definitelynotused99 \u2192 200 available=true (T-01)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-01 — username that no test user holds; should be available.",
+                  "// T-01 \u2014 username that no test user holds; should be available.",
                   "// Confirms the public endpoint returns 200 with available=true on the wire.",
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "pm.test('available is true', () => pm.expect(pm.response.json().available).to.be.true);",
@@ -223,32 +253,40 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/username/available?username=definitelynotused99",
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=definitelynotused99",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "username", "available"],
-              "query": [{ "key": "username", "value": "definitelynotused99" }]
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "definitelynotused99"
+                }
+              ]
             }
           }
         },
         {
-          "name": "PATCH /me/username → 200 happy path (T-15)",
+          "name": "PATCH /me/username \u2192 200 happy path (T-15)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-15 — authenticated user changes to a fresh, available username.",
-                  "// Confirms the full wire: JWT auth → rate limiter → handler → service → DB → 200.",
+                  "// T-15 \u2014 authenticated user changes to a fresh, available username.",
+                  "// Confirms the full wire: JWT auth \u2192 rate limiter \u2192 handler \u2192 service \u2192 DB \u2192 200.",
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "const body = pm.response.json();",
                   "pm.test('message confirms update', () => pm.expect(body.message).to.equal('username updated successfully'));",
                   "pm.collectionVariables.set('usrn_username', 'usrn_happypath');",
                   "console.log('[INFO] usrn_username set to usrn_happypath.');",
-                  "// NOT covered here: audit row content (T-36) — covered by store_test.go."
+                  "// NOT covered here: audit row content (T-36) \u2014 covered by store_test.go."
                 ]
               }
             }
@@ -256,14 +294,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"usrn_happypath\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -273,14 +324,14 @@
           }
         },
         {
-          "name": "GET /username/available?username=usrn_happypath → 200 available=false (T-02)",
+          "name": "GET /username/available?username=usrn_happypath \u2192 200 available=false (T-02)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-02 — username held by the setup user (just set via PATCH above); should be taken.",
+                  "// T-02 \u2014 username held by the setup user (just set via PATCH above); should be taken.",
                   "// Confirms the availability check correctly reports taken after a successful PATCH.",
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "pm.test('available is false', () => pm.expect(pm.response.json().available).to.be.false);",
@@ -293,18 +344,26 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/username/available?username=usrn_happypath",
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrn_happypath",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "username", "available"],
-              "query": [{ "key": "username", "value": "usrn_happypath" }]
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrn_happypath"
+                }
+              ]
             }
           }
         },
         {
-          "name": "GET /me → 200 (verify DB write — username persisted)",
+          "name": "GET /me \u2192 200 (verify DB write \u2014 username persisted)",
           "event": [
             {
               "listen": "test",
@@ -312,7 +371,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "// Wire-level confirmation that the PATCH actually persisted to the DB.",
-                  "// This is not a duplicate of T-15 — that test checks the PATCH response shape.",
+                  "// This is not a duplicate of T-15 \u2014 that test checks the PATCH response shape.",
                   "// This test checks that a subsequent GET /me reflects the new username.",
                   "pm.test('status is 200', () => pm.response.to.have.status(200));",
                   "pm.test('username updated in DB', () => {",
@@ -325,8 +384,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{usrn_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -339,10 +404,10 @@
     },
     {
       "name": "failures",
-      "description": "Domain-level error cases that require real HTTP round-trips to confirm wiring: same_username (T-23), username_taken (T-24), and a representative GET validation error (T-03).\n\nThe first request seeds a second @e2e.test user with username=usrntakenuser so the username_taken 409 test has a real conflict in the DB. No Gmail OTP is needed for this user — registration inserts the row immediately regardless of email verification status, which is all CheckUsernameAvailable queries.\n\nNOT covered here:\n  - Other 422 validation variants (T-16–T-22): covered by handler_test.go.\n  - Individual GET validation variants (T-04–T-09): covered by handler_test.go.",
+      "description": "Domain-level error cases that require real HTTP round-trips to confirm wiring: same_username (T-23), username_taken (T-24), and a representative GET validation error (T-03).\n\nThe first request seeds a second @e2e.test user with username=usrntakenuser so the username_taken 409 test has a real conflict in the DB. No Gmail OTP is needed for this user \u2014 registration inserts the row immediately regardless of email verification status, which is all CheckUsernameAvailable queries.\n\nNOT covered here:\n  - Other 422 validation variants (T-16\u2013T-22): covered by handler_test.go.\n  - Individual GET validation variants (T-04\u2013T-09): covered by handler_test.go.",
       "item": [
         {
-          "name": "seed-taken — POST /register usrn_taken@e2e.test with username=usrntakenuser → 201",
+          "name": "seed-taken \u2014 POST /register usrn_taken@e2e.test with username=usrntakenuser \u2192 201",
           "event": [
             {
               "listen": "test",
@@ -365,13 +430,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"Taken\", \"email\": \"usrn_taken@e2e.test\", \"password\": \"P@ssw0rd1!\", \"username\": \"usrntakenuser\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -381,16 +456,16 @@
           }
         },
         {
-          "name": "PATCH /me/username → 422 same_username (T-23)",
+          "name": "PATCH /me/username \u2192 422 same_username (T-23)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-23 — usrn user tries to PATCH to their current username (usrn_happypath).",
-                  "// After normalisation both values are equal → 422 same_username.",
-                  "// Confirms: rate limiter passes → service same-username guard fires → handler maps → wire.",
+                  "// T-23 \u2014 usrn user tries to PATCH to their current username (usrn_happypath).",
+                  "// After normalisation both values are equal \u2192 422 same_username.",
+                  "// Confirms: rate limiter passes \u2192 service same-username guard fires \u2192 handler maps \u2192 wire.",
                   "pm.test('status is 422', () => pm.response.to.have.status(422));",
                   "pm.test('code is same_username', () => pm.expect(pm.response.json().code).to.equal('same_username'));",
                   "// NOTE: this request consumes one uchg:usr: slot for usrn_access_token."
@@ -401,14 +476,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"{{usrn_username}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -418,16 +506,16 @@
           }
         },
         {
-          "name": "PATCH /me/username → 409 username_taken (T-24)",
+          "name": "PATCH /me/username \u2192 409 username_taken (T-24)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-24 — usrn user tries to claim usrntakenuser which belongs to the seeded user.",
-                  "// UpdateUsernameTx: SELECT FOR UPDATE → unique violation on idx_users_username → ErrUsernameTaken.",
-                  "// Handler maps ErrUsernameTaken → 409 username_taken.",
+                  "// T-24 \u2014 usrn user tries to claim usrntakenuser which belongs to the seeded user.",
+                  "// UpdateUsernameTx: SELECT FOR UPDATE \u2192 unique violation on idx_users_username \u2192 ErrUsernameTaken.",
+                  "// Handler maps ErrUsernameTaken \u2192 409 username_taken.",
                   "pm.test('status is 409', () => pm.response.to.have.status(409));",
                   "pm.test('code is username_taken', () => pm.expect(pm.response.json().code).to.equal('username_taken'));",
                   "// NOTE: this request consumes one uchg:usr: slot for usrn_access_token."
@@ -438,14 +526,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"usrntakenuser\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -455,16 +556,16 @@
           }
         },
         {
-          "name": "GET /username/available?username= → 422 validation_error (T-03 representative)",
+          "name": "GET /username/available?username= \u2192 422 validation_error (T-03 representative)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-03 — empty username query param → 422 validation_error.",
+                  "// T-03 \u2014 empty username query param \u2192 422 validation_error.",
                   "// Confirms the validation wiring fires on the wire for the public GET endpoint.",
-                  "// Other GET validation variants (T-04–T-09) are covered by handler_test.go.",
+                  "// Other GET validation variants (T-04\u2013T-09) are covered by handler_test.go.",
                   "pm.test('status is 422', () => pm.response.to.have.status(422));",
                   "pm.test('code is validation_error', () => pm.expect(pm.response.json().code).to.equal('validation_error'));"
                 ]
@@ -474,13 +575,21 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/username/available?username=",
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "username", "available"],
-              "query": [{ "key": "username", "value": "" }]
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": ""
+                }
+              ]
             }
           }
         }
@@ -488,21 +597,21 @@
     },
     {
       "name": "auth-failures",
-      "description": "Verifies that the JWT auth middleware correctly guards PATCH /me/username.\nCovers T-29 (missing Authorization) and T-30 (tampered token).\nNeither request reaches the rate limiter — JWT middleware fires first and returns 401.",
+      "description": "Verifies that the JWT auth middleware correctly guards PATCH /me/username.\nCovers T-29 (missing Authorization) and T-30 (tampered token).\nNeither request reaches the rate limiter \u2014 JWT middleware fires first and returns 401.",
       "item": [
         {
-          "name": "PATCH /me/username → 401 missing Authorization (T-29)",
+          "name": "PATCH /me/username \u2192 401 missing Authorization (T-29)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-29 — no Authorization header at all.",
+                  "// T-29 \u2014 no Authorization header at all.",
                   "// JWTAuth middleware must reject this before the rate limiter or handler body runs.",
                   "// mustUserID guard is also exercised by this missing-header case.",
                   "pm.test('status is 401', () => pm.response.to.have.status(401));",
-                  "// NOTE: no uchg:usr: slot consumed — JWT rejection fires before rate limiter."
+                  "// NOTE: no uchg:usr: slot consumed \u2014 JWT rejection fires before rate limiter."
                 ]
               }
             }
@@ -510,13 +619,23 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"usrn_shouldfail\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -526,18 +645,18 @@
           }
         },
         {
-          "name": "PATCH /me/username → 401 tampered token (T-30)",
+          "name": "PATCH /me/username \u2192 401 tampered token (T-30)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-30 — JWT with tampered ECDSA signature.",
+                  "// T-30 \u2014 JWT with tampered ECDSA signature.",
                   "// JWTAuth middleware validates the signature and must reject this with 401.",
-                  "// This is JWT middleware responsibility — confirmed on wire here.",
+                  "// This is JWT middleware responsibility \u2014 confirmed on wire here.",
                   "pm.test('status is 401', () => pm.response.to.have.status(401));",
-                  "// NOTE: no uchg:usr: slot consumed — JWT rejection fires before rate limiter."
+                  "// NOTE: no uchg:usr: slot consumed \u2014 JWT rejection fires before rate limiter."
                 ]
               }
             }
@@ -545,14 +664,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"usrn_shouldfail\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -565,10 +697,10 @@
     },
     {
       "name": "validation",
-      "description": "Infrastructure-level request validation: body size cap (T-31) and malformed JSON (T-32).\nBoth use usrn_access_token since JWTAuth fires before body decoding.\n\nNOTE: Both requests pass the JWT middleware and hit the rate limiter — they each consume\none uchg:usr: slot from usrn_access_token. Combined with the 2 slots consumed in failures,\nusrn_access_token's burst=5 bucket is fully exhausted before rate-limiting-uchg runs.\nrate-limiting-uchg therefore uses a dedicated second user (usrn_rl_access_token) with\nits own fresh burst=5 bucket.",
+      "description": "Infrastructure-level request validation: body size cap (T-31) and malformed JSON (T-32).\nBoth use usrn_access_token since JWTAuth fires before body decoding.\n\nNOTE: Both requests pass the JWT middleware and hit the rate limiter \u2014 they each consume\none uchg:usr: slot from usrn_access_token. Combined with the 2 slots consumed in failures,\nusrn_access_token's burst=5 bucket is fully exhausted before rate-limiting-uchg runs.\nrate-limiting-uchg therefore uses a dedicated second user (usrn_rl_access_token) with\nits own fresh burst=5 bucket.",
       "item": [
         {
-          "name": "PATCH /me/username → 413 body > 1 MiB (T-31)",
+          "name": "PATCH /me/username \u2192 413 body > 1 MiB (T-31)",
           "event": [
             {
               "listen": "prerequest",
@@ -577,7 +709,7 @@
                 "exec": [
                   "// Pad the body past the 1 MiB MaxBytesReader limit set in handler.UpdateUsername.",
                   "// Rate limiter fires first (consuming one uchg:usr: slot), then MaxBytesReader",
-                  "// fires during json.Decoder.Decode → respond.DecodeJSON maps to 413.",
+                  "// fires during json.Decoder.Decode \u2192 respond.DecodeJSON maps to 413.",
                   "const pad = 'x'.repeat(1024 * 1024 + 1);",
                   "pm.request.body.update({",
                   "    mode: 'raw',",
@@ -591,7 +723,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-31 — body exceeds MaxBytesReader cap → 413.",
+                  "// T-31 \u2014 body exceeds MaxBytesReader cap \u2192 413.",
                   "pm.test('status is 413', () => pm.response.to.have.status(413));"
                 ]
               }
@@ -600,14 +732,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -617,15 +762,15 @@
           }
         },
         {
-          "name": "PATCH /me/username → 400 malformed JSON (T-32)",
+          "name": "PATCH /me/username \u2192 400 malformed JSON (T-32)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-32 — malformed JSON body → 400 bad_request.",
-                  "// Rate limiter fires first (consuming one uchg:usr: slot), then decoder fails → 400.",
+                  "// T-32 \u2014 malformed JSON body \u2192 400 bad_request.",
+                  "// Rate limiter fires first (consuming one uchg:usr: slot), then decoder fails \u2192 400.",
                   "pm.test('status is 400', () => pm.response.to.have.status(400));",
                   "pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.equal('bad_request'));"
                 ]
@@ -635,14 +780,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{bad json",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -655,7 +813,7 @@
     },
     {
       "name": "rate-limiting-uchg",
-      "description": "Verifies the uchg:usr: per-user rate limiter for PATCH /me/username (burst=5, rate=5/10 min).\n\nWhy a dedicated user (usrn_rl_access_token):\n  The uchg:usr: limiter is user-keyed. The failures folder (2 PATCHes) and validation folder\n  (2 PATCHes) each use usrn_access_token, exhausting all 5 slots of that user's bucket before\n  this folder runs. To guarantee a fresh burst=5 bucket, this folder registers and logs in as a\n  separate gmail_test_email+usrnrl alias user (usrn_rl_access_token). Gmail delivers +usrnrl\n  mail to the same inbox; the OTP fetch targets the alias with a to: filter.\n\nWarmup strategy:\n  Warmup bodies send { \"username\": \"\" } → validation_error 422 after the rate limiter.\n  No need for the RL user to have an existing username — empty username triggers validation\n  immediately after the limiter passes it through.\n\nSequence:\n  rl-setup 1–3: register +usrnrl alias → verify email (Gmail OTP) → login (store usrn_rl_access_token)\n  warmup  1–5:  not 429 (slots 1–5 consumed; each returns 422 validation_error)\n  6th request → 429 too_many_requests (bucket exhausted)\n\nRetry-After = ceil(1 / (5/600)) = ceil(120) = 120 seconds.\n\nCovers T-39: 6th request from same user within 10-minute window → 429 (uchg:usr:, burst=5).",
+      "description": "Verifies the uchg:usr: per-user rate limiter for PATCH /me/username (burst=5, rate=5/10 min).\n\nWhy a dedicated user (usrn_rl_access_token):\n  The uchg:usr: limiter is user-keyed. The failures folder (2 PATCHes) and validation folder\n  (2 PATCHes) each use usrn_access_token, exhausting all 5 slots of that user's bucket before\n  this folder runs. To guarantee a fresh burst=5 bucket, this folder registers and logs in as a\n  separate gmail_test_email+usrnrl alias user (usrn_rl_access_token). Gmail delivers +usrnrl\n  mail to the same inbox; the OTP fetch targets the alias with a to: filter.\n\nWarmup strategy:\n  Warmup bodies send { \"username\": \"\" } \u2192 validation_error 422 after the rate limiter.\n  No need for the RL user to have an existing username \u2014 empty username triggers validation\n  immediately after the limiter passes it through.\n\nSequence:\n  rl-setup 1\u20133: register +usrnrl alias \u2192 verify email (Gmail OTP) \u2192 login (store usrn_rl_access_token)\n  warmup  1\u20135:  not 429 (slots 1\u20135 consumed; each returns 422 validation_error)\n  6th request \u2192 429 too_many_requests (bucket exhausted)\n\nRetry-After = ceil(1 / (5/600)) = ceil(120) = 120 seconds.\n\nCovers T-39: 6th request from same user within 10-minute window \u2192 429 (uchg:usr:, burst=5).",
       "event": [
         {
           "listen": "prerequest",
@@ -673,7 +831,7 @@
       ],
       "item": [
         {
-          "name": "rl-setup 1/3 — POST /register → 201 (+usrnrl alias user)",
+          "name": "rl-setup 1/3 \u2014 POST /register \u2192 201 (+usrnrl alias user)",
           "event": [
             {
               "listen": "prerequest",
@@ -701,7 +859,7 @@
                   "// Fetch the verification OTP for the +usrnrl alias specifically.",
                   "// Using to: filter so we get the right email when both users registered in the same hour.",
                   "const token = pm.variables.get('gmail_access_token');",
-                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
                   "",
                   "console.log('[INFO] Waiting 8 s for +usrnrl verification email...');",
                   "const start = Date.now();",
@@ -747,13 +905,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\": \"UsrnRL\", \"email\": \"{{usrn_rl_email}}\", \"password\": \"{{usrn_rl_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -763,7 +931,7 @@
           }
         },
         {
-          "name": "rl-setup 2/3 — POST /verify-email → 200 (+usrnrl alias user)",
+          "name": "rl-setup 2/3 \u2014 POST /verification \u2192 200 (+usrnrl alias user)",
           "event": [
             {
               "listen": "prerequest",
@@ -772,7 +940,7 @@
                 "exec": [
                   "const code = pm.collectionVariables.get('usrn_rl_vfy_code');",
                   "if (!code) {",
-                  "    console.error('[ERROR] usrn_rl_vfy_code is empty — Gmail fetch in rl-setup 1/3 did not complete.');",
+                  "    console.error('[ERROR] usrn_rl_vfy_code is empty \u2014 Gmail fetch in rl-setup 1/3 did not complete.');",
                   "}"
                 ]
               }
@@ -790,23 +958,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\": \"{{usrn_rl_email}}\", \"code\": \"{{usrn_rl_vfy_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
         {
-          "name": "rl-setup 3/3 — POST /login → 200 (store usrn_rl_access_token)",
+          "name": "rl-setup 3/3 \u2014 POST /login \u2192 200 (store usrn_rl_access_token)",
           "event": [
             {
               "listen": "test",
@@ -825,13 +1003,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\": \"{{usrn_rl_email}}\", \"password\": \"{{usrn_rl_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -841,7 +1029,7 @@
           }
         },
         {
-          "name": "warmup 1/5 — consume uchg:usr: slot (→ not 429)",
+          "name": "warmup 1/5 \u2014 consume uchg:usr: slot (\u2192 not 429)",
           "event": [
             {
               "listen": "test",
@@ -849,7 +1037,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "// Uses usrn_rl_access_token (fresh bucket, no prior PATCH calls for this user).",
-                  "// Empty username → rate limiter fires (slot 1 consumed) → 422 validation_error.",
+                  "// Empty username \u2192 rate limiter fires (slot 1 consumed) \u2192 422 validation_error.",
                   "pm.test('not rate-limited yet (uchg:usr: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
                 ]
               }
@@ -858,14 +1046,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -875,7 +1076,7 @@
           }
         },
         {
-          "name": "warmup 2/5 — consume uchg:usr: slot (→ not 429)",
+          "name": "warmup 2/5 \u2014 consume uchg:usr: slot (\u2192 not 429)",
           "event": [
             {
               "listen": "test",
@@ -890,14 +1091,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -907,7 +1121,7 @@
           }
         },
         {
-          "name": "warmup 3/5 — consume uchg:usr: slot (→ not 429)",
+          "name": "warmup 3/5 \u2014 consume uchg:usr: slot (\u2192 not 429)",
           "event": [
             {
               "listen": "test",
@@ -922,14 +1136,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -939,7 +1166,7 @@
           }
         },
         {
-          "name": "warmup 4/5 — consume uchg:usr: slot (→ not 429)",
+          "name": "warmup 4/5 \u2014 consume uchg:usr: slot (\u2192 not 429)",
           "event": [
             {
               "listen": "test",
@@ -954,14 +1181,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -971,14 +1211,14 @@
           }
         },
         {
-          "name": "warmup 5/5 — consume uchg:usr: slot (→ not 429, last allowed)",
+          "name": "warmup 5/5 \u2014 consume uchg:usr: slot (\u2192 not 429, last allowed)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('not rate-limited yet (uchg:usr: slot 5 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                  "pm.test('not rate-limited yet (uchg:usr: slot 5 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
                 ]
               }
             }
@@ -986,14 +1226,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -1003,14 +1256,14 @@
           }
         },
         {
-          "name": "6th request → 429 (uchg:usr: bucket exhausted — T-39)",
+          "name": "6th request \u2192 429 (uchg:usr: bucket exhausted \u2014 T-39)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-39 — burst=5 exhausted. The rate limiter fires before the handler.",
+                  "// T-39 \u2014 burst=5 exhausted. The rate limiter fires before the handler.",
                   "// Retry-After = ceil(1 / (5/600)) = ceil(120) = 120 seconds.",
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
                   "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.equal('too_many_requests'));",
@@ -1018,7 +1271,7 @@
                   "    pm.expect(pm.response.headers.get('Retry-After')).to.exist;",
                   "    pm.expect(pm.response.headers.get('Retry-After')).to.not.be.empty;",
                   "});",
-                  "// NOT covered here: exact Retry-After value — covered by rate-limiter unit tests."
+                  "// NOT covered here: exact Retry-After value \u2014 covered by rate-limiter unit tests."
                 ]
               }
             }
@@ -1026,14 +1279,27 @@
           "request": {
             "method": "PATCH",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "Authorization", "value": "Bearer {{usrn_rl_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{usrn_rl_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"username\": \"\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/username",
@@ -1046,7 +1312,7 @@
     },
     {
       "name": "rate-limiting-unav",
-      "description": "Verifies the unav:ip: per-IP rate limiter for GET /username/available (burst=20, rate=20/1 min).\n\nThis folder runs in a SEPARATE Newman invocation after _e2e-kv-clean so the 127.0.0.1\nIP bucket starts empty. The folder prerequest pins _xff to 127.0.0.1 for all requests\nso they all land in the same bucket.\n\nSequence:\n  warmup 1–25: GET → 200 (slots 1–20 consumed + 5 drain requests to absorb token refill; must not return 429)\n  26th request → 429 too_many_requests (bucket exhausted)\n\nWhy 25 warmup requests instead of 20:\n  The unav:ip: limiter is a token bucket (rate=20/60≈0.333 tok/sec). During the warmup\n  phase Redis response latency means the 20 requests can take 2–6 seconds total, refilling\n  up to ~2 tokens. Without extra drain requests the 21st fires into a non-empty bucket and\n  returns 200 instead of 429, causing an intermittent flaky failure. Sending 5 additional\n  drain requests (slots 21–25) absorbs up to ~15 seconds of refill (5/0.333=15s), making\n  the test deterministic on any machine/network speed.\n\nCovers T-14: first request beyond burst+refill from same IP within 1-minute window → 429 (unav:ip:, burst=20).",
+      "description": "Verifies the unav:ip: per-IP rate limiter for GET /username/available (burst=20, rate=20/1 min).\n\nThis folder runs in a SEPARATE Newman invocation after _e2e-kv-clean so the 127.0.0.1\nIP bucket starts empty. The folder prerequest pins _xff to 127.0.0.1 for all requests\nso they all land in the same bucket.\n\nSequence:\n  warmup 1\u201325: GET \u2192 200 (slots 1\u201320 consumed + 5 drain requests to absorb token refill; must not return 429)\n  26th request \u2192 429 too_many_requests (bucket exhausted)\n\nWhy 25 warmup requests instead of 20:\n  The unav:ip: limiter is a token bucket (rate=20/60\u22480.333 tok/sec). During the warmup\n  phase Redis response latency means the 20 requests can take 2\u20136 seconds total, refilling\n  up to ~2 tokens. Without extra drain requests the 21st fires into a non-empty bucket and\n  returns 200 instead of 429, causing an intermittent flaky failure. Sending 5 additional\n  drain requests (slots 21\u201325) absorbs up to ~15 seconds of refill (5/0.333=15s), making\n  the test deterministic on any machine/network speed.\n\nCovers T-14: first request beyond burst+refill from same IP within 1-minute window \u2192 429 (unav:ip:, burst=20).",
       "event": [
         {
           "listen": "prerequest",
@@ -1063,146 +1329,14 @@
       ],
       "item": [
         {
-          "name": "warmup 1/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 2/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 3/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 4/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 5/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 6/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 7/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 8/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 9/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 10/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 10)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 11/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 11)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 12/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 12)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 13/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 13)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 14/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 14)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 15/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 15)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 16/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 16)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 17/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 17)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 18/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 18)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 19/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 19)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 20/25 — consume unav:ip: slot (→ not 429)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited yet (unav:ip: slot 20)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 21/25 — drain refill tokens (silent)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain request — absorbs any token refilled since burst was exhausted.\n// Bucket is already empty so this will 429; that is expected and ignored.\n// No assertion here — only the 26th request asserts 429."] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 22/25 — drain refill tokens (silent)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion, see slot 21 comment."] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 23/25 — drain refill tokens (silent)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion, see slot 21 comment."] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 24/25 — drain refill tokens (silent)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion, see slot 21 comment."] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "warmup 25/25 — drain refill tokens (silent, bucket now reliably empty)",
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["// Drain — no assertion. After this the bucket is reliably empty and the 26th request must 429."] } }],
-          "request": { "method": "GET", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "username", "available"], "query": [{ "key": "username", "value": "usrnwarmup" }] } }
-        },
-        {
-          "name": "26th request → 429 (unav:ip: bucket exhausted — T-14)",
+          "name": "warmup 1/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// T-14 — burst=20 exhausted. The rate limiter fires and returns 429.",
-                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.equal('too_many_requests'));",
-                  "pm.test('Retry-After header present', () => {",
-                  "    pm.expect(pm.response.headers.get('Retry-After')).to.exist;",
-                  "    pm.expect(pm.response.headers.get('Retry-After')).to.not.be.empty;",
-                  "});",
-                  "// NOT covered here: exact Retry-After value — covered by rate-limiter unit tests."
+                  "pm.test('not rate-limited yet (unav:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
                 ]
               }
             }
@@ -1210,13 +1344,872 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/profile/username/available?username=usrnwarmup",
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "username", "available"],
-              "query": [{ "key": "username", "value": "usrnwarmup" }]
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 6/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 7/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 8/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 9/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 10/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 10)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 11/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 11)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 12/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 12)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 13/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 13)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 14/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 14)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 15/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 15)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 16/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 16)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 17/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 17)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 18/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 18)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 19/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 19)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 20/25 \u2014 consume unav:ip: slot (\u2192 not 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (unav:ip: slot 20)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 21/25 \u2014 drain refill tokens (silent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Drain request \u2014 absorbs any token refilled since burst was exhausted.\n// Bucket is already empty so this will 429; that is expected and ignored.\n// No assertion here \u2014 only the 26th request asserts 429."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 22/25 \u2014 drain refill tokens (silent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["// Drain \u2014 no assertion, see slot 21 comment."]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 23/25 \u2014 drain refill tokens (silent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["// Drain \u2014 no assertion, see slot 21 comment."]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 24/25 \u2014 drain refill tokens (silent)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": ["// Drain \u2014 no assertion, see slot 21 comment."]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "warmup 25/25 \u2014 drain refill tokens (silent, bucket now reliably empty)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Drain \u2014 no assertion. After this the bucket is reliably empty and the 26th request must 429."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "26th request \u2192 429 (unav:ip: bucket exhausted \u2014 T-14)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// T-14 \u2014 burst=20 exhausted. The rate limiter fires and returns 429.",
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.equal('too_many_requests'));",
+                  "pm.test('Retry-After header present', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.exist;",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.not.be.empty;",
+                  "});",
+                  "// NOT covered here: exact Retry-After value \u2014 covered by rate-limiter unit tests."
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/profile/me/username/available?username=usrnwarmup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "profile", "me", "username", "available"],
+              "query": [
+                {
+                  "key": "username",
+                  "value": "usrnwarmup"
+                }
+              ]
             }
           }
         }
@@ -1262,7 +2255,7 @@
     {
       "key": "usrn_rl_email",
       "value": "",
-      "description": "gmail_test_email+usrnrl alias. Derived and set in rate-limiting-uchg rl-setup 1/3 prerequest. Fresh uchg:usr: bucket — not used by any other folder."
+      "description": "gmail_test_email+usrnrl alias. Derived and set in rate-limiting-uchg rl-setup 1/3 prerequest. Fresh uchg:usr: bucket \u2014 not used by any other folder."
     },
     {
       "key": "usrn_rl_password",

@@ -12,10 +12,7 @@ import (
 	"github.com/rs/cors"
 
 	"github.com/7-Dany/store/backend/internal/app"
-	"github.com/7-Dany/store/backend/internal/domain/auth"
-	"github.com/7-Dany/store/backend/internal/domain/oauth"
-	"github.com/7-Dany/store/backend/internal/domain/profile"
-	rbacdomain "github.com/7-Dany/store/backend/internal/domain/rbac"
+	"github.com/7-Dany/store/backend/internal/domain"
 	"github.com/7-Dany/store/backend/internal/platform/ratelimit"
 	"github.com/7-Dany/store/backend/internal/platform/respond"
 )
@@ -85,16 +82,14 @@ func newRouter(ctx context.Context, deps *app.Deps) http.Handler {
 	// few seconds.
 	healthLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "health:ip:", 3.0/60, 3, 5*time.Minute)
 	go healthLimiter.StartCleanup(ctx)
-	r.With(healthLimiter.Limit).Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		respond.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
 
 	// ── API v1 ────────────────────────────────────────────────────────────
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Mount("/auth", auth.Routes(ctx, deps))
-		r.Mount("/oauth", oauth.Routes(ctx, deps))
-		r.Mount("/profile", profile.Routes(ctx, deps))
-		r.Mount("/", rbacdomain.Routes(ctx, deps))
+		r.With(healthLimiter.Limit).Get("/health", func(w http.ResponseWriter, r *http.Request) {
+			respond.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		})
+
+		domain.Mount(ctx, r, deps)
 	})
 
 	return r

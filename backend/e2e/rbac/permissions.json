@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "rbac-permissions-e2e",
-    "name": "RBAC \u2013 Permissions (GET /admin/permissions, GET /admin/permissions/groups)",
-    "description": "E2E tests for:\n  GET /api/v1/admin/permissions\n  GET /api/v1/admin/permissions/groups\n\nFolder execution order:\n  1. setup            \u2014 register + Gmail OTP + verify-email + login\n                         (captures perms_access_token \u2014 plain user, no RBAC permissions yet)\n  2. auth-guard       \u2014 401 on both routes with no Authorization header\n  3. rbac-guard       \u2014 403 on both routes with valid JWT but no rbac:read (plain user)\n  4. owner-bootstrap  \u2014 POST /owner/bootstrap promotes the test user to owner\n                         (owner role grants rbac:read; Require middleware reads DB per request \u2014\n                          no re-login needed; the same perms_access_token becomes effective)\n  5. happy-path       \u2014 200 + body shape on both routes\n\nRoutes:\n  GET /api/v1/admin/permissions\n  GET /api/v1/admin/permissions/groups\nGuard order (both routes): JWTAuth \u2192 RBAC.Require(rbac:read) \u2192 handler\nNo rate limiter on admin routes (JWT-gated).\n\nEnvironment variables required:\n  bootstrap_secret   \u2014 must match BOOTSTRAP_SECRET in .env\n  gmail_test_email   \u2014 Gmail address for OTP receipt\n  gmail_access_token \u2014 OAuth2 token for Gmail API reads\n\nNotes on what is NOT covered here (covered by unit tests):\n  - DB/service error \u2192 500              \u2014 handler_test.go\n  - nil result marshals as [] not null  \u2014 handler_test.go\n  - empty result marshals as [] not null \u2014 handler_test.go\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before each suite run.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "name": "RBAC \u2013 Permissions (GET /rbac/permissions, GET /rbac/permissions/groups)",
+    "description": "E2E tests for:\n  GET /api/v1/rbac/permissions\n  GET /api/v1/rbac/permissions/groups\n\nFolder execution order:\n  1. setup            \u2014 register + Gmail OTP + verify-email + login\n                         (captures perms_access_token \u2014 plain user, no RBAC permissions yet)\n  2. auth-guard       \u2014 401 on both routes with no Authorization header\n  3. rbac-guard       \u2014 403 on both routes with valid JWT but no rbac:read (plain user)\n  4. owner-bootstrap  \u2014 POST /owner/bootstrap promotes the test user to owner\n                         (owner role grants rbac:read; Require middleware reads DB per request \u2014\n                          no re-login needed; the same perms_access_token becomes effective)\n  5. happy-path       \u2014 200 + body shape on both routes\n\nRoutes:\n  GET /api/v1/rbac/permissions\n  GET /api/v1/rbac/permissions/groups\nGuard order (both routes): JWTAuth \u2192 RBAC.Require(rbac:read) \u2192 handler\nNo rate limiter on admin routes (JWT-gated).\n\nEnvironment variables required:\n  bootstrap_secret   \u2014 must match BOOTSTRAP_SECRET in .env\n  gmail_test_email   \u2014 Gmail address for OTP receipt\n  gmail_access_token \u2014 OAuth2 token for Gmail API reads\n\nNotes on what is NOT covered here (covered by unit tests):\n  - DB/service error \u2192 500              \u2014 handler_test.go\n  - nil result marshals as [] not null  \u2014 handler_test.go\n  - empty result marshals as [] not null \u2014 handler_test.go\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before each suite run.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -125,7 +125,7 @@
           }
         },
         {
-          "name": "POST /verify-email \u2192 200 (consume OTP)",
+          "name": "POST /verification \u2192 200 (consume OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -173,9 +173,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -254,9 +254,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/permissions",
+              "raw": "{{base_url}}/api/v1/rbac/permissions",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "permissions"]
+              "path": ["api", "v1", "rbac", "permissions"]
             }
           }
         },
@@ -283,9 +283,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/permissions/groups",
+              "raw": "{{base_url}}/api/v1/rbac/permissions/groups",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "permissions", "groups"]
+              "path": ["api", "v1", "rbac", "permissions", "groups"]
             }
           }
         }
@@ -324,9 +324,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/permissions",
+              "raw": "{{base_url}}/api/v1/rbac/permissions",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "permissions"]
+              "path": ["api", "v1", "rbac", "permissions"]
             }
           }
         },
@@ -357,9 +357,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/permissions/groups",
+              "raw": "{{base_url}}/api/v1/rbac/permissions/groups",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "permissions", "groups"]
+              "path": ["api", "v1", "rbac", "permissions", "groups"]
             }
           }
         }
@@ -401,7 +401,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -426,9 +426,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/owner/assign",
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "owner", "assign"]
+              "path": ["api", "v1", "rbac", "owner", "assign"]
             }
           }
         }
@@ -523,9 +523,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/permissions",
+              "raw": "{{base_url}}/api/v1/rbac/permissions",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "permissions"]
+              "path": ["api", "v1", "rbac", "permissions"]
             }
           }
         },
@@ -605,9 +605,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/permissions/groups",
+              "raw": "{{base_url}}/api/v1/rbac/permissions/groups",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "admin", "permissions", "groups"]
+              "path": ["api", "v1", "rbac", "permissions", "groups"]
             }
           }
         }

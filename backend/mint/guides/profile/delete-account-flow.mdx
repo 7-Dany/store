@@ -4,13 +4,13 @@ icon: "user-minus"
 description: "How to guide a user through deleting their account — the right flow depends on how the account was created."
 ---
 
-Account deletion is a single endpoint — [`DELETE /me`](/api-reference/profile/delete-account/delete-account) — but the confirmation steps differ based on how the account was registered. There are three paths. Call [`GET /me/deletion-method`](/api-reference/profile/delete-account/deletion-method) to find out which one applies before you render any UI.
+Account deletion is a single endpoint — [`DELETE /profile/me`](/api-reference/profile/deletion/delete-account) — but the confirmation steps differ based on how the account was registered. There are three paths. Call [`GET /profile/me/deletion`](/api-reference/profile/deletion/deletion-method) to find out which one applies before you render any UI.
 
 ---
 
 ## Overview
 
-Call [`GET /me/deletion-method`](/api-reference/profile/delete-account/deletion-method) once before rendering any deletion UI. It returns one of three values:
+Call [`GET /profile/me/deletion`](/api-reference/profile/deletion/deletion-method) once before rendering any deletion UI. It returns one of three values:
 
 | `deletion_method` | Who it applies to | Requests to complete deletion |
 |---|---|---|
@@ -28,7 +28,7 @@ The simplest flow. The user confirms deletion by entering their current password
 
 ### Screen — Enter password
 
-Show a confirmation dialog asking the user to enter their password. Send it to [`DELETE /me`](/api-reference/profile/delete-account/delete-account):
+Show a confirmation dialog asking the user to enter their password. Send it to [`DELETE /profile/me`](/api-reference/profile/deletion/delete-account):
 
 ```json
 {
@@ -45,7 +45,7 @@ On success the account is immediately scheduled for deletion and the server resp
 }
 ```
 
-Show the user the `scheduled_deletion_at` date and offer a link to [`POST /me/cancel-deletion`](/api-reference/profile/delete-account/cancel-deletion) if they change their mind.
+Show the user the `scheduled_deletion_at` date and offer a link to [`DELETE /profile/me/deletion`](/api-reference/profile/deletion/cancel-deletion) if they change their mind.
 
 **Wrong password** — the server returns `401 invalid_credentials`. Let the user try again.
 
@@ -57,7 +57,7 @@ For accounts with an email address but no password (e.g. Google OAuth accounts, 
 
 ### Screen 1 — Confirm intent
 
-Show a screen explaining that a confirmation code will be sent to the account's email address. When the user proceeds, send an empty body to [`DELETE /me`](/api-reference/profile/delete-account/delete-account):
+Show a screen explaining that a confirmation code will be sent to the account's email address. When the user proceeds, send an empty body to [`DELETE /profile/me`](/api-reference/profile/deletion/delete-account):
 
 ```json
 {}
@@ -77,7 +77,7 @@ Use `expires_in` (seconds) to render a countdown timer. Tell the user to check t
 
 ### Screen 2 — Enter the code
 
-The user enters the 6-digit code from their inbox. Submit it to [`DELETE /me`](/api-reference/profile/delete-account/delete-account):
+The user enters the 6-digit code from their inbox. Submit it to [`DELETE /profile/me`](/api-reference/profile/deletion/delete-account):
 
 ```json
 {
@@ -108,7 +108,7 @@ For accounts registered exclusively via Telegram — no email, no password. Two 
 
 ### Screen 1 — Confirm intent
 
-Show a screen explaining that the user will need to re-authenticate via Telegram. When they proceed, send an empty body to [`DELETE /me`](/api-reference/profile/delete-account/delete-account):
+Show a screen explaining that the user will need to re-authenticate via Telegram. When they proceed, send an empty body to [`DELETE /profile/me`](/api-reference/profile/deletion/delete-account):
 
 ```json
 {}
@@ -125,7 +125,7 @@ The server responds:
 
 ### Screen 2 — Telegram widget
 
-Render the [Telegram Login Widget](https://core.telegram.org/widgets/login). When the user completes it, the widget returns a payload. Submit it to [`DELETE /me`](/api-reference/profile/delete-account/delete-account):
+Render the [Telegram Login Widget](https://core.telegram.org/widgets/login). When the user completes it, the widget returns a payload. Submit it to [`DELETE /profile/me`](/api-reference/profile/deletion/delete-account):
 
 ```json
 {
@@ -160,8 +160,8 @@ On success:
 Regardless of path, once the account is scheduled:
 
 - The user can still sign in and use the API normally during the 30-day grace period.
-- [`GET /me`](/api-reference/profile/me/me) will include a `scheduled_deletion_at` field — surface this in your UI so the user knows their account is pending removal.
-- The user can cancel at any time by calling [`POST /me/cancel-deletion`](/api-reference/profile/delete-account/cancel-deletion).
+- [`GET /profile/me`](/api-reference/profile/account/me) will include a `scheduled_deletion_at` field — surface this in your UI so the user knows their account is pending removal.
+- The user can cancel at any time by calling [`DELETE /profile/me/deletion`](/api-reference/profile/deletion/cancel-deletion).
 - After 30 days the account is permanently erased and cannot be recovered.
 
 ---
@@ -186,7 +186,7 @@ Regardless of path, once the account is scheduled:
 ## Full sequence — Path B
 
 <Steps>
-  <Step title="GET /me/deletion-method — Discover the path">
+  <Step title="GET /profile/me/deletion — Discover the path">
     Call this before rendering any deletion UI. If the result is `email_otp`, proceed with Path B.
 
     ```json Response — 200
@@ -196,7 +196,7 @@ Regardless of path, once the account is scheduled:
     ```
   </Step>
 
-  <Step title="DELETE /me — Request the OTP">
+  <Step title="DELETE /profile/me — Request the OTP">
     Send an empty body. The server sends a 6-digit code to the account's email address.
 
     ```json Request
@@ -214,7 +214,7 @@ Regardless of path, once the account is scheduled:
     <Note>The code expires in `expires_in` seconds. Show a countdown timer and prompt the user to act before it runs out.</Note>
   </Step>
 
-  <Step title="DELETE /me — Confirm with the code">
+  <Step title="DELETE /profile/me — Confirm with the code">
     Submit the 6-digit code the user received.
 
     ```json Request
@@ -239,7 +239,7 @@ Regardless of path, once the account is scheduled:
 ## Full sequence — Path C
 
 <Steps>
-  <Step title="GET /me/deletion-method — Discover the path">
+  <Step title="GET /profile/me/deletion — Discover the path">
     If the result is `telegram`, proceed with Path C.
 
     ```json Response — 200
@@ -249,7 +249,7 @@ Regardless of path, once the account is scheduled:
     ```
   </Step>
 
-  <Step title="DELETE /me — Signal intent">
+  <Step title="DELETE /profile/me — Signal intent">
     Send an empty body to start the flow.
 
     ```json Request
@@ -264,7 +264,7 @@ Regardless of path, once the account is scheduled:
     ```
   </Step>
 
-  <Step title="DELETE /me — Submit the widget result">
+  <Step title="DELETE /profile/me — Submit the widget result">
     After the user completes the Telegram Login Widget, forward its payload.
 
     ```json Request

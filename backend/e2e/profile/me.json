@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "auth-me-e2e",
-    "name": "Profile \u2013 GET /me",
-    "description": "E2E tests for GET /api/v1/profile/me.\n\nFolders:\n  1. setup          \u2014 register \u2192 verify-email \u2192 login (stores me_access_token)\n  2. happy-path     \u2014 assert all /me response fields\n  3. rate-limiting  \u2014 exhaust pme:ip: (10 slots) \u2192 11th \u2192 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "name": "Profile – GET /me",
+    "description": "E2E tests for GET /api/v1/profile/me.\n\nFolders:\n  1. setup          — register → verify-email → login (stores me_access_token)\n  2. happy-path     — assert all /me response fields\n  3. rate-limiting  — exhaust pme:ip: (10 slots) → 11th → 429\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -25,7 +25,7 @@
       "description": "Register, verify email (via Gmail API), and log in to obtain an access token for Me tests.",
       "item": [
         {
-          "name": "POST /register \u2192 201",
+          "name": "POST /register → 201",
           "event": [
             {
               "listen": "prerequest",
@@ -75,13 +75,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"display_name\":\"MeUser\",\"email\":\"{{me_email}}\",\"password\":\"{{me_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
@@ -91,7 +101,7 @@
           }
         },
         {
-          "name": "POST /verify-email \u2192 200",
+          "name": "POST /verification → 200",
           "event": [
             {
               "listen": "prerequest",
@@ -99,7 +109,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "const code = pm.collectionVariables.get('me_code');",
-                  "if (!code) { console.error('[ERROR] OTP not set \u2014 Gmail fetch did not complete. Check gmail_access_token and --delay-request >= 8000.'); }"
+                  "if (!code) { console.error('[ERROR] OTP not set — Gmail fetch did not complete. Check gmail_access_token and --delay-request >= 8000.'); }"
                 ]
               }
             },
@@ -116,23 +126,33 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"email\":\"{{me_email}}\",\"code\":\"{{me_code}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
         {
-          "name": "POST /login \u2192 200 (store access_token)",
+          "name": "POST /login → 200 (store access_token)",
           "event": [
             {
               "listen": "test",
@@ -154,13 +174,23 @@
           "request": {
             "method": "POST",
             "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "body": {
               "mode": "raw",
               "raw": "{\"identifier\":\"{{me_email}}\",\"password\":\"{{me_password}}\"}",
-              "options": { "raw": { "language": "json" } }
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
@@ -173,10 +203,10 @@
     },
     {
       "name": "happy-path",
-      "description": "Exercises GET /me against a real registered+verified user and asserts every documented field.\n\nWhy E2E:\n  \u2022 last_login_at non-null \u2014 requires a real login row in the DB; cannot be injected via fake service.\n  \u2022 avatar_url absent (omitempty) \u2014 confirms the omitempty tag survives real HTTP JSON serialisation.\n  \u2022 id UUID format \u2014 asserted here as a cheap addition to the in-flight request.\n\nNot covered here (internal tests):\n  \u2022 avatar_url omitempty unit test         \u2014 handler_test.go TestHandler_Me_AvatarURLOmittedWhenEmpty\n  \u2022 last_login_at omitempty when nil        \u2014 handler_test.go TestHandler_Me/success_nil_LastLoginAt_is_omitted_from_response\n  \u2022 Missing/expired/tampered token \u2192 401   \u2014 handler_test.go TestHandler_Me\n  \u2022 Blocklisted token \u2192 401                \u2014 session.json 'GET /me with old access_token_a \u2192 401'",
+      "description": "Exercises GET /me against a real registered+verified user and asserts every documented field.\n\nWhy E2E:\n  • last_login_at non-null — requires a real login row in the DB; cannot be injected via fake service.\n  • avatar_url absent (omitempty) — confirms the omitempty tag survives real HTTP JSON serialisation.\n  • id UUID format — asserted here as a cheap addition to the in-flight request.\n\nNot covered here (internal tests):\n  • avatar_url omitempty unit test         — handler_test.go TestHandler_Me_AvatarURLOmittedWhenEmpty\n  • last_login_at omitempty when nil        — handler_test.go TestHandler_Me/success_nil_LastLoginAt_is_omitted_from_response\n  • Missing/expired/tampered token → 401   — handler_test.go TestHandler_Me\n  • Blocklisted token → 401                — session.json 'GET /me with old access_token_a → 401'",
       "item": [
         {
-          "name": "GET /me \u2192 200 (all fields, last_login_at non-null, avatar_url absent)",
+          "name": "GET /me → 200 (all fields, last_login_at non-null, avatar_url absent)",
           "event": [
             {
               "listen": "test",
@@ -205,8 +235,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -219,10 +255,10 @@
     },
     {
       "name": "deletion-method",
-      "description": "Happy-path and auth-failure cases for GET /me/deletion-method.\n\nUses me_access_token from setup (del_user registered with email+password).\nExpects deletion_method:\"password\" because del_user has a password hash.\n\nNot covered here (covered by unit tests):\n  \u2022 email_otp / telegram method values \u2014 require an OAuth-registered user\n  \u2022 404 not_found \u2014 not achievable via HTTP for a valid JWT\n  \u2022 Service error \u2192 500 \u2014 handler_test.go TestHandler_DeletionMethod",
+      "description": "Happy-path and auth-failure cases for GET /me/deletion-method.\n\nUses me_access_token from setup (del_user registered with email+password).\nExpects deletion_method:\"password\" because del_user has a password hash.\n\nNot covered here (covered by unit tests):\n  • email_otp / telegram method values — require an OAuth-registered user\n  • 404 not_found — not achievable via HTTP for a valid JWT\n  • Service error → 500 — handler_test.go TestHandler_DeletionMethod",
       "item": [
         {
-          "name": "GET /me/deletion-method \u2192 200 (password user)",
+          "name": "GET /me/deletion-method → 200 (password user)",
           "event": [
             {
               "listen": "test",
@@ -243,8 +279,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/deletion-method",
@@ -254,7 +296,7 @@
           }
         },
         {
-          "name": "GET /me/deletion-method (no token) \u2192 401",
+          "name": "GET /me/deletion-method (no token) → 401",
           "event": [
             {
               "listen": "test",
@@ -269,7 +311,10 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/deletion-method",
@@ -279,7 +324,7 @@
           }
         },
         {
-          "name": "GET /me/deletion-method (tampered token) \u2192 401",
+          "name": "GET /me/deletion-method (tampered token) → 401",
           "event": [
             {
               "listen": "test",
@@ -294,8 +339,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJleHAiOjE5MDAwMDAwMDAsImp0aSI6ImZha2UifQ.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAX"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me/deletion-method",
@@ -308,7 +359,7 @@
     },
     {
       "name": "rate-limiting",
-      "description": "pme:ip: limiter \u2014 burst=10, rate=10/1min (0.1667 t/s).\nAll 10 warmup requests use the valid access_token from setup (JWT auth fires before the limiter\ninside the JWT middleware group). 11th request \u2192 429 too_many_requests, Retry-After=6.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
+      "description": "pme:ip: limiter — burst=10, rate=10/1min (0.1667 t/s).\nAll 10 warmup requests use the valid access_token from setup (JWT auth fires before the limiter\ninside the JWT middleware group). 11th request → 429 too_many_requests, Retry-After=6.\n\nRequires Redis flushed (make _e2e-kv-clean) before this folder.",
       "event": [
         {
           "listen": "prerequest",
@@ -320,7 +371,7 @@
       ],
       "item": [
         {
-          "name": "warmup 1/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "name": "warmup 1/10 — consume pme:ip: slot (→ not 429)",
           "event": [
             {
               "listen": "test",
@@ -335,8 +386,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -346,7 +403,7 @@
           }
         },
         {
-          "name": "warmup 2/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "name": "warmup 2/10 — consume pme:ip: slot (→ not 429)",
           "event": [
             {
               "listen": "test",
@@ -361,8 +418,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -372,7 +435,7 @@
           }
         },
         {
-          "name": "warmup 3/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "name": "warmup 3/10 — consume pme:ip: slot (→ not 429)",
           "event": [
             {
               "listen": "test",
@@ -387,8 +450,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -398,7 +467,7 @@
           }
         },
         {
-          "name": "warmup 4/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "name": "warmup 4/10 — consume pme:ip: slot (→ not 429)",
           "event": [
             {
               "listen": "test",
@@ -413,8 +482,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -424,7 +499,7 @@
           }
         },
         {
-          "name": "warmup 5/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "name": "warmup 5/10 — consume pme:ip: slot (→ not 429)",
           "event": [
             {
               "listen": "test",
@@ -439,8 +514,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -450,7 +531,7 @@
           }
         },
         {
-          "name": "warmup 6/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "name": "warmup 6/10 — consume pme:ip: slot (→ not 429)",
           "event": [
             {
               "listen": "test",
@@ -465,8 +546,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -476,7 +563,7 @@
           }
         },
         {
-          "name": "warmup 7/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "name": "warmup 7/10 — consume pme:ip: slot (→ not 429)",
           "event": [
             {
               "listen": "test",
@@ -491,8 +578,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -502,7 +595,7 @@
           }
         },
         {
-          "name": "warmup 8/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "name": "warmup 8/10 — consume pme:ip: slot (→ not 429)",
           "event": [
             {
               "listen": "test",
@@ -517,8 +610,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -528,7 +627,7 @@
           }
         },
         {
-          "name": "warmup 9/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "name": "warmup 9/10 — consume pme:ip: slot (→ not 429)",
           "event": [
             {
               "listen": "test",
@@ -543,8 +642,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -554,7 +659,7 @@
           }
         },
         {
-          "name": "warmup 10/10 \u2014 consume pme:ip: slot (\u2192 not 429)",
+          "name": "warmup 10/10 — consume pme:ip: slot (→ not 429)",
           "event": [
             {
               "listen": "test",
@@ -569,8 +674,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -580,7 +691,7 @@
           }
         },
         {
-          "name": "GET /api/v1/profile/me: 11th request \u2192 429 (pme:ip: exhausted)",
+          "name": "GET /api/v1/profile/me: 11th request → 429 (pme:ip: exhausted)",
           "event": [
             {
               "listen": "test",
@@ -599,8 +710,14 @@
           "request": {
             "method": "GET",
             "header": [
-              { "key": "Authorization", "value": "Bearer {{me_access_token}}" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+              {
+                "key": "Authorization",
+                "value": "Bearer {{me_access_token}}"
+              },
+              {
+                "key": "X-Forwarded-For",
+                "value": "{{_xff}}"
+              }
             ],
             "url": {
               "raw": "{{base_url}}/api/v1/profile/me",
@@ -628,8 +745,16 @@
       "value": "",
       "description": "Set by setup from gmail_test_email."
     },
-    { "key": "me_password", "value": "", "description": "Set by setup." },
-    { "key": "me_code", "value": "", "description": "6-digit OTP from Gmail." },
+    {
+      "key": "me_password",
+      "value": "",
+      "description": "Set by setup."
+    },
+    {
+      "key": "me_code",
+      "value": "",
+      "description": "6-digit OTP from Gmail."
+    },
     {
       "key": "me_access_token",
       "value": "",

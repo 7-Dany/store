@@ -1,7 +1,7 @@
 ---
 title: "List Roles"
 description: "Returns all active roles in the system."
-api: "GET http://localhost:8080/admin/rbac/roles"
+api: "GET /rbac/roles"
 ---
 
 <Callout icon="key" color="#FFC107">
@@ -14,7 +14,7 @@ Only active roles are returned. System roles and the owner role are included in 
 
 <RequestExample>
 ```bash Example
-curl -X GET http://localhost:8080/admin/rbac/roles \
+curl -X GET /rbac/roles \
   -H "Authorization: Bearer <token>"
 ```
 </RequestExample>

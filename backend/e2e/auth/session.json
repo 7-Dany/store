@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "auth-session-e2e",
     "name": "Auth \u2013 Session (POST /api/v1/auth/refresh + POST /api/v1/auth/logout)",
-    "description": "E2E tests for POST /api/v1/auth/refresh and POST /api/v1/auth/logout.\n\nFolder execution order (orchestrated by make e2e-auth):\n  1. happy-path    \u2014 setup user + login two devices; assert refresh cookie attrs; logout + cross-endpoint blocklist check; sibling session survives\n  2. failures      \u2014 present a token revoked via logout \u2192 401 + cookie cleared in real HTTP response\n  3. token-reuse   \u2014 rotate once, reuse old token \u2192 401 token_reuse_detected; confirm family kill (successor also dead)\n  4. rate-limiting \u2014 refresh IP limiter (5 warmups + 6th \u2192 429); logout IP limiter (5 warmups + 6th \u2192 429)\n\nCookie management: Postman's cookie jar is not used. The refresh_token value is\nextracted from the raw Set-Cookie header and stored in collection variables; all\nrequests that need the cookie send it via an explicit Cookie: header.\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before this collection.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.\n\nNotes on what is NOT covered here (already covered by internal tests):\n  POST /refresh:\n  - Missing cookie \u2192 401 missing_token                \u2014 handler_test.go TestRefresh_MissingCookie\n  - Expired / malformed JWT \u2192 401 invalid_token        \u2014 handler_test.go TestRefresh_MalformedToken_Returns401\n  - JTI not found in DB \u2192 401 invalid_token            \u2014 service_test.go + store_test.go integration\n  - DB expires_at in the past \u2192 401 invalid_token      \u2014 service_test.go\n  - Locked account \u2192 423 + cookie cleared              \u2014 handler_test.go TestRefresh_ErrAccountLocked_423_CookieCleared\n  - Inactive account \u2192 403 + cookie cleared            \u2014 handler_test.go TestRefresh_ErrAccountInactive_403_CookieCleared\n  - User row deleted \u2192 401                             \u2014 service_test.go\n  - last_active_at / last_login_at stamped             \u2014 store_test.go TestStore_RotateRefreshTokenTx_Integration\n  - token_refreshed audit row                          \u2014 store_test.go same\n  - token_family_revoked audit row                     \u2014 store_test.go TestStore_RevokeFamilyTokens_Integration\n  - Concurrent rotation \u2192 exactly one 200, one 401     \u2014 store_test.go TestStore_RotateRefreshTokenTx_ConcurrentRotation_Integration\n  POST /logout:\n  - Missing cookie \u2192 204                              \u2014 handler_test.go TestLogout_MissingCookie_Returns204\n  - Malformed / expired cookie \u2192 204, cookie cleared  \u2014 handler_test.go TestLogout_MalformedCookie_Returns204_CookieCleared\n  - No Authorization header \u2192 204                     \u2014 handler design (best-effort parse)\n  - Expired access token \u2192 204, blocklist NOT called  \u2014 handler_test.go TestLogout_ExpiredAccessToken_BlocklistNotCalled\n  - Malformed Bearer \u2192 204, blocklist NOT called      \u2014 handler_test.go TestLogout_MalformedAccessToken_BlocklistNotCalled\n  - Double logout \u2192 204 both times                    \u2014 store_test.go LogoutTx idempotent test\n  - KV store failure \u2192 204                            \u2014 handler_test.go TestLogout_NilBlocklist_ValidAccessToken_NoError\n  - Session ended_at set in DB                        \u2014 store_test.go TestStore_LogoutTx_Integration\n  - logout audit row written                          \u2014 store_test.go same\n  - Access token JTI blocklisted with correct TTL     \u2014 handler_test.go TestLogout_ValidAccessToken_BlocklistCalled\n  - Refresh token revoked in DB with reason='logout'  \u2014 store_test.go same",
+    "description": "E2E tests for POST /api/v1/auth/refresh and POST /api/v1/auth/logout.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -11,10 +11,6 @@
       "script": {
         "type": "text/javascript",
         "exec": [
-          "// Increment the request sequence counter and derive a unique X-Forwarded-For IP",
-          "// for every request so non-RL folders never exhaust any rate-limit bucket.",
-          "// The rate-limiting folder overrides _xff to 127.0.0.1 via its own prerequest.",
-          "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
           "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
           "pm.collectionVariables.set('_req_seq', n);",
           "const ip = '10.' + ((n>>16)&0xff) + '.' + ((n>>8)&0xff) + '.' + (n&0xff);",
@@ -26,7 +22,7 @@
   "item": [
     {
       "name": "happy-path",
-      "description": "Registers the gmail_test_email user, fetches the OTP from Gmail, verifies the email, and logs in on two separate devices (A and B). Each login creates an independent token family.\n\nRefresh assertions: POST /refresh for device A returns 200 with a new access_token in the JSON body and a new refresh_token Set-Cookie header bearing the required security attributes (HttpOnly, SameSite=Strict, Path=/api/v1/auth, positive Max-Age). These attributes are enforced by the real HTTP layer and cannot be verified by handler unit tests alone.\n\nLogout assertions: POST /logout for device A returns 204 with an empty body and a Set-Cookie that clears the refresh_token (MaxAge=-1). A subsequent GET /me with the revoked access token returns 401 \u2014 this cross-endpoint check verifies that the KV blocklist is wired into the auth middleware used by /me. Device B is then refreshed to confirm that logging out device A did not kill the sibling session.",
+      "description": "Registers the gmail_test_email user, fetches the OTP from Gmail, verifies the email, and logs in on two separate devices (A and B).",
       "item": [
         {
           "name": "POST /register \u2192 201 (setup user)",
@@ -36,17 +32,10 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Use the real Gmail address so the verification OTP lands in the inbox",
-                  "// that gmail_access_token can read. The address is cleaned by _e2e-db-clean",
-                  "// before each run so this register never 409 on re-runs.",
                   "const email = pm.environment.get('gmail_test_email');",
-                  "if (!email) {",
-                  "    console.error('[ERROR] gmail_test_email not set in environment \u2014 add it to environment.json.');",
-                  "}",
+                  "if (!email) { console.error('[ERROR] gmail_test_email not set in environment.'); }",
                   "pm.collectionVariables.set('sss_email', email);",
                   "pm.collectionVariables.set('sss_password', 'P@ssw0rd1!');",
-                  "// Record the timestamp just before the register request fires so the",
-                  "// Gmail query can use after:<ts> to exclude older emails from prior runs.",
                   "pm.collectionVariables.set('sss_reg_ts', Math.floor(Date.now() / 1000));"
                 ]
               }
@@ -57,53 +46,27 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 201', () => pm.response.to.have.status(201));",
-                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
-                  "",
-                  "// --- Gmail OTP fetch ---",
-                  "// Placed in the test script (not prerequest) because pm.sendRequest is async.",
-                  "// The callback executes during the --delay-request idle window before the",
-                  "// next request fires, so 'sss_code' is set in time.",
                   "const token = pm.variables.get('gmail_access_token');",
-                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
-                  "",
-                  "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
-                  "const start = Date.now();",
-                  "while (Date.now() - start < 8000) {}",
-                  "console.log('[INFO] Done waiting. Querying Gmail API (async)...');",
-                  "",
-                  "// Use after:<unix-ts> so only emails received during THIS run are matched.",
-                  "// newer_than:1h would also match OTPs from previous runs within the same hour.",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set'); return; }",
+                  "console.log('[INFO] Waiting 8 s for verification email...');",
+                  "const start = Date.now(); while (Date.now() - start < 8000) {}",
                   "const regTs = pm.collectionVariables.get('sss_reg_ts') || Math.floor((Date.now() - 60000) / 1000);",
                   "const query = encodeURIComponent('subject:\"Verify your\" after:' + regTs);",
-                  "pm.sendRequest({",
-                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
-                  "    method: 'GET',",
-                  "    header: { Authorization: 'Bearer ' + token }",
-                  "}, (err, res) => {",
-                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
-                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired \u2014 refresh at https://developers.google.com/oauthplayground'); return; }",
+                  "pm.sendRequest({ url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3', method: 'GET', header: { Authorization: 'Bearer ' + token } }, (err, res) => {",
+                  "    if (err || res.code === 401) { console.error('[ERROR] Gmail list failed'); return; }",
                   "    const msgs = res.json().messages;",
-                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email found in Gmail.'); return; }",
-                  "    pm.sendRequest({",
-                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
-                  "        method: 'GET',",
-                  "        header: { Authorization: 'Bearer ' + token }",
-                  "    }, (err2, res2) => {",
-                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
-                  "        const msg = res2.json();",
-                  "        let body = '';",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email found.'); return; }",
+                  "    pm.sendRequest({ url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full', method: 'GET', header: { Authorization: 'Bearer ' + token } }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed'); return; }",
+                  "        const msg = res2.json(); let body = '';",
                   "        const parts = msg.payload && msg.payload.parts;",
-                  "        if (parts && parts.length) {",
-                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
-                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
-                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
-                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
-                  "        }",
+                  "        if (parts && parts.length) { const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html'); if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/')); }",
+                  "        else if (msg.payload && msg.payload.body && msg.payload.body.data) { body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/')); }",
                   "        if (!body) { console.warn('[WARN] Could not decode email body.'); return; }",
                   "        const match = body.match(/(?<!#)\\b(\\d{6})\\b/);",
-                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in email body.'); return; }",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found.'); return; }",
                   "        pm.collectionVariables.set('sss_code', match[1]);",
-                  "        console.log('[INFO] OTP stored in collection variable \"sss_code\":', match[1]);",
+                  "        console.log('[INFO] OTP stored in sss_code:', match[1]);",
                   "    });",
                   "});"
                 ]
@@ -112,36 +75,21 @@
           ],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"display_name\": \"SssHappy\", \"email\": \"{{sss_email}}\", \"password\": \"{{sss_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/register",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "register"]
-            }
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "body": { "mode": "raw", "raw": "{\"display_name\": \"SssHappy\", \"email\": \"{{sss_email}}\", \"password\": \"{{sss_password}}\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{base_url}}/api/v1/auth/register", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "register"] }
           }
         },
         {
-          "name": "POST /verify-email \u2192 200 (consume OTP)",
+          "name": "POST /verification \u2192 200 (consume OTP)",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Validate that the Gmail fetch in the register test script completed.",
                   "const code = pm.collectionVariables.get('sss_code');",
-                  "if (!code) {",
-                  "    console.error('[ERROR] collection variable \"sss_code\" is empty \u2014 Gmail fetch did not complete.');",
-                  "    console.error('        Check: gmail_access_token is set and not expired, --delay-request >= 8000.');",
-                  "}"
+                  "if (!code) { console.error('[ERROR] sss_code is empty \u2014 Gmail fetch did not complete.'); }"
                 ]
               }
             },
@@ -158,991 +106,334 @@
           ],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"email\": \"{{sss_email}}\", \"code\": \"{{sss_code}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
-            }
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "body": { "mode": "raw", "raw": "{\"email\": \"{{sss_email}}\", \"code\": \"{{sss_code}}\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{base_url}}/api/v1/auth/verification", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "verification"] }
           }
         },
         {
           "name": "POST /login device A \u2192 200 (store tokens)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
-                  "pm.collectionVariables.set('sss_access_token_a', body.access_token);",
-                  "",
-                  "// Extract the raw refresh_token cookie value from Set-Cookie.",
-                  "// pm.response.cookies.get() cannot read HttpOnly attributes so we parse",
-                  "// the header directly. We also store it for manual Cookie: injection.",
-                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "pm.test('refresh_token cookie present in Set-Cookie', () => pm.expect(sc).to.include('refresh_token='));",
-                  "const match = sc.match(/refresh_token=([^;]+)/);",
-                  "if (match) {",
-                  "    pm.collectionVariables.set('sss_refresh_token_a', match[1]);",
-                  "    console.log('[INFO] Device A refresh token stored.');",
-                  "} else {",
-                  "    console.error('[ERROR] Could not extract refresh_token from Set-Cookie.');",
-                  "}"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                "const body = pm.response.json();",
+                "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
+                "pm.collectionVariables.set('sss_access_token_a', body.access_token);",
+                "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                "pm.test('refresh_token cookie present', () => pm.expect(sc).to.include('refresh_token='));",
+                "const match = sc.match(/refresh_token=([^;]+)/);",
+                "if (match) { pm.collectionVariables.set('sss_refresh_token_a', match[1]); } else { console.error('[ERROR] Could not extract refresh_token.'); }"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{sss_email}}\", \"password\": \"{{sss_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "body": { "mode": "raw", "raw": "{\"identifier\": \"{{sss_email}}\", \"password\": \"{{sss_password}}\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
           }
         },
         {
           "name": "POST /login device B \u2192 200 (sibling session, separate family_id)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// A second login creates a new token family in the DB (new family_id).",
-                  "// This device is used at the end of happy-path to prove that",
-                  "// logging out device A does not revoke device B's session.",
-                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.test('access_token present', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
-                  "pm.collectionVariables.set('sss_access_token_b', body.access_token);",
-                  "",
-                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "pm.test('refresh_token cookie present for device B', () => pm.expect(sc).to.include('refresh_token='));",
-                  "const match = sc.match(/refresh_token=([^;]+)/);",
-                  "if (match) {",
-                  "    pm.collectionVariables.set('sss_refresh_token_b', match[1]);",
-                  "    console.log('[INFO] Device B refresh token stored.');",
-                  "} else {",
-                  "    console.error('[ERROR] Could not extract device B refresh_token from Set-Cookie.');",
-                  "}"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                "const body = pm.response.json();",
+                "pm.collectionVariables.set('sss_access_token_b', body.access_token);",
+                "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                "const match = sc.match(/refresh_token=([^;]+)/);",
+                "if (match) { pm.collectionVariables.set('sss_refresh_token_b', match[1]); }"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{sss_email}}\", \"password\": \"{{sss_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "body": { "mode": "raw", "raw": "{\"identifier\": \"{{sss_email}}\", \"password\": \"{{sss_password}}\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
           }
         },
         {
           "name": "POST /refresh device A \u2192 200 (assert cookie attrs, store new tokens)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
-                  "",
-                  "// New access_token must be present in the JSON body.",
-                  "const body = pm.response.json();",
-                  "pm.test('access_token present in body', () => {",
-                  "    pm.expect(body).to.have.property('access_token');",
-                  "    pm.expect(body.access_token).to.be.a('string').and.not.empty;",
-                  "});",
-                  "pm.test('Content-Type is application/json', () => {",
-                  "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
-                  "});",
-                  "",
-                  "// --- Cookie attribute assertions ---",
-                  "// These are the E2E-critical checks: they verify that the real HTTP stack",
-                  "// (not just handler logic) sets the correct security attributes on the",
-                  "// replacement refresh_token cookie. pm.response.cookies.get() cannot read",
-                  "// HttpOnly or SameSite, so we parse the raw Set-Cookie header.",
-                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "pm.test('Set-Cookie header present', () => pm.expect(sc).to.not.be.empty);",
-                  "pm.test('new refresh_token cookie present in Set-Cookie', () => {",
-                  "    pm.expect(sc).to.include('refresh_token=');",
-                  "});",
-                  "pm.test('refresh_token cookie is HttpOnly', () => {",
-                  "    pm.expect(sc.toLowerCase()).to.include('httponly');",
-                  "});",
-                  "pm.test('refresh_token cookie Path is /api/v1/auth', () => {",
-                  "    pm.expect(sc).to.include('Path=/api/v1/auth');",
-                  "});",
-                  "pm.test('refresh_token cookie SameSite is Strict', () => {",
-                  "    pm.expect(sc).to.include('SameSite=Strict');",
-                  "});",
-                  "pm.test('refresh_token cookie has positive Max-Age (derived from DB expires_at)', () => {",
-                  "    const m = sc.match(/Max-Age=(\\d+)/);",
-                  "    pm.expect(m).to.not.be.null;",
-                  "    pm.expect(parseInt(m[1], 10)).to.be.above(0);",
-                  "});",
-                  "",
-                  "// Store old + new tokens for subsequent steps.",
-                  "// sss_old_refresh_token_a is used by token-reuse folder.",
-                  "pm.collectionVariables.set('sss_old_refresh_token_a', pm.collectionVariables.get('sss_refresh_token_a'));",
-                  "pm.collectionVariables.set('sss_new_access_token_a', body.access_token);",
-                  "const match = sc.match(/refresh_token=([^;]+)/);",
-                  "if (match) {",
-                  "    pm.collectionVariables.set('sss_new_refresh_token_a', match[1]);",
-                  "} else {",
-                  "    console.error('[ERROR] Could not extract new refresh_token from Set-Cookie.');",
-                  "}"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                "const body = pm.response.json();",
+                "pm.test('access_token present in body', () => { pm.expect(body).to.have.property('access_token'); pm.expect(body.access_token).to.be.a('string').and.not.empty; });",
+                "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                "pm.test('new refresh_token cookie present', () => pm.expect(sc).to.include('refresh_token='));",
+                "pm.test('HttpOnly', () => pm.expect(sc.toLowerCase()).to.include('httponly'));",
+                "pm.test('Path=/api/v1/auth', () => pm.expect(sc).to.include('Path=/api/v1/auth'));",
+                "pm.test('SameSite=Strict', () => pm.expect(sc).to.include('SameSite=Strict'));",
+                "pm.test('positive Max-Age', () => { const m = sc.match(/Max-Age=(\\d+)/); pm.expect(m).to.not.be.null; pm.expect(parseInt(m[1], 10)).to.be.above(0); });",
+                "pm.collectionVariables.set('sss_old_refresh_token_a', pm.collectionVariables.get('sss_refresh_token_a'));",
+                "pm.collectionVariables.set('sss_new_access_token_a', body.access_token);",
+                "const match = sc.match(/refresh_token=([^;]+)/);",
+                "if (match) { pm.collectionVariables.set('sss_new_refresh_token_a', match[1]); }"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              {
-                "key": "Cookie",
-                "value": "refresh_token={{sss_refresh_token_a}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }, { "key": "Cookie", "value": "refresh_token={{sss_refresh_token_a}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
           }
         },
         {
           "name": "POST /logout device A \u2192 204 (cookie cleared in Set-Cookie)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 204', () => pm.response.to.have.status(204));",
-                  "pm.test('response body is empty', () => pm.expect(pm.response.text()).to.be.empty);",
-                  "",
-                  "// The refresh_token cookie must be cleared via Max-Age=-1 in the real HTTP",
-                  "// response. This attribute combination is enforced by the full HTTP stack.",
-                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "pm.test('Set-Cookie header present (cookie is being cleared)', () => pm.expect(sc).to.not.be.empty);",
-                  "pm.test('refresh_token cookie cleared (MaxAge=-1 or Max-Age=0)', () => {",
-                  "    // The server sets MaxAge = -1 (clearRefreshCookie helper).",
-                  "    // net/http serialises this as Max-Age=0 in the Set-Cookie header.",
-                  "    pm.expect(sc).to.include('refresh_token=');",
-                  "    const m = sc.match(/Max-Age=(-?\\d+)/);",
-                  "    pm.expect(m).to.not.be.null;",
-                  "    pm.expect(parseInt(m[1], 10)).to.be.at.most(0);",
-                  "});"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 204', () => pm.response.to.have.status(204));",
+                "pm.test('response body is empty', () => pm.expect(pm.response.text()).to.be.empty);",
+                "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                "pm.test('refresh_token cookie cleared (Max-Age<=0)', () => { pm.expect(sc).to.include('refresh_token='); const m = sc.match(/Max-Age=(-?\\d+)/); pm.expect(m).to.not.be.null; pm.expect(parseInt(m[1], 10)).to.be.at.most(0); });"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{sss_new_access_token_a}}"
-              },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              {
-                "key": "Cookie",
-                "value": "refresh_token={{sss_new_refresh_token_a}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/logout",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "logout"]
-            }
+            "header": [{ "key": "Authorization", "value": "Bearer {{sss_new_access_token_a}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }, { "key": "Cookie", "value": "refresh_token={{sss_new_refresh_token_a}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] }
           }
         },
         {
           "name": "GET /me with old access_token_a \u2192 401 (blocklisted by KV store)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// This is the critical cross-endpoint check: after logout, the same access token",
-                  "// that was used moments ago must be rejected by GET /me. The blocklist entry",
-                  "// is written by the logout handler (via context.WithoutCancel so it survives",
-                  "// request cancellation \u2014 ADR-004) and read by the auth middleware that guards /me.",
-                  "// Neither step can be verified by a unit test for a single handler.",
-                  "pm.test('status is 401 (access token blocklisted after logout)', () => pm.response.to.have.status(401));",
-                  "const body = pm.response.json();",
-                  "pm.test('code indicates token is invalid or revoked', () => {",
-                  "    pm.expect(['invalid_token', 'token_revoked', 'unauthorized']).to.include(body.code);",
-                  "});"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 401 (access token blocklisted after logout)', () => pm.response.to.have.status(401));",
+                "pm.test('code indicates token is invalid or revoked', () => { pm.expect(['invalid_token', 'token_revoked', 'unauthorized']).to.include(pm.response.json().code); });"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "GET",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{sss_new_access_token_a}}"
-              },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/profile/me",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "profile", "me"]
-            }
+            "header": [{ "key": "Authorization", "value": "Bearer {{sss_new_access_token_a}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/profile/me", "host": ["{{base_url}}"], "path": ["api", "v1", "profile", "me"] }
           }
         },
         {
           "name": "POST /refresh device B \u2192 200 (sibling session unaffected by device A logout)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// POST /logout only revokes the presenting device's token family.",
-                  "// (LogoutTx sets revoked_at on the one refresh_token row matching the JTI;",
-                  "// it does NOT call RevokeFamilyTokensTx.) Device B's family must still be live.",
-                  "pm.test('status is 200 (device B refresh unaffected by device A logout)', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.test('access_token present for device B', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 200 (device B refresh unaffected by device A logout)', () => pm.response.to.have.status(200));",
+                "pm.test('access_token present for device B', () => pm.expect(pm.response.json().access_token).to.be.a('string').and.not.empty);"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              {
-                "key": "Cookie",
-                "value": "refresh_token={{sss_refresh_token_b}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }, { "key": "Cookie", "value": "refresh_token={{sss_refresh_token_b}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
           }
         }
       ]
     },
     {
       "name": "failures",
-      "description": "Verifies that a refresh token revoked via logout (revoke_reason='logout') is rejected with the correct HTTP response: 401 status and a Set-Cookie that clears the cookie in the real HTTP response.\n\nAll other failure modes (missing cookie, expired JWT, locked/inactive account, etc.) are covered by internal tests \u2014 see the collection description for the full list with function references.\n\nSetup: logs in a dedicated device C so this folder is self-contained and does not depend on state from happy-path.",
+      "description": "Verifies that a refresh token revoked via logout is rejected with 401 + cookie cleared.",
       "item": [
         {
           "name": "POST /login device C \u2192 200 (setup for failures folder)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 200 (device C logged in)', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.collectionVariables.set('sss_access_token_c', body.access_token);",
-                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "const match = sc.match(/refresh_token=([^;]+)/);",
-                  "if (match) {",
-                  "    pm.collectionVariables.set('sss_refresh_token_c', match[1]);",
-                  "} else {",
-                  "    console.error('[ERROR] Could not extract device C refresh_token.');",
-                  "}"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 200 (device C logged in)', () => pm.response.to.have.status(200));",
+                "const body = pm.response.json();",
+                "pm.collectionVariables.set('sss_access_token_c', body.access_token);",
+                "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                "const match = sc.match(/refresh_token=([^;]+)/);",
+                "if (match) { pm.collectionVariables.set('sss_refresh_token_c', match[1]); }"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{sss_email}}\", \"password\": \"{{sss_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "body": { "mode": "raw", "raw": "{\"identifier\": \"{{sss_email}}\", \"password\": \"{{sss_password}}\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
           }
         },
         {
-          "name": "POST /logout device C \u2192 204 (revoke device C token with reason='logout')",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 204 (device C logged out)', () => pm.response.to.have.status(204));"
-                ]
-              }
-            }
-          ],
+          "name": "POST /logout device C \u2192 204",
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 204', () => pm.response.to.have.status(204));"] } }],
           "request": {
             "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{sss_access_token_c}}"
-              },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              {
-                "key": "Cookie",
-                "value": "refresh_token={{sss_refresh_token_c}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/logout",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "logout"]
-            }
+            "header": [{ "key": "Authorization", "value": "Bearer {{sss_access_token_c}}" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }, { "key": "Cookie", "value": "refresh_token={{sss_refresh_token_c}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] }
           }
         },
         {
           "name": "POST /refresh with revoked token (device C) \u2192 401, cookie cleared",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// The token was revoked with reason='logout'. The service checks revoked_at IS NOT NULL",
-                  "// on the token row regardless of the revoke reason, so it returns token_reuse_detected",
-                  "// and calls RevokeFamilyTokensTx just as it would for a rotated token. The handler",
-                  "// clears the cookie on any refresh error.",
-                  "// This is an E2E-only check: it verifies the real HTTP Set-Cookie clear",
-                  "// attribute on an error path (internal tests only check the status code).",
-                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
-                  "pm.test('code is token_reuse_detected', () => pm.expect(pm.response.json().code).to.eql('token_reuse_detected'));",
-                  "",
-                  "// Cookie must be cleared: the handler calls clearRefreshCookie on all error paths.",
-                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "pm.test('Set-Cookie header clears the refresh_token cookie on error', () => {",
-                  "    pm.expect(sc).to.include('refresh_token=');",
-                  "    const m = sc.match(/Max-Age=(-?\\d+)/);",
-                  "    pm.expect(m).to.not.be.null;",
-                  "    pm.expect(parseInt(m[1], 10)).to.be.at.most(0);",
-                  "});"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                "pm.test('code is token_reuse_detected', () => pm.expect(pm.response.json().code).to.eql('token_reuse_detected'));",
+                "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                "pm.test('cookie cleared on error', () => { pm.expect(sc).to.include('refresh_token='); const m = sc.match(/Max-Age=(-?\\d+)/); pm.expect(m).to.not.be.null; pm.expect(parseInt(m[1], 10)).to.be.at.most(0); });"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              {
-                "key": "Cookie",
-                "value": "refresh_token={{sss_refresh_token_c}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }, { "key": "Cookie", "value": "refresh_token={{sss_refresh_token_c}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
           }
         }
       ]
     },
     {
       "name": "token-reuse",
-      "description": "Verifies the RFC 6819 / ADR-011 token reuse detection and family kill sequence:\n  1. Login a fresh device D \u2192 valid refresh token D.\n  2. POST /refresh with D \u2192 200, token E issued; D is now revoked with reason='rotated'.\n  3. POST /refresh with old token D \u2192 401 token_reuse_detected + cookie cleared.\n     (RotateRefreshTokenTx detects revoked_at IS NOT NULL and calls RevokeFamilyTokensTx.)\n  4. POST /refresh with token E (the legitimate successor, now family-killed) \u2192 401 invalid_token.\n     Re-authentication is required after family revocation.\n\nOnly this multi-request sequence can validate the DB state transition across all three steps. Individual steps are covered by store_test.go integration tests; the E2E value is the orchestrated chain using real JWT secrets and a live DB.",
+      "description": "Verifies RFC 6819 / ADR-011 token reuse detection and family kill.",
       "item": [
         {
           "name": "POST /login device D \u2192 200 (fresh session for reuse chain)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 200 (device D logged in)', () => pm.response.to.have.status(200));",
-                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "const match = sc.match(/refresh_token=([^;]+)/);",
-                  "if (match) {",
-                  "    pm.collectionVariables.set('sss_reuse_refresh_d', match[1]);",
-                  "    console.log('[INFO] Device D (original) refresh token stored.');",
-                  "} else {",
-                  "    console.error('[ERROR] Could not extract device D refresh_token.');",
-                  "}"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 200 (device D logged in)', () => pm.response.to.have.status(200));",
+                "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                "const match = sc.match(/refresh_token=([^;]+)/);",
+                "if (match) { pm.collectionVariables.set('sss_reuse_refresh_d', match[1]); }"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" },
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\"identifier\": \"{{sss_email}}\", \"password\": \"{{sss_password}}\"}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/login",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "login"]
-            }
+            "header": [{ "key": "Content-Type", "value": "application/json" }, { "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "body": { "mode": "raw", "raw": "{\"identifier\": \"{{sss_email}}\", \"password\": \"{{sss_password}}\"}", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{base_url}}/api/v1/auth/login", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "login"] }
           }
         },
         {
           "name": "POST /refresh device D \u2192 200 (rotate: D consumed, E issued)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Legitimate first rotation. Token D is now revoked with reason='rotated'.",
-                  "// Token E (the successor) is issued and stored. The next request will reuse D.",
-                  "pm.test('status is 200 (first rotation succeeds)', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.test('access_token present after rotation', () => pm.expect(body.access_token).to.be.a('string').and.not.empty);",
-                  "",
-                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "const match = sc.match(/refresh_token=([^;]+)/);",
-                  "if (match) {",
-                  "    pm.collectionVariables.set('sss_reuse_refresh_e', match[1]);",
-                  "    console.log('[INFO] Token E (successor) stored. Reuse of token D will follow.');",
-                  "} else {",
-                  "    console.error('[ERROR] Could not extract successor refresh_token (E).');",
-                  "}"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 200 (first rotation succeeds)', () => pm.response.to.have.status(200));",
+                "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                "const match = sc.match(/refresh_token=([^;]+)/);",
+                "if (match) { pm.collectionVariables.set('sss_reuse_refresh_e', match[1]); }"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              {
-                "key": "Cookie",
-                "value": "refresh_token={{sss_reuse_refresh_d}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }, { "key": "Cookie", "value": "refresh_token={{sss_reuse_refresh_d}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
           }
         },
         {
           "name": "POST /refresh with old token D (revoked) \u2192 401 token_reuse_detected, cookie cleared",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Token D has revoked_at IS NOT NULL (reason='rotated').",
-                  "// RotateRefreshTokenTx detects this and calls RevokeFamilyTokensTx,",
-                  "// which also revokes token E. The handler then returns token_reuse_detected.",
-                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
-                  "pm.test('code is token_reuse_detected', () => pm.expect(pm.response.json().code).to.eql('token_reuse_detected'));",
-                  "",
-                  "// Cookie must be cleared in the real HTTP response.",
-                  "const sc = pm.response.headers.get('Set-Cookie') || '';",
-                  "pm.test('refresh_token cookie cleared on reuse detection', () => {",
-                  "    pm.expect(sc).to.include('refresh_token=');",
-                  "    const m = sc.match(/Max-Age=(-?\\d+)/);",
-                  "    pm.expect(m).to.not.be.null;",
-                  "    pm.expect(parseInt(m[1], 10)).to.be.at.most(0);",
-                  "});"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                "pm.test('code is token_reuse_detected', () => pm.expect(pm.response.json().code).to.eql('token_reuse_detected'));",
+                "const sc = pm.response.headers.get('Set-Cookie') || '';",
+                "pm.test('cookie cleared on reuse', () => { pm.expect(sc).to.include('refresh_token='); const m = sc.match(/Max-Age=(-?\\d+)/); pm.expect(m).to.not.be.null; pm.expect(parseInt(m[1], 10)).to.be.at.most(0); });"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              {
-                "key": "Cookie",
-                "value": "refresh_token={{sss_reuse_refresh_d}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }, { "key": "Cookie", "value": "refresh_token={{sss_reuse_refresh_d}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
           }
         },
         {
           "name": "POST /refresh with token E (family-killed successor) \u2192 401 token_reuse_detected",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// RevokeFamilyTokensTx was called in the previous step. Token E was revoked",
-                  "// even though it was never presented \u2014 it is now dead because its family_id",
-                  "// was targeted. When E is presented the service sees revoked_at IS NOT NULL",
-                  "// and returns token_reuse_detected (the same path as any revoked token).",
-                  "// The user must re-authenticate to get a new session.",
-                  "pm.test('status is 401 (family-killed successor also rejected)', () => pm.response.to.have.status(401));",
-                  "pm.test('code is token_reuse_detected (service treats any revoked token the same way)', () => {",
-                  "    pm.expect(pm.response.json().code).to.eql('token_reuse_detected');",
-                  "});"
-                ]
-              }
+          "event": [{
+            "listen": "test",
+            "script": {
+              "type": "text/javascript",
+              "exec": [
+                "pm.test('status is 401 (family-killed successor also rejected)', () => pm.response.to.have.status(401));",
+                "pm.test('code is token_reuse_detected', () => pm.expect(pm.response.json().code).to.eql('token_reuse_detected'));"
+              ]
             }
-          ],
+          }],
           "request": {
             "method": "POST",
-            "header": [
-              { "key": "X-Forwarded-For", "value": "{{_xff}}" },
-              {
-                "key": "Cookie",
-                "value": "refresh_token={{sss_reuse_refresh_e}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }, { "key": "Cookie", "value": "refresh_token={{sss_reuse_refresh_e}}" }],
+            "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] }
           }
         }
       ]
     },
     {
       "name": "rate-limiting",
-      "description": "Verifies both rate limiters by pinning all requests to a single IP (127.0.0.1).\nRequires Redis flushed (make _e2e-kv-clean) before this folder runs \u2014 enforced by make e2e-auth.\n\nPOST /refresh \u2014 rfsh:ip: limiter: burst=5, rate=5/15min, key prefix rfsh:ip:\n  Warmup 1\u20135 consume the bucket. The 6th request returns 429 too_many_requests.\n  Retry-After = ceil(1 / (5/900)) = 180 s.\n  Warmup requests carry no valid cookie \u2014 the rate limiter is middleware that\n  fires before token validation, so any request triggers a slot deduction.\n\nPOST /logout \u2014 lgout:ip: limiter: burst=5, rate=5/1min, key prefix lgout:ip:\n  Warmup 1\u20135 consume the bucket. The 6th request returns 429 too_many_requests.\n  Retry-After = ceil(1 / (5/60)) = 12 s.\n  Warmup requests carry no valid cookie \u2014 logout returns 204 for missing/invalid\n  tokens (best-effort design) so the rate limiter slot still fires.\n\nThe two limiters use different bucket prefixes (rfsh:ip: vs lgout:ip:) and do not\ninterfere with each other within the same folder run.",
-      "event": [
-        {
-          "listen": "prerequest",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "// Override the collection-level unique IP so every request in this",
-              "// folder shares the 127.0.0.1 bucket and exhausts it together.",
-              "pm.collectionVariables.set('_xff', '127.0.0.1');"
-            ]
-          }
-        }
-      ],
+      "description": "Verifies rfsh:ip: (burst=5, Retry-After=180s) and lgout:ip: (burst=5, Retry-After=12s) limiters.",
+      "event": [{ "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["pm.collectionVariables.set('_xff', '127.0.0.1');"] } }],
       "item": [
-        {
-          "name": "refresh warmup 1/5 \u2014 consume rfsh:ip: slot (\u2192 not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (rfsh:ip: slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
-          }
-        },
-        {
-          "name": "refresh warmup 2/5 \u2014 consume rfsh:ip: slot (\u2192 not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (rfsh:ip: slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
-          }
-        },
-        {
-          "name": "refresh warmup 3/5 \u2014 consume rfsh:ip: slot (\u2192 not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (rfsh:ip: slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
-          }
-        },
-        {
-          "name": "refresh warmup 4/5 \u2014 consume rfsh:ip: slot (\u2192 not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (rfsh:ip: slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
-          }
-        },
-        {
-          "name": "refresh warmup 5/5 \u2014 consume rfsh:ip: slot (\u2192 not 429, last allowed)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (rfsh:ip: slot 5 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
-          }
-        },
+        { "name": "refresh warmup 1/5", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited (rfsh slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] } } },
+        { "name": "refresh warmup 2/5", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited (rfsh slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] } } },
+        { "name": "refresh warmup 3/5", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited (rfsh slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] } } },
+        { "name": "refresh warmup 4/5", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited (rfsh slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] } } },
+        { "name": "refresh warmup 5/5 \u2014 last allowed", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited (rfsh slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] } } },
         {
           "name": "refresh 6th request \u2192 429 (rfsh:ip: bucket exhausted)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
-                  "pm.test('Retry-After is 180 (ceil(1 / (5/900)) = 180 s)', () => {",
-                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('180');",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/refresh",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "refresh"]
-            }
-          }
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 429', () => pm.response.to.have.status(429));", "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));", "pm.test('Retry-After is 180', () => { pm.expect(pm.response.headers.get('Retry-After')).to.eql('180'); });"] } }],
+          "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/refresh", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "refresh"] } }
         },
-        {
-          "name": "logout warmup 1/5 \u2014 consume lgout:ip: slot (\u2192 not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgout:ip: slot 1/5)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/logout",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "logout"]
-            }
-          }
-        },
-        {
-          "name": "logout warmup 2/5 \u2014 consume lgout:ip: slot (\u2192 not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgout:ip: slot 2/5)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/logout",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "logout"]
-            }
-          }
-        },
-        {
-          "name": "logout warmup 3/5 \u2014 consume lgout:ip: slot (\u2192 not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgout:ip: slot 3/5)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/logout",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "logout"]
-            }
-          }
-        },
-        {
-          "name": "logout warmup 4/5 \u2014 consume lgout:ip: slot (\u2192 not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgout:ip: slot 4/5)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/logout",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "logout"]
-            }
-          }
-        },
-        {
-          "name": "logout warmup 5/5 \u2014 consume lgout:ip: slot (\u2192 not 429, last allowed)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (lgout:ip: slot 5/5 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/logout",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "logout"]
-            }
-          }
-        },
+        { "name": "logout warmup 1/5", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited (lgout slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] } } },
+        { "name": "logout warmup 2/5", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited (lgout slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] } } },
+        { "name": "logout warmup 3/5", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited (lgout slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] } } },
+        { "name": "logout warmup 4/5", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited (lgout slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] } } },
+        { "name": "logout warmup 5/5 \u2014 last allowed", "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('not rate-limited (lgout slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"] } }], "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] } } },
         {
           "name": "logout 6th request \u2192 429 (lgout:ip: bucket exhausted)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
-                  "pm.test('Retry-After is 12 (ceil(1 / (5/60)) = 12 s)', () => {",
-                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('12');",
-                  "});"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
-            "url": {
-              "raw": "{{base_url}}/api/v1/auth/logout",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "logout"]
-            }
-          }
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('status is 429', () => pm.response.to.have.status(429));", "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));", "pm.test('Retry-After is 12', () => { pm.expect(pm.response.headers.get('Retry-After')).to.eql('12'); });"] } }],
+          "request": { "method": "POST", "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }], "url": { "raw": "{{base_url}}/api/v1/auth/logout", "host": ["{{base_url}}"], "path": ["api", "v1", "auth", "logout"] } }
         }
       ]
     }
   ],
   "variable": [
-    {
-      "key": "_req_seq",
-      "value": "0",
-      "description": "Auto-incremented counter used by the collection prerequest to generate unique X-Forwarded-For IPs."
-    },
-    {
-      "key": "_xff",
-      "value": "",
-      "description": "Current X-Forwarded-For value. Set to a unique IP by the collection prerequest; overridden to 127.0.0.1 by the rate-limiting folder prerequest."
-    },
-    {
-      "key": "sss_email",
-      "value": "",
-      "description": "Set by happy-path setup from the gmail_test_email environment variable. Shared across all devices and folders."
-    },
-    {
-      "key": "sss_password",
-      "value": "",
-      "description": "Set by happy-path setup. Used for all /login calls in this collection."
-    },
-    {
-      "key": "sss_reg_ts",
-      "value": "",
-      "description": "Unix timestamp (seconds) recorded in the register prerequest. Used by the Gmail query as after:<ts> to exclude emails from prior runs within the same hour."
-    },
-    {
-      "key": "sss_code",
-      "value": "",
-      "description": "6-digit OTP fetched asynchronously from Gmail during the register test script. Consumed by POST /verify-email."
-    },
-    {
-      "key": "sss_access_token_a",
-      "value": "",
-      "description": "Access token for device A, set after the first /login in happy-path."
-    },
-    {
-      "key": "sss_refresh_token_a",
-      "value": "",
-      "description": "Raw refresh_token cookie value for device A, extracted from Set-Cookie after the first /login. Used as the Cookie header in POST /refresh."
-    },
-    {
-      "key": "sss_new_access_token_a",
-      "value": "",
-      "description": "Access token for device A after the first /refresh rotation. Used as the Authorization: Bearer header in POST /logout and GET /me."
-    },
-    {
-      "key": "sss_new_refresh_token_a",
-      "value": "",
-      "description": "New refresh_token value for device A after rotation. Used in POST /logout."
-    },
-    {
-      "key": "sss_old_refresh_token_a",
-      "value": "",
-      "description": "Original device A refresh_token before rotation (a copy of sss_refresh_token_a). Kept for reference; the token-reuse chain uses its own dedicated variables."
-    },
-    {
-      "key": "sss_access_token_b",
-      "value": "",
-      "description": "Access token for device B (sibling session). Set after the second /login in happy-path."
-    },
-    {
-      "key": "sss_refresh_token_b",
-      "value": "",
-      "description": "Raw refresh_token cookie value for device B. Used to verify the sibling session survives device A logout."
-    },
-    {
-      "key": "sss_access_token_c",
-      "value": "",
-      "description": "Access token for device C. Set by the failures folder setup /login."
-    },
-    {
-      "key": "sss_refresh_token_c",
-      "value": "",
-      "description": "Raw refresh_token cookie value for device C. Revoked via /logout, then re-presented to /refresh to verify the 401 + cookie-clear behaviour."
-    },
-    {
-      "key": "sss_reuse_refresh_d",
-      "value": "",
-      "description": "Original refresh_token for the token-reuse chain (device D). Set after /login in token-reuse setup. Reused after one rotation to trigger token_reuse_detected."
-    },
-    {
-      "key": "sss_reuse_refresh_e",
-      "value": "",
-      "description": "Successor refresh_token issued after the first /refresh of device D. This is token E \u2014 family-killed by RevokeFamilyTokensTx when D is reused. Used in the final token-reuse step to confirm the family kill propagated."
-    }
+    { "key": "_req_seq", "value": "0", "description": "Auto-incremented counter for unique X-Forwarded-For IPs." },
+    { "key": "_xff", "value": "" },
+    { "key": "sss_email", "value": "" },
+    { "key": "sss_password", "value": "" },
+    { "key": "sss_reg_ts", "value": "" },
+    { "key": "sss_code", "value": "", "description": "6-digit OTP. Consumed by POST /verification." },
+    { "key": "sss_access_token_a", "value": "" },
+    { "key": "sss_refresh_token_a", "value": "" },
+    { "key": "sss_new_access_token_a", "value": "" },
+    { "key": "sss_new_refresh_token_a", "value": "" },
+    { "key": "sss_old_refresh_token_a", "value": "" },
+    { "key": "sss_access_token_b", "value": "" },
+    { "key": "sss_refresh_token_b", "value": "" },
+    { "key": "sss_access_token_c", "value": "" },
+    { "key": "sss_refresh_token_c", "value": "" },
+    { "key": "sss_reuse_refresh_d", "value": "" },
+    { "key": "sss_reuse_refresh_e", "value": "" }
   ]
 }

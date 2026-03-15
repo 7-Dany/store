@@ -1,212 +1,43 @@
 # Auth System — Remaining Routes to Implement
 
-Routes **not yet in** `E2E_CHECKLIST.md`. Everything here needs to be designed,
-implemented, and then get its own E2E section before being marked production-ready.
+Routes **not yet built**. Everything here needs to be designed, implemented, and
+then get its own E2E section in `CHECKLIST.md` before being marked production-ready.
 
 **Legend**
 - `[ ]` — not yet started
 - `[~]` — in progress
-- `[x]` — implemented (move to E2E_CHECKLIST.md when done)
 
 ---
 
 ## Implementation Order
 
-Routes are sequenced so every item builds only on what is already working.
-The RBAC platform primitive must land before any permission-guarded route can
-be wired. The job queue migration and platform package must land before the
-worker handlers or the admin job queue API can be written. Admin-domain routes
-(Group F) follow after their prerequisites are met.
-
 ```
 internal/platform/
 │
-├── rbac/          ← Checker, Require middleware, context helpers        §G-0  ← START HERE
-│
-└── jobqueue/      ← Persistent queue, admin API, WebSocket              §H-0  (requires §G-0)
+└── jobqueue/      ← Persistent queue, admin API, WebSocket              §H-0  ← START HERE
 
 internal/domain/
 │
-├── owner/
-│   └── bootstrap/ ← POST /owner/bootstrap                              §G-1  (requires §G-0)
-│
 ├── admin/
-│   ├── rbac/      ← roles, permissions, user-role, user-permission API  §G-2  (requires §G-1)
-│   ├── users/                                                            §F-1  (requires §G-0)
-│   ├── audit/                                                            §F-2  (requires §G-0)
-│   ├── sessions/                                                         §F-3  (requires §G-0)
-│   ├── lock/                                                             §F-4  (requires §G-0)
-│   └── recovery/  ← paired with auth/magiclink/                         §F-5  (requires §G-0)
+│   ├── users/                                                            §F-1
+│   ├── audit/                                                            §F-2
+│   ├── sessions/                                                         §F-3
+│   └── recovery/  ← paired with auth/magiclink/                          §F-5
 │
 └── auth/
-    └── magiclink/ ← GET /magic-link/verify                              §F-5  (paired with admin/recovery/)
+    └── magiclink/ ← GET /magic-link/verify                               §F-5  (paired with admin/recovery/)
 ```
 
 **Dependency order:**
 
-1. **§G-0** — RBAC SQL queries + seeds + platform checker + `deps.RBAC` wiring.
-   No dependencies. Platform only — no HTTP routes. This is the unlock for every
-   permission-guarded route in every domain.
+1. **§H-0** — Job queue migration + `internal/platform/jobqueue/` package + worker
+   handlers + server wiring. Requires `kvstore.RedisStore` to gain `Publish` / `Subscribe`.
 
-2. **§H-0** — Job queue migration (`006_jobqueue.sql`) + `internal/platform/jobqueue/`
-   package + `internal/worker/` handlers + server wiring. Requires §G-0 because the
-   job queue admin API uses `deps.RBAC.Require(rbac.PermJobQueueRead/Manage)`.
-   Also requires `kvstore.RedisStore` to gain `Publish` / `Subscribe`.
+2. **§F-1 / §F-2 / §F-3** — Admin user listing, audit log, session administration.
+   Can proceed in parallel — all already unblocked by §G-0 (done).
 
-3. **§G-1** — Owner bootstrap route. Requires §G-0 (checker, seeds, generated queries).
-   Unauthenticated write route but uses RBAC store queries.
-
-4. **§G-2** — RBAC admin API. Requires §G-1 so a real owner exists to call them.
-
-5. **§F-1 through §F-5** — Admin domain routes. Each requires §G-0 for RBAC guards.
-   §F-1/F-2/F-3/F-4 can proceed in parallel once §G-0 is done. §F-5 must be
-   implemented together with `auth/magiclink/` (same workflow, same PR).
-
----
-
-## Group G — RBAC (Role-Based Access Control)
-
-Full design: `docs/prompts/rbac/0-design.md`
-
-The schema and DB triggers (`003_rbac.sql`, `004_rbac_functions.sql`) are **already
-in place**. The `001_roles.sql` seed already inserts the owner role row. What remains
-is SQL queries, permission/role seeds, the platform checker, and the admin API.
-
----
-
-### §G-0 — RBAC Platform (SQL + seeds + checker — no HTTP routes)
-
-**`sql/queries/rbac.sql`** (NEW):
-- [ ] `CheckUserAccess` — single round-trip returning `is_owner` + `has_permission`
-      via UNION ALL (role path + direct-grant path)
-- [ ] `CountActiveOwners`, `GetOwnerRoleID`, `GetActiveUserByID`
-- [ ] `AssignUserRole` (upsert), `RemoveUserRole` (hard delete — history in audit table)
-- [ ] `GetRoles`, `GetRoleByID`, `GetRoleByName`, `CreateRole`, `UpdateRole` (non-system guard),
-      `DeactivateRole` (soft-delete, non-system guard)
-- [ ] `GetRolePermissions`, `AddRolePermission`, `RemoveRolePermission`
-- [ ] `GetPermissions`, `GetPermissionByCanonicalName`, `GetPermissionGroups`,
-      `GetPermissionGroupMembers`
-- [ ] `GetUserRole`, `GetUserPermissions`, `GrantUserPermission`, `RevokeUserPermission`
-
-Run `sqlc generate` after writing queries.
-
-**`sql/seeds/002_permissions.sql`** (NEW — idempotent, `ON CONFLICT DO NOTHING`):
-
-| canonical_name | resource_type | Notes |
-|---|---|---|
-| `rbac:read` | rbac | List roles, permissions, user assignments |
-| `rbac:manage` | rbac | Create/edit roles, assign role permissions |
-| `rbac:grant_user_permission` | rbac | Grant direct user permissions (higher sensitivity) |
-| `job_queue:read` | job_queue | View jobs, stats, metrics, schedules |
-| `job_queue:manage` | job_queue | Pause, retry, cancel, update priority |
-| `user:read` | user | List/view users (future) |
-| `user:manage` | user | Edit/suspend users (future) |
-| `request:read` | request | View requests (future) |
-| `request:manage` | request | Manage requests (future) |
-| `request:approve` | request | Approve requests (future) |
-
-Permission groups: System Administration (`rbac:*`), Job Queue (`job_queue:*`),
-Users (`user:*`), Requests (`request:*`).
-
-**`sql/seeds/003_roles.sql`** (NEW — idempotent):
-
-| Role | is_system_role | Default permissions |
-|---|---|---|
-| admin | TRUE | All 10 permissions |
-| vendor | FALSE | `request:read`, `request:manage` |
-| customer | FALSE | `request:read` |
-
-`granted_by` for seed permission grants uses a CTE to look up the owner user;
-falls back to a sentinel system UUID if no owner exists yet.
-
-**`internal/platform/rbac/checker.go`** (NEW):
-- [ ] Permission constants (never use raw string literals — these are the canonical source):
-      `PermRBACRead`, `PermRBACManage`, `PermRBACGrantUserPerm`,
-      `PermJobQueueRead`, `PermJobQueueManage`,
-      `PermUserRead`, `PermUserManage`,
-      `PermRequestRead`, `PermRequestManage`, `PermRequestApprove`
-- [ ] `Checker` struct with `pool *pgxpool.Pool` + `q db.Querier`
-- [ ] `NewChecker(pool *pgxpool.Pool) *Checker`
-- [ ] `IsOwner(ctx, userID string) (bool, error)`
-- [ ] `HasPermission(ctx, userID, permission string) (bool, error)`
-- [ ] `Require(permission string) func(http.Handler) http.Handler` — chi middleware:
-      - 401 when no `userID` in context (token.Auth did not run)
-      - 403 when authenticated but permission not held
-      - 500 (fail closed) on transient DB error — never grants on error
-      - Test hook: bypasses DB when `HasPermissionInContext` finds injected set
-
-**`internal/platform/rbac/context.go`** (NEW):
-- [ ] `InjectPermissionsForTest(ctx, perms ...string) context.Context`
-- [ ] `HasPermissionInContext(ctx, permission string) (allowed, found bool)`
-
-**`internal/platform/rbac/errors.go`** (NEW):
-- [ ] `ErrForbidden`, `ErrUnauthenticated`, `ErrSystemRoleImmutable`,
-      `ErrCannotReassignOwner`, `ErrCannotModifyOwnRole`, `ErrOwnerAlreadyExists`
-
-**`internal/app/deps.go`** — Add `RBAC *rbac.Checker`
-**`internal/server/server.go`** — `deps.RBAC = rbac.NewChecker(pool)` (one line, after pool init)
-
----
-
-### §G-1 — Owner Bootstrap
-
-New package: `internal/domain/owner/bootstrap/`
-
-Route mounting: `r.Mount("/owner", rbacdomain.OwnerRoutes(ctx, deps))`
-
-`POST /api/v1/owner/bootstrap`
-- [ ] **Unauthenticated** — only unauthenticated write route in the system
-- [ ] Body: `{ "user_id": "<uuid>" }`
-- [ ] Guard 1: `CountActiveOwners` → 409 `owner_already_exists` if > 0
-- [ ] Guard 2: `GetActiveUserByID` → 422 if unknown, not active, or not email-verified
-- [ ] `GetOwnerRoleID` — look up the owner role from `001_roles.sql` seed
-- [ ] `AssignUserRole` with `granted_by = user_id` (self-grant — acceptable only here,
-      must be documented in code comment)
-- [ ] Response: `{ "user_id", "role_name", "granted_at" }`
-- [ ] Rate-limit: 3 req / 15 min per IP (key `bstrp:ip:`)
-- [ ] Permanently returns 409 after the first successful bootstrap
-
----
-
-### §G-2 — RBAC Admin API
-
-New package: `internal/domain/admin/rbac/` with sub-packages:
-`roles/`, `permissions/`, `userroles/`, `userpermissions/`
-
-Route mounting: under `r.Mount("/admin", rbacdomain.AdminRoutes(ctx, deps))`
-
-All routes: JWT required. Permission per route listed below.
-
-**Roles** (`rbac:read` to read, `rbac:manage` to write):
-- [ ] `GET    /admin/rbac/roles`                           — list all active roles
-- [ ] `POST   /admin/rbac/roles`                          — create non-system role
-- [ ] `GET    /admin/rbac/roles/:id`                      — get by ID
-- [ ] `PATCH  /admin/rbac/roles/:id`                      — update name/description;
-      zero rows from `UpdateRole` → 409 `system_role_immutable`
-- [ ] `DELETE /admin/rbac/roles/:id`                      — soft-delete;
-      zero rows from `DeactivateRole` → 409 `system_role_immutable`
-- [ ] `GET    /admin/rbac/roles/:id/permissions`          — list role's permissions
-- [ ] `POST   /admin/rbac/roles/:id/permissions`          — add permission to role
-- [ ] `DELETE /admin/rbac/roles/:id/permissions/:perm_id` — remove permission from role
-
-**Permissions** (`rbac:read`):
-- [ ] `GET /admin/rbac/permissions`        — list all active permissions
-- [ ] `GET /admin/rbac/permissions/groups` — list groups with members
-
-**User role** (`rbac:read` to read, `rbac:manage` to write):
-- [ ] `GET    /admin/rbac/users/:user_id/role` — get current role (no rows → 404)
-- [ ] `PUT    /admin/rbac/users/:user_id/role` — assign or replace role;
-      guard: 409 if target is owner (`ErrCannotReassignOwner`);
-      guard: 409 if self-assignment (`ErrCannotModifyOwnRole`);
-      DB trigger fires if re-assigning the last owner
-- [ ] `DELETE /admin/rbac/users/:user_id/role` — remove role;
-      DB trigger fires if this is the last owner
-
-**User permissions** (`rbac:grant_user_permission`):
-- [ ] `GET    /admin/rbac/users/:user_id/permissions`           — list active direct grants
-- [ ] `POST   /admin/rbac/users/:user_id/permissions`           — grant direct permission;
-      `expires_at` required; DB trigger enforces ≤ 90 days and blocks privilege escalation
-- [ ] `DELETE /admin/rbac/users/:user_id/permissions/:grant_id` — revoke grant
+3. **§F-5** — CS-assisted recovery + magic-link verify. Must be implemented together
+   in one PR (`admin/recovery/` + `auth/magiclink/`).
 
 ---
 
@@ -217,11 +48,9 @@ Full design: `docs/prompts/jobqueue/0-design.md`
 ### §H-0 — Job Queue Platform + Worker Handlers + Server Wiring
 
 **`sql/schema/006_jobqueue.sql`** (NEW):
-- [ ] Creates `job_paused_kinds`, `jobs`, `workers`, `job_schedules` tables with
-      all indexes and constraints
+- [ ] Creates `job_paused_kinds`, `jobs`, `workers`, `job_schedules` tables with all indexes and constraints
 - [ ] Drops `request_executions` (replaced by `kind="execute_request"` jobs)
-- [ ] Removes delivery retry columns from `request_notifications`
-      (`delivery_attempts`, `last_attempt_at`, `delivery_error`)
+- [ ] Removes delivery retry columns from `request_notifications` (`delivery_attempts`, `last_attempt_at`, `delivery_error`)
 
 **`internal/platform/kvstore/redis.go`** (MODIFY):
 - [ ] Add `Publish(ctx, channel, message string) error`
@@ -352,28 +181,6 @@ All admin routes require JWT + an RBAC permission (§G-0 must be live).
 
 ---
 
-### §F-4 — Lock / Unlock (admin_locked field)
-
-> **Doc TODO when implemented:** Update
-> `mint/api-reference/auth/unlock/request-unlock.mdx` and
-> `mint/api-reference/auth/unlock/confirm-unlock.mdx` — both reference this
-> admin endpoint as "planned". Remove the qualifier and confirm behaviour is accurate.
-
-`PATCH /api/v1/admin/users/{id}/lock`
-- [ ] Sets `admin_locked = TRUE`
-- [ ] Body: `{ "reason": "..." }`
-- [ ] Immediately force-revokes all sessions and refresh tokens
-- [ ] Cannot lock another owner (check target role via RBAC store)
-- [ ] Audit row: `admin_lock_applied` on target; `admin_action` on acting admin
-
-`PATCH /api/v1/admin/users/{id}/unlock`
-- [ ] Clears `admin_locked = FALSE` (does NOT touch `is_locked` or
-      `login_locked_until` — those belong to the user-facing OTP unlock flow)
-- [ ] Body: `{ "reason": "..." }`
-- [ ] Audit row: `admin_lock_removed`
-
----
-
 ### §F-5 — CS-Assisted Account Recovery
 
 These three admin routes and the user-facing magic-link verify endpoint form a
@@ -432,8 +239,5 @@ New package: `internal/domain/auth/magiclink/`
 
 - Every mutation must write an audit row to `auth_audit_log`
 - Admin routes verify the RBAC check **before** any DB read
-- Rate-limit key prefixes must not reuse any prefix defined in `E2E_CHECKLIST.md`
-- `deps.RBAC.Require("resource:action")` always chains after `deps.JWTAuth` in the
-  middleware stack — never standalone
-- `MetricsRecorder` swap path: change one field in `ManagerConfig.Metrics` in
-  `server.New`; nothing else in the codebase needs to change
+- Rate-limit key prefixes must not reuse any prefix already defined in `CHECKLIST.md`
+- `deps.RBAC.Require("resource:action")` always chains after `deps.JWTAuth` in the middleware stack — never standalone

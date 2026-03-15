@@ -8,31 +8,22 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/rbac/owner"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/permissions"
 	"github.com/7-Dany/store/backend/internal/domain/rbac/roles"
-	"github.com/7-Dany/store/backend/internal/domain/rbac/userpermissions"
-	"github.com/7-Dany/store/backend/internal/domain/rbac/userroles"
-	"github.com/7-Dany/store/backend/internal/domain/rbac/userlock"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
 // OwnerFakeServicer
 // ─────────────────────────────────────────────────────────────────────────────
 
-// OwnerFakeServicer is a hand-written implementation of owner.Servicer for
-// handler unit tests. Set the Fn fields to control responses; leave nil to
-// return zero values and nil errors.
 type OwnerFakeServicer struct {
-	AssignOwnerFn      func(ctx context.Context, in owner.AssignOwnerInput) (owner.AssignOwnerResult, error)
+	AssignOwnerFn        func(ctx context.Context, in owner.AssignOwnerInput) (owner.AssignOwnerResult, error)
 	HasPendingTransferFn func(ctx context.Context) (bool, error)
-	InitiateTransferFn func(ctx context.Context, in owner.InitiateInput) (owner.InitiateResult, string, error)
-	AcceptTransferFn   func(ctx context.Context, in owner.AcceptInput) (owner.AcceptResult, error)
-	CancelTransferFn   func(ctx context.Context, actingOwnerID [16]byte, ipAddress, userAgent string) error
+	InitiateTransferFn   func(ctx context.Context, in owner.InitiateInput) (owner.InitiateResult, string, error)
+	AcceptTransferFn     func(ctx context.Context, in owner.AcceptInput) (owner.AcceptResult, error)
+	CancelTransferFn     func(ctx context.Context, actingOwnerID [16]byte, ipAddress, userAgent string) error
 }
 
-// compile-time interface check.
 var _ owner.Servicer = (*OwnerFakeServicer)(nil)
 
-// AssignOwner delegates to AssignOwnerFn if set.
-// Default: returns (AssignOwnerResult{}, nil).
 func (f *OwnerFakeServicer) AssignOwner(ctx context.Context, in owner.AssignOwnerInput) (owner.AssignOwnerResult, error) {
 	if f.AssignOwnerFn != nil {
 		return f.AssignOwnerFn(ctx, in)
@@ -40,8 +31,6 @@ func (f *OwnerFakeServicer) AssignOwner(ctx context.Context, in owner.AssignOwne
 	return owner.AssignOwnerResult{}, nil
 }
 
-// HasPendingTransfer delegates to HasPendingTransferFn if set.
-// Default: returns (false, nil).
 func (f *OwnerFakeServicer) HasPendingTransfer(ctx context.Context) (bool, error) {
 	if f.HasPendingTransferFn != nil {
 		return f.HasPendingTransferFn(ctx)
@@ -49,8 +38,6 @@ func (f *OwnerFakeServicer) HasPendingTransfer(ctx context.Context) (bool, error
 	return false, nil
 }
 
-// InitiateTransfer delegates to InitiateTransferFn if set.
-// Default: returns (InitiateResult{}, "", nil).
 func (f *OwnerFakeServicer) InitiateTransfer(ctx context.Context, in owner.InitiateInput) (owner.InitiateResult, string, error) {
 	if f.InitiateTransferFn != nil {
 		return f.InitiateTransferFn(ctx, in)
@@ -58,8 +45,6 @@ func (f *OwnerFakeServicer) InitiateTransfer(ctx context.Context, in owner.Initi
 	return owner.InitiateResult{}, "", nil
 }
 
-// AcceptTransfer delegates to AcceptTransferFn if set.
-// Default: returns (AcceptResult{}, nil).
 func (f *OwnerFakeServicer) AcceptTransfer(ctx context.Context, in owner.AcceptInput) (owner.AcceptResult, error) {
 	if f.AcceptTransferFn != nil {
 		return f.AcceptTransferFn(ctx, in)
@@ -67,8 +52,6 @@ func (f *OwnerFakeServicer) AcceptTransfer(ctx context.Context, in owner.AcceptI
 	return owner.AcceptResult{}, nil
 }
 
-// CancelTransfer delegates to CancelTransferFn if set.
-// Default: returns nil.
 func (f *OwnerFakeServicer) CancelTransfer(ctx context.Context, actingOwnerID [16]byte, ipAddress, userAgent string) error {
 	if f.CancelTransferFn != nil {
 		return f.CancelTransferFn(ctx, actingOwnerID, ipAddress, userAgent)
@@ -80,19 +63,13 @@ func (f *OwnerFakeServicer) CancelTransfer(ctx context.Context, actingOwnerID [1
 // PermissionsFakeServicer
 // ─────────────────────────────────────────────────────────────────────────────
 
-// PermissionsFakeServicer is a hand-written implementation of permissions.Servicer
-// for handler unit tests. Set the Fn fields to control responses; leave nil
-// to return an empty slice and nil error.
 type PermissionsFakeServicer struct {
 	ListPermissionsFn      func(ctx context.Context) ([]permissions.Permission, error)
 	ListPermissionGroupsFn func(ctx context.Context) ([]permissions.PermissionGroup, error)
 }
 
-// compile-time interface check.
 var _ permissions.Servicer = (*PermissionsFakeServicer)(nil)
 
-// ListPermissions delegates to ListPermissionsFn if set.
-// Default: returns ([]permissions.Permission{}, nil).
 func (f *PermissionsFakeServicer) ListPermissions(ctx context.Context) ([]permissions.Permission, error) {
 	if f.ListPermissionsFn != nil {
 		return f.ListPermissionsFn(ctx)
@@ -100,8 +77,6 @@ func (f *PermissionsFakeServicer) ListPermissions(ctx context.Context) ([]permis
 	return []permissions.Permission{}, nil
 }
 
-// ListPermissionGroups delegates to ListPermissionGroupsFn if set.
-// Default: returns ([]permissions.PermissionGroup{}, nil).
 func (f *PermissionsFakeServicer) ListPermissionGroups(ctx context.Context) ([]permissions.PermissionGroup, error) {
 	if f.ListPermissionGroupsFn != nil {
 		return f.ListPermissionGroupsFn(ctx)
@@ -113,19 +88,6 @@ func (f *PermissionsFakeServicer) ListPermissionGroups(ctx context.Context) ([]p
 // RolesFakeServicer
 // ─────────────────────────────────────────────────────────────────────────────
 
-// RolesFakeServicer is a hand-written implementation of roles.Servicer for
-// handler unit tests. Nil Fn fields return safe defaults.
-//
-// Defaults:
-//
-//	ListRolesFn            → ([]roles.Role{}, nil)
-//	GetRoleFn              → (roles.Role{}, nil)
-//	CreateRoleFn           → (roles.Role{}, nil)
-//	UpdateRoleFn           → (roles.Role{}, nil)
-//	DeleteRoleFn           → nil
-//	ListRolePermissionsFn  → ([]roles.RolePermission{}, nil)
-//	AddRolePermissionFn    → nil
-//	RemoveRolePermissionFn → nil
 type RolesFakeServicer struct {
 	ListRolesFn            func(ctx context.Context) ([]roles.Role, error)
 	GetRoleFn              func(ctx context.Context, roleID string) (roles.Role, error)
@@ -137,11 +99,8 @@ type RolesFakeServicer struct {
 	RemoveRolePermissionFn func(ctx context.Context, roleID, permID, actingUserID string) error
 }
 
-// compile-time interface check.
 var _ roles.Servicer = (*RolesFakeServicer)(nil)
 
-// ListRoles delegates to ListRolesFn if set.
-// Default: returns ([]roles.Role{}, nil).
 func (f *RolesFakeServicer) ListRoles(ctx context.Context) ([]roles.Role, error) {
 	if f.ListRolesFn != nil {
 		return f.ListRolesFn(ctx)
@@ -149,8 +108,6 @@ func (f *RolesFakeServicer) ListRoles(ctx context.Context) ([]roles.Role, error)
 	return []roles.Role{}, nil
 }
 
-// GetRole delegates to GetRoleFn if set.
-// Default: returns (roles.Role{}, nil).
 func (f *RolesFakeServicer) GetRole(ctx context.Context, roleID string) (roles.Role, error) {
 	if f.GetRoleFn != nil {
 		return f.GetRoleFn(ctx, roleID)
@@ -158,8 +115,6 @@ func (f *RolesFakeServicer) GetRole(ctx context.Context, roleID string) (roles.R
 	return roles.Role{}, nil
 }
 
-// CreateRole delegates to CreateRoleFn if set.
-// Default: returns (roles.Role{}, nil).
 func (f *RolesFakeServicer) CreateRole(ctx context.Context, in roles.CreateRoleInput) (roles.Role, error) {
 	if f.CreateRoleFn != nil {
 		return f.CreateRoleFn(ctx, in)
@@ -167,8 +122,6 @@ func (f *RolesFakeServicer) CreateRole(ctx context.Context, in roles.CreateRoleI
 	return roles.Role{}, nil
 }
 
-// UpdateRole delegates to UpdateRoleFn if set.
-// Default: returns (roles.Role{}, nil).
 func (f *RolesFakeServicer) UpdateRole(ctx context.Context, roleID string, in roles.UpdateRoleInput) (roles.Role, error) {
 	if f.UpdateRoleFn != nil {
 		return f.UpdateRoleFn(ctx, roleID, in)
@@ -176,8 +129,6 @@ func (f *RolesFakeServicer) UpdateRole(ctx context.Context, roleID string, in ro
 	return roles.Role{}, nil
 }
 
-// DeleteRole delegates to DeleteRoleFn if set.
-// Default: returns nil.
 func (f *RolesFakeServicer) DeleteRole(ctx context.Context, roleID string) error {
 	if f.DeleteRoleFn != nil {
 		return f.DeleteRoleFn(ctx, roleID)
@@ -185,8 +136,6 @@ func (f *RolesFakeServicer) DeleteRole(ctx context.Context, roleID string) error
 	return nil
 }
 
-// ListRolePermissions delegates to ListRolePermissionsFn if set.
-// Default: returns ([]roles.RolePermission{}, nil).
 func (f *RolesFakeServicer) ListRolePermissions(ctx context.Context, roleID string) ([]roles.RolePermission, error) {
 	if f.ListRolePermissionsFn != nil {
 		return f.ListRolePermissionsFn(ctx, roleID)
@@ -194,8 +143,6 @@ func (f *RolesFakeServicer) ListRolePermissions(ctx context.Context, roleID stri
 	return []roles.RolePermission{}, nil
 }
 
-// AddRolePermission delegates to AddRolePermissionFn if set.
-// Default: returns nil.
 func (f *RolesFakeServicer) AddRolePermission(ctx context.Context, roleID string, in roles.AddRolePermissionInput) error {
 	if f.AddRolePermissionFn != nil {
 		return f.AddRolePermissionFn(ctx, roleID, in)
@@ -203,156 +150,9 @@ func (f *RolesFakeServicer) AddRolePermission(ctx context.Context, roleID string
 	return nil
 }
 
-// RemoveRolePermission delegates to RemoveRolePermissionFn if set.
-// Default: returns nil.
 func (f *RolesFakeServicer) RemoveRolePermission(ctx context.Context, roleID, permID, actingUserID string) error {
 	if f.RemoveRolePermissionFn != nil {
 		return f.RemoveRolePermissionFn(ctx, roleID, permID, actingUserID)
 	}
 	return nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UserRolesFakeServicer
-// ─────────────────────────────────────────────────────────────────────────────
-
-// UserRolesFakeServicer is a hand-written implementation of userroles.Servicer
-// for handler unit tests. Set the Fn fields to control responses; leave nil
-// to return safe defaults.
-//
-// Defaults:
-//
-//	GetUserRoleFn → (UserRole{RoleName: "admin"}, nil)
-//	AssignRoleFn  → (UserRole{}, nil)
-//	RemoveRoleFn  → nil
-type UserRolesFakeServicer struct {
-	GetUserRoleFn func(ctx context.Context, targetUserID string) (userroles.UserRole, error)
-	AssignRoleFn  func(ctx context.Context, targetUserID, actingUserID string, in userroles.AssignRoleInput) (userroles.UserRole, error)
-	RemoveRoleFn  func(ctx context.Context, targetUserID, actingUserID string) error
-}
-
-// compile-time interface check.
-var _ userroles.Servicer = (*UserRolesFakeServicer)(nil)
-
-// GetUserRole delegates to GetUserRoleFn if set.
-// Default: returns (UserRole{RoleName: "admin"}, nil).
-func (f *UserRolesFakeServicer) GetUserRole(ctx context.Context, targetUserID string) (userroles.UserRole, error) {
-	if f.GetUserRoleFn != nil {
-		return f.GetUserRoleFn(ctx, targetUserID)
-	}
-	return userroles.UserRole{RoleName: "admin"}, nil
-}
-
-// AssignRole delegates to AssignRoleFn if set.
-// Default: returns (UserRole{}, nil).
-func (f *UserRolesFakeServicer) AssignRole(ctx context.Context, targetUserID, actingUserID string, in userroles.AssignRoleInput) (userroles.UserRole, error) {
-	if f.AssignRoleFn != nil {
-		return f.AssignRoleFn(ctx, targetUserID, actingUserID, in)
-	}
-	return userroles.UserRole{}, nil
-}
-
-// RemoveRole delegates to RemoveRoleFn if set.
-// Default: returns nil.
-func (f *UserRolesFakeServicer) RemoveRole(ctx context.Context, targetUserID, actingUserID string) error {
-	if f.RemoveRoleFn != nil {
-		return f.RemoveRoleFn(ctx, targetUserID, actingUserID)
-	}
-	return nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UserPermissionsFakeServicer
-// ─────────────────────────────────────────────────────────────────────────────
-
-// UserPermissionsFakeServicer is a hand-written implementation of userpermissions.Servicer
-// for handler unit tests. Set the Fn fields to control responses; leave nil
-// to return safe defaults.
-//
-// Defaults:
-//
-//	ListPermissionsFn  → ([]userpermissions.UserPermission{}, nil)
-//	GrantPermissionFn  → (userpermissions.UserPermission{}, nil)
-//	RevokePermissionFn → nil
-type UserPermissionsFakeServicer struct {
-	ListPermissionsFn  func(ctx context.Context, targetUserID string) ([]userpermissions.UserPermission, error)
-	GrantPermissionFn  func(ctx context.Context, targetUserID, actingUserID string, in userpermissions.GrantPermissionInput) (userpermissions.UserPermission, error)
-	RevokePermissionFn func(ctx context.Context, targetUserID, grantID, actingUserID string) error
-}
-
-// compile-time interface check.
-var _ userpermissions.Servicer = (*UserPermissionsFakeServicer)(nil)
-
-// ListPermissions delegates to ListPermissionsFn if set.
-// Default: returns ([]userpermissions.UserPermission{}, nil).
-func (f *UserPermissionsFakeServicer) ListPermissions(ctx context.Context, targetUserID string) ([]userpermissions.UserPermission, error) {
-	if f.ListPermissionsFn != nil {
-		return f.ListPermissionsFn(ctx, targetUserID)
-	}
-	return []userpermissions.UserPermission{}, nil
-}
-
-// GrantPermission delegates to GrantPermissionFn if set.
-// Default: returns (userpermissions.UserPermission{}, nil).
-func (f *UserPermissionsFakeServicer) GrantPermission(ctx context.Context, targetUserID, actingUserID string, in userpermissions.GrantPermissionInput) (userpermissions.UserPermission, error) {
-	if f.GrantPermissionFn != nil {
-		return f.GrantPermissionFn(ctx, targetUserID, actingUserID, in)
-	}
-	return userpermissions.UserPermission{}, nil
-}
-
-// RevokePermission delegates to RevokePermissionFn if set.
-// Default: returns nil.
-func (f *UserPermissionsFakeServicer) RevokePermission(ctx context.Context, targetUserID, grantID, actingUserID string) error {
-	if f.RevokePermissionFn != nil {
-		return f.RevokePermissionFn(ctx, targetUserID, grantID, actingUserID)
-	}
-	return nil
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// UserLockFakeServicer
-// ─────────────────────────────────────────────────────────────────────────────
-
-// UserLockFakeServicer implements userlock.Servicer for handler unit tests.
-//
-// Defaults:
-//
-//	LockUserFn      → nil  (returns nil error)
-//	UnlockUserFn    → nil  (returns nil error)
-//	GetLockStatusFn → (UserLockStatus{}, nil)
-type UserLockFakeServicer struct {
-	LockUserFn      func(ctx context.Context, targetUserID, actingUserID string, in userlock.LockUserInput) error
-	UnlockUserFn    func(ctx context.Context, targetUserID, actingUserID string) error
-	GetLockStatusFn func(ctx context.Context, targetUserID string) (userlock.UserLockStatus, error)
-}
-
-// compile-time interface check.
-var _ userlock.Servicer = (*UserLockFakeServicer)(nil)
-
-// LockUser delegates to LockUserFn if set.
-// Default: returns nil.
-func (f *UserLockFakeServicer) LockUser(ctx context.Context, targetUserID, actingUserID string, in userlock.LockUserInput) error {
-	if f.LockUserFn != nil {
-		return f.LockUserFn(ctx, targetUserID, actingUserID, in)
-	}
-	return nil
-}
-
-// UnlockUser delegates to UnlockUserFn if set.
-// Default: returns nil.
-func (f *UserLockFakeServicer) UnlockUser(ctx context.Context, targetUserID, actingUserID string) error {
-	if f.UnlockUserFn != nil {
-		return f.UnlockUserFn(ctx, targetUserID, actingUserID)
-	}
-	return nil
-}
-
-// GetLockStatus delegates to GetLockStatusFn if set.
-// Default: returns (UserLockStatus{}, nil).
-func (f *UserLockFakeServicer) GetLockStatus(ctx context.Context, targetUserID string) (userlock.UserLockStatus, error) {
-	if f.GetLockStatusFn != nil {
-		return f.GetLockStatusFn(ctx, targetUserID)
-	}
-	return userlock.UserLockStatus{}, nil
 }

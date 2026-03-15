@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "rbac-roles-e2e",
-    "name": "RBAC \u2013 Roles (/admin/rbac/roles)",
-    "description": "E2E tests for the roles CRUD API and role-permission grant management.\n\nRoutes covered:\n  GET    /api/v1/admin/rbac/roles\n  POST   /api/v1/admin/rbac/roles\n  GET    /api/v1/admin/rbac/roles/{id}\n  PATCH  /api/v1/admin/rbac/roles/{id}\n  DELETE /api/v1/admin/rbac/roles/{id}\n  GET    /api/v1/admin/rbac/roles/{id}/permissions\n  POST   /api/v1/admin/rbac/roles/{id}/permissions\n  DELETE /api/v1/admin/rbac/roles/{id}/permissions/{perm_id}\n\nFolder execution order (orchestrated by make e2e-rbac):\n  1. setup            \u2014 register + Gmail OTP + verify-email + login\n                        (captures roles_access_token \u2014 plain user, no RBAC permissions yet)\n  2. auth-guard       \u2014 401 on GET /roles and POST /roles with no Authorization header\n  3. rbac-guard       \u2014 403 on rbac:read and rbac:manage routes with valid JWT but no permissions\n  4. owner-bootstrap  \u2014 POST /owner/assign promotes the test user to owner\n                        (owner role grants rbac:read + rbac:manage; RBAC middleware reads DB\n                        per request \u2014 no re-login needed; the same token becomes effective)\n  5. happy-path       \u2014 full CRUD flow: list \u2192 create \u2192 get \u2192 update \u2192 list-perms \u2192\n                        add-perm \u2192 list-perms-after \u2192 remove-perm \u2192 delete role\n  6. not-found        \u2014 404 cases for all routes that accept an {id} URL param\n  7. validation       \u2014 422/400/413 input-error cases for POST and PATCH routes\n  8. immutable-guard  \u2014 409 when attempting to update or delete a system role\n\nGuard order (handler):\n  GET    routes: JWTAuth \u2192 RBAC.Require(rbac:read)   \u2192 handler\n  mutate routes: JWTAuth \u2192 RBAC.Require(rbac:manage) \u2192 handler\n\nThe admin router applies AllowContentType(\"application/json\") before JWTAuth, so POST/PATCH\nrequests in auth-guard must carry Content-Type: application/json to reach the 401 guard.\n\nEnvironment variables required:\n  bootstrap_secret   \u2014 must match BOOTSTRAP_SECRET in the running server's .env\n  gmail_test_email   \u2014 Gmail address for OTP receipt\n  gmail_access_token \u2014 OAuth2 token for Gmail API reads\n\nNotes on what is NOT covered here (covered by unit tests):\n  - DB / store errors \u2192 500                    \u2014 handler_test.go, service_test.go\n  - UUID parse failure \u2192 ErrRoleNotFound       \u2014 service_test.go (invalid UUID string)\n  - Conditions JSON default '{}' applied        \u2014 service_test.go\n  - nil roles marshals as [] not null           \u2014 handler_test.go\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before each suite run.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+    "name": "RBAC \u2013 Roles (/rbac/roles)",
+    "description": "E2E tests for the roles CRUD API and role-permission grant management.\n\nRoutes covered:\n  GET    /api/v1/rbac/roles\n  POST   /api/v1/rbac/roles\n  GET    /api/v1/rbac/roles/{id}\n  PATCH  /api/v1/rbac/roles/{id}\n  DELETE /api/v1/rbac/roles/{id}\n  GET    /api/v1/rbac/roles/{id}/permissions\n  POST   /api/v1/rbac/roles/{id}/permissions\n  DELETE /api/v1/rbac/roles/{id}/permissions/{perm_id}\n\nFolder execution order (orchestrated by make e2e-rbac):\n  1. setup            \u2014 register + Gmail OTP + verify-email + login\n                        (captures roles_access_token \u2014 plain user, no RBAC permissions yet)\n  2. auth-guard       \u2014 401 on GET /roles and POST /roles with no Authorization header\n  3. rbac-guard       \u2014 403 on rbac:read and rbac:manage routes with valid JWT but no permissions\n  4. owner-bootstrap  \u2014 PUT /rbac/owner/assign promotes the test user to owner\n                        (owner role grants rbac:read + rbac:manage; RBAC middleware reads DB\n                        per request \u2014 no re-login needed; the same token becomes effective)\n  5. happy-path       \u2014 full CRUD flow: list \u2192 create \u2192 get \u2192 update \u2192 list-perms \u2192\n                        add-perm \u2192 list-perms-after \u2192 remove-perm \u2192 delete role\n  6. not-found        \u2014 404 cases for all routes that accept an {id} URL param\n  7. validation       \u2014 422/400/413 input-error cases for POST and PATCH routes\n  8. immutable-guard  \u2014 409 when attempting to update or delete a system role\n\nGuard order (handler):\n  GET    routes: JWTAuth \u2192 RBAC.Require(rbac:read)   \u2192 handler\n  mutate routes: JWTAuth \u2192 RBAC.Require(rbac:manage) \u2192 handler\n\nThe admin router applies AllowContentType(\"application/json\") before JWTAuth, so POST/PATCH\nrequests in auth-guard must carry Content-Type: application/json to reach the 401 guard.\n\nEnvironment variables required:\n  bootstrap_secret   \u2014 must match BOOTSTRAP_SECRET in the running server's .env\n  gmail_test_email   \u2014 Gmail address for OTP receipt\n  gmail_access_token \u2014 OAuth2 token for Gmail API reads\n\nNotes on what is NOT covered here (covered by unit tests):\n  - DB / store errors \u2192 500                    \u2014 handler_test.go, service_test.go\n  - UUID parse failure \u2192 ErrRoleNotFound       \u2014 service_test.go (invalid UUID string)\n  - Conditions JSON default '{}' applied        \u2014 service_test.go\n  - nil roles marshals as [] not null           \u2014 handler_test.go\n\nRun `make _e2e-db-clean` and `make _e2e-kv-clean` before each suite run.\nRequires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -119,20 +119,13 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/register",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "register"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
             }
           }
         },
         {
-          "name": "POST /verify-email \u2192 200 (consume OTP)",
+          "name": "POST /verification \u2192 200 (consume OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -180,16 +173,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "verify-email"
-              ]
+              "raw": "{{base_url}}/api/v1/auth/verification",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -233,15 +219,8 @@
             },
             "url": {
               "raw": "{{base_url}}/api/v1/auth/login",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "auth",
-                "login"
-              ]
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
             }
           }
         }
@@ -275,17 +254,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         },
@@ -327,17 +298,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         },
@@ -364,14 +327,11 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions/00000000-0000-0000-0000-000000000002",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001/permissions/00000000-0000-0000-0000-000000000002",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001",
@@ -415,17 +375,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         },
@@ -470,17 +422,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         }
@@ -488,7 +432,7 @@
     },
     {
       "name": "owner-bootstrap",
-      "description": "Promotes the setup user to owner by calling POST /owner/assign with the correct bootstrap_secret. The owner role carries all permissions including rbac:read and rbac:manage. RBAC.Require reads the DB on every request \u2014 no re-login is needed; the existing roles_access_token is sufficient for all subsequent requests.",
+      "description": "Promotes the setup user to owner by calling PUT /rbac/owner/assign with the correct bootstrap_secret. The owner role carries all permissions including rbac:read and rbac:manage. RBAC.Require reads the DB on every request \u2014 no re-login is needed; the existing roles_access_token is sufficient for all subsequent requests.",
       "item": [
         {
           "name": "POST /owner/bootstrap \u2192 201 (grant owner role to roles user)",
@@ -522,7 +466,7 @@
             }
           ],
           "request": {
-            "method": "POST",
+            "method": "PUT",
             "header": [
               {
                 "key": "Content-Type",
@@ -547,16 +491,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/owner/assign",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "owner",
-                "assign"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/owner/assign",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "owner", "assign"]
             }
           }
         }
@@ -564,10 +501,10 @@
     },
     {
       "name": "happy-path",
-      "description": "Full CRUD flow authenticated as owner (rbac:read + rbac:manage granted by owner-bootstrap).\n\nExecution order:\n  1. GET /admin/permissions            \u2014 capture roles_perm_id for the AddRolePermission step\n  2. GET /rbac/roles                   \u2014 assert non-empty list; capture roles_system_role_id\n  3. POST /rbac/roles                  \u2014 create test role; capture roles_role_id\n  4. GET /rbac/roles/{id}              \u2014 assert created role shape\n  5. PATCH /rbac/roles/{id}            \u2014 update name + description\n  6. GET /rbac/roles/{id}/permissions  \u2014 assert empty list before adding\n  7. POST /rbac/roles/{id}/permissions \u2014 add a permission grant \u2192 204\n  8. GET /rbac/roles/{id}/permissions  \u2014 assert list now contains one entry; capture roles_grant_perm_id\n  9. DELETE /rbac/roles/{id}/permissions/{perm_id} \u2014 remove the grant \u2192 204\n  10. DELETE /rbac/roles/{id}          \u2014 delete the test role \u2192 204",
+      "description": "Full CRUD flow authenticated as owner (rbac:read + rbac:manage granted by owner-bootstrap).\n\nExecution order:\n  1. GET /rbac/permissions            \u2014 capture roles_perm_id for the AddRolePermission step\n  2. GET /rbac/roles                   \u2014 assert non-empty list; capture roles_system_role_id\n  3. POST /rbac/roles                  \u2014 create test role; capture roles_role_id\n  4. GET /rbac/roles/{id}              \u2014 assert created role shape\n  5. PATCH /rbac/roles/{id}            \u2014 update name + description\n  6. GET /rbac/roles/{id}/permissions  \u2014 assert empty list before adding\n  7. POST /rbac/roles/{id}/permissions \u2014 add a permission grant \u2192 204\n  8. GET /rbac/roles/{id}/permissions  \u2014 assert list now contains one entry; capture roles_grant_perm_id\n  9. DELETE /rbac/roles/{id}/permissions/{perm_id} \u2014 remove the grant \u2192 204\n  10. DELETE /rbac/roles/{id}          \u2014 delete the test role \u2192 204",
       "item": [
         {
-          "name": "GET /admin/permissions \u2192 200 (capture roles_perm_id)",
+          "name": "GET /rbac/permissions \u2192 200 (capture roles_perm_id)",
           "event": [
             {
               "listen": "test",
@@ -599,16 +536,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "permissions"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/permissions",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "permissions"]
             }
           }
         },
@@ -682,17 +612,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         },
@@ -768,17 +690,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         },
@@ -829,18 +743,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles",
-                "{{roles_role_id}}"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles/{{roles_role_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles", "{{roles_role_id}}"]
             }
           }
         },
@@ -891,18 +796,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles",
-                "{{roles_role_id}}"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles/{{roles_role_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles", "{{roles_role_id}}"]
             }
           }
         },
@@ -939,14 +835,11 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/{{roles_role_id}}/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "{{roles_role_id}}",
@@ -965,7 +858,7 @@
                 "exec": [
                   "const permID = pm.collectionVariables.get('roles_perm_id');",
                   "if (!permID) {",
-                  "    console.error('[ERROR] roles_perm_id not set \u2014 GET /admin/permissions step did not complete.');",
+                  "    console.error('[ERROR] roles_perm_id not set \u2014 GET /rbac/permissions step did not complete.');",
                   "}"
                 ]
               }
@@ -1010,14 +903,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/{{roles_role_id}}/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "{{roles_role_id}}",
@@ -1077,14 +967,11 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/{{roles_role_id}}/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "{{roles_role_id}}",
@@ -1134,14 +1021,11 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}/permissions/{{roles_grant_perm_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/{{roles_role_id}}/permissions/{{roles_grant_perm_id}}",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "{{roles_role_id}}",
@@ -1180,18 +1064,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_role_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles",
-                "{{roles_role_id}}"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles/{{roles_role_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles", "{{roles_role_id}}"]
             }
           }
         }
@@ -1228,14 +1103,11 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001"
@@ -1283,14 +1155,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001"
@@ -1325,14 +1194,11 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001"
@@ -1367,14 +1233,11 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001",
@@ -1423,14 +1286,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001",
@@ -1450,7 +1310,7 @@
                   "// Create a temporary role so the service can proceed past the role-exists check",
                   "// and reach the permission-exists check where it returns ErrPermissionNotFound.",
                   "pm.sendRequest({",
-                  "    url: pm.variables.get('base_url') + '/api/v1/admin/rbac/roles',",
+                  "    url: pm.variables.get('base_url') + '/api/v1/rbac/roles',",
                   "    method: 'POST',",
                   "    header: {",
                   "        'Content-Type': 'application/json',",
@@ -1480,7 +1340,7 @@
                   "const tempID = pm.collectionVariables.get('roles_temp_role_id');",
                   "if (tempID) {",
                   "    pm.sendRequest({",
-                  "        url: pm.variables.get('base_url') + '/api/v1/admin/rbac/roles/' + tempID,",
+                  "        url: pm.variables.get('base_url') + '/api/v1/rbac/roles/' + tempID,",
                   "        method: 'DELETE',",
                   "        header: { Authorization: 'Bearer ' + pm.collectionVariables.get('roles_access_token') }",
                   "    }, (err) => { if (err) console.warn('[WARN] Temp role cleanup failed:', err); });",
@@ -1515,14 +1375,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_temp_role_id}}/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/{{roles_temp_role_id}}/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "{{roles_temp_role_id}}",
@@ -1558,14 +1415,11 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions/00000000-0000-0000-0000-000000000002",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001/permissions/00000000-0000-0000-0000-000000000002",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001",
@@ -1621,17 +1475,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         },
@@ -1675,17 +1521,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         },
@@ -1730,17 +1568,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         },
@@ -1796,17 +1626,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         },
@@ -1859,17 +1681,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles"]
             }
           }
         },
@@ -1915,14 +1729,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001"
@@ -1972,14 +1783,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001"
@@ -2027,14 +1835,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001",
@@ -2083,14 +1888,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001",
@@ -2140,14 +1942,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001",
@@ -2197,14 +1996,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001",
@@ -2254,14 +2050,11 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
-              "host": [
-                "{{base_url}}"
-              ],
+              "raw": "{{base_url}}/api/v1/rbac/roles/00000000-0000-0000-0000-000000000001/permissions",
+              "host": ["{{base_url}}"],
               "path": [
                 "api",
                 "v1",
-                "admin",
                 "rbac",
                 "roles",
                 "00000000-0000-0000-0000-000000000001",
@@ -2332,18 +2125,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_system_role_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles",
-                "{{roles_system_role_id}}"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles/{{roles_system_role_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles", "{{roles_system_role_id}}"]
             }
           }
         },
@@ -2389,18 +2173,9 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/rbac/roles/{{roles_system_role_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "rbac",
-                "roles",
-                "{{roles_system_role_id}}"
-              ]
+              "raw": "{{base_url}}/api/v1/rbac/roles/{{roles_system_role_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "rbac", "roles", "{{roles_system_role_id}}"]
             }
           }
         }
@@ -2441,7 +2216,7 @@
     {
       "key": "roles_perm_id",
       "value": "",
-      "description": "Permission ID captured from GET /admin/permissions[0].id. Used as the permission_id argument to POST /rbac/roles/{id}/permissions in the happy-path and not-found folders."
+      "description": "Permission ID captured from GET /rbac/permissions[0].id. Used as the permission_id argument to POST /rbac/roles/{id}/permissions in the happy-path and not-found folders."
     },
     {
       "key": "roles_system_role_id",

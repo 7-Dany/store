@@ -11,18 +11,18 @@ After too many consecutive failed login attempts the account is time-locked. Dur
 ## Overview
 
 ```
-POST /request-unlock   →  OTP sent to email (always 202)
-POST /confirm-unlock   →  email + code  →  200 (account unlocked)
-POST /login            →  sign in normally
+POST /auth/unlock  →  OTP sent to email (always 202)
+PUT  /auth/unlock  →  email + code  →  200 (account unlocked)
+POST /auth/login   →  sign in normally
 ```
 
-Both endpoints share a single rate-limit bucket (`unlk:ip:`), so the combined total of requests to either endpoint from the same IP counts against one limit.
+Both endpoints share the same rate limit, so the combined total of requests to either endpoint from the same IP counts against one limit.
 
 ---
 
 ## What triggers a lockout
 
-Ten consecutive wrong-password submissions on [`POST /login`](/api-reference/auth/login) set a 15-minute `login_locked_until` on the account. During that window, even the correct password returns:
+Ten consecutive wrong-password submissions on [`POST /auth/login`](/api-reference/auth/session/login) set a 15-minute lockout on the account. During that window, even the correct password returns:
 
 ```json
 {
@@ -34,7 +34,7 @@ Ten consecutive wrong-password submissions on [`POST /login`](/api-reference/aut
 The `Retry-After` header tells the client exactly how many seconds remain. The user can wait it out or use the unlock flow to clear it immediately.
 
 <Note>
-  This flow covers **time-based lockouts** caused by failed login attempts. Accounts locked by an administrator (`is_locked = true`) require a separate admin action and cannot be self-served through this flow.
+  This flow covers **time-based lockouts** caused by failed login attempts. Accounts locked by an administrator require a separate admin action and cannot be self-served through this flow.
 </Note>
 
 ---
@@ -42,7 +42,7 @@ The `Retry-After` header tells the client exactly how many seconds remain. The u
 ## Full sequence
 
 <Steps>
-  <Step title="POST /request-unlock — Request an unlock code">
+  <Step title="POST /auth/unlock — Request an unlock code">
     Send the locked account's email address. The server sends a 6-digit OTP to that address if the account exists and is currently time-locked.
 
     ```json Request
@@ -64,7 +64,7 @@ The `Retry-After` header tells the client exactly how many seconds remain. The u
     </Note>
   </Step>
 
-  <Step title="POST /confirm-unlock — Submit the OTP">
+  <Step title="PUT /auth/unlock — Submit the OTP">
     The user enters the 6-digit code from their inbox. Submit it together with the email address.
 
     ```json Request
@@ -80,10 +80,10 @@ The `Retry-After` header tells the client exactly how many seconds remain. The u
     }
     ```
 
-    The lockout is cleared immediately — `login_locked_until` is reset and `failed_login_attempts` is set to zero. The user can log in right away.
+    The lockout is cleared immediately. The user can log in right away.
   </Step>
 
-  <Step title="POST /login — Sign in">
+  <Step title="POST /auth/login — Sign in">
     The account is now fully accessible. The user logs in with their existing credentials.
 
     ```json Request
@@ -110,6 +110,6 @@ The `Retry-After` header tells the client exactly how many seconds remain. The u
 
 ## Shared rate limit
 
-[`POST /request-unlock`](/api-reference/auth/unlock/request-unlock) and [`POST /confirm-unlock`](/api-reference/auth/unlock/confirm-unlock) share the same rate-limit bucket. Three total requests from the same IP within 10 minutes — across either endpoint — exhausts the allowance. A fourth request to either endpoint returns `429`.
+[`POST /auth/unlock`](/api-reference/auth/unlock/request-unlock) and [`PUT /auth/unlock`](/api-reference/auth/unlock/confirm-unlock) share the same rate-limit bucket. Three total requests from the same IP within 10 minutes — across either endpoint — exhausts the allowance. A fourth request to either endpoint returns `429`.
 
 This means a user who sends two request-unlock calls and one confirm-unlock call has used their full allowance, and must wait for the window to reset before trying again.

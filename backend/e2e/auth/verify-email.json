@@ -1,8 +1,8 @@
 {
   "info": {
     "_postman_id": "auth-verify-email-e2e",
-    "name": "Auth – Verify Email (POST /api/v1/auth/verify-email + POST /api/v1/auth/resend-verification)",
-    "description": "E2E tests for POST /api/v1/auth/verify-email and POST /api/v1/auth/resend-verification.\n\nFolder execution order (orchestrated by make e2e-verify-email):\n  1. setup             — register a fresh user, fetch OTP from Gmail, verify email\n  2. validation        — all 422/413 cases for POST /verify-email\n  3. happy-path        — OTP replay, indirect DB check via login, idempotent already-verified\n  4. anti-enumeration  — unknown email and wrong-code return identical 422\n  5. resend-validation — all 422/413 cases for POST /resend-verification\n  6. resend-happy-path — 202 success + anti-enumeration paths\n  7. rate-limiting     — IP and per-email limiters for both endpoints\n\nAll test users use @e2e.test emails so `make _e2e-clean` can wipe them with a single DELETE.\n\nNotes on what is NOT covered (requires time manipulation, DB introspection, or fault injection):\n  - ErrTokenExpired (needs fast-forwarding expires_at)\n  - too_many_attempts from hitting max-attempts ceiling\n  - account_locked (423) path\n  - Exponential backoff gate (vfy:bo:)\n  - Token revocation side-effects (RevokePreVerificationTokens, InvalidateAllUserTokens)\n  - email_verified audit row\n  - Resend cooldown guard (2-minute window)\n  - Resend DB side-effects (fresh token row)\n  - SMTP delivery failure → 503\n  - Response timing invariants (±100 ms)",
+    "name": "Auth – Verify Email (POST /api/v1/auth/verification + POST /api/v1/auth/verification/resend)",
+    "description": "E2E tests for POST /api/v1/auth/verification and POST /api/v1/auth/verification/resend.\n\nFolder execution order (orchestrated by make e2e-verify-email):\n  1. setup             — register a fresh user, fetch OTP from Gmail, verify email\n  2. validation        — all 422/413 cases for POST /verification\n  3. happy-path        — OTP replay, indirect DB check via login, idempotent already-verified\n  4. anti-enumeration  — unknown email and wrong-code return identical 422\n  5. resend-validation — all 422/413 cases for POST /verification/resend\n  6. resend-happy-path — 202 success + anti-enumeration paths\n  7. rate-limiting     — IP and per-email limiters for both endpoints\n\nAll test users use @e2e.test emails so `make _e2e-clean` can wipe them with a single DELETE.\n\nNotes on what is NOT covered (requires time manipulation, DB introspection, or fault injection):\n  - ErrTokenExpired (needs fast-forwarding expires_at)\n  - too_many_attempts from hitting max-attempts ceiling\n  - account_locked (423) path\n  - Exponential backoff gate (vfy:bo:)\n  - Token revocation side-effects (RevokePreVerificationTokens, InvalidateAllUserTokens)\n  - email_verified audit row\n  - Resend cooldown guard (2-minute window)\n  - Resend DB side-effects (fresh token row)\n  - SMTP delivery failure → 503\n  - Response timing invariants (±100 ms)",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "event": [
@@ -136,7 +136,7 @@
           }
         },
         {
-          "name": "POST /verify-email → 200 (consume OTP)",
+          "name": "POST /verification → 200 (consume OTP)",
           "event": [
             {
               "listen": "prerequest",
@@ -187,9 +187,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         }
@@ -197,7 +197,7 @@
     },
     {
       "name": "validation",
-      "description": "All input-validation cases for POST /verify-email. Validation fires before any DB lookup so a non-existent email (vfy-val@e2e.test) is safe to use throughout — no row will be created.",
+      "description": "All input-validation cases for POST /verification. Validation fires before any DB lookup so a non-existent email (vfy-val@e2e.test) is safe to use throughout — no row will be created.",
       "item": [
         {
           "name": "missing email → 422",
@@ -235,9 +235,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -277,9 +277,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -319,9 +319,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -371,9 +371,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -413,9 +413,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -455,9 +455,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -497,9 +497,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -539,9 +539,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -581,9 +581,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -637,9 +637,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -679,9 +679,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         }
@@ -730,9 +730,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -829,9 +829,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         }
@@ -888,9 +888,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -932,9 +932,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         }
@@ -942,7 +942,7 @@
     },
     {
       "name": "resend-validation",
-      "description": "All input-validation cases for POST /resend-verification. Validation fires before any DB lookup.",
+      "description": "All input-validation cases for POST /verification/resend. Validation fires before any DB lookup.",
       "item": [
         {
           "name": "missing email → 422",
@@ -980,9 +980,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         },
@@ -1022,9 +1022,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         },
@@ -1064,9 +1064,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         },
@@ -1116,9 +1116,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         },
@@ -1171,9 +1171,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         },
@@ -1213,9 +1213,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         }
@@ -1313,9 +1313,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         },
@@ -1357,9 +1357,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         },
@@ -1410,9 +1410,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         }
@@ -1481,9 +1481,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -1532,9 +1532,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -1583,9 +1583,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -1634,9 +1634,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -1685,9 +1685,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -1728,9 +1728,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/verify-email",
+              "raw": "{{base_url}}/api/v1/auth/verification",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "verify-email"]
+              "path": ["api", "v1", "auth", "verification"]
             }
           }
         },
@@ -1769,9 +1769,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         },
@@ -1810,9 +1810,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         },
@@ -1851,9 +1851,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         },
@@ -1894,9 +1894,9 @@
               }
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/auth/resend-verification",
+              "raw": "{{base_url}}/api/v1/auth/verification/resend",
               "host": ["{{base_url}}"],
-              "path": ["api", "v1", "auth", "resend-verification"]
+              "path": ["api", "v1", "auth", "verification", "resend"]
             }
           }
         }

@@ -1,7 +1,8 @@
 # Templates — All Stage Prompt Templates
 
 Copy the relevant template, fill every `{placeholder}`, and save to
-`docs/prompts/{feature}/{N}-{stage-name}.md`. Leave no placeholder unfilled.
+`.agents/skills/backend-route-impl/context/{feature}/{N}-{stage-name}.md`.
+Leave no placeholder unfilled.
 
 ---
 
@@ -376,8 +377,8 @@ func (p *QuerierProxy) {QueryName}(ctx context.Context, {params}) ({result}, err
 | `{feature}/handler.go` | Servicer interface location |
 | `{feature}/models.go` | I/O types |
 | Domain testutil `fake_servicer.go` (see Stage 0 table) | Existing FakeServicer layout |
-| `docs/prompts/{feature}/0-design.md §5` | Guard ordering (source of truth) |
-| `docs/prompts/{feature}/0-design.md §7` | S-layer test cases to implement |
+| `.agents/skills/backend-route-impl/context/{feature}/0-design.md §5` | Guard ordering (source of truth) |
+| `.agents/skills/backend-route-impl/context/{feature}/0-design.md §7` | S-layer test cases to implement |
 | `docs/RULES.md §3.4, §3.6, §3.7` | Error wrapping, WithoutCancel, timing |
 
 ---
@@ -468,8 +469,8 @@ func Test{MethodName}(t *testing.T) {
 | `{feature}/routes.go` | Route registration |
 | `{feature}/requests.go` + `validators.go` | Request/validation types |
 | Domain testutil `fake_servicer.go` (see Stage 0 table) | FakeServicer for handler tests |
-| `docs/prompts/{feature}/0-design.md §2` | HTTP contract |
-| `docs/prompts/{feature}/0-design.md §7` | H-layer and I-layer test cases |
+| `.agents/skills/backend-route-impl/context/{feature}/0-design.md §2` | HTTP contract |
+| `.agents/skills/backend-route-impl/context/{feature}/0-design.md §7` | H-layer and I-layer test cases |
 | `docs/RULES.md §3.10` + `§3.13` | HTTP conventions + sub-package checklist |
 
 ---
@@ -629,8 +630,8 @@ Perform a structured multi-role audit of the {Feature} HTTP layer.
 
 **Before writing anything, read these files in full:**
 
-1. `docs/prompts/{feature}/context.md`
-2. `docs/prompts/{feature}/0-design.md` (§5 guard ordering + §7 test cases)
+1. `.agents/skills/backend-route-impl/context/{feature}/context.md`
+2. `.agents/skills/backend-route-impl/context/{feature}/0-design.md` (§5 guard ordering + §7 test cases)
 3. `{feature}/handler.go`
 4. `{feature}/routes.go`
 5. `{domain}/routes.go` (domain assembler)
@@ -844,7 +845,7 @@ Write immediately after Stage 0. Keep under 80 lines.
 |---|---|
 | Closest existing collection in `e2e/{domain}/` | Canonical format for this domain (see note below) |
 | `make/e2e.mk` | Existing make target pattern |
-| `docs/prompts/{feature}/0-design.md §2, §6, §7` | HTTP contract, rate limits, test inventory |
+| `.agents/skills/backend-route-impl/context/{feature}/0-design.md §2, §6, §7` | HTTP contract, rate limits, test inventory |
 
 **Domain collection reference:**
 - `auth/` or `profile/`: use `e2e/auth/change-password.json` — has OTP flow and failure folders
@@ -899,7 +900,7 @@ Write immediately after Stage 0. Keep under 80 lines.
 |---|---|
 | `mint/api-reference/{domain}/{closest-existing}.mdx` | Format to follow exactly |
 | `mint/docs.json` | Navigation tree — where to add the new page |
-| `docs/prompts/{feature}/0-design.md §2, §3, §6` | HTTP contract, behaviour, rate limits |
+| `.agents/skills/backend-route-impl/context/{feature}/0-design.md §2, §3, §6` | HTTP contract, behaviour, rate limits |
 
 ---
 

@@ -129,7 +129,7 @@ Applied at the **root assembler** level, not at feature level:
 - All SQL in `sql/queries/{domain}.sql` (production) or `sql/queries_test/{domain}_test.sql` (test-only).
 - Every query has a `-- name:` directive in PascalCase.
 - Groups within file use `/* ── {Section} ── */` separators.
-- **No raw SQL strings in any `.go` file — production or test.** (RULES.md §3.9)
+- **No raw SQL strings in any `.go` file — production or test.** (`docs/rules/RULES.md §3.9`)
 - Run `make sqlc` after any SQL change.
 
 **Banned in `.go` files:**
@@ -158,6 +158,38 @@ r.Body = http.MaxBytesReader(w, r.Body, respond.MaxBodyBytes)
 ```
 
 Validation runs in the handler before any service call. Service never validates raw HTTP input.
+
+### URL path naming
+
+Paths identify **resources and sub-resources**. The HTTP method carries the verb. Path segments are always lowercase nouns or noun-phrases — never verb phrases.
+
+**The core rule:** if a path segment reads like an imperative command (`forgot-password`, `verify-reset-code`, `force-password-reset`), it is wrong. Reorganise around the noun.
+
+| ❌ Banned | ✓ Correct | Reason |
+|---|---|---|
+| `POST /auth/forgot-password` | `POST /auth/password/reset` | resource `password`, step `reset` |
+| `POST /auth/verify-reset-code` | `POST /auth/password/reset/verify` | step `verify` as sub-path |
+| `POST /auth/change-password` | `PATCH /auth/password` | PATCH implies change |
+| `POST /auth/resend-verification` | `POST /auth/verification/resend` | resource first |
+| `POST /auth/request-unlock` | `POST /auth/unlock` | POST implies request |
+| `POST /auth/confirm-unlock` | `PUT /auth/unlock` | PUT implies confirm/replace |
+| `POST /admin/users/{id}/force-password-reset` | `POST /admin/users/{id}/password/reset` | same hierarchy as auth domain |
+| `POST /profile/me/cancel-deletion` | `DELETE /profile/me/deletion` | DELETE implies cancel |
+
+**Multi-step flows** share the base path; method and optional `/step` sub-path distinguish phases:
+```
+POST  /password/reset          ← step 1: request OTP
+POST  /password/reset/verify   ← step 2: verify OTP, receive grant token
+PUT   /password/reset          ← step 3: apply new password
+
+POST  /me/email                ← step 1: request change OTP
+POST  /me/email/verify         ← step 2: verify current-email OTP
+PUT   /me/email                ← step 3: confirm
+```
+
+**Permitted single-word step nouns** as the final segment: `verify`, `resend`, `assign`, `transfer`. These are nouns in context — they name a lifecycle phase, not an action.
+
+**Hyphens in path segments are banned.** Either split into two segments (`password-reset` ❌ → `password/reset` ✓) or drop the redundant word when the shorter form is unambiguous (`magic-link` ❌ → `magic` ✓).
 
 ### Always use `platform/*` — never hand-roll equivalents
 

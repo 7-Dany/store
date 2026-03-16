@@ -9,6 +9,54 @@ A comment is for the reader, not the writer. Before adding a comment, ask:
 
 ---
 
+## Comment mechanics
+
+Use `//` line comments everywhere. `/* */` block comments are for package-level
+doc comments only when the comment must span before a `package` clause with no
+closing declaration, or to disable a large swath of code temporarily.
+
+**Blank line before, none between.** A doc comment is separated from whatever
+comes above it by a blank line, but there must be **no blank line** between the
+doc comment and the declaration it documents. A blank line breaks the
+association — godoc will not attach the comment to the declaration.
+
+```go
+// Good — comment directly above declaration
+// NewStore constructs a Store backed by pool.
+func NewStore(pool *pgxpool.Pool) *Store {
+
+// Bad — blank line breaks the association
+// NewStore constructs a Store backed by pool.
+
+func NewStore(pool *pgxpool.Pool) *Store {
+```
+
+**First sentence is the summary.** Godoc extracts the first sentence for
+indexes and hover text. It must be a complete, standalone sentence that makes
+sense without the rest of the comment:
+
+```go
+// Good — first sentence is self-contained
+// CreateUserTx inserts a new user and issues an email verification token.
+// Returns ErrEmailTaken if the address is already registered.
+
+// Bad — first sentence is not useful on its own
+// This function is used to create a new user.
+```
+
+**Code examples** in doc comments use `//` + tab indent, not fenced blocks.
+Godoc renders them as preformatted text:
+
+```go
+// Routes returns a self-contained chi sub-router for all /auth endpoints.
+// Mount at /api/v1/auth in the server router:
+//
+//	r.Mount("/auth", auth.Routes(ctx, deps))
+func Routes(ctx context.Context, deps *app.Deps) *chi.Mux {
+```
+
+---
+
 ## Package comments
 
 One doc comment on the `package` declaration. One sentence. Starts with
@@ -57,6 +105,76 @@ var ErrUserNotFound = errors.New("user not found")
 
 ---
 
+## Multi-paragraph doc comments
+
+A second sentence (same paragraph) documents non-obvious error conditions or
+side effects. A blank line inside the doc comment starts a new paragraph —
+use this for longer explanations, not for every function:
+
+```go
+// LoginTx validates credentials and creates a persistent session.
+// Returns ErrInvalidCredentials if the password does not match.
+// Returns ErrAccountLocked if the account is admin-locked.
+//
+// Timing invariant: the password hash check always runs even when the user is
+// not found, to prevent timing-based email enumeration.
+func (s *Service) LoginTx(ctx context.Context, in LoginInput) (LoggedInSession, error)
+```
+
+Keep it concise — if the explanation exceeds six lines, the function is
+probably doing too much.
+
+---
+
+## Interface and type comments
+
+**Interfaces** get a one-sentence comment starting with the type name.
+Describe what the interface *represents*, not what implementors must do:
+
+```go
+// Storer is the data-access contract for the login feature.
+type Storer interface {
+    GetUserForLoginTx(ctx context.Context, in GetUserForLoginInput) (UserForLogin, error)
+}
+
+// Servicer is the business-logic contract for the login feature.
+type Servicer interface {
+    LoginTx(ctx context.Context, in LoginInput) (LoggedInSession, error)
+}
+```
+
+**Request and response types** — same rule: one sentence, starts with the name:
+
+```go
+// LoginRequest is the HTTP request body for POST /auth/login.
+type LoginRequest struct {
+    Identifier string `json:"identifier"`
+    Password   string `json:"password"`
+}
+
+// LoggedInSession is the response body for a successful login.
+type LoggedInSession struct {
+    AccessToken string `json:"access_token"`
+    ExpiresIn   int    `json:"expires_in"`
+}
+```
+
+**Model types** (service-layer Input/Result) follow the same pattern:
+
+```go
+// LoginInput is the service-layer input for authenticating a user.
+type LoginInput struct {
+    Identifier string
+    Password   string
+    IPAddress  string
+}
+
+// LoggedInSession is the service-layer result for a successful login.
+type LoggedInSession struct { ... }
+```
+
+---
+
 ## Unexported identifiers
 
 No doc comments unless the logic would confuse a competent reader. Constants
@@ -66,6 +184,90 @@ that encode non-obvious constraints do warrant a comment:
 // maxUserAgentBytes is the maximum number of bytes stored in the user_agent column.
 const maxUserAgentBytes = 512
 ```
+
+---
+
+## Grouped const blocks
+
+Const groups with a shared concept get a single comment **above the group**.
+Do not comment each constant individually unless its meaning is non-obvious
+from the name:
+
+```go
+// Event types for the audit log. Every value must appear in AllEvents().
+const (
+    EventUserRegistered    EventType = "user_registered"
+    EventEmailVerified     EventType = "email_verified"
+    EventPasswordChanged   EventType = "password_changed"
+    EventSessionCreated    EventType = "session_created"
+)
+```
+
+For iota groups, document the type and its zero value:
+
+```go
+// AccessType controls how a permission grant is enforced.
+// The zero value is not valid; use AccessTypeDirect for unconditional grants.
+type AccessType int
+
+const (
+    AccessTypeDirect      AccessType = iota + 1
+    AccessTypeConditional
+    AccessTypeRequest
+    AccessTypeDenied
+)
+```
+
+Individual constants only get their own comment when the name alone is
+insufficient:
+
+```go
+const (
+    // maxOTPAttempts is the number of wrong guesses before a token is locked.
+    // Matches the value in sql/seeds/002_permissions.sql.
+    maxOTPAttempts = 5
+)
+```
+
+---
+
+## Named return parameters
+
+Use named return parameters when the names serve as documentation — i.e.
+when two return values of the same type would be ambiguous at the call site:
+
+```go
+// Good — names clarify which int is which
+func nextToken(b []byte, pos int) (value, nextPos int)
+
+// Unnecessary — context is obvious from a single return
+func (s *Store) CountSessions(ctx context.Context) (n int, err error)  // bad
+func (s *Store) CountSessions(ctx context.Context) (int, error)        // good
+```
+
+Do **not** use named returns just to enable a bare `return`. Bare returns
+make it harder to trace what is being returned. The only exception is short
+functions where the naked return is idiomatic (e.g. `io.ReadFull`-style
+wrappers under ~10 lines).
+
+---
+
+## Deprecation
+
+Mark deprecated identifiers with a `// Deprecated:` paragraph in the doc
+comment. This is recognised by `gopls`, `go vet`, and IDEs:
+
+```go
+// CheckOTPTokenLegacy verifies an OTP token using the old 4-digit format.
+//
+// Deprecated: Use CheckOTPToken which requires 6-digit codes. This function
+// will be removed once all clients have migrated.
+func CheckOTPTokenLegacy(token, code string) error {
+```
+
+The `// Deprecated:` line must be its own paragraph (preceded by a blank
+comment line). Do not add this annotation without also filing a tracked issue
+or adding a `// TODO(#NNN):` note.
 
 ---
 
@@ -349,7 +551,20 @@ ipLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "lgn:ip:", 5.0/(15*60), 5,
 - [ ] Timing invariant dummy-hash call sites have inline comment
 - [ ] Multi-step Tx methods use numbered step comments
 
+**Types and interfaces:**
+- [ ] Every `Storer` and `Servicer` interface has a one-sentence doc comment
+- [ ] Every request/response and Input/Result type has a doc comment
+- [ ] Const groups have a single comment above the group, not per-constant
+- [ ] Iota groups document the zero value on the type comment
+
+**Named returns and deprecation:**
+- [ ] Named return parameters used only when they clarify ambiguous same-type returns
+- [ ] No bare `return` in functions over ~10 lines
+- [ ] Deprecated identifiers use `// Deprecated:` as a separate paragraph
+- [ ] Every `// Deprecated:` has a corresponding `// TODO(#NNN):` or filed issue
+
 **Form:**
+- [ ] No blank line between doc comment and its declaration
 - [ ] No commented-out code
 - [ ] No bare `// TODO` / `// FIXME`
 - [ ] Section separators use `// ──` style only

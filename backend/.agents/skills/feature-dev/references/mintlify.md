@@ -1,27 +1,21 @@
 # Mintlify MDX Doc Rules
 
-Source of truth: `docs/mint/DOC-RULES.md`. This copy is here so Stage 8 sessions
-can load it from the skill folder without navigating away.
-
-**Always check `docs/mint/DOC-RULES.md` for the authoritative version.** If the
-two files diverge, the one in `docs/mint/` wins — update this copy to match.
+This is the authoritative version. Update it here directly.
 
 ---
 
 ## Mintlify file locations
 
+Do not rely on a hardcoded tree — read the actual directory before Stage 8:
+
 ```
-mint/
-├── api-reference/
-│   ├── auth/          ← auth domain endpoints
-│   ├── oauth/         ← oauth domain endpoints
-│   ├── profile/       ← profile domain endpoints
-│   └── rbac/          ← rbac domain endpoints
-├── guides/
-└── docs.json          ← navigation tree — MUST be updated for every new .mdx file
+list mint/api-reference/   ← find the correct domain folder and existing slug conventions
+read mint/docs.json        ← find the insertion point for the new .mdx entry
 ```
 
 New file path pattern: `mint/api-reference/{domain}/{route-folder}/{slug}.mdx`
+
+Slug convention: match the existing siblings in the same domain folder (e.g. `kebab-case` of the route name).
 
 ---
 
@@ -94,6 +88,93 @@ with a `Retry-After` header indicating when they may retry.
 
 ---
 
+## No-Content Responses
+
+When an endpoint returns no body (e.g. `204 No Content`), use exactly this
+comment line in the `<ResponseExample>` code block — do not vary the wording:
+
+```mdx
+<ResponseExample>
+```json 204
+// 204 No Content — empty body
+\```
+</ResponseExample>
+```
+
+In the `## Responses` accordion, omit the JSON block — describe the outcome in
+prose only:
+
+```mdx
+<Accordion title="204 — No Content">
+  The resource was deleted successfully. No response body is returned.
+</Accordion>
+```
+
+---
+
+## No Internal Details
+
+Error messages in `<ResponseExample>` and `## Responses` must reflect the exact
+JSON the API sends to the client. Never expose internal variable names, Go error
+strings, database messages, or implementation-specific text.
+
+| ✗ Avoid | ✓ Use instead |
+|---|---|
+| `"missing user id in context"` | `"missing or invalid access token"` |
+| `"sql: no rows in result set"` | `"user not found"` |
+| `"token claims cast failed"` | `"missing or invalid access token"` |
+| `"context deadline exceeded"` | `"internal server error"` |
+
+If you are unsure what message the route returns, check the handler source —
+never guess or copy internal log output.
+
+---
+
+## Callouts
+
+Use `<Callout>` for information a developer **must not miss**. Keep `## Behaviour`
+for explanation; callouts are for must-act-on alerts only. Do not duplicate
+information already covered in `## Behaviour`.
+
+### When to use
+
+| Situation | Required? |
+|---|---|
+| Route requires a specific RBAC permission | **Always** |
+| Playground cannot exercise the route (e.g. HttpOnly cookie auth) | **Always** |
+| Destructive or irreversible action with no confirmation step | Recommended |
+| Non-obvious security constraint the developer must act on | Recommended |
+
+### Placement
+
+Place callouts **after all `<ParamField>` blocks and before `## Behaviour`**,
+unless the callout describes a playground-level limitation — in that case place
+it immediately after the frontmatter (before the first `<ParamField>`).
+
+### Permission callout — standard format
+
+Every route guarded by a named RBAC permission must include this callout.
+The format is fixed — do not rephrase:
+
+```mdx
+<Callout icon="key" color="#FFC107">
+  Requires the **`permission:canonical_name`** permission.
+</Callout>
+```
+
+If the route requires two permissions, list both on one line:
+
+```mdx
+<Callout icon="key" color="#FFC107">
+  Requires the **`permission:one`** and **`permission:two`** permissions.
+</Callout>
+```
+
+Routes that only require a valid access token (no named RBAC permission) do
+**not** include this callout.
+
+---
+
 ## RequestExample
 
 ```mdx
@@ -107,6 +188,17 @@ with a `Retry-After` header indicating when they may retry.
 ```
 
 GET endpoints with no body can omit `<RequestExample>`.
+
+DELETE and other no-body requests should include a comment indicating no body is
+sent:
+
+```mdx
+<RequestExample>
+```json Example
+// No request body — the resource ID is passed as a path parameter.
+\```
+</RequestExample>
+```
 
 ---
 
@@ -211,6 +303,12 @@ api: "POST http://localhost:8080/api/v1/route"
   Description of the field.
 </ParamField>
 
+{/* Include the Callout below only if the route requires a named RBAC permission. */}
+{/* Omit entirely for routes that only require a valid access token.             */}
+<Callout icon="key" color="#FFC107">
+  Requires the **`permission:canonical_name`** permission.
+</Callout>
+
 ## Behaviour
 
 Explain any non-obvious logic here.
@@ -251,6 +349,11 @@ with a `Retry-After` header indicating when they may retry.
     { "message": "success" }
     ```
   </Accordion>
+
+  {/* For no-body responses, omit the JSON block entirely — prose only: */}
+  {/* <Accordion title="204 — No Content">                                */}
+  {/*   The resource was updated. No response body is returned.          */}
+  {/* </Accordion>                                                       */}
   <Accordion title="422 — Validation Error">
     Explanation of when this is returned.
     ```json

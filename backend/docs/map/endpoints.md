@@ -128,7 +128,7 @@ All routes are prefixed with `/api/v1`. JWT = `Authorization: Bearer <token>` re
 |--------|------|-------------|
 | `GET` | `/oauth/google` | Initiate Google OAuth. Generates PKCE + state, redirects to Google. |
 | `GET` | `/oauth/google/callback` | Handle Google callback. Creates or updates user + identity, issues session, redirects to frontend. |
-| `DELETE` | `/oauth/google/unlink` | Remove Google identity from account. 422 if it's the last auth method. *(JWT)* |
+| `DELETE` | `/oauth/google` | Remove Google identity from account. 422 if it's the last auth method. *(JWT)* |
 
 ---
 
@@ -137,8 +137,8 @@ All routes are prefixed with `/api/v1`. JWT = `Authorization: Bearer <token>` re
 | Method | Path | Description |
 |--------|------|-------------|
 | `POST` | `/oauth/telegram/callback` | Handle Telegram Login Widget payload. Verifies HMAC, creates or updates user + identity, issues session. |
-| `POST` | `/oauth/telegram/link` | Link Telegram to an existing account. 409 if already linked or identity belongs to another user. *(JWT)* |
-| `DELETE` | `/oauth/telegram/unlink` | Remove Telegram identity from account. 422 if it's the last auth method. *(JWT)* |
+| `PUT` | `/oauth/telegram` | Link Telegram to an existing account. 409 if already linked or identity belongs to another user. *(JWT)* |
+| `DELETE` | `/oauth/telegram` | Remove Telegram identity from account. 409 if it's the last auth method. *(JWT)* |
 
 ---
 

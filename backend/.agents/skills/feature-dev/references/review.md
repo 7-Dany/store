@@ -1,28 +1,8 @@
-# Package Review Prompt
+# Review Framework
 
-Use this prompt to get a structured 4-part review of any Go package in this
-codebase. Paste it, then replace `{PACKAGE_PATH}` with the actual path.
-
----
-
-## Instructions for the reviewer
-
-You are performing a deep review of the Go package at:
-
-```
-{PACKAGE_PATH}
-```
-
-**Before writing anything, read these files in order:**
-
-1. `docs/RULES.md` — the authoritative source for every naming, layering,
-   import, testing, and commenting convention in this codebase.
-2. Every `.go` file in `{PACKAGE_PATH}` (production and test files).
-3. Domain `shared/errors.go` — shared sentinel errors (path depends on domain; see table below).
-4. Domain `shared/store.go` — BaseStore helpers.
-5. Domain `shared/testutil/fake_storer.go` — FakeStorer catalogue.
-6. Domain `shared/testutil/querier_proxy.go` — QuerierProxy catalogue.
-7. Domain `shared/testutil/builders.go` — test helpers.
+This file is the checklist reference for Stage 5 audit passes. Each pass in
+`stages.md` cites specific parts of this document. It can also be used
+standalone as a full-package review by loading it directly.
 
 **Domain shared paths:**
 
@@ -33,18 +13,16 @@ You are performing a deep review of the Go package at:
 | `internal/domain/oauth/{provider}/` | `internal/domain/oauth/shared/` | `oauthsharedtest` |
 | `internal/domain/rbac/{feature}/` | `internal/domain/rbac/shared/` | `rbacsharedtest` |
 
-Produce **exactly four parts**, in order, with no extra sections.
-
 ---
 
 ## Part 1 — Rules Conformance
 
-Check every file against RULES.md. For each violation or ambiguity, produce one
+Check every file against `docs/rules/RULES.md`. For each violation or ambiguity, produce one
 entry in this format:
 
 ```
 FILE        handler.go
-RULE        RULES.md §3.10
+RULE        docs/rules/RULES.md §3.10
 SEVERITY    Error | Warning | Info
 FINDING     <one-sentence description>
 EVIDENCE    <quoted line(s) from the source file>
@@ -66,8 +44,8 @@ underspecified, list each contradiction here so the rules can be refined.
 Format each as:
 
 ```
-RULE A      §X.Y <quote>
-RULE B / CODE   §X.Z <quote> — OR — existing pattern in {other package}
+RULE A      docs/rules/RULES.md §X.Y <quote>
+RULE B / CODE   docs/rules/RULES.md §X.Z <quote> — OR — existing pattern in {other package}
 CONFLICT    <what is contradictory>
 RECOMMENDATION  <proposed resolution>
 ```
@@ -131,7 +109,7 @@ FIX         <proposed change>
 ## Part 3 — Platform Package Compliance
 
 `internal/platform/` packages exist to centralise cross-cutting concerns.
-Using them everywhere is what keeps those concerns consistent (RULES.md §3.10).
+Using them everywhere is what keeps those concerns consistent (`docs/rules/RULES.md §3.10`).
 
 For each concern below, state whether the package uses the correct platform
 abstraction or hand-rolls an alternative:
@@ -193,7 +171,7 @@ Rules for this checklist:
 - For integration tests, specify whether `txStores(t)` or `commitUser(t)` is
   needed (per ADR-003: use `commitUser` only when independent commit is required).
 - Do not list tests for `// Unreachable:` branches — explain why instead.
-- Apply all conventions from RULES.md §3.8 and §3.13 test checklist to every
+- Apply all conventions from `docs/rules/RULES.md §3.8` and `§3.13` test checklist to every
   generated test name (suffix `_Integration`, `t.Parallel()`, no raw SQL, etc.).
 
 ### Avoiding Redundant Tests: What Shared Packages Already Guarantee

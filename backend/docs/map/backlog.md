@@ -1,7 +1,7 @@
 # Auth System — Remaining Routes to Implement
 
 Routes **not yet built**. Everything here needs to be designed, implemented, and
-then get its own E2E section in `CHECKLIST.md` before being marked production-ready.
+then get its own E2E section in `endpoints.md` before being marked production-ready.
 
 **Legend**
 - `[ ]` — not yet started
@@ -43,9 +43,10 @@ internal/domain/
 
 ## Group H — Job Queue
 
-Full design: `docs/prompts/jobqueue/0-design.md`
+Full design: `docs/design/jobqueue/0-design.md`
 
 ### §H-0 — Job Queue Platform + Worker Handlers + Server Wiring
+**Go package:** `internal/platform/jobqueue/` (+ modifications to `internal/worker/`, `internal/app/`, `internal/server/`, `internal/config/`)
 
 **`sql/schema/006_jobqueue.sql`** (NEW):
 - [ ] Creates `job_paused_kinds`, `jobs`, `workers`, `job_schedules` tables with all indexes and constraints
@@ -137,6 +138,7 @@ All admin routes require JWT + an RBAC permission (§G-0 must be live).
 ---
 
 ### §F-1 — User Listing and Detail
+**Go package:** `internal/domain/admin/users/`
 
 `GET /api/v1/admin/users`
 - [ ] Paginated (cursor-based)
@@ -152,6 +154,7 @@ All admin routes require JWT + an RBAC permission (§G-0 must be live).
 ---
 
 ### §F-2 — User Audit Log
+**Go package:** `internal/domain/admin/audit/`
 
 `GET /api/v1/admin/users/{id}/audit`
 - [ ] Paginated rows from `auth_audit_log` filtered by `user_id`
@@ -167,6 +170,7 @@ All admin routes require JWT + an RBAC permission (§G-0 must be live).
 ---
 
 ### §F-3 — Session Administration
+**Go package:** `internal/domain/admin/sessions/`
 
 `GET /api/v1/admin/users/{id}/sessions`
 - [ ] Returns all active sessions for any user
@@ -182,9 +186,9 @@ All admin routes require JWT + an RBAC permission (§G-0 must be live).
 ---
 
 ### §F-5 — CS-Assisted Account Recovery
+**Go packages:** `internal/domain/admin/recovery/` + `internal/domain/auth/magiclink/`
+Implement together in one PR — they are two ends of the same workflow.
 
-These three admin routes and the user-facing magic-link verify endpoint form a
-single recovery workflow. Implement them together in one PR.
 
 `PATCH /api/v1/admin/users/{id}/email`
 - [ ] Body: `{ "new_email": "...", "reason": "ticket:#1234" }` — reason required
@@ -196,7 +200,7 @@ single recovery workflow. Implement them together in one PR.
 - [ ] Audit row: `admin_email_changed` (old + new email, `admin_id` in `metadata`)
 - [ ] Rate-limit: 10 req / 1 min per admin (key `adm:echg:usr:`)
 
-`POST /api/v1/admin/users/{id}/magic-link`
+`POST /api/v1/admin/users/{id}/magic`
 - [ ] Body: `{ "send_to": "...", "redirect_to": "...", "reason": "ticket:#1234" }`
 - [ ] `send_to` validated but need not match user's registered email (recovery scenario)
 - [ ] `redirect_to` validated against internal allowlist (not bypassed for admins)
@@ -206,23 +210,23 @@ single recovery workflow. Implement them together in one PR.
 - [ ] Audit row: `admin_magic_link_issued` (`admin_id`, `send_to`, `reason` in `metadata`)
 - [ ] Rate-limit: 5 req / 15 min per admin (key `adm:ml:usr:`)
 
-`POST /api/v1/admin/users/{id}/force-password-reset`
+`POST /api/v1/admin/users/{id}/password/reset`
 - [ ] Body: `{ "reason": "ticket:#1234" }` — required
 - [ ] Sets `password_hash = NULL`
 - [ ] Revokes all refresh tokens (`force_password_reset`); blocklists access tokens
-- [ ] Immediately triggers `forgot-password` OTP flow to `users.email`
+- [ ] Immediately triggers password-reset OTP flow to `users.email`
 - [ ] Cannot target another owner unless actor is also an owner
 - [ ] Audit row: `admin_force_password_reset` (`admin_id`, `reason` in `metadata`)
 - [ ] Rate-limit: 5 req / 15 min per admin (key `adm:fpr:usr:`)
 
-#### Magic Link — user-facing verify (paired with admin/recovery/)
+#### Magic link — user-facing redeem (paired with admin/recovery/)
 
 New package: `internal/domain/auth/magiclink/`
 
 > Magic links are admin-controlled recovery tools only. Self-service issuance
 > is intentionally omitted. All issuance goes through the admin routes above.
 
-`GET /api/v1/auth/magic-link/verify?token=<token_hash>`
+`GET /api/v1/auth/magic?token=<token_hash>`
 - [ ] Public — the token is the credential
 - [ ] Validates `token_hash` against `one_time_tokens` where
       `token_type = 'magic_link'` and `used_at IS NULL` and `expires_at > NOW()`
@@ -239,5 +243,5 @@ New package: `internal/domain/auth/magiclink/`
 
 - Every mutation must write an audit row to `auth_audit_log`
 - Admin routes verify the RBAC check **before** any DB read
-- Rate-limit key prefixes must not reuse any prefix already defined in `CHECKLIST.md`
-- `deps.RBAC.Require("resource:action")` always chains after `deps.JWTAuth` in the middleware stack — never standalone
+- Rate-limit key prefixes must not reuse any prefix already defined in `docs/map/project-map.md §7`
+- `deps.RBAC.Require(perm)` always chains **after** `deps.JWTAuth` in every `r.With(...)` call — never used standalone

@@ -1194,6 +1194,52 @@ r.Body = http.MaxBytesReader(w, r.Body, respond.MaxBodyBytes)
 
 Validation (`validateAndNormalise` or equivalent) is called in the handler before any service call. The service never validates raw HTTP input.
 
+#### URL path naming
+
+Paths identify **resources and sub-resources**. The HTTP method carries the verb. Path segments are always lowercase nouns or noun-phrases — never verb phrases.
+
+**Rules:**
+
+1. **No verb prefixes.** Strip any leading action word and reorganise around the resource.
+   | ❌ Banned | ✓ Correct | Why |
+   |---|---|---|
+   | `POST /auth/forgot-password` | `POST /auth/password/reset` | `password` is the resource, `reset` is the sub-action noun |
+   | `POST /auth/verify-reset-code` | `POST /auth/password/reset/verify` | `verify` names the step, not the operation |
+   | `POST /auth/change-password` | `PATCH /auth/password` | PATCH already says "change" |
+   | `POST /auth/resend-verification` | `POST /auth/verification/resend` | resource first, then step |
+   | `POST /auth/request-unlock` | `POST /auth/unlock` | POST already says "request" |
+   | `POST /auth/confirm-unlock` | `PUT /auth/unlock` | PUT signals replacement/confirmation |
+   | `POST /admin/users/{id}/force-password-reset` | `POST /admin/users/{id}/password/reset` | same resource hierarchy as auth domain |
+   | `POST /profile/me/cancel-deletion` | `DELETE /profile/me/deletion` | DELETE already says "cancel/remove" |
+
+2. **Resource hierarchy first.** Build paths from general to specific: `/{resource}/{sub-resource}/{step}`.
+   - `password/reset` — the resource is `password`, the sub-resource is `reset` (the reset flow)
+   - `password/reset/verify` — one level deeper: the verify step within the reset flow
+   - `owner/transfer` — the resource is `owner`, the sub-resource is `transfer` (the transfer flow)
+
+3. **Multi-step flows share the base path; the method and an optional `/step` distinguish phases.**
+   ```
+   POST   /password/reset          ← step 1: request OTP
+   POST   /password/reset/verify   ← step 2: verify OTP, receive grant token
+   PUT    /password/reset          ← step 3: apply new password
+   ```
+   ```
+   POST   /me/email                ← step 1: request change OTP
+   POST   /me/email/verify         ← step 2: verify current-email OTP
+   PUT    /me/email                ← step 3: confirm new-email OTP
+   ```
+
+4. **Allowed single-word action nouns as step segments.** A small set of words name a distinct lifecycle phase cleanly and are permitted as the final segment: `verify`, `resend`, `assign`, `transfer`. These are nouns in context (the verify step, the transfer resource), not imperative verbs.
+
+5. **Hyphens in path segments are banned.** A hyphenated segment is a signal to either split into two segments (`password-reset` ❌ → `password/reset` ✓) or drop the redundant word entirely when the shorter form is unambiguous (`magic-link` ❌ → `magic` ✓, since no other `/auth/magic` resource exists).
+
+6. **Admin sub-resources follow the same hierarchy.** Put the user anchor first, then the resource:
+   - ✓ `/admin/users/{id}/role`
+   - ✓ `/admin/users/{id}/lock`
+   - ✓ `/admin/users/{id}/password/reset`
+   - ❌ `/admin/lock-user/{id}` — verb phrase
+   - ❌ `/admin/force-password-reset/{id}` — verb phrase
+
 #### Always use `platform/*` packages — never hand-roll their equivalents
 
 The packages under `internal/platform/` exist specifically to centralise

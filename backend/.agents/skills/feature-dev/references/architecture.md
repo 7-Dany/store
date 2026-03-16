@@ -4,37 +4,20 @@
 
 ## Folder structure
 
+Do not rely on a hardcoded tree — read the actual directories before starting:
+
 ```
-internal/
-├── server/          # Process boundary: startup, shutdown, root router
-├── config/          # All env-var reading. Only place os.Getenv is called
-├── app/             # app.Deps struct — leaf package, no domain imports
-├── domain/          # Business logic. One sub-package per bounded context
-│   ├── auth/        # package auth — root assembler only
-│   │   ├── routes.go             # The ONLY file in package auth
-│   │   ├── shared/               # package authshared
-│   │   └── {feature}/            # One sub-package per feature
-│   ├── profile/     # package profile — same pattern
-│   ├── oauth/       # package oauth — root assembler only
-│   │   ├── routes.go             # Returns *chi.Mux; no AllowContentType (OAuth is browser-redirect)
-│   │   ├── shared/               # package oauthshared
-│   │   └── {provider}/           # google/, telegram/
-│   └── rbac/        # package rbac — root assembler with /owner + /admin sub-routers
-│       ├── routes.go             # Returns *chi.Mux; mounts /owner and /admin
-│       ├── shared/               # package rbacshared
-│       └── {feature}/            # bootstrap/, permissions/, roles/, userroles/
-├── platform/        # Shared infrastructure. No business logic
-│   ├── token/       # JWT generation, parsing, middleware, context helpers
-│   ├── kvstore/     # Generic key-value store
-│   ├── ratelimit/   # Token-bucket and backoff rate limiters
-│   ├── mailer/      # SMTP delivery and async queue
-│   ├── respond/     # JSON, Error, NoContent HTTP response helpers
-│   ├── rbac/        # RBAC Checker, Require/ApprovalGate middleware, Perm* constants
-│   └── crypto/      # AES-256-GCM for OAuth token encryption
-├── db/              # sqlc-generated query code. Never edited by hand
-├── audit/           # Typed audit-event constants. No dependencies
-└── worker/          # Background job types and purge worker
+list internal/domain/          ← current domain list and their feature sub-packages
+list internal/platform/        ← current platform packages
+read internal/domain/routes.go ← canonical domain mount list and URL prefixes
 ```
+
+**Stable layout rules (these never change):**
+- Every domain has a `routes.go` root assembler and a `shared/` package.
+- Feature sub-packages live under `{domain}/{feature}/`.
+- `platform/` packages have no domain imports.
+- `db/` is sqlc-generated — never edited by hand.
+- `config/` is the only place `os.Getenv` is called.
 
 ---
 
@@ -43,14 +26,14 @@ internal/
 ```
 cmd/api
   └─► server
-        └─► domain/{auth, profile, oauth, rbac}
+        └─► domain/{each domain — read internal/domain/routes.go for current list}
               ├─► app           (routes.go only — shared runtime deps)
               ├─► platform/*    (any domain package may import)
               ├─► db            (stores only — never handlers or services)
               └─► audit         (stores only — event name constants)
 ```
 
-**Within any domain (auth, profile, oauth, rbac):**
+**Within any domain:**
 ```
 {domain}/routes.go (root assembler)
   ├─► {domain}/shared/
@@ -58,12 +41,12 @@ cmd/api
         └─► {domain}/shared/  ← features import shared, never each other
 ```
 
-**rbac domain exception — platform/rbac:**
+**platform/rbac exception:**
 ```
-domain/rbac/{feature}/routes.go
-  └─► platform/rbac    ← imports permission constants (rbac.Perm*) and Checker type
+domain/{feature}/routes.go (any domain)
+  └─► platform/rbac    ← imports Perm* constants and Checker type
 ```
-This is NOT a circular import: `platform/rbac` has no dependency on `domain/rbac`.
+This is NOT a circular import: `platform/rbac` has no dependency on any domain package.
 
 **Hard rules:**
 - `domain` packages never import each other (ADR-010).
@@ -158,16 +141,18 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps)
 // No return value — registers directly on r to avoid chi.Mount panic
 ```
 
-**rbac domain root assembler** (`rbac/routes.go`) — dual sub-router pattern:
+**rbac domain root assembler** (`rbac/routes.go`):
 ```go
 func Routes(ctx context.Context, deps *app.Deps) *chi.Mux {
     r := chi.NewRouter()
-    r.Mount("/owner", ownerRoutes(ctx, deps))  // unauthenticated — bootstrap only
-    r.Mount("/admin", adminRoutes(ctx, deps))  // RBAC-gated admin routes
+    owner.Routes(ctx, r, deps)       // /owner/assign, /owner/transfer
+    permissions.Routes(ctx, r, deps) // /permissions, /permissions/groups
+    roles.Routes(ctx, r, deps)       // /roles, /roles/{id}, /roles/{id}/permissions
     return r
 }
 ```
-Mounted at `/api/v1/` (not `/api/v1/rbac/`) so paths resolve to `/api/v1/owner/...` and `/api/v1/admin/...`.
+Mounted at `/api/v1/rbac` — paths resolve to `/api/v1/rbac/owner/...`, `/api/v1/rbac/roles/...` etc.
+Read `internal/domain/rbac/routes.go` for the current sub-package list.
 
 ---
 
@@ -207,19 +192,4 @@ JWT secrets never reach the service. (ADR-001)
 
 ## `app.Deps` — available dependencies
 
-See `project-map.md §4` for the full, always-current field list. Key fields:
-
-```go
-Pool                *pgxpool.Pool
-KVStore             kvstore.Store
-Blocklist           kvstore.TokenBlocklist   // may be nil; nil-check before use
-Mailer              *mailer.SMTPMailer
-MailQueue           *mailer.Queue
-JWTAuth             func(http.Handler) http.Handler
-SecureCookies       bool
-OTPTokenTTL         time.Duration
-Encryptor           *crypto.Encryptor        // OAuth tokens only
-RBAC                *rbac.Checker            // deps.RBAC.Require(perm) as middleware
-BootstrapSecret     string
-OAuth               app.OAuthConfig          // GoogleClientID, TelegramBotToken, etc.
-```
+See `project-map.md §4` for the full, always-current field list. Do not rely on a cached copy here.

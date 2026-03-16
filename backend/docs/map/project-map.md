@@ -1,6 +1,6 @@
 # Project Map — Fast Lookup Reference
 
-Last updated: 2026-03-13. Update this file when new packages, errors, or SQL queries are added.
+Last updated: 2026-03-16. Update this file when new packages, errors, or SQL queries are added.
 
 ---
 
@@ -12,9 +12,9 @@ Last updated: 2026-03-13. Update this file when new packages, errors, or SQL que
 |---|---|---|
 | `auth/login` | POST /auth/login | handler, service, store, models, requests, validators |
 | `auth/register` | POST /auth/register | handler, service, store, models, requests, validators |
-| `auth/verification` | POST /auth/verify-email, POST /auth/resend-verification | handler, service, store, models, requests, validators |
-| `auth/unlock` | POST /auth/request-unlock, POST /auth/confirm-unlock | handler, service, store, models, requests, validators |
-| `auth/password` | POST /auth/forgot-password, POST /auth/verify-reset-code, POST /auth/reset-password, POST /auth/change-password | handler, service, store, models, requests, validators, errors |
+| `auth/verification` | POST /auth/verification, POST /auth/verification/resend | handler, service, store, models, requests, validators |
+| `auth/unlock` | POST /auth/unlock, PUT /auth/unlock | handler, service, store, models, requests, validators |
+| `auth/password` | POST /auth/password/reset, POST /auth/password/reset/verify, PUT /auth/password/reset, PATCH /auth/password | handler, service, store, models, requests, validators, errors |
 | `auth/session` | POST /auth/refresh, POST /auth/logout | handler, service, store, models |
 | `auth/shared` | — shared primitives | errors, models, otp, password, store, validators |
 | `auth/shared/testutil` | — test helpers | fake_storer, fake_servicer, querier_proxy, builders, backoff |
@@ -23,12 +23,12 @@ Last updated: 2026-03-13. Update this file when new packages, errors, or SQL que
 
 | Package | Endpoint(s) | Key files |
 |---|---|---|
-| `profile/me` | GET /profile/me, PATCH /profile/me | handler, service, store, models, requests, validators, errors |
-| `profile/session` | GET /profile/sessions, DELETE /profile/sessions/{id} | handler, service, store, models, requests |
-| `profile/set-password` | POST /profile/set-password | handler, service, store, models, requests, validators, errors |
-| `profile/username` | GET /profile/username/available, PATCH /profile/me/username | handler, service, store, models, requests, validators, errors |
-| `profile/email` | POST /profile/me/email/request-change, POST /profile/me/email/verify-current, POST /profile/me/email/confirm-change | handler, service, store, models, requests, routes, validators, validators_test |
-| `profile/delete-account` | DELETE /profile/me, POST /profile/me/cancel-deletion, GET /profile/me/deletion-method | handler, service, store, models, requests, routes, validators, errors |
+| `profile/me` | GET /profile/me, PATCH /profile/me, GET /profile/me/identities | handler, service, store, models, requests, validators, errors |
+| `profile/session` | GET /profile/me/sessions, DELETE /profile/me/sessions/{id} | handler, service, store, models, requests |
+| `profile/set-password` | POST /profile/me/password | handler, service, store, models, requests, validators, errors |
+| `profile/username` | GET /profile/me/username/available, PATCH /profile/me/username | handler, service, store, models, requests, validators, errors |
+| `profile/email` | POST /profile/me/email, POST /profile/me/email/verify, PUT /profile/me/email | handler, service, store, models, requests, routes, validators, validators_test |
+| `profile/delete-account` | DELETE /profile/me, DELETE /profile/me/deletion, GET /profile/me/deletion | handler, service, store, models, requests, routes, validators, errors |
 | `profile/shared` | — shared primitives | errors (ErrUserNotFound alias), store (BaseStore) |
 
 **Note:** `profile/shared/testutil` does NOT exist. Profile domain uses `auth/shared/testutil` (package `authsharedtest`).
@@ -39,8 +39,8 @@ Last updated: 2026-03-13. Update this file when new packages, errors, or SQL que
 
 | Package | Endpoint(s) | Key files |
 |---|---|---|
-| `oauth/google` | GET /oauth/google, GET /oauth/google/callback, DELETE /oauth/google/unlink | handler, service, store, models, routes, errors, provider |
-| `oauth/telegram` | POST /oauth/telegram/callback, POST /oauth/telegram/link, DELETE /oauth/telegram/unlink | handler, service, store, models, requests, routes, validators, validators_test, errors |
+| `oauth/google` | GET /oauth/google, GET /oauth/google/callback, DELETE /oauth/google | handler, service, store, models, routes, errors, provider |
+| `oauth/telegram` | POST /oauth/telegram/callback, PUT /oauth/telegram, DELETE /oauth/telegram | handler, service, store, models, requests, routes, validators, validators_test, errors |
 | `oauth/shared` | — shared primitives | models (LoggedInSession, LinkedIdentity), errors, store |
 | `oauth/shared/testutil` | — test helpers | builders, fake_storer, fake_servicer, querier_proxy |
 
@@ -50,12 +50,23 @@ Last updated: 2026-03-13. Update this file when new packages, errors, or SQL que
 
 | Package | Endpoint(s) | Key files |
 |---|---|---|
-| `rbac/bootstrap` | POST /owner/bootstrap | handler, service, store, models, requests, routes, validators, validators_test, errors, export_test |
-| `rbac/permissions` | GET /admin/permissions, GET /admin/permissions/groups | handler, service, store, models, requests, routes |
-| `rbac/roles` | GET/POST /admin/rbac/roles, GET/PATCH/DELETE /admin/rbac/roles/{id}, GET/POST /admin/rbac/roles/{id}/permissions, DELETE /admin/rbac/roles/{id}/permissions/{perm_id} | handler, service, store, models, requests, routes, validators, validators_test, errors, export_test |
-| `rbac/userroles` | GET /admin/rbac/users/{user_id}/role, PUT/DELETE /admin/rbac/users/{user_id}/role | handler, service, store, models, requests, routes, validators, validators_test, errors, export_test |
+| `rbac/owner` | PUT /rbac/owner/assign, POST/PUT/DELETE /rbac/owner/transfer | handler, service, store, models, requests, routes, validators, validators_test, errors, export_test |
+| `rbac/permissions` | GET /rbac/permissions, GET /rbac/permissions/groups | handler, service, store, models, requests, routes |
+| `rbac/roles` | GET/POST /rbac/roles, GET/PATCH/DELETE /rbac/roles/{id}, GET/POST /rbac/roles/{id}/permissions, DELETE /rbac/roles/{id}/permissions/{perm_id} | handler, service, store, models, requests, routes, validators, validators_test, errors, export_test |
 | `rbac/shared` | — shared primitives | errors (ErrUserNotFound), store, validators |
 | `rbac/shared/testutil` | — test helpers | builders, fake_storer, fake_servicer, querier_proxy |
+
+---
+
+### `internal/domain/admin/`  (package `admin`)
+
+| Package | Endpoint(s) | Key files |
+|---|---|---|
+| `admin/userroles` | GET /admin/users/{user_id}/role, PUT/DELETE /admin/users/{user_id}/role | handler, service, store, models, requests, routes, validators, validators_test, errors, export_test |
+| `admin/userpermissions` | GET /admin/users/{user_id}/permissions, POST /admin/users/{user_id}/permissions, DELETE /admin/users/{user_id}/permissions/{grant_id} | handler, service, store, models, requests, routes, validators, validators_test, errors, export_test |
+| `admin/userlock` | POST /admin/users/{user_id}/lock, DELETE /admin/users/{user_id}/lock, GET /admin/users/{user_id}/lock | handler, service, store, models, requests, routes, validators, validators_test, errors, export_test |
+| `admin/shared` | — shared primitives | errors, handler (shared base handler) |
+| `admin/shared/testutil` | — test helpers | builders, fake_storer, fake_servicer, querier_proxy |
 
 ---
 
@@ -260,30 +271,45 @@ Collision check: new prefixes must not appear in this table.
 
 | Prefix | Feature | Limiter type | Limit |
 |---|---|---|---|
-| `reg:ip:` | register | IP | 5 / 10 min |
-| `vfy:ip:` | verify-email | IP | 5 / 10 min |
-| `rsnd:ip:` | resend-verification | IP | 3 / 10 min |
-| `lgn:ip:` | login | IP | 5 / 15 min |
-| `rfsh:ip:` | refresh | IP | 5 / 15 min |
-| `lgout:ip:` | logout | IP | 5 / 1 min |
-| `unlk:ip:` | request-unlock + confirm-unlock (shared) | IP | 3 / 10 min |
-| `fpw:ip:` | forgot-password | IP | 3 / 10 min |
-| `vpc:ip:` | verify-reset-code | IP | 5 / 10 min |
-| `rpw:ip:` | reset-password | IP | 5 / 10 min |
-| `cpw:ip:` | change-password | IP | 5 / 15 min |
-| `pme:ip:` | GET /me | IP | 10 / 1 min |
-| `psess:ip:` | GET /sessions | IP | 10 / 1 min |
-| `rsess:ip:` | DELETE /sessions/{id} | IP | 3 / 15 min |
-| `prof:ip:` | PATCH /me (profile) | IP | 10 / 1 min |
-| `spw:usr:` | set-password | User | 5 / 15 min |
-| `unav:ip:` | GET /username/available | IP | 20 / 1 min |
-| `uchg:usr:` | PATCH /me/username | User | 5 / 10 min |
-| `blocklist:jti:` | token blocklist | KV direct | — |
-| `echg:usr:` | email request-change *(planned)* | User | 3 / 10 min |
-| `echg:usr:vfy:` | email verify-current *(planned)* | User | 5 / 15 min |
-| `echg:usr:cnf:` | email confirm-change *(planned)* | User | 5 / 15 min |
-| `echg:pending:` | email change KV carry *(planned)* | KV direct | — |
-| `echg:gt:` | email grant token *(planned)* | KV direct | — |
+| `reg:ip:` | POST /auth/register | IP | 5 / 10 min |
+| `vfy:ip:` | POST /auth/verification | IP | 5 / 10 min |
+| `rsnd:ip:` | POST /auth/verification/resend | IP | 3 / 10 min |
+| `lgn:ip:` | POST /auth/login | IP | 5 / 15 min |
+| `rfsh:ip:` | POST /auth/refresh | IP | 5 / 15 min |
+| `lgout:ip:` | POST /auth/logout | IP | 5 / 1 min |
+| `unlk:ip:` | POST+PUT /auth/unlock (shared) | IP | 3 / 10 min |
+| `fpw:ip:` | POST /auth/password/reset | IP | 3 / 10 min |
+| `vpc:ip:` | POST /auth/password/reset/verify | IP | 5 / 10 min |
+| `rpw:ip:` | PUT /auth/password/reset | IP | 5 / 10 min |
+| `cpw:ip:` | PATCH /auth/password | IP | 5 / 15 min |
+| `pme:ip:` | GET /profile/me | IP | 10 / 1 min |
+| `psess:ip:` | GET /profile/me/sessions | IP | 10 / 1 min |
+| `rsess:ip:` | DELETE /profile/me/sessions/{id} | IP | 3 / 15 min |
+| `prof:ip:` | PATCH /profile/me | IP | 10 / 1 min |
+| `ident:ip:` | GET /profile/me/identities | IP | 20 / 1 min |
+| `spw:usr:` | POST /profile/me/password | User | 5 / 15 min |
+| `unav:ip:` | GET /profile/me/username/available | IP | 20 / 1 min |
+| `uchg:usr:` | PATCH /profile/me/username | User | 5 / 10 min |
+| `echg:usr:` | POST /profile/me/email | User | 3 / 10 min |
+| `echg:usr:vfy:` | POST /profile/me/email/verify | User | 5 / 15 min |
+| `echg:usr:cnf:` | PUT /profile/me/email (confirm step) | User | 5 / 15 min |
+| `echg:pending:` | email change pending KV carry | KV direct | — |
+| `echg:gt:` | email change grant token | KV direct | — |
+| `del:usr:` | DELETE /profile/me | User | 10 / 1 hr |
+| `delc:usr:` | DELETE /profile/me/deletion | User | 10 / 10 min |
+| `delm:usr:` | GET /profile/me/deletion | User | 10 / 1 min |
+| `goauth:init:ip:` | GET /oauth/google | IP | 20 / 5 min |
+| `goauth:cb:ip:` | GET /oauth/google/callback | IP | 20 / 5 min |
+| `goauth:unl:usr:` | DELETE /oauth/google | User | 5 / 15 min |
+| `tgcb:ip:` | POST /oauth/telegram/callback | IP | 10 / 1 min |
+| `tglnk:usr:` | PUT /oauth/telegram | User | 5 / 15 min |
+| `tgunlk:usr:` | DELETE /oauth/telegram | User | 5 / 15 min |
+| `asgn:ip:` | PUT /rbac/owner/assign | IP | 3 / 15 min |
+| `xfr:usr:` | POST /rbac/owner/transfer | User | 3 / 24 hr |
+| `xfra:ip:` | PUT /rbac/owner/transfer | IP | 10 / 1 hr |
+| `xfrc:usr:` | DELETE /rbac/owner/transfer | User | 10 / 1 hr |
+| `health:ip:` | GET /health | IP | 3 / 1 min |
+| `blocklist:jti:` | token blocklist (all domains) | KV direct | — |
 
 ---
 
@@ -376,3 +402,18 @@ LinkedIdentity{Provider, DisplayName, AvatarURL string}
 ```
 ErrUserNotFound  — user row not found
 ```
+
+---
+
+## 14. `adminsharedtest` — Test Helpers
+
+**Import path:** `github.com/7-Dany/store/backend/internal/domain/admin/shared/testutil`
+
+```
+ErrProxy                                              — sentinel for QuerierProxy injections
+QuerierProxy{Base db.Querier, Fail* bool}             — one Fail* per query, grouped by feature
+{Feature}FakeStorer  — one per feature, all in fake_storer.go
+{Feature}FakeServicer — one per feature, all in fake_servicer.go
+```
+
+**Note:** admin domain has its own testutil — do NOT import `authsharedtest` or `rbacsharedtest` for admin tests.

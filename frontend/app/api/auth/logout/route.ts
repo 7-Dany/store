@@ -3,6 +3,18 @@ import { cookies } from "next/headers";
 
 const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8080/api/v1";
 
+// GET /api/auth/logout
+// Used by server components (layout redirect) to clear a stale/invalid
+// session cookie without needing a POST. Skips the backend call since the
+// token is likely already invalid — just clears cookies and redirects.
+export async function GET(request: Request) {
+  const origin = new URL(request.url).origin;
+  const res = NextResponse.redirect(`${origin}/login`);
+  res.cookies.set("session", "", { path: "/", maxAge: 0, httpOnly: true, sameSite: "strict" });
+  res.cookies.set("refresh_token", "", { path: "/", maxAge: 0, httpOnly: true, sameSite: "strict" });
+  return res;
+}
+
 // POST /api/auth/logout
 // Forwards to Go backend with Bearer + refresh_token cookie, clears both
 // cookies, then redirects to /login. Always treats as success — the backend

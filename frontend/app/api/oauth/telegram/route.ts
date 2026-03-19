@@ -1,17 +1,8 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+import { isAxiosError } from "axios";
+import { serverApi } from "@/lib/api/http/server";
 
-// Telegram Login Widget callback bridge.
-//
-// The Telegram widget delivers signed user data to our client-side JS.
-// This route forwards it to the Go backend for HMAC verification, creates or
-// finds the user, and promotes the returned access_token into a session cookie
-// that proxy.ts recognises.
-//
-// Flow:
-//   1. TelegramLoginButton (client) POSTs widget data here
-//   2. We forward to Go → POST /oauth/telegram/callback
-//   3. Go validates HMAC + auth_date, upserts user, returns { access_token, expires_in }
-//   4. We set session cookie and return { redirectUrl } to the client
 const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8080/api/v1";
 
 export async function POST(request: Request) {
@@ -25,7 +16,6 @@ export async function POST(request: Request) {
     );
   }
 
-  // Forward to Go backend — HMAC verification and user upsert happen there.
   let goRes: Response;
   try {
     goRes = await fetch(`${API_BASE}/oauth/telegram/callback`, {
@@ -55,14 +45,74 @@ export async function POST(request: Request) {
     { status: 200 },
   );
 
-  // Promote access token into a session cookie that proxy.ts recognises.
-  // MaxAge matches expires_in returned by the Go backend (ACCESS_TOKEN_TTL).
   response.cookies.set("session", data.access_token, {
     httpOnly: true,
     path: "/",
     maxAge: data.expires_in,
-    sameSite: "strict",
+    sameSite: "lax",
   });
 
   return response;
+}
+
+export async function PUT(request: Request) {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("session")?.value;
+
+  if (!token) {
+    return NextResponse.json(
+      { code: "unauthorized", message: "Not authenticated." },
+      { status: 401 },
+    );
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json(
+      { code: "bad_request", message: "Invalid JSON body" },
+      { status: 400 },
+    );
+  }
+
+  try {
+    await serverApi.put("/oauth/telegram", body, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return new NextResponse(null, { status: 204 });
+  } catch (e) {
+    return proxyError(e);
+  }
+}
+
+export async function DELETE() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("session")?.value;
+
+  if (!token) {
+    return NextResponse.json(
+      { code: "unauthorized", message: "Not authenticated." },
+      { status: 401 },
+    );
+  }
+
+  try {
+    await serverApi.delete("/oauth/telegram", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    return new NextResponse(null, { status: 204 });
+  } catch (e) {
+    return proxyError(e);
+  }
+}
+
+function proxyError(e: unknown): NextResponse {
+  if (isAxiosError(e) && e.response) {
+    return NextResponse.json(e.response.data, { status: e.response.status });
+  }
+  return NextResponse.json(
+    { code: "upstream_unavailable", message: "Service temporarily unavailable." },
+    { status: 502 },
+  );
 }

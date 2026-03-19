@@ -80,6 +80,27 @@
   --sidebar-accent-foreground: oklch(0.218 0.008 223.9);
   --sidebar-border: oklch(0.925 0.005 214.3);
   --sidebar-ring: oklch(0.723 0.014 214.4);
+
+  /* ── Toast color tokens (light) ──────────────────────────────────────── */
+  --toast-success-fill:   oklch(0.97 0.012 186);
+  --toast-success-border: oklch(0.80 0.045 186);
+  --toast-success-fg:     oklch(0.39 0.085 186);
+
+  --toast-error-fill:     oklch(0.97 0.015 27);
+  --toast-error-border:   oklch(0.78 0.100 27);
+  --toast-error-fg:       oklch(0.50 0.220 27);
+
+  --toast-warning-fill:   oklch(0.97 0.015 85);
+  --toast-warning-border: oklch(0.82 0.090 85);
+  --toast-warning-fg:     oklch(0.46 0.150 85);
+
+  --toast-info-fill:      oklch(0.97 0.012 240);
+  --toast-info-border:    oklch(0.76 0.090 240);
+  --toast-info-fg:        oklch(0.43 0.155 240);
+
+  --toast-default-fill:   var(--card);
+  --toast-default-border: var(--border);
+  --toast-default-fg:     var(--card-foreground);
 }
 
 .dark {
@@ -114,6 +135,27 @@
   --sidebar-accent-foreground: oklch(0.987 0.002 197.1);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.56 0.021 213.5);
+
+  /* ── Toast color tokens (dark) ───────────────────────────────────────── */
+  --toast-success-fill:   oklch(0.21 0.028 186);
+  --toast-success-border: oklch(0.36 0.055 186);
+  --toast-success-fg:     oklch(0.73 0.095 186);
+
+  --toast-error-fill:     oklch(0.21 0.030 27);
+  --toast-error-border:   oklch(0.40 0.120 27);
+  --toast-error-fg:       oklch(0.73 0.190 27);
+
+  --toast-warning-fill:   oklch(0.21 0.020 85);
+  --toast-warning-border: oklch(0.40 0.100 85);
+  --toast-warning-fg:     oklch(0.83 0.155 85);
+
+  --toast-info-fill:      oklch(0.21 0.025 240);
+  --toast-info-border:    oklch(0.38 0.100 240);
+  --toast-info-fg:        oklch(0.73 0.155 240);
+
+  --toast-default-fill:   var(--card);
+  --toast-default-border: var(--border);
+  --toast-default-fg:     var(--card-foreground);
 }
 
 @layer base {
@@ -126,4 +168,34 @@
   html {
     @apply font-sans;
   }
+}
+
+/* ── Sonner host — strip conflicting visual styles, keep layout ─────────── */
+[data-sonner-toaster] [data-sonner-toast] {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+
+/* Fade + slight shrink when Sonner marks a toast for removal */
+[data-sonner-toaster] [data-sonner-toast][data-removed="true"] {
+  opacity: 0;
+  transform: scale(0.92);
+  transition: opacity 0.16s ease, transform 0.16s ease !important;
+}
+
+/* ── Profile Hero gradient and texture ────────────────────────────────── */
+.profile-hero-gradient {
+  background: linear-gradient(
+    135deg,
+    hsl(var(--primary) / 0.12) 0%,
+    hsl(var(--primary) / 0.08) 55%,
+    hsl(var(--primary) / 0.05) 100%
+  );
+}
+
+.profile-hero-noise {
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 150px 150px;
 }

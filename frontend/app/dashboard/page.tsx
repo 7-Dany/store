@@ -7,15 +7,16 @@ import {
   IconCurrencyDollar,
   IconCircleFilled,
 } from "@tabler/icons-react";
-import { cn } from "@/lib/utils";
+import { cn, capitalize } from "@/lib/utils";
+import { redirect } from "next/navigation";
 
 // ─── Mock data ────────────────────────────────────────────────────────────────
 
 const STATS = [
-  { label: "Total Revenue", value: "$48,295", change: "+12.5%", up: true,  sub: "vs last month", icon: IconCurrencyDollar },
-  { label: "Orders",        value: "1,284",   change: "+8.1%",  up: true,  sub: "vs last month", icon: IconShoppingCart   },
-  { label: "Customers",     value: "9,621",   change: "+3.4%",  up: true,  sub: "vs last month", icon: IconUsers          },
-  { label: "Products",      value: "342",     change: "-2 removed", up: false, sub: "active listings", icon: IconPackage  },
+  { label: "Total Revenue", value: "$48,295", change: "+12.5%", up: true,  sub: "vs last month",    icon: IconCurrencyDollar },
+  { label: "Orders",        value: "1,284",   change: "+8.1%",  up: true,  sub: "vs last month",    icon: IconShoppingCart   },
+  { label: "Customers",     value: "9,621",   change: "+3.4%",  up: true,  sub: "vs last month",    icon: IconUsers          },
+  { label: "Products",      value: "342",     change: "-2 removed", up: false, sub: "active listings", icon: IconPackage     },
 ];
 
 type OrderStatus = "Delivered" | "Processing" | "Shipped" | "Cancelled";
@@ -62,22 +63,22 @@ export default async function DashboardPage({
   searchParams: Promise<{ provider?: string; action?: string }>;
 }) {
   const { provider, action } = await searchParams;
-  const justLinked   = provider && action === "linked";
-  const justLoggedIn = provider && action !== "linked";
+
+  if (provider && action === "linked") {
+    redirect(`/dashboard/profile?linked=${encodeURIComponent(provider)}`);
+  }
+
+  const justLoggedIn = !!provider;
 
   return (
-    <div className="mx-auto flex max-w-[1200px] flex-col gap-8 p-6 lg:p-8">
+    <div className="mx-auto flex max-w-300 flex-col gap-8 p-6 lg:p-8">
 
       {/* ── Header ── */}
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-          Overview
-        </h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-foreground">Overview</h1>
         <p className="mt-0.5 text-sm text-muted-foreground">
-          {justLinked
-            ? `${cap(provider!)} account linked successfully.`
-            : justLoggedIn
-            ? `Signed in with ${cap(provider!)}.`
+          {justLoggedIn
+            ? `Signed in with ${capitalize(provider!)}.`
             : "Here's what's happening in your store today."}
         </p>
       </div>
@@ -131,7 +132,10 @@ export default async function DashboardPage({
               <thead>
                 <tr className="border-y border-border bg-muted/40">
                   {["Order", "Customer", "Product", "Date", "Amount", "Status"].map((h) => (
-                    <th key={h} className="whitespace-nowrap px-5 py-2.5 text-left text-xs font-medium text-muted-foreground">
+                    <th
+                      key={h}
+                      className="whitespace-nowrap px-5 py-2.5 text-left text-xs font-medium text-muted-foreground"
+                    >
                       {h}
                     </th>
                   ))}
@@ -141,7 +145,10 @@ export default async function DashboardPage({
                 {ORDERS.map((o, i) => (
                   <tr
                     key={o.id}
-                    className={cn("transition-colors hover:bg-muted/30", i !== ORDERS.length - 1 && "border-b border-border/60")}
+                    className={cn(
+                      "transition-colors hover:bg-muted/30",
+                      i !== ORDERS.length - 1 && "border-b border-border/60",
+                    )}
                   >
                     <td className="whitespace-nowrap px-5 py-3 font-mono text-xs text-muted-foreground">{o.id}</td>
                     <td className="whitespace-nowrap px-5 py-3 font-medium text-foreground">{o.customer}</td>
@@ -149,7 +156,12 @@ export default async function DashboardPage({
                     <td className="whitespace-nowrap px-5 py-3 text-muted-foreground">{o.date}</td>
                     <td className="whitespace-nowrap px-5 py-3 font-medium text-foreground">{o.amount}</td>
                     <td className="whitespace-nowrap px-5 py-3">
-                      <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium", STATUS_STYLES[o.status])}>
+                      <span
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
+                          STATUS_STYLES[o.status],
+                        )}
+                      >
                         <IconCircleFilled size={6} className={STATUS_DOT[o.status]} />
                         {o.status}
                       </span>
@@ -185,7 +197,10 @@ export default async function DashboardPage({
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-muted-foreground">{p.revenue} revenue</span>
-                  <span className={cn("text-xs font-medium", p.stock < 20 ? "text-destructive" : "text-muted-foreground")}>
+                  <span className={cn(
+                    "text-xs font-medium",
+                    p.stock < 20 ? "text-destructive" : "text-muted-foreground",
+                  )}>
                     {p.stock} in stock{p.stock < 20 && " ⚠"}
                   </span>
                 </div>
@@ -196,8 +211,4 @@ export default async function DashboardPage({
       </div>
     </div>
   );
-}
-
-function cap(s: string) {
-  return s.charAt(0).toUpperCase() + s.slice(1);
 }

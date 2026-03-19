@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { isAxiosError } from "axios";
-import { serverApi } from "@/lib/api/server";
+import { serverApi } from "@/lib/api/http/server";
 
 interface LoginResponse {
   access_token: string;
@@ -18,8 +18,16 @@ export async function POST(request: Request) {
       httpOnly: true,
       path: "/",
       maxAge: data.expires_in ?? 900,
-      sameSite: "strict",
+      sameSite: "lax",
     });
+    if (data.refresh_token) {
+      res.cookies.set("refresh_token", data.refresh_token, {
+        httpOnly: true,
+        path: "/",
+        maxAge: 60 * 60 * 24 * 30, // 30 days
+        sameSite: "lax",
+      });
+    }
     return res;
   } catch (e) {
     return proxyError(e);
@@ -28,18 +36,13 @@ export async function POST(request: Request) {
 
 function proxyError(e: unknown): NextResponse {
   if (isAxiosError(e) && e.response) {
-    const res = NextResponse.json(e.response.data, {
-      status: e.response.status,
-    });
+    const res = NextResponse.json(e.response.data, { status: e.response.status });
     const retryAfter = e.response.headers["retry-after"] as string | undefined;
     if (retryAfter) res.headers.set("Retry-After", retryAfter);
     return res;
   }
   return NextResponse.json(
-    {
-      code: "upstream_unavailable",
-      message: "Service temporarily unavailable.",
-    },
+    { code: "upstream_unavailable", message: "Service temporarily unavailable." },
     { status: 502 },
   );
 }

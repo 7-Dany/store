@@ -3,9 +3,9 @@ package username
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // Storer is the data-access contract for the username feature.
@@ -22,6 +22,8 @@ type Storer interface {
 	// log row — all within a single database transaction.
 	UpdateUsernameTx(ctx context.Context, in UpdateUsernameInput) error
 }
+
+var log = telemetry.New("username")
 
 // Service holds the business logic for the username availability check and
 // username mutation endpoints. It has no knowledge of HTTP, pgtype, or JWT.
@@ -52,7 +54,7 @@ func (s *Service) CheckUsernameAvailable(ctx context.Context, username string) (
 	// 2. Point-in-time availability query.
 	available, err := s.store.CheckUsernameAvailable(ctx, normalised)
 	if err != nil {
-		return false, fmt.Errorf("username.CheckUsernameAvailable: query: %w", err)
+		return false, telemetry.Service("username.CheckUsernameAvailable: query", err)
 	}
 	return available, nil
 }
@@ -92,7 +94,7 @@ func (s *Service) UpdateUsername(ctx context.Context, in UpdateUsernameInput) er
 		case errors.Is(err, profileshared.ErrUserNotFound):
 			return profileshared.ErrUserNotFound
 		default:
-			return fmt.Errorf("username.UpdateUsername: update username tx: %w", err)
+			return telemetry.Service("username.UpdateUsername: update username tx", err)
 		}
 	}
 	return nil

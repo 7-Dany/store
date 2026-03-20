@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/7-Dany/store/backend/internal/db"
 	adminshared "github.com/7-Dany/store/backend/internal/domain/admin/shared"
 	rbacshared "github.com/7-Dany/store/backend/internal/domain/rbac/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -42,7 +42,7 @@ func (s *Store) WithQuerier(q db.Querier) *Store {
 func (s *Store) GetUserPermissions(ctx context.Context, userID [16]byte) ([]UserPermission, error) {
 	rows, err := s.Queries.GetUserPermissions(ctx, s.ToPgtypeUUID(userID))
 	if err != nil {
-		return nil, fmt.Errorf("store.GetUserPermissions: query: %w", err)
+		return nil, telemetry.Store("GetUserPermissions.query", err)
 	}
 	result := make([]UserPermission, len(rows))
 	for i, row := range rows {
@@ -59,7 +59,7 @@ func (s *Store) GrantPermissionTx(ctx context.Context, in GrantPermissionTxInput
 		if s.IsNoRows(err) {
 			return UserPermission{}, ErrPermissionNotFound
 		}
-		return UserPermission{}, fmt.Errorf("store.GrantPermissionTx: get permission by id: %w", err)
+		return UserPermission{}, telemetry.Store("GrantPermissionTx.get_permission", err)
 	}
 
 	// 2. Validate scope against scope_policy (same rules as roles.AddRolePermission).
@@ -101,13 +101,13 @@ func (s *Store) tryGrant(ctx context.Context, in GrantPermissionTxInput, scope s
 		if isPrivilegeEscalation(err) {
 			return UserPermission{}, ErrPrivilegeEscalation
 		}
-		return UserPermission{}, fmt.Errorf("store.GrantPermissionTx: insert: %w", err)
+		return UserPermission{}, telemetry.Store("GrantPermissionTx.insert", err)
 	}
 
 	// Re-read to get canonical_name, name, resource_type, granted_reason.
 	rows, err := s.Queries.GetUserPermissions(ctx, s.ToPgtypeUUID(in.UserID))
 	if err != nil {
-		return UserPermission{}, fmt.Errorf("store.GrantPermissionTx: re-read: %w", err)
+		return UserPermission{}, telemetry.Store("GrantPermissionTx.re_read", err)
 	}
 	// Find the newly inserted grant by ID.
 	grantID := uuid.UUID(granted.ID).String()
@@ -162,7 +162,7 @@ func (s *Store) RevokePermission(ctx context.Context, grantID, userID [16]byte, 
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("store.RevokePermission: with acting user: %w", err)
+		return telemetry.Store("RevokePermission.with_acting_user", err)
 	}
 	if rowsAffected == 0 {
 		return ErrGrantNotFound

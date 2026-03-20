@@ -16,14 +16,14 @@ import (
 	"github.com/7-Dany/store/backend/internal/domain/auth/password"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	authsharedtest "github.com/7-Dany/store/backend/internal/domain/auth/shared/testutil"
-	mailertest "github.com/7-Dany/store/backend/internal/platform/mailer/testutil"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
+	mailertest "github.com/7-Dany/store/backend/internal/platform/mailer/testutil"
 	"github.com/7-Dany/store/backend/internal/platform/token"
 	"github.com/stretchr/testify/require"
 )
 
 func newTestHandler(svc password.Servicer) *password.Handler {
-	return password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, kvstore.NewInMemoryStore(0), 10*time.Minute)
+	return password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, kvstore.NewInMemoryStore(0), 10*time.Minute, authshared.NoopAuthRecorder{})
 }
 
 func postJSON(handler http.HandlerFunc, body string) *httptest.ResponseRecorder {
@@ -59,7 +59,7 @@ func TestHandler_ForgotPassword_AlwaysReturns202(t *testing.T) {
 				return authshared.OTPIssuanceResult{UserID: "uid", Email: "a@example.com", RawCode: "123456"}, nil
 			},
 		}
-		w := postJSON(password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, kvstore.NewInMemoryStore(0), 10*time.Minute).ForgotPassword,
+		w := postJSON(password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, kvstore.NewInMemoryStore(0), 10*time.Minute, authshared.NoopAuthRecorder{}).ForgotPassword,
 			`{"email":"a@example.com"}`)
 		require.Equal(t, http.StatusAccepted, w.Code)
 	})
@@ -84,7 +84,7 @@ func TestHandler_ForgotPassword_AlwaysReturns202(t *testing.T) {
 		}
 		base := mailertest.ErrorBase(errors.New("smtp down"))
 		base.Timeout = 1
-		h := password.NewHandler(svc, base, nil, nil, 0, false, kvstore.NewInMemoryStore(0), 10*time.Minute)
+		h := password.NewHandler(svc, base, nil, nil, 0, false, kvstore.NewInMemoryStore(0), 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ForgotPassword, `{"email":"a@example.com"}`)
 		require.Equal(t, http.StatusAccepted, w.Code)
 	})
@@ -146,7 +146,7 @@ func TestHandler_VerifyResetCode(t *testing.T) {
 			},
 		}
 		gs := kvstore.NewInMemoryStore(0)
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.VerifyResetCode, `{"email":"a@example.com","code":"123456"}`)
 		require.Equal(t, http.StatusOK, w.Code)
 		var resp map[string]any
@@ -243,7 +243,7 @@ func TestHandler_VerifyResetCode(t *testing.T) {
 			},
 		}
 		// Passing nil as grantStore triggers the 503 path in the handler.
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, nil, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, nil, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.VerifyResetCode, `{"email":"a@example.com","code":"123456"}`)
 		require.Equal(t, http.StatusServiceUnavailable, w.Code)
 	})
@@ -271,7 +271,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 		t.Parallel()
 		svc := &authsharedtest.PasswordFakeServicer{}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusOK, w.Code)
 	})
@@ -284,7 +284,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 			},
 		}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusGone, w.Code)
 	})
@@ -297,7 +297,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 			},
 		}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
 	})
@@ -310,7 +310,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 			},
 		}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
 	})
@@ -323,7 +323,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 			},
 		}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
 	})
@@ -336,7 +336,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 			},
 		}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusTooManyRequests, w.Code)
 	})
@@ -365,7 +365,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 			},
 		}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusInternalServerError, w.Code)
 	})
@@ -380,7 +380,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 		}
 		bl := &mockBlocklist{}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), bl, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), bl, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusOK, w.Code)
 		bl.mu.Lock()
@@ -394,7 +394,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 		svc := &authsharedtest.PasswordFakeServicer{}
 		bl := &mockBlocklist{err: errors.New("kv store down")}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), bl, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), bl, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusOK, w.Code)
 	})
@@ -407,7 +407,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 			},
 		}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
 	})
@@ -416,7 +416,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 		t.Parallel()
 		svc := &authsharedtest.PasswordFakeServicer{}
 		gs, _, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusOK, w.Code)
 	})
@@ -452,7 +452,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 		t.Parallel()
 		// The KV store is empty — grantStore.Get returns ErrNotFound → 422.
 		svc := &authsharedtest.PasswordFakeServicer{}
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, kvstore.NewInMemoryStore(0), 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, kvstore.NewInMemoryStore(0), 10*time.Minute, authshared.NoopAuthRecorder{})
 		body := `{"reset_token":"` + uuid.New().String() + `","new_password":"NewPassw0rd!"}`
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusUnprocessableEntity, w.Code)
@@ -462,7 +462,7 @@ func TestHandler_ResetPassword(t *testing.T) {
 		t.Parallel()
 		svc := &authsharedtest.PasswordFakeServicer{}
 		gs, tok, body := preloadGrant(t, "a@example.com", "123456", "NewPassw0rd!")
-		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute)
+		h := password.NewHandler(svc, mailertest.NoopBase(), nil, nil, 0, false, gs, 10*time.Minute, authshared.NoopAuthRecorder{})
 		w := postJSON(h.ResetPassword, body)
 		require.Equal(t, http.StatusOK, w.Code)
 		// The key must be absent from the store — grant tokens are single-use.
@@ -508,7 +508,7 @@ func newCPHandler(svc password.Servicer, jtibl *mockJTIBlocklist) *password.Hand
 	if jtibl != nil {
 		bl = jtibl
 	}
-	return password.NewHandler(svc, mailertest.NoopBase(), nil, bl, 15*time.Minute, false, kvstore.NewInMemoryStore(0), 10*time.Minute)
+	return password.NewHandler(svc, mailertest.NoopBase(), nil, bl, 15*time.Minute, false, kvstore.NewInMemoryStore(0), 10*time.Minute, authshared.NoopAuthRecorder{})
 }
 
 // postJSONWithUserID fires a POST with a fake user-ID injected into the context.

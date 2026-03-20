@@ -3,7 +3,6 @@ package setpassword
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
@@ -73,7 +72,7 @@ func (h *Handler) SetPassword(w http.ResponseWriter, r *http.Request) {
 			// but should be unreachable in production (handler validates first).
 			respond.Error(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
 		default:
-			slog.ErrorContext(r.Context(), "setpassword.SetPassword: service error", "error", err)
+			log.Error(r.Context(), "SetPassword: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return

@@ -2,10 +2,10 @@ package permissions
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/7-Dany/store/backend/internal/db"
 	rbacshared "github.com/7-Dany/store/backend/internal/domain/rbac/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -36,7 +36,7 @@ func (s *Store) WithQuerier(q db.Querier) *Store {
 func (s *Store) GetPermissions(ctx context.Context) ([]Permission, error) {
 	rows, err := s.Queries.GetPermissions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("store.GetPermissions: %w", err)
+		return nil, telemetry.Store("GetPermissions.query", err)
 	}
 	perms := make([]Permission, 0, len(rows))
 	for _, row := range rows {
@@ -57,14 +57,14 @@ func (s *Store) GetPermissions(ctx context.Context) ([]Permission, error) {
 func (s *Store) GetPermissionGroups(ctx context.Context) ([]PermissionGroup, error) {
 	groupRows, err := s.Queries.GetPermissionGroups(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("store.GetPermissionGroups: groups: %w", err)
+		return nil, telemetry.Store("GetPermissionGroups.query_groups", err)
 	}
 
 	groups := make([]PermissionGroup, 0, len(groupRows))
 	for _, g := range groupRows {
 		memberRows, err := s.Queries.GetPermissionGroupMembers(ctx, s.UUIDToPgtypeUUID(g.ID))
 		if err != nil {
-			return nil, fmt.Errorf("store.GetPermissionGroups: members for %s: %w", g.Name, err)
+			return nil, telemetry.Store("GetPermissionGroups.query_members", err)
 		}
 
 		members := make([]PermissionGroupMember, 0, len(memberRows))

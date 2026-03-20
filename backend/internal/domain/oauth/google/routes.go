@@ -80,6 +80,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 		deps.OAuth.SuccessURL,
 		deps.OAuth.ErrorURL,
 		deps.SecureCookies,
+		deps.Metrics,
 	)
 
 	// ── Route registration ────────────────────────────────────────────────────

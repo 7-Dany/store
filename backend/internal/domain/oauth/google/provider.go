@@ -2,8 +2,9 @@ package google
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
 	goauth "golang.org/x/oauth2/google"
@@ -27,7 +28,7 @@ var _ OAuthProvider = (*GoogleProvider)(nil)
 func NewGoogleProvider(ctx context.Context, clientID, clientSecret, redirectURI string) (*GoogleProvider, error) {
 	provider, err := oidc.NewProvider(ctx, "https://accounts.google.com")
 	if err != nil {
-		return nil, fmt.Errorf("google.NewGoogleProvider: OIDC discovery: %w", err)
+		return nil, telemetry.OAuth("NewGoogleProvider.oidc_discovery", err)
 	}
 
 	cfg := &oauth2.Config{
@@ -47,12 +48,12 @@ func NewGoogleProvider(ctx context.Context, clientID, clientSecret, redirectURI 
 func (p *GoogleProvider) ExchangeCode(ctx context.Context, code, codeVerifier string) (GoogleTokens, error) {
 	tok, err := p.cfg.Exchange(ctx, code, oauth2.VerifierOption(codeVerifier))
 	if err != nil {
-		return GoogleTokens{}, fmt.Errorf("google.ExchangeCode: %w", err)
+		return GoogleTokens{}, telemetry.OAuth("ExchangeCode.exchange", err)
 	}
 
 	rawIDToken, ok := tok.Extra("id_token").(string)
 	if !ok || rawIDToken == "" {
-		return GoogleTokens{}, fmt.Errorf("google.ExchangeCode: missing id_token in token response")
+		return GoogleTokens{}, telemetry.OAuth("ExchangeCode.id_token", errors.New("missing id_token in token response"))
 	}
 
 	return GoogleTokens{
@@ -65,7 +66,7 @@ func (p *GoogleProvider) ExchangeCode(ctx context.Context, code, codeVerifier st
 func (p *GoogleProvider) VerifyIDToken(ctx context.Context, rawIDToken string) (GoogleClaims, error) {
 	idToken, err := p.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
-		return GoogleClaims{}, fmt.Errorf("google.VerifyIDToken: %w", err)
+		return GoogleClaims{}, telemetry.OAuth("VerifyIDToken.verify", err)
 	}
 
 	var payload struct {
@@ -75,7 +76,7 @@ func (p *GoogleProvider) VerifyIDToken(ctx context.Context, rawIDToken string) (
 		Picture string `json:"picture"`
 	}
 	if err := idToken.Claims(&payload); err != nil {
-		return GoogleClaims{}, fmt.Errorf("google.VerifyIDToken: extract claims: %w", err)
+		return GoogleClaims{}, telemetry.OAuth("VerifyIDToken.claims", err)
 	}
 
 	return GoogleClaims{

@@ -69,7 +69,7 @@ func TestSendVerificationEmail_TemplateExecuteError(t *testing.T) {
 
 	err := m.Send(mailertemplates.VerificationKey)(context.Background(), "u@example.com", "123456")
 	require.Error(t, err)
-	require.ErrorContains(t, err, "render template")
+	require.ErrorContains(t, err, "mailer.sendOTPEmail.render_template")
 }
 
 // ── mailer.go:116.16,118.3 — buildMessage error in sendOTPEmail, and
@@ -91,8 +91,7 @@ func TestSendVerificationEmail_BuildMessageUUIDError(t *testing.T) {
 	m := newBaseMailer(t)
 	err := m.Send(mailertemplates.VerificationKey)(context.Background(), "u@example.com", "123456")
 	require.Error(t, err)
-	// sendOTPEmail wraps the error with "mailer: build message:".
-	require.ErrorContains(t, err, "build message")
+	require.ErrorContains(t, err, "mailer.sendOTPEmail.build_message")
 }
 
 // ── mailer.go:232.55,234.3 — qpw.Write error in buildMessage ─────────────────
@@ -116,7 +115,7 @@ func TestSendVerificationEmail_BuildMessageQPWriteError(t *testing.T) {
 	m := newBaseMailer(t)
 	err := m.Send(mailertemplates.VerificationKey)(context.Background(), "u@example.com", "123456")
 	require.Error(t, err)
-	require.ErrorContains(t, err, "build message")
+	require.ErrorContains(t, err, "mailer.sendOTPEmail.build_message")
 }
 
 // ── mailer.go:235.36,237.3 — qpw.Close error in buildMessage ─────────────────
@@ -138,7 +137,7 @@ func TestSendVerificationEmail_BuildMessageQPCloseError(t *testing.T) {
 	m := newBaseMailer(t)
 	err := m.Send(mailertemplates.VerificationKey)(context.Background(), "u@example.com", "123456")
 	require.Error(t, err)
-	require.ErrorContains(t, err, "build message")
+	require.ErrorContains(t, err, "mailer.sendOTPEmail.build_message")
 }
 
 // ── mailer.go:136.16,138.3 — net.SplitHostPort error in sendWithContext ──────
@@ -313,7 +312,7 @@ func TestBuildMessage_UUIDError(t *testing.T) {
 
 	err := m.Send(mailertemplates.VerificationKey)(context.Background(), "u@example.com", "000000")
 	require.Error(t, err)
-	require.ErrorContains(t, err, "build message")
+	require.ErrorContains(t, err, "mailer.sendOTPEmail.build_message")
 }
 
 // ── Config / constructor tests ───────────────────────────────────────────────
@@ -698,7 +697,7 @@ func TestSendVerificationEmail_STARTTLSHandshakeFails(t *testing.T) {
 	host, port := startSMTPWithSTARTTLSAdvertised(t)
 	m := newMailer(t, host, port)
 	err := m.Send(mailertemplates.VerificationKey)(context.Background(), "u@example.com", "123456")
-	require.ErrorContains(t, err, "STARTTLS")
+	require.ErrorContains(t, err, "mailer.sendWithContext.starttls")
 }
 
 // ── T2: AUTH rejection ────────────────────────────────────────────────────────

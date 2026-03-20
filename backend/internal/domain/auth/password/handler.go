@@ -3,7 +3,6 @@ package password
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -43,6 +42,16 @@ func (b *userBlocklist) Block(ctx context.Context, userID string) error {
 	return b.store.Set(ctx, "pr_blocked_user:"+userID, ts, b.ttl)
 }
 
+// ── Recorder ──────────────────────────────────────────────────────────────────
+
+// Recorder is the narrow observability interface for the password handler.
+// *telemetry.Registry satisfies this interface structurally.
+type Recorder interface {
+	OnPasswordResetRequested()
+	OnPasswordResetCompleted()
+	OnPasswordChanged()
+}
+
 // Servicer is the subset of the service that the handler requires.
 // *Service satisfies this interface; tests may supply a fake implementation.
 type Servicer interface {
@@ -79,6 +88,7 @@ type JTIBlocklist interface {
 // or synchronously delivers OTP emails.
 type Handler struct {
 	svc           Servicer
+	recorder      Recorder
 	blocklist     Blocklist    // per-user block for reset-password (may be nil)
 	jtiBlocklist  JTIBlocklist // per-JTI block for change-password (may be nil)
 	accessTTL     time.Duration
@@ -108,6 +118,7 @@ func NewHandler(
 	secureCookies bool,
 	grantStore    kvstore.Store,
 	grantTTL      time.Duration,
+	recorder      Recorder,
 ) *Handler {
 	return &Handler{
 		svc:           svc,
@@ -118,6 +129,7 @@ func NewHandler(
 		secureCookies: secureCookies,
 		grantStore:    grantStore,
 		grantTTL:      grantTTL,
+		recorder:      recorder,
 	}
 }
 
@@ -148,7 +160,7 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		// Do not expose service errors — anti-enumeration requires uniform 202.
-		slog.ErrorContext(r.Context(), "password.ForgotPassword: service error", "error", err)
+		log.Error(r.Context(), "ForgotPassword: service error", "error", err)
 		respond.JSON(w, http.StatusAccepted, map[string]string{
 			"message": "if that email is registered and verified, a password reset code has been sent",
 		})
@@ -157,17 +169,17 @@ func (h *Handler) ForgotPassword(w http.ResponseWriter, r *http.Request) {
 
 	// SendOTPEmail is a no-op when result.RawCode is empty (anti-enumeration path).
 	if result.RawCode == "" {
-		slog.DebugContext(r.Context(), "password.ForgotPassword: suppressed — service returned empty code (anti-enumeration)")
+		log.Debug(r.Context(), "ForgotPassword: suppressed — service returned empty code (anti-enumeration)")
 	} else {
-		slog.DebugContext(r.Context(), "password.ForgotPassword: dispatching OTP email", "email", result.Email)
+		log.Debug(r.Context(), "ForgotPassword: dispatching OTP email", "email", result.Email)
 	}
 	if err := mailer.SendOTPEmail(r.Context(), h.OTPHandlerBase, result.UserID, result.Email, result.RawCode, "password"); err != nil {
 		// Security: do not surface mail failure — any non-202 response here
 		// reveals that the email is registered and verified (anti-enumeration).
-		slog.WarnContext(r.Context(), "password.ForgotPassword: mail delivery failed",
-			"error", err, "email", result.Email)
+		log.Warn(r.Context(), "ForgotPassword: mail delivery failed", "error", err, "email", result.Email)
 	} else if result.RawCode != "" {
-		slog.InfoContext(r.Context(), "password.ForgotPassword: OTP email dispatched", "email", result.Email)
+		h.recorder.OnPasswordResetRequested()
+		log.Info(r.Context(), "ForgotPassword: OTP email dispatched", "email", result.Email)
 	}
 
 	respond.JSON(w, http.StatusAccepted, map[string]string{
@@ -210,14 +222,14 @@ func (h *Handler) VerifyResetCode(w http.ResponseWriter, r *http.Request) {
 			errors.Is(err, authshared.ErrInvalidCode):
 			respond.Error(w, http.StatusUnprocessableEntity, "validation_error", "invalid reset code")
 		default:
-			slog.ErrorContext(r.Context(), "password.VerifyResetCode: service error", "error", err)
+			log.Error(r.Context(), "VerifyResetCode: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
 	}
 
 	if h.grantStore == nil {
-		slog.ErrorContext(r.Context(), "password.VerifyResetCode: grantStore is nil")
+		log.Error(r.Context(), "VerifyResetCode: grantStore is nil")
 		respond.Error(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable")
 		return
 	}
@@ -231,7 +243,7 @@ func (h *Handler) VerifyResetCode(w http.ResponseWriter, r *http.Request) {
 		email+"\n"+req.Code,
 		h.grantTTL,
 	); err != nil {
-		slog.ErrorContext(r.Context(), "password.VerifyResetCode: store grant token", "error", err)
+		log.Error(r.Context(), "VerifyResetCode: store grant token failed", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -262,7 +274,7 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.grantStore == nil {
-		slog.ErrorContext(r.Context(), "password.ResetPassword: grantStore is nil")
+		log.Error(r.Context(), "ResetPassword: grantStore is nil")
 		respond.Error(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable")
 		return
 	}
@@ -299,10 +311,10 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 			// Security: WithoutCancel so a client disconnect cannot skip blocklist
 			// revocation and leave outstanding access tokens valid after a reset.
 			if blErr := h.blocklist.Block(context.WithoutCancel(r.Context()), uid); blErr != nil {
-				slog.WarnContext(r.Context(), "password.ResetPassword: blocklist.Block failed",
-					"error", blErr, "user_id", uid)
+				log.Warn(r.Context(), "ResetPassword: blocklist.Block failed", "error", blErr, "user_id", uid)
 			}
 		}
+		h.recorder.OnPasswordResetCompleted()
 		respond.JSON(w, http.StatusOK, map[string]string{"message": "password reset successfully"})
 		return
 	}
@@ -321,7 +333,7 @@ func (h *Handler) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrSamePassword):
 		respond.Error(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
 	default:
-		slog.ErrorContext(r.Context(), "password.ResetPassword: service error", "error", err)
+		log.Error(r.Context(), "ResetPassword: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
@@ -369,7 +381,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, authshared.ErrUserNotFound):
 			respond.Error(w, http.StatusNotFound, "not_found", "user not found")
 		default:
-			slog.ErrorContext(r.Context(), "password.ChangePassword: service error", "error", err)
+			log.Error(r.Context(), "ChangePassword: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -383,12 +395,13 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 	if h.jtiBlocklist != nil {
 		if jti, ok := token.JTIFromContext(r.Context()); ok && jti != "" {
 			if err := h.jtiBlocklist.BlockToken(context.WithoutCancel(r.Context()), jti, h.accessTTL); err != nil {
-				slog.ErrorContext(r.Context(), "password.ChangePassword: blocklist current access token", "error", err)
+				log.Error(r.Context(), "ChangePassword: blocklist current access token failed", "error", err)
 				// Non-fatal: the refresh cookie was cleared and all sessions are revoked.
 			}
 		}
 	}
 
+	h.recorder.OnPasswordChanged()
 	respond.JSON(w, http.StatusOK, map[string]string{"message": "password changed successfully"})
 }
 

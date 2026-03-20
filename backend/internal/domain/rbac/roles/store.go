@@ -2,11 +2,11 @@ package roles
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/7-Dany/store/backend/internal/db"
 	rbacshared "github.com/7-Dany/store/backend/internal/domain/rbac/shared"
 	"github.com/7-Dany/store/backend/internal/platform/rbac"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,7 +38,7 @@ func (s *Store) WithQuerier(q db.Querier) *Store {
 func (s *Store) GetRoles(ctx context.Context) ([]Role, error) {
 	rows, err := s.Queries.GetRoles(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("store.GetRoles: %w", err)
+		return nil, telemetry.Store("GetRoles.query", err)
 	}
 	roles := make([]Role, 0, len(rows))
 	for _, row := range rows {
@@ -55,7 +55,7 @@ func (s *Store) GetRoleByID(ctx context.Context, roleID [16]byte) (Role, error) 
 		if s.IsNoRows(err) {
 			return Role{}, ErrRoleNotFound
 		}
-		return Role{}, fmt.Errorf("store.GetRoleByID: %w", err)
+		return Role{}, telemetry.Store("GetRoleByID.query", err)
 	}
 	return mapDBRole(row), nil
 }
@@ -70,7 +70,7 @@ func (s *Store) CreateRole(ctx context.Context, in CreateRoleInput) (Role, error
 		if s.IsUniqueViolation(err, "roles_name_key") {
 			return Role{}, ErrRoleNameConflict
 		}
-		return Role{}, fmt.Errorf("store.CreateRole: %w", err)
+		return Role{}, telemetry.Store("CreateRole.insert", err)
 	}
 	return mapDBRole(row), nil
 }
@@ -104,7 +104,7 @@ func (s *Store) UpdateRole(ctx context.Context, roleID [16]byte, in UpdateRoleIn
 		if s.IsUniqueViolation(err, "roles_name_key") {
 			return Role{}, ErrRoleNameConflict
 		}
-		return Role{}, fmt.Errorf("store.UpdateRole: %w", err)
+		return Role{}, telemetry.Store("UpdateRole.exec", err)
 	}
 	return mapDBRole(row), nil
 }
@@ -115,7 +115,7 @@ func (s *Store) UpdateRole(ctx context.Context, roleID [16]byte, in UpdateRoleIn
 func (s *Store) DeactivateRole(ctx context.Context, roleID [16]byte) error {
 	rows, err := s.Queries.DeactivateRole(ctx, s.ToPgtypeUUID(roleID))
 	if err != nil {
-		return fmt.Errorf("store.DeactivateRole: %w", err)
+		return telemetry.Store("DeactivateRole.exec", err)
 	}
 	if rows == 0 {
 		// Zero rows: the role does not exist, is a system role, or is already inactive.
@@ -132,7 +132,7 @@ func (s *Store) DeactivateRole(ctx context.Context, roleID [16]byte) error {
 func (s *Store) GetRolePermissions(ctx context.Context, roleID [16]byte) ([]RolePermission, error) {
 	rows, err := s.Queries.GetRolePermissions(ctx, s.ToPgtypeUUID(roleID))
 	if err != nil {
-		return nil, fmt.Errorf("store.GetRolePermissions: %w", err)
+		return nil, telemetry.Store("GetRolePermissions.query", err)
 	}
 	perms := make([]RolePermission, 0, len(rows))
 	for _, row := range rows {
@@ -158,7 +158,7 @@ func (s *Store) GetPermissionCaps(ctx context.Context, permissionID [16]byte) (P
 		if s.IsNoRows(err) {
 			return PermissionCaps{}, ErrPermissionNotFound
 		}
-		return PermissionCaps{}, fmt.Errorf("store.GetPermissionCaps: %w", err)
+		return PermissionCaps{}, telemetry.Store("GetPermissionCaps.query", err)
 	}
 	return PermissionCaps{
 		ID:               [16]byte(row.ID),
@@ -190,7 +190,7 @@ func (s *Store) AddRolePermission(ctx context.Context, roleID [16]byte, in AddRo
 		if s.IsForeignKeyViolation(err, "role_permissions_role_id_fkey") {
 			return ErrRoleNotFound
 		}
-		return fmt.Errorf("store.AddRolePermission: %w", err)
+		return telemetry.Store("AddRolePermission.insert", err)
 	}
 	if rows == 0 {
 		return ErrGrantAlreadyExists
@@ -209,7 +209,7 @@ func (s *Store) RemoveRolePermission(ctx context.Context, roleID, permID [16]byt
 			PermissionID: s.ToPgtypeUUID(permID),
 		})
 		if err != nil {
-			return fmt.Errorf("store.RemoveRolePermission: %w", err)
+			return telemetry.Store("RemoveRolePermission.delete", err)
 		}
 		if rows == 0 {
 			return ErrRolePermissionNotFound

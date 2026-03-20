@@ -35,7 +35,7 @@ func makeHandler(svc login.Servicer) *login.Handler {
 		JWTRefreshSecret: "test-refresh-secret-32-bytes-long",
 		AccessTTL:        15 * time.Minute,
 		SecureCookies:    false,
-	})
+	}, authshared.NoopAuthRecorder{})
 }
 
 // postLogin sends a POST /login with the given JSON body.
@@ -179,7 +179,7 @@ func TestNewHandler_PanicOnShortAccessSecret(t *testing.T) {
 		login.NewHandler(svc, token.JWTConfig{
 			JWTAccessSecret:  "short",
 			JWTRefreshSecret: "test-refresh-secret-32-bytes-long",
-		})
+		}, authshared.NoopAuthRecorder{})
 	})
 }
 
@@ -192,7 +192,7 @@ func TestNewHandler_PanicOnShortRefreshSecret(t *testing.T) {
 		login.NewHandler(svc, token.JWTConfig{
 			JWTAccessSecret:  "test-access-secret-32-bytes-long!",
 			JWTRefreshSecret: "short",
-		})
+		}, authshared.NoopAuthRecorder{})
 	})
 }
 
@@ -205,7 +205,7 @@ func TestNewHandler_PanicOnExactly31ByteAccessSecret(t *testing.T) {
 		login.NewHandler(svc, token.JWTConfig{
 			JWTAccessSecret:  strings.Repeat("x", 31),
 			JWTRefreshSecret: "test-refresh-secret-32-bytes-long",
-		})
+		}, authshared.NoopAuthRecorder{})
 	})
 }
 
@@ -216,7 +216,7 @@ func TestNewHandler_PanicOnExactly31ByteRefreshSecret(t *testing.T) {
 		login.NewHandler(svc, token.JWTConfig{
 			JWTAccessSecret:  "test-access-secret-32-bytes-long!",
 			JWTRefreshSecret: strings.Repeat("x", 31),
-		})
+		}, authshared.NoopAuthRecorder{})
 	})
 }
 
@@ -227,7 +227,7 @@ func TestNewHandler_NoPanicOnExactly32ByteAccessSecret(t *testing.T) {
 		login.NewHandler(svc, token.JWTConfig{
 			JWTAccessSecret:  strings.Repeat("x", 32),
 			JWTRefreshSecret: "test-refresh-secret-32-bytes-long",
-		})
+		}, authshared.NoopAuthRecorder{})
 	})
 }
 
@@ -238,7 +238,7 @@ func TestNewHandler_NoPanicOnExactly32ByteRefreshSecret(t *testing.T) {
 		login.NewHandler(svc, token.JWTConfig{
 			JWTAccessSecret:  "test-access-secret-32-bytes-long!",
 			JWTRefreshSecret: strings.Repeat("x", 32),
-		})
+		}, authshared.NoopAuthRecorder{})
 	})
 }
 
@@ -312,7 +312,7 @@ func TestHandler_Login_CookieSecureTrue_WhenSecureCookiesEnabled(t *testing.T) {
 		JWTRefreshSecret: "test-refresh-secret-32-bytes-long",
 		AccessTTL:        15 * time.Minute,
 		SecureCookies:    true,
-	})
+	}, authshared.NoopAuthRecorder{})
 	w := postLogin(h, `{"identifier":"user@example.com","password":"Passw0rd!1"}`)
 	require.Equal(t, http.StatusOK, w.Code)
 	var refreshCookie *http.Cookie

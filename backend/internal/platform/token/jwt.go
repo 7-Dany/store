@@ -2,11 +2,12 @@
 package token
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // Audience and issuer constants enforce per-token-type audience claims so that
@@ -62,7 +63,7 @@ type RefreshClaims struct {
 // validation fails.
 func ParseAccessToken(tokenString, secret string) (*AccessClaims, error) {
 	if secret == "" {
-		return nil, fmt.Errorf("token.ParseAccessToken: empty signing secret")
+		return nil, errors.New("empty signing secret")
 	}
 	claims := &AccessClaims{}
 	_, err := jwt.ParseWithClaims(
@@ -75,7 +76,7 @@ func ParseAccessToken(tokenString, secret string) (*AccessClaims, error) {
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name}),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("token.ParseAccessToken: %w", err)
+		return nil, telemetry.Token("ParseAccessToken.parse", err)
 	}
 	return claims, nil
 }
@@ -93,7 +94,7 @@ func ParseAccessToken(tokenString, secret string) (*AccessClaims, error) {
 // validation fails.
 func ParseRefreshToken(tokenString, secret string) (*RefreshClaims, error) {
 	if secret == "" {
-		return nil, fmt.Errorf("token.ParseRefreshToken: empty signing secret")
+		return nil, errors.New("empty signing secret")
 	}
 	claims := &RefreshClaims{}
 	_, err := jwt.ParseWithClaims(
@@ -106,7 +107,7 @@ func ParseRefreshToken(tokenString, secret string) (*RefreshClaims, error) {
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Name}),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("token.ParseRefreshToken: %w", err)
+		return nil, telemetry.Token("ParseRefreshToken.parse", err)
 	}
 	return claims, nil
 }

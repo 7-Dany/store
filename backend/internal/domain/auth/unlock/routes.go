@@ -39,7 +39,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 		Send:    deps.Mailer.Send(mailertemplates.UnlockKey),
 		Queue:   deps.MailQueue,
 		Timeout: deps.MailDeliveryTimeout,
-	})
+	}, deps.Metrics)
 
 	ratelimit.RouteWithIP(r, http.MethodPost, "/unlock", h.RequestUnlock, limiter)
 	ratelimit.RouteWithIP(r, http.MethodPut, "/unlock", h.ConfirmUnlock, limiter)

@@ -2,10 +2,10 @@ package userlock
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/7-Dany/store/backend/internal/db"
 	rbacshared "github.com/7-Dany/store/backend/internal/domain/rbac/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -40,7 +40,7 @@ func (s *Store) IsOwnerUser(ctx context.Context, userID [16]byte) (bool, error) 
 		if s.IsNoRows(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("store.IsOwnerUser: get user role: %w", err)
+		return false, telemetry.Store("IsOwnerUser.get_user_role", err)
 	}
 	return row.IsOwnerRole, nil
 }
@@ -53,7 +53,7 @@ func (s *Store) GetLockStatus(ctx context.Context, userID [16]byte) (UserLockSta
 		if s.IsNoRows(err) {
 			return UserLockStatus{}, ErrUserNotFound
 		}
-		return UserLockStatus{}, fmt.Errorf("store.GetLockStatus: query: %w", err)
+		return UserLockStatus{}, telemetry.Store("GetLockStatus.query", err)
 	}
 	return mapLockStatus(row), nil
 }
@@ -73,7 +73,7 @@ func (s *Store) LockUserTx(ctx context.Context, in LockUserTxInput) error {
 		})
 	})
 	if err != nil {
-		return fmt.Errorf("store.LockUserTx: %w", err)
+		return telemetry.Store("LockUserTx.lock", err)
 	}
 	return nil
 }
@@ -89,7 +89,7 @@ func (s *Store) UnlockUserTx(ctx context.Context, userID [16]byte, actingUserID 
 		return s.Queries.UnlockUser(safeCtx, s.ToPgtypeUUID(userID))
 	})
 	if err != nil {
-		return fmt.Errorf("store.UnlockUserTx: %w", err)
+		return telemetry.Store("UnlockUserTx.unlock", err)
 	}
 	return nil
 }

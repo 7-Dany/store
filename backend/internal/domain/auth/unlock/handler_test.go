@@ -19,7 +19,7 @@ import (
 func newTestHandler(svc unlock.Servicer) *unlock.Handler {
 	base := mailertest.NoopBase()
 	base.Timeout = time.Second
-	return unlock.NewHandler(svc, base)
+	return unlock.NewHandler(svc, base, authshared.NoopAuthRecorder{})
 }
 
 func requestUnlockBody(email string) string {
@@ -78,7 +78,7 @@ func TestHandler_RequestUnlock_AlwaysReturns202(t *testing.T) {
 		}
 		base := mailertest.ErrorBase(authshared.ErrAccountLocked)
 		base.Timeout = time.Second
-		h := unlock.NewHandler(svc, base)
+		h := unlock.NewHandler(svc, base, authshared.NoopAuthRecorder{})
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(http.MethodPost, "/request-unlock", strings.NewReader(requestUnlockBody("a@example.com")))
 		r.Header.Set("Content-Type", "application/json")

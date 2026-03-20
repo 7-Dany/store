@@ -3,13 +3,14 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"time"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 )
+
+var log = telemetry.New("session")
 
 // ── Storer interface ──────────────────────────────────────────────────────────
 
@@ -75,7 +76,7 @@ func NewService(store Storer) *Service {
 // user no longer exists. Returns authshared.ErrAccountLocked or
 // authshared.ErrAccountInactive when the account has been suspended.
 func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua string) (RotatedSession, error) {
-	slog.DebugContext(ctx, "session.RotateRefreshToken: start", "jti", uuid.UUID(jti).String(), "ip", ip)
+	log.Debug(ctx, "RotateRefreshToken: start", "jti", uuid.UUID(jti).String(), "ip", ip)
 
 	// 1. Look up the DB row by jti. jti is already [16]byte — no uuid.Parse needed.
 	stored, err := s.store.GetRefreshTokenByJTI(ctx, jti)
@@ -84,12 +85,12 @@ func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua s
 			// Security: detach from the request context so a client disconnect cannot
 			// abort the audit write and erase the evidence of an invalid token presentation.
 			if auditErr := s.store.WriteRefreshFailedAuditTx(context.WithoutCancel(ctx), ip, ua); auditErr != nil {
-				slog.ErrorContext(ctx, "session.RotateRefreshToken: write refresh_failed audit (not found)",
+				log.Warn(ctx, "RotateRefreshToken: write refresh_failed audit failed (not found)",
 					"error", auditErr)
 			}
 			return RotatedSession{}, authshared.ErrInvalidToken
 		}
-		return RotatedSession{}, fmt.Errorf("session.RotateRefreshToken: get token: %w", err)
+		return RotatedSession{}, telemetry.Service("RotateRefreshToken.get_token", err)
 	}
 
 	// 2. Reuse detection: row exists but is already revoked.
@@ -100,7 +101,7 @@ func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua s
 		if revokeErr := s.store.RevokeFamilyTokensTx(
 			context.WithoutCancel(ctx), stored.UserID, stored.FamilyID, "reuse_detected",
 		); revokeErr != nil {
-			slog.ErrorContext(ctx, "session.RotateRefreshToken: revoke family after reuse detection",
+			log.Warn(ctx, "RotateRefreshToken: revoke family after reuse detection failed",
 				"family_id", uuid.UUID(stored.FamilyID).String(),
 				"error", revokeErr,
 			)
@@ -113,7 +114,7 @@ func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua s
 	if stored.ExpiresAt.Before(time.Now()) {
 		// Security: same rationale as above — must not be abortable by a client disconnect.
 		if auditErr := s.store.WriteRefreshFailedAuditTx(context.WithoutCancel(ctx), ip, ua); auditErr != nil {
-			slog.ErrorContext(ctx, "session.RotateRefreshToken: write refresh_failed audit (expired)",
+			log.Warn(ctx, "RotateRefreshToken: write refresh_failed audit failed (expired)",
 				"error", auditErr)
 		}
 		return RotatedSession{}, authshared.ErrInvalidToken
@@ -127,7 +128,7 @@ func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua s
 		if errors.Is(err, authshared.ErrUserNotFound) {
 			return RotatedSession{}, authshared.ErrInvalidToken
 		}
-		return RotatedSession{}, fmt.Errorf("session.RotateRefreshToken: get user status: %w", err)
+		return RotatedSession{}, telemetry.Service("RotateRefreshToken.get_user_status", err)
 	}
 	if status.IsLocked {
 		return RotatedSession{}, authshared.ErrAccountLocked
@@ -136,7 +137,7 @@ func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua s
 		return RotatedSession{}, authshared.ErrAccountInactive
 	}
 
-	slog.DebugContext(ctx, "session.RotateRefreshToken: guards passed, rotating token",
+	log.Debug(ctx, "RotateRefreshToken: guards passed, rotating token",
 		"user_id", uuid.UUID(stored.UserID).String(),
 		"session_id", uuid.UUID(stored.SessionID).String(),
 	)
@@ -154,10 +155,10 @@ func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua s
 		if errors.Is(err, authshared.ErrTokenAlreadyConsumed) {
 			return RotatedSession{}, authshared.ErrInvalidToken
 		}
-		return RotatedSession{}, fmt.Errorf("session.RotateRefreshToken: rotate tx: %w", err)
+		return RotatedSession{}, telemetry.Service("RotateRefreshToken.rotate_tx", err)
 	}
 
-	slog.InfoContext(ctx, "session.RotateRefreshToken: success",
+	log.Info(ctx, "RotateRefreshToken: success",
 		"user_id", uuid.UUID(stored.UserID).String(),
 		"session_id", uuid.UUID(stored.SessionID).String(),
 	)
@@ -169,14 +170,14 @@ func (s *Service) RotateRefreshToken(ctx context.Context, jti [16]byte, ip, ua s
 // every open session, and writes an audit row for the given user.
 // The reason "forced_logout" is hardcoded.
 func (s *Service) RevokeAllUserTokens(ctx context.Context, userID [16]byte, ipAddress, userAgent string) error {
-	slog.DebugContext(ctx, "session.RevokeAllUserTokens: start", "user_id", uuid.UUID(userID).String(), "ip", ipAddress)
+	log.Debug(ctx, "RevokeAllUserTokens: start", "user_id", uuid.UUID(userID).String(), "ip", ipAddress)
 	// Security: detach from the request context so a client-timed disconnect cannot
 	// abort the token revocation or session termination, leaving active tokens in
 	// the DB with no audit evidence of the revocation attempt (ADR-004).
 	if err := s.store.RevokeAllUserTokensTx(context.WithoutCancel(ctx), userID, "forced_logout", ipAddress, userAgent); err != nil {
-		return fmt.Errorf("session.RevokeAllUserTokens: revoke: %w", err)
+		return telemetry.Service("RevokeAllUserTokens.revoke", err)
 	}
-	slog.InfoContext(ctx, "session.RevokeAllUserTokens: all sessions revoked", "user_id", uuid.UUID(userID).String())
+	log.Info(ctx, "RevokeAllUserTokens: all sessions revoked", "user_id", uuid.UUID(userID).String())
 	return nil
 }
 
@@ -189,14 +190,14 @@ func (s *Service) RevokeAllUserTokens(ctx context.Context, userID [16]byte, ipAd
 // token identifiers via LogoutTxInput. Errors are logged but never returned
 // so the handler always clears the cookie and writes 204.
 func (s *Service) Logout(ctx context.Context, in LogoutTxInput) error {
-	slog.DebugContext(ctx, "session.Logout: start",
+	log.Debug(ctx, "Logout: start",
 		"user_id", uuid.UUID(in.UserID).String(),
 		"session_id", uuid.UUID(in.SessionID).String(),
 	)
 	// Security: detach from the request context so a client disconnect cannot
 	// prevent the DB revocation from completing.
 	if err := s.store.LogoutTx(context.WithoutCancel(ctx), in); err != nil {
-		slog.ErrorContext(ctx, "session.Logout: logout tx", "error", err)
+		log.Warn(ctx, "Logout: logout tx failed", "error", err)
 	}
 	return nil
 }

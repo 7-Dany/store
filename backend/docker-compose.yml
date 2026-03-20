@@ -21,9 +21,6 @@ services:
   redis:
     image: redis:8.6-alpine
     container_name: ${COMPOSE_PROJECT_NAME:-app}_redis
-    # requirepass enforces authentication; the password is read from .env so
-    # it is never hardcoded here. The redis-cli healthcheck passes the same
-    # password via -a so Docker can verify liveness without a separate tool.
     command: redis-server --requirepass ${REDIS_PASSWORD:-changeme} --save 60 1 --loglevel warning
     ports:
       - "${REDIS_PORT_DOCKER:-6380}:6379"
@@ -35,6 +32,32 @@ services:
       timeout: 5s
       retries: 10
 
+  prometheus:
+    image: prom/prometheus:v3.4.0
+    container_name: ${COMPOSE_PROJECT_NAME:-app}_prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.enable-lifecycle"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    mem_limit: 512m
+    mem_reservation: 128m
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
+  prometheus_data:

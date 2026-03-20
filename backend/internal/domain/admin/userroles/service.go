@@ -3,11 +3,13 @@ package userroles
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	platformrbac "github.com/7-Dany/store/backend/internal/platform/rbac"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 )
+
+var log = telemetry.New("userroles")
 
 // Storer is the data-access contract for the userroles service.
 type Storer interface {
@@ -45,7 +47,7 @@ func (s *Service) GetUserRole(ctx context.Context, targetUserID string) (UserRol
 	}
 	ur, err := s.store.GetUserRole(ctx, id)
 	if err != nil {
-		return UserRole{}, fmt.Errorf("userroles.GetUserRole: %w", err)
+		return UserRole{}, telemetry.Service("GetUserRole.get", err)
 	}
 	return ur, nil
 }
@@ -71,7 +73,7 @@ func (s *Service) AssignRole(ctx context.Context, targetUserID, actingUserID str
 	//    failure here indicates a token signing misconfiguration, not user input.
 	actorID, err := parseID(actingUserID)
 	if err != nil {
-		return UserRole{}, fmt.Errorf("userroles.AssignRole: invalid acting user id: %w", err)
+		return UserRole{}, telemetry.Service("AssignRole.parse_actor_id", err)
 	}
 	// 3. Self-assignment guard
 	if targetID == actorID {
@@ -90,7 +92,7 @@ func (s *Service) AssignRole(ctx context.Context, targetUserID, actingUserID str
 	// 6. Owner guard: check if target already has an owner role
 	existing, err := s.store.GetUserRole(ctx, targetID)
 	if err != nil && !errors.Is(err, ErrUserRoleNotFound) {
-		return UserRole{}, fmt.Errorf("userroles.AssignRole: check target role: %w", err)
+		return UserRole{}, telemetry.Service("AssignRole.check_target_role", err)
 	}
 	if err == nil && existing.IsOwnerRole {
 		return UserRole{}, platformrbac.ErrCannotReassignOwner
@@ -108,7 +110,7 @@ func (s *Service) AssignRole(ctx context.Context, targetUserID, actingUserID str
 		ExpiresAt:     in.ExpiresAt,
 	})
 	if err != nil {
-		return UserRole{}, fmt.Errorf("userroles.AssignRole: %w", err)
+		return UserRole{}, telemetry.Service("AssignRole.assign_tx", err)
 	}
 	return result, nil
 }
@@ -133,7 +135,7 @@ func (s *Service) RemoveRole(ctx context.Context, targetUserID, actingUserID str
 	//    failure here indicates a token signing misconfiguration, not user input.
 	actorID, err := parseID(actingUserID)
 	if err != nil {
-		return fmt.Errorf("userroles.RemoveRole: invalid acting user id: %w", err)
+		return telemetry.Service("RemoveRole.parse_actor_id", err)
 	}
 	// 3. Self-assignment guard
 	if targetID == actorID {
@@ -142,7 +144,7 @@ func (s *Service) RemoveRole(ctx context.Context, targetUserID, actingUserID str
 	// 4. Check if target has a role
 	existing, err := s.store.GetUserRole(ctx, targetID)
 	if err != nil {
-		return fmt.Errorf("userroles.RemoveRole: %w", err) // propagates ErrUserRoleNotFound
+		return telemetry.Service("RemoveRole.get_role", err) // propagates ErrUserRoleNotFound
 	}
 	// 5. Owner guard
 	if existing.IsOwnerRole {
@@ -150,7 +152,7 @@ func (s *Service) RemoveRole(ctx context.Context, targetUserID, actingUserID str
 	}
 	// 6. Remove
 	if err := s.store.RemoveUserRole(ctx, targetID, actingUserID); err != nil {
-		return fmt.Errorf("userroles.RemoveRole: %w", err)
+		return telemetry.Service("RemoveRole.remove", err)
 	}
 	return nil
 }

@@ -3,13 +3,13 @@ package me
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -75,7 +75,7 @@ func (s *Store) GetUserProfile(ctx context.Context, userID [16]byte) (UserProfil
 		if s.IsNoRows(err) {
 			return UserProfile{}, authshared.ErrUserNotFound
 		}
-		return UserProfile{}, fmt.Errorf("store.GetUserProfile: query: %w", err)
+		return UserProfile{}, telemetry.Store("GetUserProfile.query", err)
 	}
 
 	var lastLoginAt *time.Time
@@ -115,7 +115,7 @@ func (s *Store) UpdateProfileTx(ctx context.Context, in UpdateProfileInput) erro
 	if err != nil {
 		// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 		// and always returns nil error. No test can trigger this branch.
-		return fmt.Errorf("store.UpdateProfileTx: begin tx: %w", err)
+		return telemetry.Store("UpdateProfileTx.begin_tx", err)
 	}
 
 	// 1. Update the user's profile columns.
@@ -125,7 +125,7 @@ func (s *Store) UpdateProfileTx(ctx context.Context, in UpdateProfileInput) erro
 		UserID:      s.ToPgtypeUUID(in.UserID),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.UpdateProfileTx: update profile: %w", err)
+		return telemetry.Store("UpdateProfileTx.update_profile", err)
 	}
 
 	// 2. Audit row.
@@ -138,14 +138,14 @@ func (s *Store) UpdateProfileTx(ctx context.Context, in UpdateProfileInput) erro
 		Metadata:  buildProfileMetadata(in),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.UpdateProfileTx: audit log: %w", err)
+		return telemetry.Store("UpdateProfileTx.audit_log", err)
 	}
 
 	if err := h.Commit(); err != nil {
 		// Unreachable via QuerierProxy: on the TxBound path commitFn is a no-op
 		// that always returns nil; on the non-TxBound path commitFn wraps
 		// pgx.Tx.Commit which the proxy cannot intercept.
-		return fmt.Errorf("store.UpdateProfileTx: commit: %w", err)
+		return telemetry.Store("UpdateProfileTx.commit", err)
 	}
 	return nil
 }
@@ -157,7 +157,7 @@ func (s *Store) UpdateProfileTx(ctx context.Context, in UpdateProfileInput) erro
 func (s *Store) GetUserIdentities(ctx context.Context, userID [16]byte) ([]LinkedIdentity, error) {
 	rows, err := s.Queries.GetUserIdentities(ctx, s.ToPgtypeUUID(userID))
 	if err != nil {
-		return nil, fmt.Errorf("store.GetUserIdentities: query: %w", err)
+		return nil, telemetry.Store("GetUserIdentities.query", err)
 	}
 
 	out := make([]LinkedIdentity, 0, len(rows))

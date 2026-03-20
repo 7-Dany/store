@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s      # scrape your app every 15 seconds
+  evaluation_interval: 15s  # evaluate alert rules every 15 seconds
+
+scrape_configs:
+  - job_name: "store_backend"
+    static_configs:
+      - targets: ["host.docker.internal:8080"]  # your Go app running on the host
+    metrics_path: /metrics
+
+  # scrape Prometheus itself so you can monitor the scraper
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]

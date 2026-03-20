@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -125,7 +124,7 @@ func (h *Handler) AssignOwner(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrUserNotVerified):
 		respond.Error(w, http.StatusUnprocessableEntity, "email_not_verified", "user email address must be verified before being assigned owner")
 	default:
-		slog.ErrorContext(r.Context(), "owner.AssignOwner: service error", "error", err)
+		log.Error(r.Context(), "AssignOwner: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
@@ -152,7 +151,7 @@ func (h *Handler) InitiateTransfer(w http.ResponseWriter, r *http.Request) {
 
 	isOwner, err := h.deps.isOwner(r.Context(), userID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "owner.InitiateTransfer: IsOwner check failed", "error", err)
+		log.Error(r.Context(), "InitiateTransfer: IsOwner check failed", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -197,7 +196,7 @@ func (h *Handler) InitiateTransfer(w http.ResponseWriter, r *http.Request) {
 	// 409 without consuming that remaining token.
 	pending, err := h.svc.HasPendingTransfer(r.Context())
 	if err != nil {
-		slog.ErrorContext(r.Context(), "owner.InitiateTransfer: HasPendingTransfer failed", "error", err)
+		log.Error(r.Context(), "InitiateTransfer: HasPendingTransfer failed", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -234,7 +233,7 @@ func (h *Handler) InitiateTransfer(w http.ResponseWriter, r *http.Request) {
 				Deliver: h.mailer.Send(mailertemplates.OwnerTransferKey),
 			}); enqErr != nil {
 				asyncCancel()
-				slog.WarnContext(r.Context(), "owner.InitiateTransfer: enqueue invitation email failed", "error", enqErr)
+				log.Warn(r.Context(), "InitiateTransfer: enqueue invitation email failed", "error", enqErr)
 			} else {
 				_ = asyncCancel // context expires at deadline; cancel is a no-op but suppresses vet warning
 			}
@@ -261,7 +260,7 @@ func (h *Handler) InitiateTransfer(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrCannotTransferToSelf):
 		respond.Error(w, http.StatusConflict, "cannot_transfer_to_self", "cannot transfer ownership to yourself")
 	default:
-		slog.ErrorContext(r.Context(), "owner.InitiateTransfer: service error", "error", err)
+		log.Error(r.Context(), "InitiateTransfer: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
@@ -310,7 +309,7 @@ func (h *Handler) AcceptTransfer(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrInitiatorNotOwner):
 		respond.Error(w, http.StatusConflict, "initiator_not_owner", "initiating user no longer holds the owner role")
 	default:
-		slog.ErrorContext(r.Context(), "owner.AcceptTransfer: service error", "error", err)
+		log.Error(r.Context(), "AcceptTransfer: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
@@ -332,7 +331,7 @@ func (h *Handler) CancelTransfer(w http.ResponseWriter, r *http.Request) {
 
 	isOwner, err := h.deps.isOwner(r.Context(), userID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "owner.CancelTransfer: IsOwner check failed", "error", err)
+		log.Error(r.Context(), "CancelTransfer: IsOwner check failed", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -349,7 +348,7 @@ func (h *Handler) CancelTransfer(w http.ResponseWriter, r *http.Request) {
 			respond.Error(w, http.StatusNotFound, "no_pending_transfer", "no pending ownership transfer found")
 			return
 		}
-		slog.ErrorContext(r.Context(), "owner.CancelTransfer: service error", "error", err)
+		log.Error(r.Context(), "CancelTransfer: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}

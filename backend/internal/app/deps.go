@@ -16,6 +16,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/mailer"
 	"github.com/7-Dany/store/backend/internal/platform/rbac"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/7-Dany/store/backend/internal/platform/token"
 )
 
@@ -95,7 +96,7 @@ type Deps struct {
 	// anywhere in the service or store layers.
 	OTPTokenTTL time.Duration
 
-	// ── RBAC ────────────────────────────────────────────────────────────────────
+	// ── RBAC ──────────────────────────────────────────────────────────────────
 	// RBAC is the platform checker used to guard admin routes.
 	// Constructed in server.New from the shared DB pool.
 	RBAC *rbac.Checker
@@ -119,6 +120,21 @@ type Deps struct {
 	// OAuth holds the Google OAuth 2.0 config values threaded from config.Config.
 	// Consumed by the oauth domain assembler to construct the provider and handler.
 	OAuth OAuthConfig
+
+	// ── Telemetry ─────────────────────────────────────────────────────────────
+	// Metrics is the shared Prometheus registry. It satisfies these interfaces
+	// structurally — no factory methods needed, pass it directly:
+	//   - authshared.AuthRecorder      (domain/auth/shared/recorder.go)
+	//   - bitcoinshared.BitcoinRecorder (domain/bitcoin/shared/recorder.go)
+	//   - jobqueue.MetricsRecorder     (internal/platform/jobqueue/metrics.go)
+	//
+	// Domain sub-packages declare a narrow local interface covering only the
+	// methods they actually call, and deps.Metrics satisfies each one
+	// structurally. The compiler verifies this at each call site.
+	//
+	// nil-safe: all *Registry hook methods are no-ops when called on nil.
+	// Tests that do not need metric assertions can leave this field unset.
+	Metrics *telemetry.Registry
 }
 
 // OAuthConfig holds the Google OAuth 2.0 configuration values.

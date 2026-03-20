@@ -3,14 +3,15 @@ package verification
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 )
+
+var log = telemetry.New("verification")
 
 // resendCooldown is the minimum interval between resend requests for the same account.
 const resendCooldown = 2 * time.Minute
@@ -48,7 +49,7 @@ func NewService(store Storer, tokenTTL time.Duration) *Service {
 // VerifyEmailTx already marks the email as verified inside its transaction,
 // so the onSuccess callback is a no-op.
 func (s *Service) VerifyEmail(ctx context.Context, in VerifyEmailInput) error {
-	slog.DebugContext(ctx, "verification.VerifyEmail: start", "email", in.Email, "ip", in.IPAddress)
+	log.Debug(ctx, "VerifyEmail: start", "email", in.Email, "ip", in.IPAddress)
 	err := authshared.ConsumeOTPToken(
 		ctx,
 		in.Code,
@@ -73,7 +74,7 @@ func (s *Service) VerifyEmail(ctx context.Context, in VerifyEmailInput) error {
 		},
 	)
 	if err == nil {
-		slog.InfoContext(ctx, "verification.VerifyEmail: success", "email", in.Email)
+		log.Info(ctx, "VerifyEmail: success", "email", in.Email)
 	}
 	return err
 }
@@ -87,7 +88,7 @@ func (s *Service) VerifyEmail(ctx context.Context, in VerifyEmailInput) error {
 // The caller must inspect ResendResult.RawCode: an empty string means
 // the request was silently suppressed and no email should be sent.
 func (s *Service) ResendVerification(ctx context.Context, in ResendInput) (authshared.OTPIssuanceResult, error) {
-	slog.DebugContext(ctx, "verification.ResendVerification: start", "email", in.Email, "ip", in.IPAddress)
+	log.Debug(ctx, "ResendVerification: start", "email", in.Email, "ip", in.IPAddress)
 
 	// 1. Look up the account. Unknown email -> silent no-op (anti-enumeration).
 	user, err := s.store.GetUserForResend(ctx, in.Email)
@@ -97,15 +98,15 @@ func (s *Service) ResendVerification(ctx context.Context, in ResendInput) (auths
 			// equalize response latency with the happy path, which calls GenerateCodeHash
 			// (bcrypt at cost 12).
 			_ = authshared.GetDummyOTPHash()
-			slog.DebugContext(ctx, "verification.ResendVerification: suppressed — email not found", "email", in.Email)
+			log.Debug(ctx, "ResendVerification: suppressed — email not found", "email", in.Email)
 			return authshared.OTPIssuanceResult{}, nil
 		}
-		return authshared.OTPIssuanceResult{}, fmt.Errorf("verification.ResendVerification: get user: %w", err)
+		return authshared.OTPIssuanceResult{}, telemetry.Service("ResendVerification.get_user", err)
 	}
 
 	// 2. Already verified or admin-locked -> silent no-op (anti-enumeration).
 	if user.EmailVerified || user.IsLocked {
-		slog.DebugContext(ctx, "verification.ResendVerification: suppressed — already verified or locked",
+		log.Debug(ctx, "ResendVerification: suppressed — already verified or locked",
 			"email", in.Email,
 			"email_verified", user.EmailVerified,
 			"is_locked", user.IsLocked,
@@ -116,13 +117,13 @@ func (s *Service) ResendVerification(ctx context.Context, in ResendInput) (auths
 	// 3. Cooldown: a fresh token was recently issued -- prevent flooding.
 	createdAt, err := s.store.GetLatestTokenCreatedAt(ctx, user.ID)
 	if err != nil {
-		return authshared.OTPIssuanceResult{}, fmt.Errorf("verification.ResendVerification: get latest token: %w", err)
+		return authshared.OTPIssuanceResult{}, telemetry.Service("ResendVerification.get_latest_token", err)
 	}
 	if !createdAt.IsZero() && time.Since(createdAt) < resendCooldown {
 		// Anti-enumeration: surfacing ErrResendTooSoon would allow an attacker to
 		// distinguish known-recently-active addresses from all others within the
 		// 2-minute window. Treat this path as a silent no-op identical to unknown email.
-		slog.InfoContext(ctx, "verification.ResendVerification: cooldown not elapsed, suppressing resend",
+		log.Info(ctx, "ResendVerification: cooldown not elapsed, suppressing resend",
 			"user_id", uuid.UUID(user.ID).String(),
 			"email", in.Email,
 		)
@@ -132,7 +133,7 @@ func (s *Service) ResendVerification(ctx context.Context, in ResendInput) (auths
 	// 4. Generate fresh OTP.
 	raw, codeHash, err := authshared.GenerateCodeHash()
 	if err != nil {
-		return authshared.OTPIssuanceResult{}, fmt.Errorf("verification.ResendVerification: generate code hash: %w", err)
+		return authshared.OTPIssuanceResult{}, telemetry.Service("ResendVerification.generate_code", err)
 	}
 
 	// 5. Invalidate prior tokens, create new one, write audit row.
@@ -143,10 +144,10 @@ func (s *Service) ResendVerification(ctx context.Context, in ResendInput) (auths
 		UserAgent: in.UserAgent,
 		TTL:       s.tokenTTL,
 	}, codeHash); err != nil {
-		return authshared.OTPIssuanceResult{}, fmt.Errorf("verification.ResendVerification: resend tx: %w", err)
+		return authshared.OTPIssuanceResult{}, telemetry.Service("ResendVerification.resend_tx", err)
 	}
 
-	slog.InfoContext(ctx, "verification.ResendVerification: OTP issued",
+	log.Info(ctx, "ResendVerification: OTP issued",
 		"user_id", uuid.UUID(user.ID).String(),
 		"email", in.Email,
 	)

@@ -35,7 +35,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 
 	store := NewStore(deps.Pool)
 	svc := NewService(store)
-	h := NewHandler(svc, deps.JWTConfig)
+	h := NewHandler(svc, deps.JWTConfig, deps.Metrics)
 
 	r.With(ipLimiter.Limit).Post("/login", h.Login)
 }

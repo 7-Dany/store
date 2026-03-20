@@ -5,10 +5,10 @@ package setpassword
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // Storer is the subset of the store that the service requires.
@@ -24,6 +24,8 @@ type Storer interface {
 	// WHERE password_hash IS NULL guard catches a concurrent write.
 	SetPasswordHashTx(ctx context.Context, in SetPasswordInput, newHash string) error
 }
+
+var log = telemetry.New("set-password")
 
 // Service is the business-logic layer for POST /set-password.
 type Service struct {
@@ -59,7 +61,7 @@ func (s *Service) SetPassword(ctx context.Context, in SetPasswordInput) error {
 		if errors.Is(err, profileshared.ErrUserNotFound) {
 			return profileshared.ErrUserNotFound
 		}
-		return fmt.Errorf("setpassword.SetPassword: get user: %w", err)
+		return telemetry.Service("setpassword.SetPassword: get user", err)
 	}
 
 	// 3. Guard: account must not already have a password.
@@ -80,7 +82,7 @@ func (s *Service) SetPassword(ctx context.Context, in SetPasswordInput) error {
 	// supported platform (crypto/rand failure requires an OS-level fault).
 	newHash, err := authshared.HashPassword(in.NewPassword)
 	if err != nil {
-		return fmt.Errorf("setpassword.SetPassword: hash password: %w", err)
+		return telemetry.Service("SetPassword.hash_password", err)
 	}
 
 	// 6. Set hash + audit in one transaction.
@@ -93,7 +95,7 @@ func (s *Service) SetPassword(ctx context.Context, in SetPasswordInput) error {
 		if errors.Is(err, profileshared.ErrUserNotFound) {
 			return profileshared.ErrUserNotFound
 		}
-		return fmt.Errorf("setpassword.SetPassword: set password hash tx: %w", err)
+		return telemetry.Service("setpassword.SetPassword: set password hash tx", err)
 	}
 
 	return nil

@@ -3,13 +3,19 @@ package register
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	"github.com/7-Dany/store/backend/internal/platform/mailer"
 	"github.com/7-Dany/store/backend/internal/platform/respond"
 )
+
+// Recorder is the narrow observability interface for the register handler.
+// *telemetry.Registry satisfies this interface structurally.
+type Recorder interface {
+	OnRegistrationSuccess()
+	OnRegistrationFailed(reason string)
+}
 
 // Servicer is the subset of the service that the handler requires.
 // *Service satisfies this interface; tests may supply a fake implementation.
@@ -21,7 +27,8 @@ type Servicer interface {
 // calls the service, maps sentinel errors to HTTP status codes, and enqueues
 // or synchronously delivers verification emails.
 type Handler struct {
-	svc Servicer
+	svc      Servicer
+	recorder Recorder
 	mailer.OTPHandlerBase
 }
 
@@ -30,8 +37,8 @@ type Handler struct {
 // When base.Queue is non-nil, mail jobs are enqueued asynchronously via the queue.
 // When base.Queue is nil, base.Send is called synchronously on the handler
 // goroutine — the preferred path in tests.
-func NewHandler(svc Servicer, base mailer.OTPHandlerBase) *Handler {
-	return &Handler{svc: svc, OTPHandlerBase: base}
+func NewHandler(svc Servicer, base mailer.OTPHandlerBase, recorder Recorder) *Handler {
+	return &Handler{svc: svc, OTPHandlerBase: base, recorder: recorder}
 }
 
 // ── Register ──────────────────────────────────────────────────────────────────
@@ -62,11 +69,13 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, authshared.ErrEmailTaken):
+			h.recorder.OnRegistrationFailed(authshared.RegistrationReasonEmailTaken)
 			respond.Error(w, http.StatusConflict, "email_taken", "this email is already registered")
 		case errors.Is(err, authshared.ErrUsernameTaken):
+			h.recorder.OnRegistrationFailed(authshared.RegistrationReasonUsernameTaken)
 			respond.Error(w, http.StatusConflict, "username_taken", "this username is already taken")
 		default:
-			slog.ErrorContext(r.Context(), "register.Register: service error", "error", err)
+			log.Error(r.Context(), "Register: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -76,12 +85,13 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		// Registration succeeded but email delivery failed entirely (queue full
 		// AND synchronous fallback failed). Tell the client so they know to retry
 		// via the resend endpoint rather than waiting indefinitely.
-		slog.ErrorContext(r.Context(), "register.Register: mail delivery failed", "error", err)
+		log.Error(r.Context(), "Register: mail delivery failed", "error", err)
 		respond.Error(w, http.StatusServiceUnavailable, "mail_delivery_failed",
 			"registration succeeded but we could not send your verification email — please use the resend endpoint")
 		return
 	}
 
+	h.recorder.OnRegistrationSuccess()
 	respond.JSON(w, http.StatusCreated, map[string]string{
 		"message": "registration successful — please check your email for a verification code",
 	})

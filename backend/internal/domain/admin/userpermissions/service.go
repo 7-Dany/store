@@ -2,10 +2,12 @@ package userpermissions
 
 import (
 	"context"
-	"fmt"
 
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 )
+
+var log = telemetry.New("userpermissions")
 
 // Storer is the data-access contract for the userpermissions service.
 type Storer interface {
@@ -46,7 +48,7 @@ func (s *Service) ListPermissions(ctx context.Context, targetUserID string) ([]U
 	}
 	perms, err := s.store.GetUserPermissions(ctx, userID)
 	if err != nil {
-		return nil, fmt.Errorf("userpermissions.ListPermissions: get permissions: %w", err)
+		return nil, telemetry.Service("ListPermissions.get_permissions", err)
 	}
 	return perms, nil
 }
@@ -70,7 +72,7 @@ func (s *Service) GrantPermission(ctx context.Context, targetUserID, actingUserI
 	//    failure here indicates a token signing misconfiguration, not user input.
 	actorID, err := parseID(actingUserID)
 	if err != nil {
-		return UserPermission{}, fmt.Errorf("userpermissions.GrantPermission: invalid acting user id: %w", err)
+		return UserPermission{}, telemetry.Service("GrantPermission.parse_actor_id", err)
 	}
 	// 3. Validate input
 	if err := ValidateGrantPermission(in); err != nil {
@@ -94,7 +96,7 @@ func (s *Service) GrantPermission(ctx context.Context, targetUserID, actingUserI
 		ExpiresAt:     in.ExpiresAt,
 	})
 	if err != nil {
-		return UserPermission{}, fmt.Errorf("userpermissions.GrantPermission: grant tx: %w", err)
+		return UserPermission{}, telemetry.Service("GrantPermission.grant_tx", err)
 	}
 	return result, nil
 }
@@ -120,13 +122,13 @@ func (s *Service) RevokePermission(ctx context.Context, targetUserID, grantID, a
 	// 3. Parse actingUserID — actingUserID comes from the JWT subject; a parse
 	//    failure here indicates a token signing misconfiguration, not user input.
 	if _, err := parseID(actingUserID); err != nil {
-		return fmt.Errorf("userpermissions.RevokePermission: invalid acting user id: %w", err)
+		return telemetry.Service("RevokePermission.parse_actor_id", err)
 	}
 	// 4. Delegate to store
 	// Security: detach from the request context so a client-timed disconnect
 	// cannot abort the revocation mid-flight, leaving the grant active.
 	if err := s.store.RevokePermission(context.WithoutCancel(ctx), gID, userID, actingUserID); err != nil {
-		return fmt.Errorf("userpermissions.RevokePermission: revoke: %w", err)
+		return telemetry.Service("RevokePermission.revoke", err)
 	}
 	return nil
 }

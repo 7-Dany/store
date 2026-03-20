@@ -7,6 +7,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -40,7 +41,7 @@ func (s *Store) GetUserForSetPassword(ctx context.Context, userID [16]byte) (Set
 		if s.IsNoRows(err) {
 			return SetPasswordUser{}, profileshared.ErrUserNotFound
 		}
-		return SetPasswordUser{}, fmt.Errorf("store.GetUserForSetPassword: query: %w", err)
+		return SetPasswordUser{}, telemetry.Store("GetUserForSetPassword.query", err)
 	}
 	// HasNoPassword is a computed column (password_hash IS NULL); sqlc generates
 	// interface{} for boolean expressions — type-assert to bool safely.
@@ -58,7 +59,7 @@ func (s *Store) GetUserForSetPassword(ctx context.Context, userID [16]byte) (Set
 func (s *Store) SetPasswordHashTx(ctx context.Context, in SetPasswordInput, newHash string) error {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return fmt.Errorf("store.SetPasswordHashTx: begin tx: %w", err)
+		return telemetry.Store("SetPasswordHashTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(s.mustParseUserID(in.UserID))
@@ -72,7 +73,7 @@ func (s *Store) SetPasswordHashTx(ctx context.Context, in SetPasswordInput, newH
 	})
 	if err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.SetPasswordHashTx: set hash: %w", err)
+		return telemetry.Store("SetPasswordHashTx.set_hash", err)
 	}
 	if n == 0 {
 		h.Rollback()
@@ -90,14 +91,14 @@ func (s *Store) SetPasswordHashTx(ctx context.Context, in SetPasswordInput, newH
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.SetPasswordHashTx: audit log: %w", err)
+		return telemetry.Store("SetPasswordHashTx.audit_log", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path h.Commit is a no-op
 	// that always returns nil; on the non-TxBound path it wraps pgx.Tx.Commit
 	// which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.SetPasswordHashTx: commit: %w", err)
+		return telemetry.Store("SetPasswordHashTx.commit", err)
 	}
 	return nil
 }

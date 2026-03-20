@@ -3,12 +3,12 @@ package password
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -62,7 +62,7 @@ func (s *Store) GetUserForPasswordReset(ctx context.Context, email string) (GetU
 		if s.IsNoRows(err) {
 			return GetUserForPasswordResetResult{}, authshared.ErrUserNotFound
 		}
-		return GetUserForPasswordResetResult{}, fmt.Errorf("store.GetUserForPasswordReset: query: %w", err)
+		return GetUserForPasswordResetResult{}, telemetry.Store("GetUserForPasswordReset.query", err)
 	}
 	return GetUserForPasswordResetResult{
 		ID:            s.UUIDToBytes(row.ID),
@@ -91,7 +91,7 @@ func (s *Store) RequestPasswordResetTx(ctx context.Context, in RequestPasswordRe
 	// always returns nil error. No test can trigger this branch.
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return fmt.Errorf("store.RequestPasswordResetTx: begin tx: %w", err)
+		return telemetry.Store("RequestPasswordResetTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(in.UserID)
@@ -107,7 +107,7 @@ func (s *Store) RequestPasswordResetTx(ctx context.Context, in RequestPasswordRe
 		return authshared.ErrResetTokenCooldown
 	} else if !s.IsNoRows(lookupErr) {
 		h.Rollback()
-		return fmt.Errorf("store.RequestPasswordResetTx: check existing token: %w", lookupErr)
+		return telemetry.Store("RequestPasswordResetTx.check existing token", lookupErr)
 	}
 
 	// 2. Create password-reset token.
@@ -125,7 +125,7 @@ func (s *Store) RequestPasswordResetTx(ctx context.Context, in RequestPasswordRe
 		if isDuplicateActiveToken(err) {
 			return authshared.ErrResetTokenCooldown
 		}
-		return fmt.Errorf("store.RequestPasswordResetTx: create token: %w", err)
+		return telemetry.Store("RequestPasswordResetTx.create_token", err)
 	}
 
 	// 3. Audit row.
@@ -138,14 +138,14 @@ func (s *Store) RequestPasswordResetTx(ctx context.Context, in RequestPasswordRe
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RequestPasswordResetTx: audit log: %w", err)
+		return telemetry.Store("RequestPasswordResetTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path Commit is a no-op
 	// that always returns nil; on the non-TxBound path it wraps pgx.Tx.Commit,
 	// which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.RequestPasswordResetTx: commit: %w", err)
+		return telemetry.Store("RequestPasswordResetTx.commit", err)
 	}
 	return nil
 }
@@ -170,7 +170,7 @@ func (s *Store) ConsumeAndUpdatePasswordTx(ctx context.Context, in ConsumeAndUpd
 	// always returns nil error. No test can trigger this branch.
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return [16]byte{}, fmt.Errorf("store.ConsumeAndUpdatePasswordTx: begin tx: %w", err)
+		return [16]byte{}, telemetry.Store("ConsumeAndUpdatePasswordTx.begin_tx", err)
 	}
 
 	// 1. Fetch token (FOR UPDATE in query).
@@ -180,7 +180,7 @@ func (s *Store) ConsumeAndUpdatePasswordTx(ctx context.Context, in ConsumeAndUpd
 		if s.IsNoRows(err) {
 			return [16]byte{}, authshared.ErrTokenNotFound
 		}
-		return [16]byte{}, fmt.Errorf("store.ConsumeAndUpdatePasswordTx: get token: %w", err)
+		return [16]byte{}, telemetry.Store("ConsumeAndUpdatePasswordTx.get_token", err)
 	}
 
 	// 2. Map to domain type.
@@ -204,7 +204,7 @@ func (s *Store) ConsumeAndUpdatePasswordTx(ctx context.Context, in ConsumeAndUpd
 	consumed, err := h.Q.ConsumePasswordResetToken(ctx, s.UUIDToPgtypeUUID(row.ID))
 	if err != nil {
 		h.Rollback()
-		return [16]byte{}, fmt.Errorf("store.ConsumeAndUpdatePasswordTx: consume token: %w", err)
+		return [16]byte{}, telemetry.Store("ConsumeAndUpdatePasswordTx.consume_token", err)
 	}
 	if consumed == 0 {
 		h.Rollback()
@@ -231,7 +231,7 @@ func (s *Store) ConsumeAndUpdatePasswordTx(ctx context.Context, in ConsumeAndUpd
 		UserID:       row.UserID,
 	}); err != nil {
 		h.Rollback()
-		return [16]byte{}, fmt.Errorf("store.ConsumeAndUpdatePasswordTx: update hash: %w", err)
+		return [16]byte{}, telemetry.Store("ConsumeAndUpdatePasswordTx.update_hash", err)
 	}
 
 	// 7. Revoke all active refresh tokens so no session survives the password change.
@@ -240,13 +240,13 @@ func (s *Store) ConsumeAndUpdatePasswordTx(ctx context.Context, in ConsumeAndUpd
 		Reason: "password_changed",
 	}); err != nil {
 		h.Rollback()
-		return [16]byte{}, fmt.Errorf("store.ConsumeAndUpdatePasswordTx: revoke refresh tokens: %w", err)
+		return [16]byte{}, telemetry.Store("ConsumeAndUpdatePasswordTx.revoke_tokens", err)
 	}
 
 	// 8. End all open sessions.
 	if err := h.Q.EndAllUserSessions(ctx, row.UserID); err != nil {
 		h.Rollback()
-		return [16]byte{}, fmt.Errorf("store.ConsumeAndUpdatePasswordTx: end sessions: %w", err)
+		return [16]byte{}, telemetry.Store("ConsumeAndUpdatePasswordTx.end_sessions", err)
 	}
 
 	// 9. password_reset_confirmed audit row — ip/ua are captured here now that
@@ -260,7 +260,7 @@ func (s *Store) ConsumeAndUpdatePasswordTx(ctx context.Context, in ConsumeAndUpd
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return [16]byte{}, fmt.Errorf("store.ConsumeAndUpdatePasswordTx: audit log (confirmed): %w", err)
+		return [16]byte{}, telemetry.Store("ConsumeAndUpdatePasswordTx.audit_confirmed", err)
 	}
 
 	// 10. password_changed audit row.
@@ -273,14 +273,14 @@ func (s *Store) ConsumeAndUpdatePasswordTx(ctx context.Context, in ConsumeAndUpd
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return [16]byte{}, fmt.Errorf("store.ConsumeAndUpdatePasswordTx: audit log (changed): %w", err)
+		return [16]byte{}, telemetry.Store("ConsumeAndUpdatePasswordTx.audit_changed", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path Commit is a no-op
 	// that always returns nil; on the non-TxBound path it wraps pgx.Tx.Commit,
 	// which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return [16]byte{}, fmt.Errorf("store.ConsumeAndUpdatePasswordTx: commit: %w", err)
+		return [16]byte{}, telemetry.Store("ConsumeAndUpdatePasswordTx.commit", err)
 	}
 	return row.UserID.Bytes, nil
 }
@@ -295,7 +295,7 @@ func (s *Store) GetUserPasswordHash(ctx context.Context, userID [16]byte) (Curre
 		if s.IsNoRows(err) {
 			return CurrentCredentials{}, authshared.ErrUserNotFound
 		}
-		return CurrentCredentials{}, fmt.Errorf("store.GetUserPasswordHash: query: %w", err)
+		return CurrentCredentials{}, telemetry.Store("GetUserPasswordHash.query", err)
 	}
 	return CurrentCredentials{
 		PasswordHash: row.PasswordHash.String,
@@ -312,7 +312,7 @@ func (s *Store) IncrementChangePasswordFailuresTx(ctx context.Context, userID [1
 	if err != nil {
 		// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 		// and always returns nil error. No test can trigger this branch.
-		return 0, fmt.Errorf("store.IncrementChangePasswordFailuresTx: begin tx: %w", err)
+		return 0, telemetry.Store("IncrementChangePasswordFailuresTx.begin_tx", err)
 	}
 
 	// 1. Increment the per-user failure counter and return the new count.
@@ -329,7 +329,7 @@ func (s *Store) IncrementChangePasswordFailuresTx(ctx context.Context, userID [1
 			return 0, nil
 		}
 		h.Rollback()
-		return 0, fmt.Errorf("store.IncrementChangePasswordFailuresTx: increment counter: %w", incrErr)
+		return 0, telemetry.Store("IncrementChangePasswordFailuresTx.increment", incrErr)
 	}
 
 	// 2. Audit row — written only after confirming the user exists.
@@ -342,12 +342,12 @@ func (s *Store) IncrementChangePasswordFailuresTx(ctx context.Context, userID [1
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return 0, fmt.Errorf("store.IncrementChangePasswordFailuresTx: audit log: %w", err)
+		return 0, telemetry.Store("IncrementChangePasswordFailuresTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: commitFn is a no-op on the TxBound path.
 	if err := h.Commit(); err != nil {
-		return 0, fmt.Errorf("store.IncrementChangePasswordFailuresTx: commit: %w", err)
+		return 0, telemetry.Store("IncrementChangePasswordFailuresTx.commit", err)
 	}
 	return count, nil
 }
@@ -359,7 +359,7 @@ func (s *Store) IncrementChangePasswordFailuresTx(ctx context.Context, userID [1
 // prevent the 200 response; the caller logs the error and continues.
 func (s *Store) ResetChangePasswordFailuresTx(ctx context.Context, userID [16]byte) error {
 	if err := s.Queries.ResetChangePasswordFailures(ctx, s.ToPgtypeUUID(userID)); err != nil {
-		return fmt.Errorf("store.ResetChangePasswordFailuresTx: reset counter: %w", err)
+		return telemetry.Store("ResetChangePasswordFailuresTx.reset", err)
 	}
 	return nil
 }
@@ -376,7 +376,7 @@ func (s *Store) GetPasswordResetTokenForVerify(ctx context.Context, email string
 		if s.IsNoRows(err) {
 			return authshared.VerificationToken{}, authshared.ErrTokenNotFound
 		}
-		return authshared.VerificationToken{}, fmt.Errorf("store.GetPasswordResetTokenForVerify: query: %w", err)
+		return authshared.VerificationToken{}, telemetry.Store("GetPasswordResetTokenForVerify.query", err)
 	}
 	return authshared.NewVerificationToken(
 		s.UUIDToBytes(row.ID),
@@ -400,7 +400,7 @@ func (s *Store) GetPasswordResetTokenCreatedAt(ctx context.Context, email string
 		if s.IsNoRows(err) {
 			return time.Time{}, authshared.ErrTokenNotFound
 		}
-		return time.Time{}, fmt.Errorf("store.GetPasswordResetTokenCreatedAt: query: %w", err)
+		return time.Time{}, telemetry.Store("GetPasswordResetTokenCreatedAt.query", err)
 	}
 	return t.UTC(), nil
 }

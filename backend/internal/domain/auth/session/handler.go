@@ -3,8 +3,6 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +10,7 @@ import (
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/respond"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/7-Dany/store/backend/internal/platform/token"
 	"github.com/google/uuid"
 )
@@ -35,6 +34,16 @@ type accessClaims struct {
 	ExpiresAt time.Time // populated from the JWT exp claim; used for blocklist TTL
 }
 
+// ── Recorder ──────────────────────────────────────────────────────────────────
+
+// Recorder is the narrow observability interface for the session handler.
+// *telemetry.Registry satisfies this interface structurally.
+type Recorder interface {
+	OnTokenRefreshed(clientType string)
+	OnLogout()
+	OnSessionRevoked()
+}
+
 // ── Servicer interface ────────────────────────────────────────────────────────
 
 // Servicer is the subset of the service that the handler requires.
@@ -50,14 +59,15 @@ type Servicer interface {
 // calls the service, maps sentinel errors to HTTP status codes, and signs JWTs.
 // blocklist may be nil; logout proceeds without access-token blocklisting when omitted.
 type Handler struct {
-	svc      Servicer
+	svc       Servicer
+	recorder  Recorder
 	blocklist kvstore.TokenBlocklist // may be nil
 	token.JWTConfig
 }
 
 // NewHandler constructs a Handler.
-func NewHandler(svc Servicer, cfg token.JWTConfig, blocklist kvstore.TokenBlocklist) *Handler {
-	return &Handler{svc: svc, JWTConfig: cfg, blocklist: blocklist}
+func NewHandler(svc Servicer, cfg token.JWTConfig, blocklist kvstore.TokenBlocklist, recorder Recorder) *Handler {
+	return &Handler{svc: svc, JWTConfig: cfg, blocklist: blocklist, recorder: recorder}
 }
 
 // ── Refresh ───────────────────────────────────────────────────────────────────
@@ -93,16 +103,18 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 			RefreshExpiry: session.RefreshExpiry,
 		}, h.JWTConfig)
 		if signErr != nil {
-			slog.ErrorContext(r.Context(), "session.Refresh: sign tokens", "error", signErr)
+			log.Error(r.Context(), "Refresh: sign tokens failed", "error", signErr)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 			return
 		}
+		h.recorder.OnTokenRefreshed("web")
 		respond.JSON(w, http.StatusOK, result)
 		return
 	}
 
 	switch {
 	case errors.Is(err, authshared.ErrTokenReuseDetected):
+		h.recorder.OnSessionRevoked()
 		h.clearRefreshCookie(w)
 		respond.Error(w, http.StatusUnauthorized, "token_reuse_detected", err.Error())
 	case errors.Is(err, authshared.ErrInvalidToken):
@@ -114,7 +126,7 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 		h.clearRefreshCookie(w)
 		respond.Error(w, http.StatusForbidden, "account_inactive", err.Error())
 	default:
-		slog.ErrorContext(r.Context(), "session.Refresh: service error", "error", err)
+		log.Error(r.Context(), "Refresh: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
@@ -178,11 +190,12 @@ func (h *Handler) Logout(w http.ResponseWriter, r *http.Request) {
 				uuid.UUID(parsedAccessClaims.JTI).String(),
 				ttl,
 			); blErr != nil {
-				slog.WarnContext(r.Context(), "session.Logout: blocklist.BlockToken failed", "error", blErr)
+				log.Warn(r.Context(), "Logout: blocklist.BlockToken failed", "error", blErr)
 			}
 		}
 	}
 
+	h.recorder.OnLogout()
 	h.clearRefreshCookie(w)
 	respond.NoContent(w)
 }
@@ -198,19 +211,19 @@ func (h *Handler) parseRefreshToken(tokenString string) (*refreshClaims, error) 
 	}
 	jti, err := uuid.Parse(c.ID)
 	if err != nil {
-		return nil, fmt.Errorf("session.parseRefreshToken: invalid jti: %w", err)
+		return nil, telemetry.Handler("parseRefreshToken.jti", err)
 	}
 	userID, err := uuid.Parse(c.Subject)
 	if err != nil {
-		return nil, fmt.Errorf("session.parseRefreshToken: invalid sub: %w", err)
+		return nil, telemetry.Handler("parseRefreshToken.sub", err)
 	}
 	sessionID, err := uuid.Parse(c.SessionID)
 	if err != nil {
-		return nil, fmt.Errorf("session.parseRefreshToken: invalid sid: %w", err)
+		return nil, telemetry.Handler("parseRefreshToken.sid", err)
 	}
 	familyID, err := uuid.Parse(c.FamilyID)
 	if err != nil {
-		return nil, fmt.Errorf("session.parseRefreshToken: invalid fid: %w", err)
+		return nil, telemetry.Handler("parseRefreshToken.fid", err)
 	}
 	return &refreshClaims{
 		JTI:       [16]byte(jti),
@@ -229,15 +242,15 @@ func (h *Handler) parseAccessToken(tokenString string) (*accessClaims, error) {
 	}
 	jti, err := uuid.Parse(c.ID)
 	if err != nil {
-		return nil, fmt.Errorf("session.parseAccessToken: invalid jti: %w", err)
+		return nil, telemetry.Handler("parseAccessToken.jti", err)
 	}
 	userID, err := uuid.Parse(c.Subject)
 	if err != nil {
-		return nil, fmt.Errorf("session.parseAccessToken: invalid sub: %w", err)
+		return nil, telemetry.Handler("parseAccessToken.sub", err)
 	}
 	sessionID, err := uuid.Parse(c.SessionID)
 	if err != nil {
-		return nil, fmt.Errorf("session.parseAccessToken: invalid sid: %w", err)
+		return nil, telemetry.Handler("parseAccessToken.sid", err)
 	}
 	return &accessClaims{
 		JTI:       [16]byte(jti),

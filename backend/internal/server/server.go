@@ -16,12 +16,13 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/config"
+	"github.com/7-Dany/store/backend/internal/db"
 	"github.com/7-Dany/store/backend/internal/platform/crypto"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/mailer"
-	"github.com/7-Dany/store/backend/internal/db"
 	"github.com/7-Dany/store/backend/internal/platform/ratelimit"
 	"github.com/7-Dany/store/backend/internal/platform/rbac"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/7-Dany/store/backend/internal/platform/token"
 )
 
@@ -36,6 +37,12 @@ import (
 //	defer cleanup()
 //	srv.ListenAndServe()
 func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) {
+	// ── Telemetry ─────────────────────────────────────────────────────────
+	// Created first so SetDefault replaces the slog global before any
+	// infrastructure error can be logged without fault enrichment.
+	registry := telemetry.NewRegistry()
+	telemetry.SetDefault(registry)
+
 	// ── Database pool ─────────────────────────────────────────────────────
 	pool, err := newPool(ctx, cfg)
 	if err != nil {
@@ -43,7 +50,7 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 	}
 
 	// ── KV store (rate-limiters + JTI blocklist) ──────────────────────────
-	kvStore, err := newKVStore(cfg)
+	kvStore, err := newKVStore(ctx, cfg)
 	if err != nil {
 		pool.Close()
 		return nil, nil, fmt.Errorf("server: kv store: %w", err)
@@ -62,6 +69,16 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 	if bl, ok := kvStore.(kvstore.TokenBlocklist); ok {
 		blocklist = bl
 	}
+
+	// ── Infra poller ──────────────────────────────────────────────────────
+	// Type-assert to RedisStatsProvider. When the in-memory fallback is active,
+	// redisStats is nil and the poller skips Redis gauge updates — correct
+	// behaviour; no false alert fires on a planned Redis fallback.
+	var redisStats telemetry.RedisStatsProvider
+	if rs, ok := kvStore.(telemetry.RedisStatsProvider); ok {
+		redisStats = rs
+	}
+	registry.StartInfraPoller(ctx, pool, redisStats, 15*time.Second)
 
 	// ── Mailer ────────────────────────────────────────────────────────────
 	m, err := mailer.New(mailer.Config{
@@ -141,6 +158,7 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		Encryptor:           encryptor,
 		RBAC:                rbacChecker,
 		BootstrapSecret:     cfg.BootstrapSecret,
+		Metrics:             registry,
 		// ApprovalSubmitter: assigned in Phase 10 when requests domain is ready.
 		OAuth: app.OAuthConfig{
 			GoogleClientID:     cfg.GoogleClientID,
@@ -155,7 +173,7 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 	// ── HTTP server ───────────────────────────────────────────────────────
 	srv := &http.Server{
 		Addr:         cfg.Addr,
-		Handler:      newRouter(ctx, deps),
+		Handler:      newRouter(ctx, deps, registry),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
@@ -200,13 +218,15 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
-func newKVStore(cfg *config.Config) (kvstore.Store, error) {
+func newKVStore(ctx context.Context, cfg *config.Config) (kvstore.Store, error) {
 	if cfg.RedisURL != "" {
 		s, err := kvstore.NewRedisStore(cfg.RedisURL)
 		if err == nil {
 			return s, nil
 		}
-		slog.Warn("server: Redis unavailable, falling back to in-memory KV store", "error", err)
+		// SetDefault has already been called, so slog.Default() IS the
+		// TelemetryHandler — this warning gets request_id enrichment automatically.
+		slog.WarnContext(ctx, "server: Redis unavailable, falling back to in-memory KV store", "error", err)
 	}
 	return kvstore.NewInMemoryStore(5 * time.Minute), nil
 }

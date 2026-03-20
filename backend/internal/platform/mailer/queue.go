@@ -3,8 +3,8 @@ package mailer
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 	"time"
 
@@ -217,10 +217,10 @@ func (q *Queue) Start(n int) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.started {
-		return fmt.Errorf("mailer: Queue.Start: already started")
+		return errors.New("mailer: Queue.Start: already started")
 	}
 	if q.closed {
-		return fmt.Errorf("mailer: Queue.Start: queue is shut down")
+		return errors.New("mailer: Queue.Start: queue is shut down")
 	}
 	q.started = true
 
@@ -267,10 +267,10 @@ func (q *Queue) Start(n int) error {
 // for details.
 func (q *Queue) Enqueue(j Job) error {
 	if j.Ctx == nil {
-		return fmt.Errorf("mailer: Job.Ctx must not be nil")
+		return errors.New("mailer: Job.Ctx must not be nil")
 	}
 	if _, hasDeadline := j.Ctx.Deadline(); !hasDeadline {
-		return fmt.Errorf(
+		return errors.New(
 			"mailer: Job.Ctx must carry a deadline; " +
 				"use context.WithDeadline or context.WithTimeout on context.Background()",
 		)
@@ -278,10 +278,10 @@ func (q *Queue) Enqueue(j Job) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed {
-		return fmt.Errorf("mailer: queue is shut down")
+		return errors.New("mailer: queue is shut down")
 	}
 	if j.Deliver == nil {
-		return fmt.Errorf("mailer: Job.Deliver must not be nil")
+		return errors.New("mailer: Job.Deliver must not be nil")
 	}
 	select {
 	case q.jobs <- j:
@@ -304,8 +304,8 @@ func deliverWithRetry(j Job, dl DeadLetterStore) {
 			// Back off before retrying; respect context cancellation.
 			select {
 			case <-j.Ctx.Done():
-				slog.WarnContext(j.Ctx, "mailer: context cancelled during retry back-off",
-				 "user_id", j.UserID, "email_token", emailToken(j.Email))
+				log.Warn(j.Ctx, "context cancelled during retry back-off",
+					"user_id", j.UserID, "email_token", emailToken(j.Email))
 				return
 			case <-time.After(delay):
 			}
@@ -319,13 +319,13 @@ func deliverWithRetry(j Job, dl DeadLetterStore) {
 		err := j.Deliver(j.Ctx, j.Email, j.Code)
 		if err == nil {
 			if attempt > 0 {
-				slog.InfoContext(j.Ctx, "mailer: delivery succeeded after retry",
+				log.Info(j.Ctx, "delivery succeeded after retry",
 					"attempt", attempt+1, "user_id", j.UserID, "email_token", emailToken(j.Email))
 			}
 			return
 		}
 		lastErr = err
-		slog.WarnContext(j.Ctx, "mailer: delivery attempt failed",
+		log.Warn(j.Ctx, "delivery attempt failed",
 			"attempt", attempt+1,
 			"max_attempts", maxDeliveryAttempts,
 			"user_id", j.UserID,
@@ -337,7 +337,7 @@ func deliverWithRetry(j Job, dl DeadLetterStore) {
 	// All attempts exhausted. Route to dead-letter store if configured so the
 	// job is not silently lost. Always emit an ERROR log regardless so operators
 	// see the failure even without a store wired.
-	slog.ErrorContext(j.Ctx, "mailer: all delivery attempts exhausted — job moved to dead-letter",
+	log.Error(j.Ctx, "all delivery attempts exhausted — job moved to dead-letter",
 		"user_id", j.UserID, "email_token", emailToken(j.Email), "last_err", lastErr)
 	if dl != nil {
 		dl.Add(DeadLetterJob{

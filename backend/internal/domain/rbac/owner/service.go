@@ -4,13 +4,17 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
+
+// log is the package-level structured logger for the owner feature.
+// One logger per package — shared across all files in the package.
+var log = telemetry.New("owner")
 
 // Storer is the data-access contract for the owner service.
 type Storer interface {
@@ -57,7 +61,7 @@ func (s *Service) AssignOwner(ctx context.Context, in AssignOwnerInput) (AssignO
 	// 1. Enforce single-owner invariant.
 	count, err := s.store.CountActiveOwners(ctx)
 	if err != nil {
-		return AssignOwnerResult{}, fmt.Errorf("service.AssignOwner: count owners: %w", err)
+		return AssignOwnerResult{}, telemetry.Service("AssignOwner.count_owners", err)
 	}
 	if count > 0 {
 		return AssignOwnerResult{}, ErrOwnerAlreadyExists
@@ -66,13 +70,13 @@ func (s *Service) AssignOwner(ctx context.Context, in AssignOwnerInput) (AssignO
 	// 2. Resolve the owner role ID.
 	roleID, err := s.store.GetOwnerRoleID(ctx)
 	if err != nil {
-		return AssignOwnerResult{}, fmt.Errorf("service.AssignOwner: get owner role: %w", err)
+		return AssignOwnerResult{}, telemetry.Service("AssignOwner.get_owner_role", err)
 	}
 
 	// 3. Fetch and validate the calling user.
 	user, err := s.store.GetActiveUserByID(ctx, in.UserID)
 	if err != nil {
-		return AssignOwnerResult{}, fmt.Errorf("service.AssignOwner: get user: %w", err)
+		return AssignOwnerResult{}, telemetry.Service("AssignOwner.get_user", err)
 	}
 	if !user.IsActive {
 		return AssignOwnerResult{}, ErrUserNotActive
@@ -89,7 +93,7 @@ func (s *Service) AssignOwner(ctx context.Context, in AssignOwnerInput) (AssignO
 		UserAgent: in.UserAgent,
 	})
 	if err != nil {
-		return AssignOwnerResult{}, fmt.Errorf("service.AssignOwner: tx: %w", err)
+		return AssignOwnerResult{}, telemetry.Service("AssignOwner.tx", err)
 	}
 	return result, nil
 }
@@ -119,7 +123,7 @@ func (s *Service) InitiateTransfer(ctx context.Context, in InitiateInput) (Initi
 	// Guard: one pending transfer at a time.
 	pending, err := s.store.HasPendingTransferToken(ctx)
 	if err != nil {
-		return InitiateResult{}, "", fmt.Errorf("service.InitiateTransfer: check pending: %w", err)
+		return InitiateResult{}, "", telemetry.Service("InitiateTransfer.check_pending", err)
 	}
 	if pending {
 		return InitiateResult{}, "", ErrTransferAlreadyPending
@@ -128,7 +132,7 @@ func (s *Service) InitiateTransfer(ctx context.Context, in InitiateInput) (Initi
 	// Validate target user eligibility.
 	target, err := s.store.GetTransferTargetUser(ctx, in.TargetUserID)
 	if err != nil {
-		return InitiateResult{}, "", fmt.Errorf("service.InitiateTransfer: get target: %w", err)
+		return InitiateResult{}, "", telemetry.Service("InitiateTransfer.get_target", err)
 	}
 	if target.IsOwner {
 		return InitiateResult{}, "", ErrUserIsAlreadyOwner
@@ -143,7 +147,7 @@ func (s *Service) InitiateTransfer(ctx context.Context, in InitiateInput) (Initi
 	// Generate raw token + bcrypt hash.
 	rawToken, codeHash, err := generateTransferToken()
 	if err != nil {
-		return InitiateResult{}, "", fmt.Errorf("service.InitiateTransfer: generate token: %w", err)
+		return InitiateResult{}, "", telemetry.Service("InitiateTransfer.generate_token", err)
 	}
 
 	ownerIDStr := uuid.UUID(in.ActingOwnerID).String()
@@ -152,12 +156,12 @@ func (s *Service) InitiateTransfer(ctx context.Context, in InitiateInput) (Initi
 	// Persist hashed token.
 	tokenID, expiresAt, err := s.store.InsertTransferToken(ctx, in.TargetUserID, target.Email, codeHash, ownerIDStr)
 	if err != nil {
-		return InitiateResult{}, "", fmt.Errorf("service.InitiateTransfer: insert token: %w", err)
+		return InitiateResult{}, "", telemetry.Service("InitiateTransfer.insert_token", err)
 	}
 
-	// Audit log (non-fatal — token is already committed).
+	// Audit log is a best-effort secondary op — token is already committed.
 	if err := s.store.WriteInitiateAuditLog(ctx, in.ActingOwnerID, targetIDStr, in.IPAddress, in.UserAgent); err != nil {
-		slog.ErrorContext(ctx, "owner.InitiateTransfer: audit log", "error", err)
+		log.Warn(ctx, "InitiateTransfer: audit log failed", "error", err)
 	}
 
 	return InitiateResult{
@@ -177,7 +181,7 @@ func (s *Service) AcceptTransfer(ctx context.Context, in AcceptInput) (AcceptRes
 	// Fetch the pending token row (FOR UPDATE to prevent concurrent accepts).
 	info, err := s.store.GetPendingTransferToken(ctx)
 	if err != nil {
-		return AcceptResult{}, fmt.Errorf("service.AcceptTransfer: get token: %w", err)
+		return AcceptResult{}, telemetry.Service("AcceptTransfer.get_token", err)
 	}
 
 	// Verify the raw token against the stored bcrypt hash.
@@ -188,13 +192,13 @@ func (s *Service) AcceptTransfer(ctx context.Context, in AcceptInput) (AcceptRes
 	// Parse the initiating owner's UUID.
 	previousOwnerID, err := parseUUID16(info.InitiatedBy)
 	if err != nil {
-		return AcceptResult{}, fmt.Errorf("service.AcceptTransfer: parse initiator uuid: %w", err)
+		return AcceptResult{}, telemetry.Service("AcceptTransfer.parse_initiator", err)
 	}
 
 	// Re-validate the target (new owner) at accept time.
 	target, err := s.store.GetTransferTargetUser(ctx, info.NewOwnerID)
 	if err != nil {
-		return AcceptResult{}, fmt.Errorf("service.AcceptTransfer: re-check target: %w", err)
+		return AcceptResult{}, telemetry.Service("AcceptTransfer.recheck_target", err)
 	}
 	if !target.IsActive || !target.EmailVerified {
 		return AcceptResult{}, ErrUserNotEligible
@@ -203,7 +207,7 @@ func (s *Service) AcceptTransfer(ctx context.Context, in AcceptInput) (AcceptRes
 	// Resolve owner role ID.
 	roleID, err := s.store.GetOwnerRoleID(ctx)
 	if err != nil {
-		return AcceptResult{}, fmt.Errorf("service.AcceptTransfer: get owner role: %w", err)
+		return AcceptResult{}, telemetry.Service("AcceptTransfer.get_owner_role", err)
 	}
 
 	// Security: detach from the request context so a client-timed disconnect cannot
@@ -218,7 +222,7 @@ func (s *Service) AcceptTransfer(ctx context.Context, in AcceptInput) (AcceptRes
 		UserAgent:       in.UserAgent,
 	})
 	if err != nil {
-		return AcceptResult{}, fmt.Errorf("service.AcceptTransfer: tx: %w", err)
+		return AcceptResult{}, telemetry.Service("AcceptTransfer.tx", err)
 	}
 
 	return AcceptResult{
@@ -235,11 +239,12 @@ func (s *Service) AcceptTransfer(ctx context.Context, in AcceptInput) (AcceptRes
 func (s *Service) CancelTransfer(ctx context.Context, actingOwnerID [16]byte, ipAddress, userAgent string) error {
 	ownerIDStr := uuid.UUID(actingOwnerID).String()
 	if err := s.store.DeletePendingTransferToken(ctx, ownerIDStr); err != nil {
-		return fmt.Errorf("service.CancelTransfer: %w", err)
+		return telemetry.Service("CancelTransfer.delete_token", err)
 	}
 	// Audit log (non-fatal).
+	// Audit log is a best-effort secondary op — token is already deleted.
 	if err := s.store.WriteCancelAuditLog(ctx, actingOwnerID, ipAddress, userAgent); err != nil {
-		slog.ErrorContext(ctx, "owner.CancelTransfer: audit log", "error", err)
+		log.Warn(ctx, "CancelTransfer: audit log failed", "error", err)
 	}
 	return nil
 }
@@ -251,12 +256,12 @@ func (s *Service) CancelTransfer(ctx context.Context, actingOwnerID [16]byte, ip
 func generateTransferToken() (rawToken, hash string, err error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
-		return "", "", fmt.Errorf("generateTransferToken: rand: %w", err)
+		return "", "", telemetry.Service("generateTransferToken.rand", err)
 	}
 	raw := base64.RawURLEncoding.EncodeToString(b)
 	h, err := bcrypt.GenerateFromPassword([]byte(raw), transferTokenBcryptCost)
 	if err != nil {
-		return "", "", fmt.Errorf("generateTransferToken: bcrypt: %w", err)
+		return "", "", telemetry.Service("generateTransferToken.bcrypt", err)
 	}
 	return raw, string(h), nil
 }
@@ -265,7 +270,7 @@ func generateTransferToken() (rawToken, hash string, err error) {
 func parseUUID16(s string) ([16]byte, error) {
 	u, err := uuid.Parse(s)
 	if err != nil {
-		return [16]byte{}, fmt.Errorf("parseUUID16: %w", err)
+		return [16]byte{}, telemetry.Service("parseUUID16.parse", err)
 	}
 	return [16]byte(u), nil
 }

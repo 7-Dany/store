@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -85,7 +85,7 @@ func (s *Store) GetCurrentUserEmail(ctx context.Context, userID [16]byte) (strin
 		if s.IsNoRows(err) {
 			return "", profileshared.ErrUserNotFound
 		}
-		return "", fmt.Errorf("store.GetCurrentUserEmail: query: %w", err)
+		return "", telemetry.Store("GetCurrentUserEmail.query", err)
 	}
 	return row.Email.String, nil
 }
@@ -99,7 +99,7 @@ func (s *Store) CheckEmailAvailableForChange(ctx context.Context, newEmail strin
 		UserID:   s.ToPgtypeUUID(userID),
 	})
 	if err != nil {
-		return false, fmt.Errorf("store.CheckEmailAvailableForChange: query: %w", err)
+		return false, telemetry.Store("CheckEmailAvailableForChange.query", err)
 	}
 	// EXISTS returns true when the email IS taken by another user; negate for "available".
 	return !exists, nil
@@ -114,7 +114,7 @@ func (s *Store) GetLatestEmailChangeVerifyTokenCreatedAt(ctx context.Context, us
 		if s.IsNoRows(err) {
 			return time.Time{}, authshared.ErrTokenNotFound
 		}
-		return time.Time{}, fmt.Errorf("store.GetLatestEmailChangeVerifyTokenCreatedAt: query: %w", err)
+		return time.Time{}, telemetry.Store("GetLatestEmailChangeVerifyTokenCreatedAt.query", err)
 	}
 	return createdAt.UTC(), nil
 }
@@ -132,7 +132,7 @@ func (s *Store) GetLatestEmailChangeVerifyTokenCreatedAt(ctx context.Context, us
 func (s *Store) RequestEmailChangeTx(ctx context.Context, in RequestEmailChangeTxInput) error {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return fmt.Errorf("store.RequestEmailChangeTx: begin tx: %w", err)
+		return telemetry.Store("RequestEmailChangeTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(in.UserID)
@@ -140,7 +140,7 @@ func (s *Store) RequestEmailChangeTx(ctx context.Context, in RequestEmailChangeT
 	// 1. Void any existing active verify tokens.
 	if err := h.Q.InvalidateUserEmailChangeVerifyTokens(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RequestEmailChangeTx: invalidate tokens: %w", err)
+		return telemetry.Store("RequestEmailChangeTx.invalidate_tokens", err)
 	}
 
 	// 2. Build metadata JSON.
@@ -162,7 +162,7 @@ func (s *Store) RequestEmailChangeTx(ctx context.Context, in RequestEmailChangeT
 			// Race: invalidate ran but a concurrent insert sneaked in before us.
 			return ErrCooldownActive
 		}
-		return fmt.Errorf("store.RequestEmailChangeTx: create token: %w", err)
+		return telemetry.Store("RequestEmailChangeTx.create_token", err)
 	}
 
 	// 4. Audit log.
@@ -175,12 +175,12 @@ func (s *Store) RequestEmailChangeTx(ctx context.Context, in RequestEmailChangeT
 		Metadata:  s.MustJSON(map[string]string{"new_email": in.NewEmail}),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RequestEmailChangeTx: audit log: %w", err)
+		return telemetry.Store("RequestEmailChangeTx.audit_log", err)
 	}
 
 	// 5. Commit.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.RequestEmailChangeTx: commit: %w", err)
+		return telemetry.Store("RequestEmailChangeTx.commit", err)
 	}
 	return nil
 }
@@ -200,7 +200,7 @@ func (s *Store) RequestEmailChangeTx(ctx context.Context, in RequestEmailChangeT
 func (s *Store) VerifyCurrentEmailTx(ctx context.Context, in VerifyCurrentEmailTxInput, checkFn func(authshared.VerificationToken) error) (VerifyCurrentEmailStoreResult, error) {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return VerifyCurrentEmailStoreResult{}, fmt.Errorf("store.VerifyCurrentEmailTx: begin tx: %w", err)
+		return VerifyCurrentEmailStoreResult{}, telemetry.Store("VerifyCurrentEmailTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(in.UserID)
@@ -212,7 +212,7 @@ func (s *Store) VerifyCurrentEmailTx(ctx context.Context, in VerifyCurrentEmailT
 		if s.IsNoRows(err) {
 			return VerifyCurrentEmailStoreResult{}, authshared.ErrTokenNotFound
 		}
-		return VerifyCurrentEmailStoreResult{}, fmt.Errorf("store.VerifyCurrentEmailTx: get token: %w", err)
+		return VerifyCurrentEmailStoreResult{}, telemetry.Store("VerifyCurrentEmailTx.get_token", err)
 	}
 
 	// 2. Build VerificationToken and run application-layer checks (expiry, attempts, hash).
@@ -234,7 +234,7 @@ func (s *Store) VerifyCurrentEmailTx(ctx context.Context, in VerifyCurrentEmailT
 	rowsAffected, err := h.Q.ConsumeEmailChangeToken(ctx, s.ToPgtypeUUID(token.ID))
 	if err != nil {
 		h.Rollback()
-		return VerifyCurrentEmailStoreResult{}, fmt.Errorf("store.VerifyCurrentEmailTx: consume token: %w", err)
+		return VerifyCurrentEmailStoreResult{}, telemetry.Store("VerifyCurrentEmailTx.consume_token", err)
 	}
 	if rowsAffected == 0 {
 		h.Rollback()
@@ -247,14 +247,14 @@ func (s *Store) VerifyCurrentEmailTx(ctx context.Context, in VerifyCurrentEmailT
 	}
 	if err := json.Unmarshal(row.Metadata, &meta); err != nil {
 		h.Rollback()
-		return VerifyCurrentEmailStoreResult{}, fmt.Errorf("store.VerifyCurrentEmailTx: parse metadata: %w", err)
+		return VerifyCurrentEmailStoreResult{}, telemetry.Store("VerifyCurrentEmailTx.parse_metadata", err)
 	}
 	newEmail := meta.NewEmail
 
 	// 5. Void any existing confirm tokens before issuing a new one.
 	if err := h.Q.InvalidateUserEmailChangeConfirmTokens(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return VerifyCurrentEmailStoreResult{}, fmt.Errorf("store.VerifyCurrentEmailTx: invalidate confirm tokens: %w", err)
+		return VerifyCurrentEmailStoreResult{}, telemetry.Store("VerifyCurrentEmailTx.invalidate_confirm_tokens", err)
 	}
 
 	// 6. Create the confirm token (email column = new_email per D-09).
@@ -267,7 +267,7 @@ func (s *Store) VerifyCurrentEmailTx(ctx context.Context, in VerifyCurrentEmailT
 	})
 	if err != nil {
 		h.Rollback()
-		return VerifyCurrentEmailStoreResult{}, fmt.Errorf("store.VerifyCurrentEmailTx: create confirm token: %w", err)
+		return VerifyCurrentEmailStoreResult{}, telemetry.Store("VerifyCurrentEmailTx.create_confirm_token", err)
 	}
 
 	// 7. Audit log.
@@ -280,12 +280,12 @@ func (s *Store) VerifyCurrentEmailTx(ctx context.Context, in VerifyCurrentEmailT
 		Metadata:  s.MustJSON(map[string]string{"new_email": newEmail}),
 	}); err != nil {
 		h.Rollback()
-		return VerifyCurrentEmailStoreResult{}, fmt.Errorf("store.VerifyCurrentEmailTx: audit log: %w", err)
+		return VerifyCurrentEmailStoreResult{}, telemetry.Store("VerifyCurrentEmailTx.audit_log", err)
 	}
 
 	// 8. Commit.
 	if err := h.Commit(); err != nil {
-		return VerifyCurrentEmailStoreResult{}, fmt.Errorf("store.VerifyCurrentEmailTx: commit: %w", err)
+		return VerifyCurrentEmailStoreResult{}, telemetry.Store("VerifyCurrentEmailTx.commit", err)
 	}
 
 	return VerifyCurrentEmailStoreResult{
@@ -319,7 +319,7 @@ func (s *Store) IncrementAttemptsTx(ctx context.Context, in authshared.Increment
 func (s *Store) ConfirmEmailChangeTx(ctx context.Context, in ConfirmEmailChangeTxInput, checkFn func(authshared.VerificationToken) error) error {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return fmt.Errorf("store.ConfirmEmailChangeTx: begin tx: %w", err)
+		return telemetry.Store("ConfirmEmailChangeTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(in.UserID)
@@ -331,7 +331,7 @@ func (s *Store) ConfirmEmailChangeTx(ctx context.Context, in ConfirmEmailChangeT
 		if s.IsNoRows(err) {
 			return authshared.ErrTokenNotFound
 		}
-		return fmt.Errorf("store.ConfirmEmailChangeTx: get confirm token: %w", err)
+		return telemetry.Store("ConfirmEmailChangeTx.get_confirm_token", err)
 	}
 
 	// 2. Build VerificationToken (email column holds new_email per D-09) and check.
@@ -353,7 +353,7 @@ func (s *Store) ConfirmEmailChangeTx(ctx context.Context, in ConfirmEmailChangeT
 	rowsAffected, err := h.Q.ConsumeEmailChangeToken(ctx, s.ToPgtypeUUID(token.ID))
 	if err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.ConfirmEmailChangeTx: consume token: %w", err)
+		return telemetry.Store("ConfirmEmailChangeTx.consume_token", err)
 	}
 	if rowsAffected == 0 {
 		h.Rollback()
@@ -367,7 +367,7 @@ func (s *Store) ConfirmEmailChangeTx(ctx context.Context, in ConfirmEmailChangeT
 		if s.IsNoRows(err) {
 			return authshared.ErrUserNotFound
 		}
-		return fmt.Errorf("store.ConfirmEmailChangeTx: get user: %w", err)
+		return telemetry.Store("ConfirmEmailChangeTx.get_user", err)
 	}
 	oldEmail := userRow.Email.String
 	newEmail := token.Email // new_email from the confirm token
@@ -383,7 +383,7 @@ func (s *Store) ConfirmEmailChangeTx(ctx context.Context, in ConfirmEmailChangeT
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return ErrEmailTaken
 		}
-		return fmt.Errorf("store.ConfirmEmailChangeTx: set email: %w", err)
+		return telemetry.Store("ConfirmEmailChangeTx.set_email", err)
 	}
 	if rowsAffected == 0 {
 		h.Rollback()
@@ -396,13 +396,13 @@ func (s *Store) ConfirmEmailChangeTx(ctx context.Context, in ConfirmEmailChangeT
 		Reason: "email_changed",
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.ConfirmEmailChangeTx: revoke refresh tokens: %w", err)
+		return telemetry.Store("ConfirmEmailChangeTx.revoke_refresh_tokens", err)
 	}
 
 	// 7. End all open sessions.
 	if err := h.Q.EndAllUserSessions(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.ConfirmEmailChangeTx: end sessions: %w", err)
+		return telemetry.Store("ConfirmEmailChangeTx.end_sessions", err)
 	}
 
 	// 8. Audit log — record both old and new email for a complete change trail.
@@ -418,12 +418,12 @@ func (s *Store) ConfirmEmailChangeTx(ctx context.Context, in ConfirmEmailChangeT
 		}),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.ConfirmEmailChangeTx: audit log: %w", err)
+		return telemetry.Store("ConfirmEmailChangeTx.audit_log", err)
 	}
 
 	// 9. Commit.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.ConfirmEmailChangeTx: commit: %w", err)
+		return telemetry.Store("ConfirmEmailChangeTx.commit", err)
 	}
 	return nil
 }

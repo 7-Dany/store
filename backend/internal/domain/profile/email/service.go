@@ -3,8 +3,6 @@ package email
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -13,6 +11,7 @@ import (
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // Storer is the data-access contract for the email-change feature.
@@ -50,6 +49,8 @@ type Storer interface {
 	// an audit row.
 	ConfirmEmailChangeTx(ctx context.Context, in ConfirmEmailChangeTxInput, checkFn func(authshared.VerificationToken) error) error
 }
+
+var log = telemetry.New("email")
 
 // Service holds the business logic for the email-change flow.
 // It has no knowledge of HTTP, pgtype, pgxpool, or JWT signing.
@@ -98,7 +99,7 @@ func (s *Service) RequestEmailChange(ctx context.Context, in EmailChangeRequestI
 		if errors.Is(err, profileshared.ErrUserNotFound) {
 			return EmailChangeRequestResult{}, profileshared.ErrUserNotFound
 		}
-		return EmailChangeRequestResult{}, fmt.Errorf("email.RequestEmailChange: get current email: %w", err)
+		return EmailChangeRequestResult{}, telemetry.Service("email.RequestEmailChange: get current email", err)
 	}
 
 	// 3. Reject no-op changes.
@@ -109,7 +110,7 @@ func (s *Service) RequestEmailChange(ctx context.Context, in EmailChangeRequestI
 	// 4. Point-in-time availability check (uniqueness re-enforced inside ConfirmEmailChangeTx).
 	available, err := s.store.CheckEmailAvailableForChange(ctx, normalised, in.UserID)
 	if err != nil {
-		return EmailChangeRequestResult{}, fmt.Errorf("email.RequestEmailChange: check availability: %w", err)
+		return EmailChangeRequestResult{}, telemetry.Service("RequestEmailChange.check_availability", err)
 	}
 	if !available {
 		return EmailChangeRequestResult{}, ErrEmailTaken
@@ -118,7 +119,7 @@ func (s *Service) RequestEmailChange(ctx context.Context, in EmailChangeRequestI
 	// 5. Cooldown check: reject if a verify token was issued less than 2 minutes ago.
 	createdAt, err := s.store.GetLatestEmailChangeVerifyTokenCreatedAt(ctx, in.UserID)
 	if err != nil && !errors.Is(err, authshared.ErrTokenNotFound) {
-		return EmailChangeRequestResult{}, fmt.Errorf("email.RequestEmailChange: cooldown check: %w", err)
+		return EmailChangeRequestResult{}, telemetry.Service("RequestEmailChange.cooldown_check", err)
 	}
 	if err == nil && time.Since(createdAt) < 2*time.Minute {
 		return EmailChangeRequestResult{}, ErrCooldownActive
@@ -127,7 +128,7 @@ func (s *Service) RequestEmailChange(ctx context.Context, in EmailChangeRequestI
 	// 6. Generate OTP.
 	raw, codeHash, err := authshared.GenerateCodeHash()
 	if err != nil {
-		return EmailChangeRequestResult{}, fmt.Errorf("email.RequestEmailChange: generate code hash: %w", err)
+		return EmailChangeRequestResult{}, telemetry.Service("RequestEmailChange.generate_code_hash", err)
 	}
 
 	// 7. Persist the verify token (context.WithoutCancel ensures the write commits
@@ -144,7 +145,7 @@ func (s *Service) RequestEmailChange(ctx context.Context, in EmailChangeRequestI
 		if errors.Is(err, ErrCooldownActive) {
 			return EmailChangeRequestResult{}, ErrCooldownActive
 		}
-		return EmailChangeRequestResult{}, fmt.Errorf("email.RequestEmailChange: request tx: %w", err)
+		return EmailChangeRequestResult{}, telemetry.Service("RequestEmailChange.request_tx", err)
 	}
 
 	// 8. Return plaintext OTP for the handler to enqueue.
@@ -163,7 +164,7 @@ func (s *Service) VerifyCurrentEmail(ctx context.Context, in EmailChangeVerifyCu
 	// 2. Generate OTP for the new-email confirm token (created inside the TX).
 	raw2, codeHash2, err := authshared.GenerateCodeHash()
 	if err != nil {
-		return EmailChangeVerifyCurrentResult{}, fmt.Errorf("email.VerifyCurrentEmail: generate confirm code hash: %w", err)
+		return EmailChangeVerifyCurrentResult{}, telemetry.Service("VerifyCurrentEmail.generate_confirm_code_hash", err)
 	}
 
 	// 3. Build checkFn — runs inside the store TX under a row-level lock.
@@ -205,7 +206,7 @@ func (s *Service) VerifyCurrentEmail(ctx context.Context, in EmailChangeVerifyCu
 					AttemptEvent: audit.EventEmailChangeVerifyAttemptFailed,
 				},
 			); incErr != nil {
-				slog.ErrorContext(ctx, "email.VerifyCurrentEmail: increment attempts", "error", incErr)
+				log.Warn(ctx, "VerifyCurrentEmail: increment attempts failed (best-effort)", "error", incErr)
 			}
 		}
 		// Pass through known sentinels; wrap everything else.
@@ -216,7 +217,7 @@ func (s *Service) VerifyCurrentEmail(ctx context.Context, in EmailChangeVerifyCu
 			errors.Is(err, authshared.ErrTokenAlreadyUsed) {
 			return EmailChangeVerifyCurrentResult{}, err
 		}
-		return EmailChangeVerifyCurrentResult{}, fmt.Errorf("email.VerifyCurrentEmail: verify tx: %w", err)
+		return EmailChangeVerifyCurrentResult{}, telemetry.Service("VerifyCurrentEmail.verify_tx", err)
 	}
 
 	// 5. Generate a random grant token (UUID string).
@@ -231,7 +232,7 @@ func (s *Service) VerifyCurrentEmail(ctx context.Context, in EmailChangeVerifyCu
 		uuid.UUID(in.UserID).String()+":"+result.NewEmail,
 		10*time.Minute,
 	); err != nil {
-		return EmailChangeVerifyCurrentResult{}, fmt.Errorf("email.VerifyCurrentEmail: set grant token: %w", err)
+		return EmailChangeVerifyCurrentResult{}, telemetry.Service("email.VerifyCurrentEmail: set grant token", err)
 	}
 
 	// 7. Return grant token and new-email OTP for the handler to deliver.
@@ -282,7 +283,7 @@ func (s *Service) ConfirmEmailChange(ctx context.Context, in EmailChangeConfirmI
 		if errors.Is(err, profileshared.ErrUserNotFound) {
 			return ConfirmEmailChangeResult{}, profileshared.ErrUserNotFound
 		}
-		return ConfirmEmailChangeResult{}, fmt.Errorf("email.ConfirmEmailChange: get old email: %w", err)
+		return ConfirmEmailChangeResult{}, telemetry.Service("ConfirmEmailChange.get_old_email", err)
 	}
 
 	// 6. Build checkFn for the confirm token.
@@ -317,7 +318,7 @@ func (s *Service) ConfirmEmailChange(ctx context.Context, in EmailChangeConfirmI
 					AttemptEvent: audit.EventEmailChangeConfirmAttemptFailed,
 				},
 			); incErr != nil {
-				slog.ErrorContext(ctx, "email.ConfirmEmailChange: increment attempts", "error", incErr)
+				log.Warn(ctx, "ConfirmEmailChange: increment attempts failed (best-effort)", "error", incErr)
 			}
 		}
 		if errors.Is(err, ErrEmailTaken) ||
@@ -331,12 +332,12 @@ func (s *Service) ConfirmEmailChange(ctx context.Context, in EmailChangeConfirmI
 		if errors.Is(err, profileshared.ErrUserNotFound) {
 			return ConfirmEmailChangeResult{}, profileshared.ErrUserNotFound
 		}
-		return ConfirmEmailChangeResult{}, fmt.Errorf("email.ConfirmEmailChange: confirm tx: %w", err)
+		return ConfirmEmailChangeResult{}, telemetry.Service("ConfirmEmailChange.confirm_tx", err)
 	}
 
 	// 8. Best-effort: delete grant token (single-use; natural expiry is the fallback).
 	if delErr := s.kv.Delete(context.WithoutCancel(ctx), "echg:gt:"+in.GrantToken); delErr != nil {
-		slog.ErrorContext(ctx, "email.ConfirmEmailChange: delete grant token", "error", delErr)
+		log.Warn(ctx, "ConfirmEmailChange: delete grant token failed (best-effort)", "error", delErr)
 	}
 
 	// 9. Best-effort: blocklist the caller's access token.
@@ -344,7 +345,7 @@ func (s *Service) ConfirmEmailChange(ctx context.Context, in EmailChangeConfirmI
 		if blErr := s.blocklist.BlockToken(
 			context.WithoutCancel(ctx), in.AccessJTI, s.accessTokenTTL,
 		); blErr != nil {
-			slog.ErrorContext(ctx, "email.ConfirmEmailChange: blocklist access token", "error", blErr)
+			log.Warn(ctx, "ConfirmEmailChange: blocklist access token failed (best-effort)", "error", blErr)
 		}
 	}
 

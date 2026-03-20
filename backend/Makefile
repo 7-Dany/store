@@ -109,8 +109,9 @@ ifeq ($(DETECTED_OS),Windows)
 	@& { Write-Host "GO TESTS:" -ForegroundColor Cyan; Write-Host "  make test               - Run unit tests (fast, no DB)"; Write-Host "  make test-integration   - Run integration tests (requires TEST_DATABASE_URL)"; Write-Host "  make test-all           - Run unit + integration tests"; Write-Host "  make test-coverage      - Unit tests with HTML coverage report"; Write-Host "  make test-uncovered     - Unit tests - print only uncovered functions/blocks"; Write-Host "" }
 	@& { Write-Host "CODE GENERATION (SQLC):" -ForegroundColor Cyan; Write-Host "  make sqlc-generate      - Generate Go code from SQL"; Write-Host "  make sqlc-vet           - Vet SQL queries with sqlc"; Write-Host "  make sqlc-compile       - Compile SQL without generating code"; Write-Host "" }
 	@& { Write-Host "SCHEMA TESTING (pgTAP):" -ForegroundColor Cyan; Write-Host "  make db-test-schema              - Run all pgTAP schema tests"; Write-Host "  make db-test-schema-verbose      - Run tests with full TAP output + timing"; Write-Host "  make db-test-schema-file         - Run one file (TEST_FILE=path)"; Write-Host "  make db-test-schema-fresh        - migrate-up then run all tests"; Write-Host "  make db-test-schema-install-pgtap - Install pgTAP extension"; Write-Host "  make db-test-schema-check-deps   - Check pgTAP is ready"; Write-Host "" }
-	@& { Write-Host "DOCKER:" -ForegroundColor Cyan; Write-Host "  make docker-up                - Start Docker containers"; Write-Host "  make docker-down              - Stop Docker containers"; Write-Host "  make docker-logs              - Tail container logs"; Write-Host "  make docker-setup             - Full setup inside Docker"; Write-Host "  make docker-db-tables         - List tables in Docker DB"; Write-Host "  make docker-db-schema         - Show schema in Docker DB"; Write-Host "  make docker-db-indexes        - List indexes in Docker DB"; Write-Host "  make docker-db-functions      - List functions in Docker DB"; Write-Host "  make docker-db-size           - Show Docker DB size"; Write-Host "  make docker-db-table-sizes    - Show per-table sizes in Docker DB"; Write-Host "  make docker-db-connect        - Connect to Docker DB with psql"; Write-Host "  make docker-db-dump           - Backup Docker database"; Write-Host "  make docker-db-restore        - Restore into Docker DB (BACKUP_FILE=path)"; Write-Host "  make docker-db-reset          - Drop, create, migrate, seed in Docker"; Write-Host "" }
+	@& { Write-Host "DOCKER:" -ForegroundColor Cyan; Write-Host "  make docker-up                - Start postgres + redis"; Write-Host "  make docker-up-full           - Start postgres + redis + prometheus (full dev stack)"; Write-Host "  make docker-down              - Stop all containers"; Write-Host "  make docker-logs              - Tail all container logs"; Write-Host "  make docker-setup             - Full setup inside Docker"; Write-Host "  make docker-db-tables         - List tables in Docker DB"; Write-Host "  make docker-db-schema         - Show schema in Docker DB"; Write-Host "  make docker-db-indexes        - List indexes in Docker DB"; Write-Host "  make docker-db-functions      - List functions in Docker DB"; Write-Host "  make docker-db-size           - Show Docker DB size"; Write-Host "  make docker-db-table-sizes    - Show per-table sizes in Docker DB"; Write-Host "  make docker-db-connect        - Connect to Docker DB with psql"; Write-Host "  make docker-db-dump           - Backup Docker database"; Write-Host "  make docker-db-restore        - Restore into Docker DB (BACKUP_FILE=path)"; Write-Host "  make docker-db-reset          - Drop, create, migrate, seed in Docker"; Write-Host "" }
 	@& { Write-Host "  make docker-migrate-status    - Show migrations in Docker DB"; Write-Host "  make docker-migrate-up        - Apply all migrations in Docker DB"; Write-Host "  make docker-migrate-down      - Rollback last migration in Docker DB"; Write-Host "  make docker-migrate-reset     - Rollback all migrations in Docker DB"; Write-Host "  make docker-migrate-redo      - Redo last migration in Docker DB"; Write-Host "  make docker-migrate-version   - Show migration version in Docker DB"; Write-Host "  make docker-seed              - Apply seed data to Docker DB"; Write-Host "  make docker-seed-reset        - Reset seed data in Docker DB"; Write-Host "  make docker-seed-status       - Show seed status in Docker DB"; Write-Host "" }
+	@& { Write-Host "PROMETHEUS:" -ForegroundColor Cyan; Write-Host "  make prometheus-up            - Start Prometheus container only"; Write-Host "  make prometheus-down          - Stop Prometheus (data preserved)"; Write-Host "  make prometheus-logs          - Tail Prometheus logs"; Write-Host "  make prometheus-reload        - Hot-reload config without restart"; Write-Host "  make prometheus-status        - Show scrape targets and their health"; Write-Host "  make prometheus-open          - Open Prometheus UI in browser"; Write-Host "  make prometheus-purge         - Stop + delete all stored metric data"; Write-Host "" }
 	@& { Write-Host "TEST DATABASE:" -ForegroundColor Cyan; Write-Host "  make test-db-setup          - Create test DB + migrate (first-run)"; Write-Host "  make test-db-reset          - Drop, create, and migrate test DB"; Write-Host "  make test-db-create         - Create test database"; Write-Host "  make test-db-drop           - Drop test database"; Write-Host "  make test-db-connect        - Connect to test database with psql"; Write-Host "" }
 	@& { Write-Host "TEST MIGRATIONS:" -ForegroundColor Cyan; Write-Host "  make test-migrate-status    - Show migration status of test DB"; Write-Host "  make test-migrate-up        - Apply all pending migrations to test DB"; Write-Host "  make test-migrate-down      - Rollback last migration on test DB"; Write-Host "  make test-migrate-reset     - Rollback ALL migrations on test DB"; Write-Host "  make test-migrate-refresh   - Rollback ALL then re-apply ALL on test DB"; Write-Host "  make test-migrate-version   - Show migration version of test DB"; Write-Host "" }
 	@& { Write-Host "TEST SEEDS:" -ForegroundColor Cyan; Write-Host "  make test-seed              - Apply seed data to test DB"; Write-Host "  make test-seed-reset        - Reset seed data on test DB"; Write-Host "  make test-seed-status       - Show seed status of test DB"; Write-Host "" }
@@ -187,9 +188,10 @@ else
 		"  make db-test-schema-check-deps   - Check pgTAP is ready" \
 		"" \
 		"DOCKER:" \
-		"  make docker-up                - Start Docker containers" \
-		"  make docker-down              - Stop Docker containers" \
-		"  make docker-logs              - Tail container logs" \
+		"  make docker-up                - Start postgres + redis" \
+		"  make docker-up-full           - Start postgres + redis + prometheus (full dev stack)" \
+		"  make docker-down              - Stop all containers" \
+		"  make docker-logs              - Tail all container logs" \
 		"  make docker-setup             - Full setup inside Docker" \
 		"  make docker-db-tables         - List tables in Docker DB" \
 		"  make docker-db-schema         - Show schema in Docker DB" \
@@ -210,6 +212,15 @@ else
 		"  make docker-seed              - Apply seed data to Docker DB" \
 		"  make docker-seed-reset        - Reset seed data in Docker DB" \
 		"  make docker-seed-status       - Show seed status in Docker DB" \
+		"" \
+		"PROMETHEUS:" \
+		"  make prometheus-up            - Start Prometheus container only" \
+		"  make prometheus-down          - Stop Prometheus (data preserved)" \
+		"  make prometheus-logs          - Tail Prometheus logs" \
+		"  make prometheus-reload        - Hot-reload config without restart" \
+		"  make prometheus-status        - Show scrape targets and their health" \
+		"  make prometheus-open          - Open Prometheus UI in browser" \
+		"  make prometheus-purge         - Stop + delete all stored metric data" \
 		"" \
 		"TEST DATABASE:" \
 		"  make test-db-setup          - Create test DB + migrate (first-run)" \
@@ -322,26 +333,28 @@ ifeq ($(DETECTED_OS),Windows)
 	@Write-Host "  QUERIES_DIR   : $(QUERIES_DIR)"
 	@Write-Host "  TESTS_DIR     : $(TESTS_DIR)"
 	@Write-Host "  PGTAP_CONTAINER: $(PGTAP_CONTAINER)"
+	@Write-Host "  PROMETHEUS_PORT: $(PROMETHEUS_PORT)"
 	@Write-Host ""
 	@Write-Host "=== Test Database ===" -ForegroundColor Cyan
 	@Write-Host "  TEST_DB_NAME    : $(TEST_DB_NAME)"
 	@Write-Host "  TEST_DB_URL     : $(TEST_DB_URL_DISPLAY)"
 else
-	@printf "%-20s %s\n" "DETECTED_OS:"    "$(DETECTED_OS)"
-	@printf "%-20s %s\n" "DB_NAME:"        "$(DB_NAME)"
-	@printf "%-20s %s\n" "DB_USER:"        "$(DB_USER)"
-	@printf "%-20s %s\n" "DB_HOST:"        "$(DB_HOST)"
-	@printf "%-20s %s\n" "DB_PORT:"        "$(DB_PORT)"
-	@printf "%-20s %s\n" "DB_SSL_MODE:"    "$(DB_SSL_MODE)"
-	@printf "%-20s %s\n" "DB_URL:"         "$(DB_URL_DISPLAY)"
-	@printf "%-20s %s\n" "SCHEMA_DIR:"     "$(SCHEMA_DIR)"
-	@printf "%-20s %s\n" "SEEDS_DIR:"      "$(SEEDS_DIR)"
-	@printf "%-20s %s\n" "QUERIES_DIR:"    "$(QUERIES_DIR)"
-	@printf "%-20s %s\n" "TESTS_DIR:"      "$(TESTS_DIR)"
-	@printf "%-20s %s\n" "PGTAP_CONTAINER:" "$(PGTAP_CONTAINER)"
+	@printf "%-22s %s\n" "DETECTED_OS:"      "$(DETECTED_OS)"
+	@printf "%-22s %s\n" "DB_NAME:"          "$(DB_NAME)"
+	@printf "%-22s %s\n" "DB_USER:"          "$(DB_USER)"
+	@printf "%-22s %s\n" "DB_HOST:"          "$(DB_HOST)"
+	@printf "%-22s %s\n" "DB_PORT:"          "$(DB_PORT)"
+	@printf "%-22s %s\n" "DB_SSL_MODE:"      "$(DB_SSL_MODE)"
+	@printf "%-22s %s\n" "DB_URL:"           "$(DB_URL_DISPLAY)"
+	@printf "%-22s %s\n" "SCHEMA_DIR:"       "$(SCHEMA_DIR)"
+	@printf "%-22s %s\n" "SEEDS_DIR:"        "$(SEEDS_DIR)"
+	@printf "%-22s %s\n" "QUERIES_DIR:"      "$(QUERIES_DIR)"
+	@printf "%-22s %s\n" "TESTS_DIR:"        "$(TESTS_DIR)"
+	@printf "%-22s %s\n" "PGTAP_CONTAINER:"  "$(PGTAP_CONTAINER)"
+	@printf "%-22s %s\n" "PROMETHEUS_PORT:"  "$(PROMETHEUS_PORT)"
 	@printf "\n"
-	@printf "%-20s %s\n" "TEST_DB_NAME:"   "$(TEST_DB_NAME)"
-	@printf "%-20s %s\n" "TEST_DB_URL:"    "$(TEST_DB_URL_DISPLAY)"
+	@printf "%-22s %s\n" "TEST_DB_NAME:"     "$(TEST_DB_NAME)"
+	@printf "%-22s %s\n" "TEST_DB_URL:"      "$(TEST_DB_URL_DISPLAY)"
 endif
 
 env-create: ## Create .env from .env.example

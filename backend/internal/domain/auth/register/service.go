@@ -3,12 +3,13 @@ package register
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"time"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
+
+var log = telemetry.New("register")
 
 // Storer is the subset of the store that the service requires.
 // *Store satisfies this interface; tests may supply a fake implementation.
@@ -51,7 +52,7 @@ func NewService(store Storer, tokenTTL ...time.Duration) *Service {
 // Timing invariant: HashPassword is called before CreateUserTx so that both the
 // happy path and the duplicate-email path incur the same bcrypt cost.
 func (s *Service) Register(ctx context.Context, in RegisterInput) (RegisterResult, error) {
-	slog.DebugContext(ctx, "register.Register: start", "email", in.Email, "ip", in.IPAddress)
+	log.Debug(ctx, "Register: start", "email", in.Email, "ip", in.IPAddress)
 
 	// 1. Hash the password.
 	// Security: HashPassword is called first — equalises timing between the happy
@@ -59,13 +60,13 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegisterResul
 	// the email is already registered (ADR-006).
 	passwordHash, err := authshared.HashPassword(in.Password)
 	if err != nil {
-		return RegisterResult{}, fmt.Errorf("register.Register: hash password: %w", err)
+		return RegisterResult{}, telemetry.Service("Register.hash_password", err)
 	}
 
 	// 2. Generate a cryptographically random OTP and its stored bcrypt hash.
 	raw, codeHash, err := s.generateCodeHash()
 	if err != nil {
-		return RegisterResult{}, fmt.Errorf("register.Register: generate code hash: %w", err)
+		return RegisterResult{}, telemetry.Service("Register.generate_code", err)
 	}
 
 	// 3. Persist the user, verification token, and audit log in one transaction.
@@ -86,7 +87,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegisterResul
 			// Security: detach from the request context so a client-timed disconnect
 			// cannot abort the audit write and hide duplicate-registration attempts.
 			if auditErr := s.store.WriteRegisterFailedAuditTx(context.WithoutCancel(ctx), [16]byte{}, in.IPAddress, in.UserAgent); auditErr != nil {
-				slog.ErrorContext(ctx, "register.Register: write register_failed audit", "error", auditErr)
+				log.Warn(ctx, "Register: write register_failed audit failed", "error", auditErr)
 			}
 		}
 		// Propagate original error unchanged — bcrypt ran in step 1 so timing is
@@ -94,7 +95,7 @@ func (s *Service) Register(ctx context.Context, in RegisterInput) (RegisterResul
 		return RegisterResult{}, err
 	}
 
-	slog.InfoContext(ctx, "register.Register: success", "user_id", created.UserID, "email", created.Email)
+	log.Info(ctx, "Register: success", "user_id", created.UserID, "email", created.Email)
 
 	return RegisterResult{
 		UserID:  created.UserID,

@@ -3,7 +3,6 @@ package token
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,8 +10,11 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/respond"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 )
+
+var log = telemetry.New("token")
 
 // Auth returns a chi-compatible middleware that validates the Bearer access
 // token and injects userID + sessionID into the request context.
@@ -69,17 +71,18 @@ func Auth(secret string, blocklist kvstore.TokenBlocklist, userStore kvstore.Sto
 				return
 			}
 
-			// 3. JTI blocklist check — fail closed on transient errors.
+			// 3. JTI blocklist check.
+			// Fail open on transient store errors: a brief Redis outage must not
+			// log out all active users. Access tokens expire in ≤15 min, bounding
+			// the window where a revoked JTI could slip through.
 			if blocklist != nil {
 				blocked, blErr := blocklist.IsTokenBlocked(r.Context(), claims.ID)
 				if blErr != nil {
-					slog.ErrorContext(r.Context(), "token.Auth: blocklist check error",
+					// Log so the Redis anomaly is visible in metrics/alerts, but
+					// let the request continue rather than terminating the session.
+					log.Error(r.Context(), "Auth: blocklist check error — failing open",
 						"jti", claims.ID, "error", blErr)
-					respond.Error(w, http.StatusUnauthorized, "token_revoked",
-						"access token has been revoked")
-					return
-				}
-				if blocked {
+				} else if blocked {
 					respond.Error(w, http.StatusUnauthorized, "token_revoked",
 						"access token has been revoked")
 					return
@@ -98,8 +101,8 @@ func Auth(secret string, blocklist kvstore.TokenBlocklist, userStore kvstore.Sto
 					blockUnix, parseErr := strconv.ParseInt(blockVal, 10, 64)
 					if parseErr != nil {
 						// Unrecognised format (e.g. legacy "1" entry) — fail closed.
-						slog.ErrorContext(r.Context(), "token.Auth: user block value unrecognised",
-							"user_id", claims.Subject, "value", blockVal)
+						log.Error(r.Context(), "Auth: user block value unrecognised",
+						"user_id", claims.Subject, "value", blockVal)
 						respond.Error(w, http.StatusUnauthorized, "token_revoked",
 							"access token has been revoked")
 						return
@@ -112,12 +115,11 @@ func Auth(secret string, blocklist kvstore.TokenBlocklist, userStore kvstore.Sto
 					}
 					// Token was issued after the reset — not blocked, continue.
 				} else if !errors.Is(ubErr, kvstore.ErrNotFound) {
-					// Transient error — fail closed.
-					slog.ErrorContext(r.Context(), "token.Auth: user block check error",
+					// Transient store error — fail open. Log for observability but
+					// do not terminate the session; the pr_blocked_user key is a
+					// post-password-reset guard that remains effective once Redis recovers.
+					log.Error(r.Context(), "Auth: user block check error — failing open",
 						"user_id", claims.Subject, "error", ubErr)
-					respond.Error(w, http.StatusUnauthorized, "token_revoked",
-						"access token has been revoked")
-					return
 				}
 				// ErrNotFound → key absent → not blocked.
 			}
@@ -134,12 +136,11 @@ func Auth(secret string, blocklist kvstore.TokenBlocklist, userStore kvstore.Sto
 						"access token has been revoked")
 					return
 				} else if !errors.Is(alErr, kvstore.ErrNotFound) {
-					// Transient error — fail closed.
-					slog.ErrorContext(r.Context(), "token.Auth: admin lock check error",
+					// Transient store error — fail open. Log for observability but
+					// do not terminate the session. Admin locks placed before the
+					// outage are re-enforced automatically once Redis recovers.
+					log.Error(r.Context(), "Auth: admin lock check error — failing open",
 						"user_id", claims.Subject, "error", alErr)
-					respond.Error(w, http.StatusUnauthorized, "token_revoked",
-						"access token has been revoked")
-					return
 				}
 				// ErrNotFound — not admin-locked, continue.
 			}

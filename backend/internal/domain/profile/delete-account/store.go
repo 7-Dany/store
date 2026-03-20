@@ -9,6 +9,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -45,7 +46,7 @@ func (s *Store) GetUserForDeletion(ctx context.Context, userID [16]byte) (Deleti
 		if s.IsNoRows(err) {
 			return DeletionUser{}, profileshared.ErrUserNotFound
 		}
-		return DeletionUser{}, fmt.Errorf("store.GetUserForDeletion: query: %w", err)
+		return DeletionUser{}, telemetry.Store("GetUserForDeletion.query", err)
 	}
 	var email *string
 	if row.Email.Valid {
@@ -73,7 +74,7 @@ func (s *Store) GetUserAuthMethods(ctx context.Context, userID [16]byte) (UserAu
 		if s.IsNoRows(err) {
 			return UserAuthMethods{}, profileshared.ErrUserNotFound
 		}
-		return UserAuthMethods{}, fmt.Errorf("store.GetUserAuthMethods: query: %w", err)
+		return UserAuthMethods{}, telemetry.Store("GetUserAuthMethods.query", err)
 	}
 	hasPassword, _ := row.HasPassword.(bool)
 	return UserAuthMethods{
@@ -94,7 +95,7 @@ func (s *Store) GetIdentityByUserAndProvider(ctx context.Context, userID [16]byt
 		if s.IsNoRows(err) {
 			return "", authshared.ErrUserNotFound
 		}
-		return "", fmt.Errorf("store.GetIdentityByUserAndProvider: query: %w", err)
+		return "", telemetry.Store("GetIdentityByUserAndProvider.query", err)
 	}
 	return row.ProviderUid, nil
 }
@@ -109,7 +110,7 @@ func (s *Store) GetAccountDeletionToken(ctx context.Context, userID [16]byte) (a
 		if s.IsNoRows(err) {
 			return authshared.VerificationToken{}, authshared.ErrTokenNotFound
 		}
-		return authshared.VerificationToken{}, fmt.Errorf("store.GetAccountDeletionToken: query: %w", err)
+		return authshared.VerificationToken{}, telemetry.Store("GetAccountDeletionToken.query", err)
 	}
 	return authshared.NewVerificationToken(
 		[16]byte(row.ID),
@@ -134,7 +135,7 @@ func (s *Store) ScheduleDeletionTx(ctx context.Context, in ScheduleDeletionInput
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return DeletionScheduled{}, fmt.Errorf("store.ScheduleDeletionTx: begin tx: %w", err)
+		return DeletionScheduled{}, telemetry.Store("ScheduleDeletionTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(s.mustParseUserID(in.UserID))
@@ -146,7 +147,7 @@ func (s *Store) ScheduleDeletionTx(ctx context.Context, in ScheduleDeletionInput
 		if s.IsNoRows(err) {
 			return DeletionScheduled{}, profileshared.ErrUserNotFound
 		}
-		return DeletionScheduled{}, fmt.Errorf("store.ScheduleDeletionTx: schedule: %w", err)
+		return DeletionScheduled{}, telemetry.Store("ScheduleDeletionTx.schedule", err)
 	}
 
 	// 2. Audit row — written after the successful UPDATE so the event is not
@@ -161,14 +162,14 @@ func (s *Store) ScheduleDeletionTx(ctx context.Context, in ScheduleDeletionInput
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return DeletionScheduled{}, fmt.Errorf("store.ScheduleDeletionTx: audit log: %w", err)
+		return DeletionScheduled{}, telemetry.Store("ScheduleDeletionTx.audit_log", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path h.Commit is a no-op
 	// that always returns nil; on the non-TxBound path h.Commit wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return DeletionScheduled{}, fmt.Errorf("store.ScheduleDeletionTx: commit: %w", err)
+		return DeletionScheduled{}, telemetry.Store("ScheduleDeletionTx.commit", err)
 	}
 
 	// ScheduleUserDeletion RETURNING deleted_at is always non-nil when err == nil.
@@ -183,7 +184,7 @@ func (s *Store) SendDeletionOTPTx(ctx context.Context, in SendDeletionOTPInput) 
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return SendDeletionOTPResult{}, fmt.Errorf("store.SendDeletionOTPTx: begin tx: %w", err)
+		return SendDeletionOTPResult{}, telemetry.Store("SendDeletionOTPTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(s.mustParseUserID(in.UserID))
@@ -191,14 +192,14 @@ func (s *Store) SendDeletionOTPTx(ctx context.Context, in SendDeletionOTPInput) 
 	// 1. Void any outstanding deletion tokens to prevent accumulation.
 	if err := h.Q.InvalidateUserDeletionTokens(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return SendDeletionOTPResult{}, fmt.Errorf("store.SendDeletionOTPTx: invalidate tokens: %w", err)
+		return SendDeletionOTPResult{}, telemetry.Store("SendDeletionOTPTx.invalidate_tokens", err)
 	}
 
 	// 2. Generate a 6-digit OTP and its bcrypt hash.
 	rawCode, codeHash, err := authshared.GenerateCodeHash()
 	if err != nil {
 		h.Rollback()
-		return SendDeletionOTPResult{}, fmt.Errorf("store.SendDeletionOTPTx: generate code: %w", err)
+		return SendDeletionOTPResult{}, telemetry.Store("SendDeletionOTPTx.generate_code", err)
 	}
 
 	// 3. Persist the token. TTLSeconds comes from config.OTPTokenTTL, passed in
@@ -218,7 +219,7 @@ func (s *Store) SendDeletionOTPTx(ctx context.Context, in SendDeletionOTPInput) 
 			pgErr.ConstraintName == "idx_ott_account_deletion_active" {
 			return SendDeletionOTPResult{}, ErrDeletionTokenCooldown
 		}
-		return SendDeletionOTPResult{}, fmt.Errorf("store.SendDeletionOTPTx: create token: %w", err)
+		return SendDeletionOTPResult{}, telemetry.Store("SendDeletionOTPTx.create_token", err)
 	}
 
 	// 4. Audit row — written after the token is persisted.
@@ -232,14 +233,14 @@ func (s *Store) SendDeletionOTPTx(ctx context.Context, in SendDeletionOTPInput) 
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return SendDeletionOTPResult{}, fmt.Errorf("store.SendDeletionOTPTx: audit log: %w", err)
+		return SendDeletionOTPResult{}, telemetry.Store("SendDeletionOTPTx.audit_log", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path h.Commit is a no-op
 	// that always returns nil; on the non-TxBound path h.Commit wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return SendDeletionOTPResult{}, fmt.Errorf("store.SendDeletionOTPTx: commit: %w", err)
+		return SendDeletionOTPResult{}, telemetry.Store("SendDeletionOTPTx.commit", err)
 	}
 
 	return SendDeletionOTPResult{RawCode: rawCode}, nil
@@ -253,7 +254,7 @@ func (s *Store) ConfirmOTPDeletionTx(ctx context.Context, in ScheduleDeletionInp
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return DeletionScheduled{}, fmt.Errorf("store.ConfirmOTPDeletionTx: begin tx: %w", err)
+		return DeletionScheduled{}, telemetry.Store("ConfirmOTPDeletionTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(s.mustParseUserID(in.UserID))
@@ -266,7 +267,7 @@ func (s *Store) ConfirmOTPDeletionTx(ctx context.Context, in ScheduleDeletionInp
 		if s.IsNoRows(err) {
 			return DeletionScheduled{}, authshared.ErrTokenNotFound
 		}
-		return DeletionScheduled{}, fmt.Errorf("store.ConfirmOTPDeletionTx: get token: %w", err)
+		return DeletionScheduled{}, telemetry.Store("ConfirmOTPDeletionTx.get_token", err)
 	}
 
 	// 2. Consume the locked token. 0 rows means a concurrent submission already
@@ -274,7 +275,7 @@ func (s *Store) ConfirmOTPDeletionTx(ctx context.Context, in ScheduleDeletionInp
 	n, err := h.Q.ConsumeAccountDeletionToken(ctx, s.UUIDToPgtypeUUID(lockedRow.ID))
 	if err != nil {
 		h.Rollback()
-		return DeletionScheduled{}, fmt.Errorf("store.ConfirmOTPDeletionTx: consume token: %w", err)
+		return DeletionScheduled{}, telemetry.Store("ConfirmOTPDeletionTx.consume_token", err)
 	}
 	if n == 0 {
 		h.Rollback()
@@ -288,7 +289,7 @@ func (s *Store) ConfirmOTPDeletionTx(ctx context.Context, in ScheduleDeletionInp
 		if s.IsNoRows(err) {
 			return DeletionScheduled{}, profileshared.ErrUserNotFound
 		}
-		return DeletionScheduled{}, fmt.Errorf("store.ConfirmOTPDeletionTx: schedule: %w", err)
+		return DeletionScheduled{}, telemetry.Store("ConfirmOTPDeletionTx.schedule", err)
 	}
 
 	// 4. Audit row — context.WithoutCancel so a client disconnect cannot abort it.
@@ -301,14 +302,14 @@ func (s *Store) ConfirmOTPDeletionTx(ctx context.Context, in ScheduleDeletionInp
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return DeletionScheduled{}, fmt.Errorf("store.ConfirmOTPDeletionTx: audit log: %w", err)
+		return DeletionScheduled{}, telemetry.Store("ConfirmOTPDeletionTx.audit_log", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path h.Commit is a no-op
 	// that always returns nil; on the non-TxBound path h.Commit wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return DeletionScheduled{}, fmt.Errorf("store.ConfirmOTPDeletionTx: commit: %w", err)
+		return DeletionScheduled{}, telemetry.Store("ConfirmOTPDeletionTx.commit", err)
 	}
 
 	// tokenID is the service-layer token ID passed in for documentation purposes.
@@ -328,7 +329,7 @@ func (s *Store) CancelDeletionTx(ctx context.Context, in CancelDeletionInput) er
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return fmt.Errorf("store.CancelDeletionTx: begin tx: %w", err)
+		return telemetry.Store("CancelDeletionTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(s.mustParseUserID(in.UserID))
@@ -337,7 +338,7 @@ func (s *Store) CancelDeletionTx(ctx context.Context, in CancelDeletionInput) er
 	n, err := h.Q.CancelUserDeletion(ctx, userPgUUID)
 	if err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.CancelDeletionTx: cancel: %w", err)
+		return telemetry.Store("CancelDeletionTx.cancel", err)
 	}
 	if n == 0 {
 		h.Rollback()
@@ -354,14 +355,14 @@ func (s *Store) CancelDeletionTx(ctx context.Context, in CancelDeletionInput) er
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.CancelDeletionTx: audit log: %w", err)
+		return telemetry.Store("CancelDeletionTx.audit_log", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path h.Commit is a no-op
 	// that always returns nil; on the non-TxBound path h.Commit wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.CancelDeletionTx: commit: %w", err)
+		return telemetry.Store("CancelDeletionTx.commit", err)
 	}
 
 	return nil

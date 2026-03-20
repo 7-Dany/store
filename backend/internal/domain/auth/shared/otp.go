@@ -5,12 +5,12 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math/big"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -79,12 +79,12 @@ func GenerateCodeHash() (raw, hash string, err error) {
 	}
 	n, randErr := rand.Int(rand.Reader, big.NewInt(1_000_000))
 	if randErr != nil {
-		return "", "", fmt.Errorf("authshared.GenerateCodeHash: rand OTP: %w", randErr)
+		return "", "", telemetry.Service("GenerateCodeHash.rand_otp", randErr)
 	}
 	raw = fmt.Sprintf("%06d", n.Int64())
 	b, hashErr := bcrypt.GenerateFromPassword([]byte(raw), bcryptCost)
 	if hashErr != nil {
-		return "", "", fmt.Errorf("authshared.GenerateCodeHash: bcrypt: %w", hashErr)
+		return "", "", telemetry.Service("GenerateCodeHash.bcrypt", hashErr)
 	}
 	return raw, string(b), nil
 }
@@ -98,7 +98,7 @@ func GenerateCodeHash() (raw, hash string, err error) {
 func GenerateCodeHashForTest(code string) (string, error) {
 	h, err := bcrypt.GenerateFromPassword([]byte(code), bcryptCost)
 	if err != nil {
-		return "", fmt.Errorf("authshared.GenerateCodeHashForTest: %w", err)
+		return "", telemetry.Service("GenerateCodeHashForTest.hash", err)
 	}
 	return string(h), nil
 }
@@ -165,7 +165,7 @@ func ConsumeOTPToken(
 		// Security: detach from the request context so a client-timed disconnect
 		// cannot abort the counter increment and grant unlimited OTP retries (ADR-004).
 		if incErr := incrementFn(context.WithoutCancel(ctx), captured); incErr != nil {
-			slog.ErrorContext(ctx, "authshared.ConsumeOTPToken: incrementFn failed", "error", incErr)
+			log.Warn(ctx, "ConsumeOTPToken: incrementFn failed", "error", incErr)
 		}
 		return ErrInvalidCode
 	}

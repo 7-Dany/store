@@ -73,6 +73,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 		deps.SecureCookies,
 		deps.KVStore,    // grantStore
 		10*time.Minute,  // grantTTL
+		deps.Metrics,
 	)
 
 	ratelimit.RouteWithIP(r, http.MethodPost, "/password/reset",        h.ForgotPassword, forgotLimiter)

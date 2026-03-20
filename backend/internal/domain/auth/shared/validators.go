@@ -2,10 +2,10 @@ package authshared
 
 import (
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 )
 
@@ -32,7 +32,7 @@ var reEmail = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
 func ParseUserID(logPrefix, userID string) ([16]byte, error) {
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		return [16]byte{}, fmt.Errorf("%s: parse user id: %w", logPrefix, err)
+		return [16]byte{}, telemetry.Service(logPrefix+": parse user id", err)
 	}
 	return [16]byte(uid), nil
 }

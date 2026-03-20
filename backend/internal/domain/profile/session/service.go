@@ -2,9 +2,9 @@ package session
 
 import (
 	"context"
-	"fmt"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 )
 
@@ -14,6 +14,8 @@ type Storer interface {
 	GetActiveSessions(ctx context.Context, userID [16]byte) ([]ActiveSession, error)
 	RevokeSessionTx(ctx context.Context, sessionID, ownerUserID [16]byte, ipAddress, userAgent string) error
 }
+
+var log = telemetry.New("session")
 
 // Service holds pure business logic for the session sub-package.
 // It has no knowledge of HTTP, pgtype, pgxpool, or JWT signing.
@@ -36,7 +38,7 @@ func (s *Service) GetActiveSessions(ctx context.Context, userID string) ([]Activ
 	}
 	sessions, err := s.store.GetActiveSessions(ctx, uid)
 	if err != nil {
-		return nil, fmt.Errorf("profile.GetActiveSessions: get sessions: %w", err)
+		return nil, telemetry.Service("GetActiveSessions.get_sessions", err)
 	}
 	return sessions, nil
 }
@@ -51,11 +53,11 @@ func (s *Service) RevokeSession(ctx context.Context, userID, sessionID, ipAddres
 	}
 	sid, err := uuid.Parse(sessionID)
 	if err != nil {
-		return fmt.Errorf("profile.RevokeSession: parse session id: %w", err)
+		return telemetry.Service("RevokeSession.parse_session_id", err)
 	}
 	// Security: use WithoutCancel so a client disconnect cannot abort the session revocation commit.
 	if err := s.store.RevokeSessionTx(context.WithoutCancel(ctx), [16]byte(sid), uid, ipAddress, userAgent); err != nil {
-		return fmt.Errorf("profile.RevokeSession: revoke session: %w", err)
+		return telemetry.Service("RevokeSession.revoke_session", err)
 	}
 	return nil
 }

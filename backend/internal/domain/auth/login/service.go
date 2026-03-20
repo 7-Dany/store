@@ -3,14 +3,15 @@ package login
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
+
+var log = telemetry.New("login")
 
 // Storer is the data-access contract for the login service.
 type Storer interface {
@@ -53,7 +54,7 @@ func NewService(store Storer) *Service {
 // itself limits exploitation, and the simpler guard order is easier to audit.
 // See login.md §2.2 for the full analysis.
 func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, error) {
-	slog.DebugContext(ctx, "login.Login: start", "identifier", in.Identifier, "ip", in.IPAddress)
+	log.Debug(ctx, "Login: start", "identifier", in.Identifier, "ip", in.IPAddress)
 
 	// 1. Look up the user. On no-rows, fall through to a dummy bcrypt compare
 	// below so the timing is indistinguishable from a wrong-password attempt.
@@ -77,15 +78,15 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 		return LoggedInSession{}, authshared.ErrInvalidCredentials
 	}
 	if lookupErr != nil {
-		return LoggedInSession{}, fmt.Errorf("login.Login: get user: %w", lookupErr)
+		return LoggedInSession{}, telemetry.Service("Login.get_user", lookupErr)
 	}
 
 	// 4. Wrong password → increment failure counter, return ErrInvalidCredentials.
 	if pwErr != nil {
-		slog.DebugContext(ctx, "login.Login: wrong password", "user_id", uuid.UUID(user.ID).String())
+		log.Debug(ctx, "Login: wrong password", "user_id", uuid.UUID(user.ID).String())
 		if !errors.Is(pwErr, authshared.ErrInvalidCredentials) {
 			// Malformed hash is a data-integrity alert, not a user error.
-			return LoggedInSession{}, fmt.Errorf("login.Login: password check: %w", pwErr)
+			return LoggedInSession{}, telemetry.Service("Login.password_check", pwErr)
 		}
 		// Security: context.WithoutCancel prevents a client-timed disconnect from
 		// aborting the counter increment and granting unlimited wrong-password attempts.
@@ -95,7 +96,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 			in.IPAddress,
 			in.UserAgent,
 		); incErr != nil {
-			slog.ErrorContext(ctx, "login.Login: IncrementLoginFailuresTx", "error", incErr)
+			log.Warn(ctx, "Login: increment failures failed", "error", incErr)
 		}
 		return LoggedInSession{}, authshared.ErrInvalidCredentials
 	}
@@ -105,7 +106,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 	// with a Retry-After header rather than 423 (permanent admin lock).
 	if user.LoginLockedUntil != nil && user.LoginLockedUntil.After(time.Now()) {
 		retryAfter := time.Until(*user.LoginLockedUntil)
-		slog.DebugContext(ctx, "login.Login: guard rejected — time_locked",
+		log.Debug(ctx, "Login: guard rejected — time_locked",
 			"user_id", uuid.UUID(user.ID).String(),
 			"retry_after", retryAfter.Round(time.Second).String(),
 		)
@@ -118,7 +119,7 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 	case user.AdminLocked:
 		// Admin-imposed lock checked before OTP lock: the unlock OTP flow cannot
 		// clear admin_locked, so surfacing this first gives the clearest guidance.
-		slog.DebugContext(ctx, "login.Login: guard rejected — admin_locked", "user_id", uuid.UUID(user.ID).String())
+		log.Debug(ctx, "Login: guard rejected — admin_locked", "user_id", uuid.UUID(user.ID).String())
 		if auditErr := s.store.WriteLoginFailedAuditTx(
 			context.WithoutCancel(ctx),
 			user.ID,
@@ -126,11 +127,11 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 			in.IPAddress,
 			in.UserAgent,
 		); auditErr != nil {
-			slog.ErrorContext(ctx, "login.Login: write login_failed audit", "error", auditErr)
+			log.Warn(ctx, "Login: write login_failed audit failed", "error", auditErr)
 		}
 		return LoggedInSession{}, authshared.ErrAdminLocked
 	case user.IsLocked:
-		slog.DebugContext(ctx, "login.Login: guard rejected — account_locked", "user_id", uuid.UUID(user.ID).String())
+		log.Debug(ctx, "Login: guard rejected — account_locked", "user_id", uuid.UUID(user.ID).String())
 		// Security: WithoutCancel so audit write survives a client disconnect.
 		if auditErr := s.store.WriteLoginFailedAuditTx(
 			context.WithoutCancel(ctx),
@@ -139,25 +140,25 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 			in.IPAddress,
 			in.UserAgent,
 		); auditErr != nil {
-			slog.ErrorContext(ctx, "login.Login: write login_failed audit", "error", auditErr)
+			log.Warn(ctx, "Login: write login_failed audit failed", "error", auditErr)
 		}
 		return LoggedInSession{}, authshared.ErrAccountLocked
 	case !user.EmailVerified:
-		slog.DebugContext(ctx, "login.Login: guard rejected — email_not_verified", "user_id", uuid.UUID(user.ID).String())
+		log.Debug(ctx, "Login: guard rejected — email_not_verified", "user_id", uuid.UUID(user.ID).String())
 		if auditErr := s.store.WriteLoginFailedAuditTx(
 			context.WithoutCancel(ctx), user.ID, "email_not_verified",
 			in.IPAddress, in.UserAgent,
 		); auditErr != nil {
-			slog.ErrorContext(ctx, "login.Login: write login_failed audit", "error", auditErr)
+			log.Warn(ctx, "Login: write login_failed audit failed", "error", auditErr)
 		}
 		return LoggedInSession{}, authshared.ErrEmailNotVerified
 	case !user.IsActive:
-		slog.DebugContext(ctx, "login.Login: guard rejected — account_inactive", "user_id", uuid.UUID(user.ID).String())
+		log.Debug(ctx, "Login: guard rejected — account_inactive", "user_id", uuid.UUID(user.ID).String())
 		if auditErr := s.store.WriteLoginFailedAuditTx(
 			context.WithoutCancel(ctx), user.ID, "account_inactive",
 			in.IPAddress, in.UserAgent,
 		); auditErr != nil {
-			slog.ErrorContext(ctx, "login.Login: write login_failed audit", "error", auditErr)
+			log.Warn(ctx, "Login: write login_failed audit failed", "error", auditErr)
 		}
 		return LoggedInSession{}, authshared.ErrAccountInactive
 	}
@@ -169,16 +170,16 @@ func (s *Service) Login(ctx context.Context, in LoginInput) (LoggedInSession, er
 		UserAgent: in.UserAgent,
 	})
 	if err != nil {
-		return LoggedInSession{}, fmt.Errorf("login.Login: login tx: %w", err)
+		return LoggedInSession{}, telemetry.Service("Login.login_tx", err)
 	}
 
 	// 8. Clear the failure counter now that login succeeded.
 	// Security: WithoutCancel so a client disconnect cannot skip the reset.
 	if resetErr := s.store.ResetLoginFailuresTx(context.WithoutCancel(ctx), user.ID); resetErr != nil {
-		slog.ErrorContext(ctx, "login.Login: ResetLoginFailuresTx", "error", resetErr)
+		log.Warn(ctx, "Login: reset login failures failed", "error", resetErr)
 	}
 
-	slog.InfoContext(ctx, "login.Login: success",
+	log.Info(ctx, "Login: success",
 		"user_id", uuid.UUID(user.ID).String(),
 		"session_id", uuid.UUID(session.SessionID).String(),
 	)

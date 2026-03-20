@@ -3,7 +3,6 @@ package roles
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/7-Dany/store/backend/internal/platform/rbac"
@@ -40,7 +39,7 @@ func NewHandler(svc Servicer) *Handler {
 func (h *Handler) ListRoles(w http.ResponseWriter, r *http.Request) {
 	roles, err := h.svc.ListRoles(r.Context())
 	if err != nil {
-		slog.ErrorContext(r.Context(), "roles.ListRoles: service error", "error", err)
+		log.Error(r.Context(), "ListRoles: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -71,7 +70,7 @@ func (h *Handler) CreateRole(w http.ResponseWriter, r *http.Request) {
 			respond.Error(w, http.StatusConflict, "role_name_conflict", "a role with this name already exists")
 			return
 		}
-		slog.ErrorContext(r.Context(), "roles.CreateRole: service error", "error", err)
+		log.Error(r.Context(), "CreateRole: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -87,7 +86,7 @@ func (h *Handler) GetRole(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrRoleNotFound):
 			respond.Error(w, http.StatusNotFound, "role_not_found", "role not found")
 		default:
-			slog.ErrorContext(r.Context(), "roles.GetRole: service error", "error", err)
+			log.Error(r.Context(), "GetRole: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -120,7 +119,7 @@ func (h *Handler) UpdateRole(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrRoleNameConflict):
 			respond.Error(w, http.StatusConflict, "role_name_conflict", "a role with this name already exists")
 		default:
-			slog.ErrorContext(r.Context(), "roles.UpdateRole: service error", "error", err)
+			log.Error(r.Context(), "UpdateRole: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -139,7 +138,7 @@ func (h *Handler) DeleteRole(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, rbac.ErrSystemRoleImmutable):
 			respond.Error(w, http.StatusConflict, "system_role_immutable", "system roles cannot be modified")
 		default:
-			slog.ErrorContext(r.Context(), "roles.DeleteRole: service error", "error", err)
+			log.Error(r.Context(), "DeleteRole: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -156,7 +155,7 @@ func (h *Handler) ListRolePermissions(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrRoleNotFound):
 			respond.Error(w, http.StatusNotFound, "role_not_found", "role not found")
 		default:
-			slog.ErrorContext(r.Context(), "roles.ListRolePermissions: service error", "error", err)
+			log.Error(r.Context(), "ListRolePermissions: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -215,7 +214,7 @@ func (h *Handler) AddRolePermission(w http.ResponseWriter, r *http.Request) {
 			respond.Error(w, http.StatusUnprocessableEntity, "scope_not_allowed",
 				"scope is not permitted for this permission")
 		default:
-			slog.ErrorContext(r.Context(), "roles.AddRolePermission: service error", "error", err)
+			log.Error(r.Context(), "AddRolePermission: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -238,7 +237,7 @@ func (h *Handler) RemoveRolePermission(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrRolePermissionNotFound):
 			respond.Error(w, http.StatusNotFound, "role_permission_not_found", "role permission grant not found")
 		default:
-			slog.ErrorContext(r.Context(), "roles.RemoveRolePermission: service error", "error", err)
+			log.Error(r.Context(), "RemoveRolePermission: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return

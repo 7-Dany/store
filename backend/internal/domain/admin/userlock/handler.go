@@ -3,7 +3,6 @@ package userlock
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	adminshared "github.com/7-Dany/store/backend/internal/domain/admin/shared"
@@ -102,7 +101,7 @@ func (h *Handler) writeLockError(w http.ResponseWriter, r *http.Request, err err
 	case errors.Is(err, platformrbac.ErrCannotLockOwner):
 		respond.Error(w, http.StatusConflict, "cannot_lock_owner", "owner accounts cannot be admin-locked")
 	default:
-		slog.ErrorContext(r.Context(), "userlock: service error", "error", err)
+		log.Error(r.Context(), "writeLockError: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }

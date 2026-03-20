@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // KeySize is the required AES-256 key length in bytes.
@@ -55,7 +57,7 @@ var (
 // Returns ErrWeakKey if key is all zero bytes (misconfiguration guard).
 func New(key []byte) (*Encryptor, error) {
 	if len(key) != 32 {
-		return nil, fmt.Errorf("crypto.New: %w: got %d", ErrInvalidKeySize, len(key))
+		return nil, telemetry.Crypto("New.invalid_key_size", fmt.Errorf("%w: got %d", ErrInvalidKeySize, len(key)))
 	}
 
 	// Security: an all-zero key almost always means the env var was not loaded.
@@ -68,17 +70,17 @@ func New(key []byte) (*Encryptor, error) {
 		}
 	}
 	if allZero {
-		return nil, fmt.Errorf("crypto.New: %w", ErrWeakKey)
+		return nil, telemetry.Crypto("New.weak_key", ErrWeakKey)
 	}
 
 	block, err := newCipher(key)
 	if err != nil {
-		return nil, fmt.Errorf("crypto.New: aes.NewCipher: %w", err)
+		return nil, telemetry.Crypto("New.aes_new_cipher", err)
 	}
 
 	aead, err := newGCM(block)
 	if err != nil {
-		return nil, fmt.Errorf("crypto.New: cipher.NewGCM: %w", err)
+		return nil, telemetry.Crypto("New.cipher_new_gcm", err)
 	}
 
 	return &Encryptor{aead: aead}, nil
@@ -96,7 +98,7 @@ func (e *Encryptor) Encrypt(plaintext string) (string, error) {
 	// break GCM confidentiality. randReader is crypto/rand.Reader in production
 	// and is swapped for a deterministic source only in unit tests.
 	if _, err := io.ReadFull(randReader, nonce); err != nil {
-		return "", fmt.Errorf("crypto.Encrypt: generate nonce: %w", err)
+		return "", telemetry.Crypto("Encrypt.generate_nonce", err)
 	}
 
 	// Seal appends ciphertext+tag to nonce in one allocation.
@@ -112,23 +114,23 @@ func (e *Encryptor) Encrypt(plaintext string) (string, error) {
 // decoding fails or GCM authentication fails (indicating tampering or a wrong key).
 func (e *Encryptor) Decrypt(ciphertext string) (string, error) {
 	if len(ciphertext) < len(prefix) || ciphertext[:len(prefix)] != prefix {
-		return "", fmt.Errorf("crypto.Decrypt: %w", ErrMissingSentinel)
+		return "", telemetry.Crypto("Decrypt.missing_sentinel", ErrMissingSentinel)
 	}
 
 	data, err := base64.StdEncoding.DecodeString(ciphertext[len(prefix):])
 	if err != nil {
-		return "", fmt.Errorf("crypto.Decrypt: base64 decode: %w", err)
+		return "", telemetry.Crypto("Decrypt.base64_decode", err)
 	}
 
 	nonceSize := e.aead.NonceSize()
 	if len(data) < nonceSize {
-		return "", fmt.Errorf("crypto.Decrypt: %w", ErrCiphertextTooShort)
+		return "", telemetry.Crypto("Decrypt.ciphertext_too_short", ErrCiphertextTooShort)
 	}
 
 	nonce, data := data[:nonceSize], data[nonceSize:]
 	plaintext, err := e.aead.Open(nil, nonce, data, nil)
 	if err != nil {
-		return "", fmt.Errorf("crypto.Decrypt: decrypt/authenticate: %w", err)
+		return "", telemetry.Crypto("Decrypt.decrypt_authenticate", err)
 	}
 
 	return string(plaintext), nil

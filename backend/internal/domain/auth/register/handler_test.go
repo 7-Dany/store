@@ -16,7 +16,6 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/mailer"
 	mailertest "github.com/7-Dany/store/backend/internal/platform/mailer/testutil"
 	"github.com/stretchr/testify/require"
-
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -39,7 +38,7 @@ func newHandler(t *testing.T, svc register.Servicer, mailerErr error) *register.
 		base = mailertest.NoopBase()
 	}
 	base.Timeout = 5 * time.Second
-	return register.NewHandler(svc, base)
+	return register.NewHandler(svc, base, authshared.NoopAuthRecorder{})
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────

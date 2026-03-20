@@ -2,12 +2,12 @@ package unlock
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -44,7 +44,7 @@ func (s *Store) GetUserForUnlock(ctx context.Context, email string) (UnlockUser,
 		if s.IsNoRows(err) {
 			return UnlockUser{}, authshared.ErrUserNotFound
 		}
-		return UnlockUser{}, fmt.Errorf("store.GetUserForUnlock: query: %w", err)
+		return UnlockUser{}, telemetry.Store("GetUserForUnlock.query", err)
 	}
 	var loginLockedUntil *time.Time
 	if row.LoginLockedUntil.Valid {
@@ -70,7 +70,7 @@ func (s *Store) GetUnlockToken(ctx context.Context, email string) (authshared.Ve
 		if s.IsNoRows(err) {
 			return authshared.VerificationToken{}, authshared.ErrTokenNotFound
 		}
-		return authshared.VerificationToken{}, fmt.Errorf("store.GetUnlockToken: query: %w", err)
+		return authshared.VerificationToken{}, telemetry.Store("GetUnlockToken.query", err)
 	}
 	return authshared.NewVerificationToken(
 		s.UUIDToBytes(row.ID),
@@ -94,7 +94,7 @@ func (s *Store) RequestUnlockTx(ctx context.Context, in RequestUnlockStoreInput)
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return fmt.Errorf("store.RequestUnlockTx: begin tx: %w", err)
+		return telemetry.Store("RequestUnlockTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(in.UserID)
@@ -111,7 +111,7 @@ func (s *Store) RequestUnlockTx(ctx context.Context, in RequestUnlockStoreInput)
 		IpAddress:  s.IPToNullable(in.IPAddress),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RequestUnlockTx: create token: %w", err)
+		return telemetry.Store("RequestUnlockTx.create_token", err)
 	}
 
 	// 2. Audit row.
@@ -124,14 +124,14 @@ func (s *Store) RequestUnlockTx(ctx context.Context, in RequestUnlockStoreInput)
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RequestUnlockTx: audit log: %w", err)
+		return telemetry.Store("RequestUnlockTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path commitFn is a no-op
 	// that always returns nil; on the non-TxBound path commitFn wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.RequestUnlockTx: commit: %w", err)
+		return telemetry.Store("RequestUnlockTx.commit", err)
 	}
 	return nil
 }
@@ -151,7 +151,7 @@ func (s *Store) ConsumeUnlockTokenTx(ctx context.Context, email string,
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return fmt.Errorf("store.ConsumeUnlockTokenTx: begin tx: %w", err)
+		return telemetry.Store("ConsumeUnlockTokenTx.begin_tx", err)
 	}
 
 	// 1. Fetch token (FOR UPDATE in query).
@@ -164,14 +164,14 @@ func (s *Store) ConsumeUnlockTokenTx(ctx context.Context, email string,
 			// invisible to it. Check the broader set before returning.
 			consumed, checkErr := s.Queries.HasConsumedUnlockToken(ctx, email)
 			if checkErr != nil {
-				return fmt.Errorf("store.ConsumeUnlockTokenTx: check consumed: %w", checkErr)
+				return telemetry.Store("ConsumeUnlockTokenTx.check_consumed", checkErr)
 			}
 			if consumed {
 				return authshared.ErrTokenAlreadyUsed
 			}
 			return authshared.ErrTokenNotFound
 		}
-		return fmt.Errorf("store.ConsumeUnlockTokenTx: get token: %w", err)
+		return telemetry.Store("ConsumeUnlockTokenTx.get_token", err)
 	}
 
 	// 2. Map to domain type.
@@ -195,7 +195,7 @@ func (s *Store) ConsumeUnlockTokenTx(ctx context.Context, email string,
 	consumed, err := h.Q.ConsumeUnlockToken(ctx, s.UUIDToPgtypeUUID(row.ID))
 	if err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.ConsumeUnlockTokenTx: consume token: %w", err)
+		return telemetry.Store("ConsumeUnlockTokenTx.consume_token", err)
 	}
 	if consumed == 0 {
 		h.Rollback()
@@ -206,7 +206,7 @@ func (s *Store) ConsumeUnlockTokenTx(ctx context.Context, email string,
 	// that always returns nil; on the non-TxBound path commitFn wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.ConsumeUnlockTokenTx: commit: %w", err)
+		return telemetry.Store("ConsumeUnlockTokenTx.commit", err)
 	}
 	return nil
 }
@@ -222,7 +222,7 @@ func (s *Store) UnlockAccountTx(ctx context.Context, userID [16]byte, ipAddress,
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return fmt.Errorf("store.UnlockAccountTx: begin tx: %w", err)
+		return telemetry.Store("UnlockAccountTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(userID)
@@ -230,7 +230,7 @@ func (s *Store) UnlockAccountTx(ctx context.Context, userID [16]byte, ipAddress,
 	// 1. Clear all lock state.
 	if err := h.Q.UnlockAccount(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.UnlockAccountTx: unlock account: %w", err)
+		return telemetry.Store("UnlockAccountTx.unlock_account", err)
 	}
 
 	// 2. Audit row.
@@ -243,14 +243,14 @@ func (s *Store) UnlockAccountTx(ctx context.Context, userID [16]byte, ipAddress,
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.UnlockAccountTx: audit log: %w", err)
+		return telemetry.Store("UnlockAccountTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path commitFn is a no-op
 	// that always returns nil; on the non-TxBound path commitFn wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.UnlockAccountTx: commit: %w", err)
+		return telemetry.Store("UnlockAccountTx.commit", err)
 	}
 	return nil
 }

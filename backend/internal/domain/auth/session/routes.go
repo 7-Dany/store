@@ -40,7 +40,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 
 	store := NewStore(deps.Pool)
 	svc := NewService(store)
-	h := NewHandler(svc, deps.JWTConfig, deps.Blocklist)
+	h := NewHandler(svc, deps.JWTConfig, deps.Blocklist, deps.Metrics)
 
 	ratelimit.RouteWithIP(r, http.MethodPost, "/refresh", h.Refresh, refreshLimiter)
 	ratelimit.RouteWithIP(r, http.MethodPost, "/logout", h.Logout, logoutLimiter)

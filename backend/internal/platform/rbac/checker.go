@@ -6,11 +6,11 @@ package rbac
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 
 	"github.com/7-Dany/store/backend/internal/db"
 	"github.com/7-Dany/store/backend/internal/platform/respond"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/7-Dany/store/backend/internal/platform/token"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -90,6 +90,8 @@ type Checker struct {
 	q db.Querier
 }
 
+var log = telemetry.New("rbac")
+
 // NewChecker constructs a Checker backed by the given Querier.
 // Panics if q is nil — misconfiguration must be caught at startup.
 func NewChecker(q db.Querier) *Checker {
@@ -166,7 +168,7 @@ func (c *Checker) IsOwner(ctx context.Context, userID string) (bool, error) {
 		Permission: pgtype.Text{String: "", Valid: true},
 	})
 	if err != nil {
-		return false, err
+		return false, telemetry.RBAC("IsOwner.db_check", err)
 	}
 	return asBool(row.IsOwner), nil
 }
@@ -184,7 +186,7 @@ func (c *Checker) HasPermission(ctx context.Context, userID, permission string) 
 		Permission: pgtype.Text{String: permission, Valid: true},
 	})
 	if err != nil {
-		return false, err
+		return false, telemetry.RBAC("HasPermission.db_check", err)
 	}
 	if asBool(row.IsOwner) {
 		return true, nil
@@ -255,7 +257,7 @@ func (c *Checker) Require(permission string) func(http.Handler) http.Handler {
 				Permission: pgtype.Text{String: permission, Valid: true},
 			})
 			if err != nil {
-				slog.ErrorContext(r.Context(), "rbac.Require: db check failed", "error", err)
+				log.Error(r.Context(), "Require: db check failed", "error", err)
 				respond.Error(w, http.StatusInternalServerError, "internal_error",
 					"internal server error")
 				return
@@ -367,7 +369,7 @@ func (c *Checker) ApprovalGate(submitter ApprovalSubmitter) func(http.Handler) h
 				r.Context(), userID, result.Permission, r,
 			)
 			if err != nil {
-				slog.ErrorContext(r.Context(), "rbac.ApprovalGate: submit approval failed",
+				log.Error(r.Context(), "ApprovalGate: submit approval failed",
 					"error", err)
 				respond.Error(w, http.StatusInternalServerError, "internal_error",
 					"internal server error")

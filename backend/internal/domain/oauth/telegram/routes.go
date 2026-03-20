@@ -62,7 +62,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 
 	store := NewStore(deps.Pool)
 	svc := NewService(store)
-	h := NewHandler(svc, deps.OAuth.TelegramBotToken, deps.JWTConfig, deps.SecureCookies)
+	h := NewHandler(svc, deps.OAuth.TelegramBotToken, deps.JWTConfig, deps.SecureCookies, deps.Metrics)
 
 	// ── Route registration ────────────────────────────────────────────────────
 

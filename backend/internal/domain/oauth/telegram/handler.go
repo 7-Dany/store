@@ -5,7 +5,6 @@ package telegram
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -24,18 +23,28 @@ type Servicer interface {
 	UnlinkTelegram(ctx context.Context, userID [16]byte, ipAddress, userAgent string) error
 }
 
+// Recorder is the narrow observability interface for the Telegram OAuth handler.
+// *telemetry.Registry satisfies this interface structurally.
+type Recorder interface {
+	OnOAuthSuccess(provider string)
+	OnOAuthFailed(provider string, reason string)
+	OnOAuthLinked(provider string)
+	OnOAuthUnlinked(provider string)
+}
+
 // Handler is the HTTP layer for Telegram Login Widget authentication:
 // callback, link, and unlink.
 type Handler struct {
 	svc           Servicer
+	recorder      Recorder
 	botToken      string
 	cfg           token.JWTConfig
 	secureCookies bool
 }
 
 // NewHandler constructs a Handler with the given dependencies.
-func NewHandler(svc Servicer, botToken string, cfg token.JWTConfig, secureCookies bool) *Handler {
-	return &Handler{svc: svc, botToken: botToken, cfg: cfg, secureCookies: secureCookies}
+func NewHandler(svc Servicer, botToken string, cfg token.JWTConfig, secureCookies bool, recorder Recorder) *Handler {
+	return &Handler{svc: svc, recorder: recorder, botToken: botToken, cfg: cfg, secureCookies: secureCookies}
 }
 
 // HandleCallback handles POST /oauth/telegram/callback.
@@ -93,8 +102,10 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrInvalidTelegramSignature):
+			h.recorder.OnOAuthFailed("telegram", "malformed_callback")
 			respond.Error(w, http.StatusUnauthorized, "invalid_signature", "invalid telegram signature")
 		case errors.Is(err, ErrTelegramAuthDateExpired):
+			h.recorder.OnOAuthFailed("telegram", "malformed_callback")
 			respond.Error(w, http.StatusUnauthorized, "auth_date_expired", "telegram auth_date is expired or invalid")
 		case errors.Is(err, ErrProviderUIDTaken):
 			respond.Error(w, http.StatusConflict, "provider_uid_taken", "telegram account already linked to another user")
@@ -103,7 +114,8 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, oauthshared.ErrAccountInactive):
 			respond.Error(w, http.StatusForbidden, "account_inactive", "account is inactive")
 		default:
-			slog.ErrorContext(r.Context(), "telegram.HandleCallback: service error", "error", err)
+			h.recorder.OnOAuthFailed("telegram", "unknown")
+			log.Error(r.Context(), "HandleCallback: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -118,12 +130,14 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		RefreshExpiry: result.Session.RefreshExpiry,
 	}, h.cfg)
 	if mintErr != nil {
-		slog.ErrorContext(r.Context(), "telegram.HandleCallback: mint tokens", "error", mintErr)
+		h.recorder.OnOAuthFailed("telegram", "unknown")
+		log.Error(r.Context(), "HandleCallback: mint tokens failed", "error", mintErr)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
 
 	// 8. Respond: 201 for new users, 200 for returning users.
+	h.recorder.OnOAuthSuccess("telegram")
 	status := http.StatusOK
 	if result.NewUser {
 		status = http.StatusCreated
@@ -217,13 +231,14 @@ func (h *Handler) HandleLink(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, oauthshared.ErrAccountInactive):
 			respond.Error(w, http.StatusForbidden, "account_inactive", "account is inactive")
 		default:
-			slog.ErrorContext(r.Context(), "telegram.HandleLink: service error", "error", err)
+			log.Error(r.Context(), "HandleLink: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
 	}
 
 	// 9. Success.
+	h.recorder.OnOAuthLinked("telegram")
 	respond.NoContent(w)
 }
 
@@ -257,12 +272,13 @@ func (h *Handler) HandleUnlink(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, oauthshared.ErrLastAuthMethod):
 			respond.Error(w, http.StatusConflict, "last_auth_method", "cannot remove the last authentication method")
 		default:
-			slog.ErrorContext(r.Context(), "telegram.HandleUnlink: service error", "error", err)
+			log.Error(r.Context(), "HandleUnlink: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
 	}
 
 	// 4. Success.
+	h.recorder.OnOAuthUnlinked("telegram")
 	respond.NoContent(w)
 }

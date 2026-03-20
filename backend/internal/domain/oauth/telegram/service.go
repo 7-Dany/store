@@ -6,13 +6,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	oauthshared "github.com/7-Dany/store/backend/internal/domain/oauth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
+
+var log = telemetry.New("telegram")
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Interfaces
@@ -105,7 +107,7 @@ var _ Servicer = (*Service)(nil)
 func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (CallbackResult, error) {
 	providerUID := strconv.FormatInt(in.User.ID, 10)
 
-	slog.DebugContext(ctx, "telegram.HandleCallback: looking up identity",
+	log.Debug(ctx, "HandleCallback: looking up identity",
 		"provider_uid", providerUID,
 		"ip", in.IPAddress,
 	)
@@ -113,33 +115,33 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 	identity, err := s.store.GetIdentityByProviderUID(ctx, providerUID)
 	if err == nil {
 		// ── EXISTING-USER PATH ────────────────────────────────────────────────
-		slog.DebugContext(ctx, "telegram.HandleCallback: existing identity found → login path",
+		log.Debug(ctx, "HandleCallback: existing identity found → login path",
 			"user_id", fmt.Sprintf("%x", identity.UserID),
 			"provider_uid", providerUID,
 		)
 
 		user, err := s.store.GetUserForOAuthCallback(ctx, identity.UserID)
 		if err != nil {
-			slog.ErrorContext(ctx, "telegram.HandleCallback: get user failed (login path)",
+			log.Error(ctx, "HandleCallback: get user failed (login path)",
 				"user_id", fmt.Sprintf("%x", identity.UserID),
 				"error", err,
 			)
-			return CallbackResult{}, fmt.Errorf("telegram.HandleCallback: get user: %w", err)
+			return CallbackResult{}, telemetry.Service("HandleCallback.get_user", err)
 		}
 		if user.IsLocked || user.AdminLocked {
-			slog.DebugContext(ctx, "telegram.HandleCallback: user is locked (login path)",
+			log.Debug(ctx, "HandleCallback: user is locked (login path)",
 				"user_id", fmt.Sprintf("%x", identity.UserID),
 			)
 			return CallbackResult{}, oauthshared.ErrAccountLocked
 		}
 		if !user.IsActive {
-			slog.DebugContext(ctx, "telegram.HandleCallback: user is inactive (login path)",
+			log.Debug(ctx, "HandleCallback: user is inactive (login path)",
 				"user_id", fmt.Sprintf("%x", identity.UserID),
 			)
 			return CallbackResult{}, oauthshared.ErrAccountInactive
 		}
 
-		slog.DebugContext(ctx, "telegram.HandleCallback: running OAuthLoginTx",
+		log.Debug(ctx, "HandleCallback: running OAuthLoginTx",
 			"user_id", fmt.Sprintf("%x", identity.UserID),
 		)
 		// WithoutCancel: the Tx writes the audit log internally; protect it from
@@ -151,13 +153,13 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 			NewUser:   false,
 		})
 		if err != nil {
-			slog.ErrorContext(ctx, "telegram.HandleCallback: OAuthLoginTx failed",
+			log.Error(ctx, "HandleCallback: OAuthLoginTx failed",
 				"user_id", fmt.Sprintf("%x", identity.UserID),
 				"error", err,
 			)
-			return CallbackResult{}, fmt.Errorf("telegram.HandleCallback: login tx: %w", err)
+			return CallbackResult{}, telemetry.Service("telegram.HandleCallback: login tx", err)
 		}
-		slog.DebugContext(ctx, "telegram.HandleCallback: OAuthLoginTx OK",
+		log.Debug(ctx, "HandleCallback: OAuthLoginTx OK",
 			"user_id", fmt.Sprintf("%x", identity.UserID),
 			"session_id", fmt.Sprintf("%x", session.SessionID),
 		)
@@ -165,11 +167,11 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 	}
 
 	if !errors.Is(err, oauthshared.ErrIdentityNotFound) {
-		return CallbackResult{}, fmt.Errorf("telegram.HandleCallback: get identity by provider uid: %w", err)
+		return CallbackResult{}, telemetry.Service("telegram.HandleCallback: get identity", err)
 	}
 
 	// ── NEW-USER PATH ─────────────────────────────────────────────────────────
-	slog.DebugContext(ctx, "telegram.HandleCallback: no existing identity → register path",
+	log.Debug(ctx, "HandleCallback: no existing identity → register path",
 		"provider_uid", providerUID,
 	)
 
@@ -185,15 +187,15 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 		UserAgent:   in.UserAgent,
 	})
 	if err != nil {
-		slog.ErrorContext(ctx, "telegram.HandleCallback: OAuthRegisterTx failed", "error", err)
-		return CallbackResult{}, fmt.Errorf("telegram.HandleCallback: register tx: %w", err)
+		log.Error(ctx, "HandleCallback: OAuthRegisterTx failed", "error", err)
+		return CallbackResult{}, telemetry.Service("telegram.HandleCallback: register tx", err)
 	}
-	slog.DebugContext(ctx, "telegram.HandleCallback: OAuthRegisterTx OK",
+	log.Debug(ctx, "HandleCallback: OAuthRegisterTx OK",
 		"user_id", fmt.Sprintf("%x", session.UserID),
 		"session_id", fmt.Sprintf("%x", session.SessionID),
 	)
 
-	slog.DebugContext(ctx, "telegram.HandleCallback: complete (new user)",
+	log.Debug(ctx, "HandleCallback: complete (new user)",
 		"user_id", fmt.Sprintf("%x", session.UserID),
 		"session_id", fmt.Sprintf("%x", session.SessionID),
 	)
@@ -218,7 +220,7 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 func (s *Service) LinkTelegram(ctx context.Context, in LinkInput) error {
 	providerUID := strconv.FormatInt(in.User.ID, 10)
 
-	slog.DebugContext(ctx, "telegram.LinkTelegram: resolving user",
+	log.Debug(ctx, "LinkTelegram: resolving user",
 		"user_id", fmt.Sprintf("%x", in.UserID),
 		"provider_uid", providerUID,
 		"ip", in.IPAddress,
@@ -227,20 +229,20 @@ func (s *Service) LinkTelegram(ctx context.Context, in LinkInput) error {
 	// 1. Resolve the user and check for locks.
 	user, err := s.store.GetUserForOAuthCallback(ctx, in.UserID)
 	if err != nil {
-		slog.ErrorContext(ctx, "telegram.LinkTelegram: get user failed",
+		log.Error(ctx, "LinkTelegram: get user failed",
 			"user_id", fmt.Sprintf("%x", in.UserID),
 			"error", err,
 		)
-		return fmt.Errorf("telegram.LinkTelegram: get user: %w", err)
+		return telemetry.Service("LinkTelegram.get_user", err)
 	}
 	if user.IsLocked || user.AdminLocked {
-		slog.DebugContext(ctx, "telegram.LinkTelegram: user is locked",
+		log.Debug(ctx, "LinkTelegram: user is locked",
 			"user_id", fmt.Sprintf("%x", in.UserID),
 		)
 		return oauthshared.ErrAccountLocked
 	}
 	if !user.IsActive {
-		slog.DebugContext(ctx, "telegram.LinkTelegram: user is inactive",
+		log.Debug(ctx, "LinkTelegram: user is inactive",
 			"user_id", fmt.Sprintf("%x", in.UserID),
 		)
 		return oauthshared.ErrAccountInactive
@@ -249,36 +251,36 @@ func (s *Service) LinkTelegram(ctx context.Context, in LinkInput) error {
 	// 2. Check whether this user already has a Telegram identity.
 	_, err = s.store.GetIdentityByUserAndProvider(ctx, in.UserID)
 	if err == nil {
-		slog.DebugContext(ctx, "telegram.LinkTelegram: user already has telegram identity",
+		log.Debug(ctx, "LinkTelegram: user already has telegram identity",
 			"user_id", fmt.Sprintf("%x", in.UserID),
 		)
 		return ErrProviderAlreadyLinked
 	}
 	if !errors.Is(err, oauthshared.ErrIdentityNotFound) {
-		return fmt.Errorf("telegram.LinkTelegram: get identity by user: %w", err)
+		return telemetry.Service("LinkTelegram.get_identity_by_user", err)
 	}
 
 	// 3. Check whether this Telegram UID is already bound to another account.
 	existing, err := s.store.GetIdentityByProviderUID(ctx, providerUID)
 	if err == nil {
 		if existing.UserID != in.UserID {
-			slog.DebugContext(ctx, "telegram.LinkTelegram: provider uid taken by another user",
+			log.Debug(ctx, "LinkTelegram: provider uid taken by another user",
 				"provider_uid", providerUID,
 				"owner_user_id", fmt.Sprintf("%x", existing.UserID),
 			)
 			return ErrProviderUIDTaken
 		}
 		// Same user already has this identity — idempotent fall-through.
-		slog.DebugContext(ctx, "telegram.LinkTelegram: provider uid already belongs to this user (idempotent)",
+		log.Debug(ctx, "LinkTelegram: provider uid already belongs to this user (idempotent)",
 			"user_id", fmt.Sprintf("%x", in.UserID),
 		)
 	} else if !errors.Is(err, oauthshared.ErrIdentityNotFound) {
-		return fmt.Errorf("telegram.LinkTelegram: get identity by provider uid: %w", err)
+		return telemetry.Service("LinkTelegram.get_identity_by_provider_uid", err)
 	}
 
 	// 4. Insert the new identity row.
 	displayName := buildDisplayName(in.User.FirstName, in.User.LastName)
-	slog.DebugContext(ctx, "telegram.LinkTelegram: inserting identity",
+	log.Debug(ctx, "LinkTelegram: inserting identity",
 		"user_id", fmt.Sprintf("%x", in.UserID),
 		"provider_uid", providerUID,
 		"display_name", displayName,
@@ -289,13 +291,13 @@ func (s *Service) LinkTelegram(ctx context.Context, in LinkInput) error {
 		DisplayName: displayName,
 		AvatarURL:   in.User.PhotoURL,
 	}); err != nil {
-		slog.ErrorContext(ctx, "telegram.LinkTelegram: insert identity failed",
+		log.Error(ctx, "LinkTelegram: insert identity failed",
 			"user_id", fmt.Sprintf("%x", in.UserID),
 			"error", err,
 		)
-		return fmt.Errorf("telegram.LinkTelegram: insert identity: %w", err)
+		return telemetry.Service("LinkTelegram.insert_identity", err)
 	}
-	slog.DebugContext(ctx, "telegram.LinkTelegram: identity inserted OK",
+	log.Debug(ctx, "LinkTelegram: identity inserted OK",
 		"user_id", fmt.Sprintf("%x", in.UserID),
 	)
 
@@ -307,10 +309,10 @@ func (s *Service) LinkTelegram(ctx context.Context, in LinkInput) error {
 		UserAgent: in.UserAgent,
 		Metadata:  map[string]any{"provider": "telegram"},
 	}); err != nil {
-		return fmt.Errorf("telegram.LinkTelegram: insert audit: %w", err)
+		return telemetry.Service("LinkTelegram.insert_audit", err)
 	}
 
-	slog.DebugContext(ctx, "telegram.LinkTelegram: link complete",
+	log.Debug(ctx, "LinkTelegram: link complete",
 		"user_id", fmt.Sprintf("%x", in.UserID),
 	)
 	return nil
@@ -329,7 +331,7 @@ func (s *Service) LinkTelegram(ctx context.Context, in LinkInput) error {
 //  4. DeleteUserIdentity — 0 rows → ErrProviderNotLinked (lost race).
 //  5. InsertAuditLogTx(context.WithoutCancel(ctx), ...) — error → wrap.
 func (s *Service) UnlinkTelegram(ctx context.Context, userID [16]byte, ipAddress, userAgent string) error {
-	slog.DebugContext(ctx, "telegram.UnlinkTelegram: fetching auth methods",
+	log.Debug(ctx, "UnlinkTelegram: fetching auth methods",
 		"user_id", fmt.Sprintf("%x", userID),
 		"ip", ipAddress,
 	)
@@ -337,23 +339,23 @@ func (s *Service) UnlinkTelegram(ctx context.Context, userID [16]byte, ipAddress
 	// 1. Fetch auth-method counts for the last-method guard.
 	methods, err := s.store.GetUserAuthMethods(ctx, userID)
 	if err != nil {
-		slog.ErrorContext(ctx, "telegram.UnlinkTelegram: get auth methods failed",
+		log.Error(ctx, "UnlinkTelegram: get auth methods failed",
 			"user_id", fmt.Sprintf("%x", userID),
 			"error", err,
 		)
-		return fmt.Errorf("telegram.UnlinkTelegram: get auth methods: %w", err)
+		return telemetry.Service("telegram.UnlinkTelegram: get auth methods", err)
 	}
 
 	// 2. Confirm the identity exists before evaluating the guard.
 	_, err = s.store.GetIdentityByUserAndProvider(ctx, userID)
 	if errors.Is(err, oauthshared.ErrIdentityNotFound) {
-		slog.DebugContext(ctx, "telegram.UnlinkTelegram: identity not found",
+		log.Debug(ctx, "UnlinkTelegram: identity not found",
 			"user_id", fmt.Sprintf("%x", userID),
 		)
 		return ErrProviderNotLinked
 	}
 	if err != nil {
-		return fmt.Errorf("telegram.UnlinkTelegram: get identity: %w", err)
+		return telemetry.Service("UnlinkTelegram.get_identity", err)
 	}
 
 	// 3. Last-auth-method guard: sum password (1 or 0) + linked identities.
@@ -363,7 +365,7 @@ func (s *Service) UnlinkTelegram(ctx context.Context, userID [16]byte, ipAddress
 		pwCount = 1
 	}
 	if pwCount+methods.IdentityCount <= 1 {
-		slog.DebugContext(ctx, "telegram.UnlinkTelegram: last auth method guard triggered",
+		log.Debug(ctx, "UnlinkTelegram: last auth method guard triggered",
 			"user_id", fmt.Sprintf("%x", userID),
 			"has_password", methods.HasPassword,
 			"identity_count", methods.IdentityCount,
@@ -372,25 +374,25 @@ func (s *Service) UnlinkTelegram(ctx context.Context, userID [16]byte, ipAddress
 	}
 
 	// 4. Delete the identity row.
-	slog.DebugContext(ctx, "telegram.UnlinkTelegram: deleting identity",
+	log.Debug(ctx, "UnlinkTelegram: deleting identity",
 		"user_id", fmt.Sprintf("%x", userID),
 	)
 	rows, err := s.store.DeleteUserIdentity(ctx, userID)
 	if err != nil {
-		slog.ErrorContext(ctx, "telegram.UnlinkTelegram: delete identity failed",
+		log.Error(ctx, "UnlinkTelegram: delete identity failed",
 			"user_id", fmt.Sprintf("%x", userID),
 			"error", err,
 		)
-		return fmt.Errorf("telegram.UnlinkTelegram: delete identity: %w", err)
+		return telemetry.Service("UnlinkTelegram.delete_identity", err)
 	}
 	if rows == 0 {
 		// Lost a race — another request deleted the row first.
-		slog.DebugContext(ctx, "telegram.UnlinkTelegram: delete returned 0 rows (lost race)",
+		log.Debug(ctx, "UnlinkTelegram: delete returned 0 rows (lost race)",
 			"user_id", fmt.Sprintf("%x", userID),
 		)
 		return ErrProviderNotLinked
 	}
-	slog.DebugContext(ctx, "telegram.UnlinkTelegram: identity deleted OK",
+	log.Debug(ctx, "UnlinkTelegram: identity deleted OK",
 		"user_id", fmt.Sprintf("%x", userID),
 	)
 
@@ -402,10 +404,10 @@ func (s *Service) UnlinkTelegram(ctx context.Context, userID [16]byte, ipAddress
 		UserAgent: userAgent,
 		Metadata:  map[string]any{"provider": "telegram"},
 	}); err != nil {
-		return fmt.Errorf("telegram.UnlinkTelegram: insert audit: %w", err)
+		return telemetry.Service("UnlinkTelegram.insert_audit", err)
 	}
 
-	slog.DebugContext(ctx, "telegram.UnlinkTelegram: unlink complete",
+	log.Debug(ctx, "UnlinkTelegram: unlink complete",
 		"user_id", fmt.Sprintf("%x", userID),
 	)
 	return nil

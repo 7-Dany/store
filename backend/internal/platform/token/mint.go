@@ -7,6 +7,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // GenerateAccessToken signs a short-lived HS256 access JWT.
@@ -123,7 +124,7 @@ func MintTokens(
 		cfg.JWTAccessSecret,
 	)
 	if err != nil {
-		return TokenResult{}, fmt.Errorf("token.MintTokens: sign access token: %w", err)
+		return TokenResult{}, telemetry.Handler("MintTokens.sign_access_token", err)
 	}
 
 	refreshToken, err := GenerateRefreshToken(
@@ -135,7 +136,7 @@ func MintTokens(
 		cfg.JWTRefreshSecret,
 	)
 	if err != nil {
-		return TokenResult{}, fmt.Errorf("token.MintTokens: sign refresh token: %w", err)
+		return TokenResult{}, telemetry.Handler("MintTokens.sign_refresh_token", err)
 	}
 
 	SetRefreshCookie(w, refreshToken, in.RefreshExpiry, cfg.SecureCookies)

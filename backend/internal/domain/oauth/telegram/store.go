@@ -4,12 +4,12 @@ package telegram
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	oauthshared "github.com/7-Dany/store/backend/internal/domain/oauth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -48,7 +48,7 @@ func (s *Store) GetIdentityByProviderUID(ctx context.Context, providerUID string
 		if s.IsNoRows(err) {
 			return ProviderIdentity{}, oauthshared.ErrIdentityNotFound
 		}
-		return ProviderIdentity{}, fmt.Errorf("store.GetIdentityByProviderUID: %w", err)
+		return ProviderIdentity{}, telemetry.Store("GetIdentityByProviderUID.query", err)
 	}
 	return ProviderIdentity{
 		ID:     row.ID,
@@ -67,7 +67,7 @@ func (s *Store) GetIdentityByUserAndProvider(ctx context.Context, userID [16]byt
 		if s.IsNoRows(err) {
 			return ProviderIdentity{}, oauthshared.ErrIdentityNotFound
 		}
-		return ProviderIdentity{}, fmt.Errorf("store.GetIdentityByUserAndProvider: %w", err)
+		return ProviderIdentity{}, telemetry.Store("GetIdentityByUserAndProvider.query", err)
 	}
 	return ProviderIdentity{
 		ID:     row.ID,
@@ -83,7 +83,7 @@ func (s *Store) GetUserForOAuthCallback(ctx context.Context, userID [16]byte) (O
 		if s.IsNoRows(err) {
 			return OAuthUserRecord{}, authshared.ErrUserNotFound
 		}
-		return OAuthUserRecord{}, fmt.Errorf("store.GetUserForOAuthCallback: %w", err)
+		return OAuthUserRecord{}, telemetry.Store("GetUserForOAuthCallback.query", err)
 	}
 	return OAuthUserRecord{
 		ID:          row.ID,
@@ -101,7 +101,7 @@ func (s *Store) GetUserAuthMethods(ctx context.Context, userID [16]byte) (UserAu
 		if s.IsNoRows(err) {
 			return UserAuthMethods{}, authshared.ErrUserNotFound
 		}
-		return UserAuthMethods{}, fmt.Errorf("store.GetUserAuthMethods: %w", err)
+		return UserAuthMethods{}, telemetry.Store("GetUserAuthMethods.query", err)
 	}
 	hasPassword := false
 	if row.HasPassword != nil {
@@ -129,7 +129,7 @@ func (s *Store) InsertUserIdentity(ctx context.Context, in InsertIdentityInput) 
 		AvatarURL:     s.ToText(in.AvatarURL),
 	})
 	if err != nil {
-		return fmt.Errorf("store.InsertUserIdentity: %w", err)
+		return telemetry.Store("InsertUserIdentity.upsert", err)
 	}
 	return nil
 }
@@ -142,7 +142,7 @@ func (s *Store) DeleteUserIdentity(ctx context.Context, userID [16]byte) (int64,
 		Provider: db.AuthProviderTelegram,
 	})
 	if err != nil {
-		return 0, fmt.Errorf("store.DeleteUserIdentity: %w", err)
+		return 0, telemetry.Store("DeleteUserIdentity.delete", err)
 	}
 	return n, nil
 }
@@ -155,7 +155,7 @@ func (s *Store) DeleteUserIdentity(ctx context.Context, userID [16]byte) (int64,
 func (s *Store) OAuthLoginTx(ctx context.Context, in OAuthLoginTxInput) (oauthshared.LoggedInSession, error) {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthLoginTx: begin tx: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthLoginTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(in.UserID)
@@ -169,7 +169,7 @@ func (s *Store) OAuthLoginTx(ctx context.Context, in OAuthLoginTxInput) (oauthsh
 	})
 	if err != nil {
 		h.Rollback()
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthLoginTx: create session: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthLoginTx.create_session", err)
 	}
 
 	// 2. Issue root refresh token.
@@ -179,13 +179,13 @@ func (s *Store) OAuthLoginTx(ctx context.Context, in OAuthLoginTxInput) (oauthsh
 	})
 	if err != nil {
 		h.Rollback()
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthLoginTx: create refresh token: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthLoginTx.create_token", err)
 	}
 
 	// 3. Stamp last_login_at.
 	if err := h.Q.UpdateLastLoginAt(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthLoginTx: update last login at: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthLoginTx.update_login", err)
 	}
 
 	// 4. Audit log — use context.WithoutCancel so a client disconnect cannot
@@ -199,11 +199,11 @@ func (s *Store) OAuthLoginTx(ctx context.Context, in OAuthLoginTxInput) (oauthsh
 		Metadata:  s.MustJSON(map[string]any{"provider": "telegram", "new_user": in.NewUser}),
 	}); err != nil {
 		h.Rollback()
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthLoginTx: audit log: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthLoginTx.audit", err)
 	}
 
 	if err := h.Commit(); err != nil {
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthLoginTx: commit: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthLoginTx.commit", err)
 	}
 
 	return oauthshared.LoggedInSession{
@@ -221,7 +221,7 @@ func (s *Store) OAuthLoginTx(ctx context.Context, in OAuthLoginTxInput) (oauthsh
 func (s *Store) OAuthRegisterTx(ctx context.Context, in OAuthRegisterTxInput) (oauthshared.LoggedInSession, error) {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: begin tx: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthRegisterTx.begin_tx", err)
 	}
 
 	// 1. Create user row — email is always empty for Telegram (D-04).
@@ -231,7 +231,7 @@ func (s *Store) OAuthRegisterTx(ctx context.Context, in OAuthRegisterTxInput) (o
 	})
 	if err != nil {
 		h.Rollback()
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: create user: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthRegisterTx.create_user", err)
 	}
 
 	userPgUUID := s.UUIDToPgtypeUUID(newUserID)
@@ -246,7 +246,7 @@ func (s *Store) OAuthRegisterTx(ctx context.Context, in OAuthRegisterTxInput) (o
 		AvatarURL:     s.ToText(in.AvatarURL),
 	}); err != nil {
 		h.Rollback()
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: insert identity: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthRegisterTx.insert_identity", err)
 	}
 
 	// 3. Create session row.
@@ -258,7 +258,7 @@ func (s *Store) OAuthRegisterTx(ctx context.Context, in OAuthRegisterTxInput) (o
 	})
 	if err != nil {
 		h.Rollback()
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: create session: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthRegisterTx.create_session", err)
 	}
 
 	// 4. Issue root refresh token.
@@ -268,13 +268,13 @@ func (s *Store) OAuthRegisterTx(ctx context.Context, in OAuthRegisterTxInput) (o
 	})
 	if err != nil {
 		h.Rollback()
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: create refresh token: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthRegisterTx.create_token", err)
 	}
 
 	// 5. Stamp last_login_at.
 	if err := h.Q.UpdateLastLoginAt(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: update last login at: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthRegisterTx.update_login", err)
 	}
 
 	// 6. Audit log — context.WithoutCancel (D-17).
@@ -287,11 +287,11 @@ func (s *Store) OAuthRegisterTx(ctx context.Context, in OAuthRegisterTxInput) (o
 		Metadata:  s.MustJSON(map[string]any{"provider": "telegram", "new_user": true}),
 	}); err != nil {
 		h.Rollback()
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: audit log: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthRegisterTx.audit", err)
 	}
 
 	if err := h.Commit(); err != nil {
-		return oauthshared.LoggedInSession{}, fmt.Errorf("store.OAuthRegisterTx: commit: %w", err)
+		return oauthshared.LoggedInSession{}, telemetry.Store("OAuthRegisterTx.commit", err)
 	}
 
 	return oauthshared.LoggedInSession{
@@ -308,7 +308,7 @@ func (s *Store) OAuthRegisterTx(ctx context.Context, in OAuthRegisterTxInput) (o
 func (s *Store) InsertAuditLogTx(ctx context.Context, in OAuthAuditInput) error {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return fmt.Errorf("store.InsertAuditLogTx: begin tx: %w", err)
+		return telemetry.Store("InsertAuditLogTx.begin_tx", err)
 	}
 
 	if err := h.Q.InsertAuditLog(ctx, db.InsertAuditLogParams{
@@ -320,11 +320,11 @@ func (s *Store) InsertAuditLogTx(ctx context.Context, in OAuthAuditInput) error 
 		Metadata:  s.MustJSON(in.Metadata),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.InsertAuditLogTx: insert audit log: %w", err)
+		return telemetry.Store("InsertAuditLogTx.audit", err)
 	}
 
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.InsertAuditLogTx: commit: %w", err)
+		return telemetry.Store("InsertAuditLogTx.commit", err)
 	}
 	return nil
 }

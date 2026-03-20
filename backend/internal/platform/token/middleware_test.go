@@ -164,15 +164,20 @@ func TestAuth_BlocklistedToken_Returns401(t *testing.T) {
 	require.False(t, next.called)
 }
 
-func TestAuth_BlocklistError_FailsClosed(t *testing.T) {
+// TestAuth_BlocklistError_FailsOpen asserts that a transient blocklist store
+// error (e.g. Redis timeout) does NOT reject the request. The session stays
+// alive and the error is only logged. Access tokens expire naturally (≤15 min),
+// bounding the window where a revoked JTI could slip through during an outage.
+func TestAuth_BlocklistError_FailsOpen(t *testing.T) {
 	t.Parallel()
 	bl := &fakeBlocklist{err: errors.New("redis timeout")}
 	next := &okHandler{}
 	mw := token.Auth(testSecret, bl, nil)(next)
 	w := httptest.NewRecorder()
 	mw.ServeHTTP(w, makeRequest(validBearerHeader(t, uuid.NewString(), uuid.NewString())))
-	require.Equal(t, http.StatusUnauthorized, w.Code)
-	require.False(t, next.called)
+	// Request must succeed — a Redis outage must not log the user out.
+	require.Equal(t, http.StatusOK, w.Code)
+	require.True(t, next.called)
 }
 
 func TestAuth_NotBlocklisted_AllowsThrough(t *testing.T) {

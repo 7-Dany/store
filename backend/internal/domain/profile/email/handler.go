@@ -3,7 +3,6 @@ package email
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -52,7 +51,7 @@ func (h *Handler) enqueueEmail(reqCtx context.Context, logPrefix, userID, toEmai
 		Deliver: h.deps.Mailer.Send(templateKey),
 	}); err != nil {
 		mailCancel()
-		slog.WarnContext(reqCtx, logPrefix+": enqueue mail failed (best-effort)", "error", err)
+		log.Warn(reqCtx, logPrefix+": enqueue mail failed (best-effort)", "error", err)
 	}
 }
 
@@ -76,7 +75,7 @@ func (h *Handler) RequestChange(w http.ResponseWriter, r *http.Request) {
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "email.RequestChange: parse user id", "error", err)
+		log.Error(r.Context(), "RequestChange: parse user id", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -99,10 +98,10 @@ func (h *Handler) RequestChange(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrCooldownActive):
 			respond.Error(w, http.StatusTooManyRequests, "cooldown_active", err.Error())
 		case errors.Is(err, profileshared.ErrUserNotFound):
-			slog.ErrorContext(r.Context(), "email.RequestChange: user not found for authenticated request", "error", err)
+			log.Error(r.Context(), "RequestChange: user not found for authenticated request", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		default:
-			slog.ErrorContext(r.Context(), "email.RequestChange: service error", "error", err)
+			log.Error(r.Context(), "RequestChange: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -135,7 +134,7 @@ func (h *Handler) VerifyCurrent(w http.ResponseWriter, r *http.Request) {
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "email.VerifyCurrent: parse user id", "error", err)
+		log.Error(r.Context(), "VerifyCurrent: parse user id", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -158,10 +157,10 @@ func (h *Handler) VerifyCurrent(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, authshared.ErrTooManyAttempts):
 			respond.Error(w, http.StatusTooManyRequests, "too_many_attempts", err.Error())
 		case errors.Is(err, profileshared.ErrUserNotFound):
-			slog.ErrorContext(r.Context(), "email.VerifyCurrent: user not found for authenticated request", "error", err)
+			log.Error(r.Context(), "VerifyCurrent: user not found for authenticated request", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		default:
-			slog.ErrorContext(r.Context(), "email.VerifyCurrent: service error", "error", err)
+			log.Error(r.Context(), "VerifyCurrent: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -197,7 +196,7 @@ func (h *Handler) ConfirmChange(w http.ResponseWriter, r *http.Request) {
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "email.ConfirmChange: parse user id", "error", err)
+		log.Error(r.Context(), "ConfirmChange: parse user id", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -232,10 +231,10 @@ func (h *Handler) ConfirmChange(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrEmailTaken):
 			respond.Error(w, http.StatusConflict, "email_taken", err.Error())
 		case errors.Is(err, profileshared.ErrUserNotFound):
-			slog.ErrorContext(r.Context(), "email.ConfirmChange: user not found for authenticated request", "error", err)
+			log.Error(r.Context(), "ConfirmChange: user not found for authenticated request", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		default:
-			slog.ErrorContext(r.Context(), "email.ConfirmChange: service error", "error", err)
+			log.Error(r.Context(), "ConfirmChange: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -253,7 +252,7 @@ func (h *Handler) ConfirmChange(w http.ResponseWriter, r *http.Request) {
 		Deliver: h.deps.Mailer.Send(mailertemplates.EmailChangedNotificationKey),
 	}); err != nil {
 		mailCancel()
-		slog.WarnContext(r.Context(), "email.ConfirmChange: enqueue notification failed (best-effort)", "error", err)
+		log.Warn(r.Context(), "ConfirmChange: enqueue notification failed (best-effort)", "error", err)
 	}
 
 	respond.JSON(w, http.StatusOK, messageResponse{Message: "email address updated successfully"})

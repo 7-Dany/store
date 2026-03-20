@@ -5,7 +5,6 @@ package ratelimit
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/respond"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // ─────────────────────────────────────────────────────────────
@@ -29,6 +29,8 @@ type bucketState struct {
 // ─────────────────────────────────────────────────────────────
 // rateLimiter — shared token-bucket engine
 // ─────────────────────────────────────────────────────────────
+
+var log = telemetry.New("ratelimit")
 
 // rateLimiter is the private, embeddable core of IPRateLimiter. It holds the
 // token-bucket parameters and drives all read-modify-write operations against
@@ -92,7 +94,7 @@ func (rl *rateLimiter) allow(ctx context.Context, key string) bool {
 		// error — the effective rate limit is multiplied by the number of running
 		// instances until Redis recovers. Monitor for sustained WarnContext bursts
 		// in production.
-		slog.WarnContext(ctx, "ratelimit: atomic store error, falling back to local bucket",
+		log.Warn(ctx, "atomic store error, falling back to local bucket",
 			"key", key, "error", err)
 	}
 
@@ -152,7 +154,7 @@ func (rl *rateLimiter) peek(ctx context.Context, key string) bool {
 		}
 		// Transient error: fall through to local path (fail-open, consistent
 		// with the allow fallback behaviour).
-		slog.WarnContext(ctx, "ratelimit: atomic peek error, falling back to local bucket",
+		log.Warn(ctx, "atomic peek error, falling back to local bucket",
 			"key", key, "error", err)
 	}
 
@@ -257,7 +259,7 @@ func remoteIP(r *http.Request) string {
 		// Bare IP or empty — normalise what we have.
 		if r.RemoteAddr == "" {
 			// Empty RemoteAddr: all such requests share the prefix-only bucket key.
-			slog.Warn("ratelimit: empty RemoteAddr; sharing prefix bucket",
+			log.Warn(r.Context(), "empty RemoteAddr; sharing prefix bucket",
 				"method", r.Method, "path", r.URL.Path)
 		}
 		if ip := net.ParseIP(r.RemoteAddr); ip != nil {

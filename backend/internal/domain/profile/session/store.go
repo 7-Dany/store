@@ -2,12 +2,12 @@ package session
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -39,7 +39,7 @@ func (s *Store) WithQuerier(q db.Querier) *Store {
 func (s *Store) GetActiveSessions(ctx context.Context, userID [16]byte) ([]ActiveSession, error) {
 	rows, err := s.Queries.GetActiveSessions(ctx, s.ToPgtypeUUID(userID))
 	if err != nil {
-		return nil, fmt.Errorf("store.GetActiveSessions: query: %w", err)
+		return nil, telemetry.Store("GetActiveSessions.query", err)
 	}
 
 	sessions := make([]ActiveSession, 0, len(rows))
@@ -69,7 +69,7 @@ func (s *Store) RevokeSessionTx(ctx context.Context, sessionID, ownerUserID [16]
 	if err != nil {
 		// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 		// and always returns nil error. No test can trigger this branch.
-		return fmt.Errorf("store.RevokeSessionTx: begin tx: %w", err)
+		return telemetry.Store("RevokeSessionTx.begin_tx", err)
 	}
 
 	sessionPgUUID := s.ToPgtypeUUID(sessionID)
@@ -82,7 +82,7 @@ func (s *Store) RevokeSessionTx(ctx context.Context, sessionID, ownerUserID [16]
 		if s.IsNoRows(err) {
 			return authshared.ErrSessionNotFound
 		}
-		return fmt.Errorf("store.RevokeSessionTx: get session: %w", err)
+		return telemetry.Store("RevokeSessionTx.get_session", err)
 	}
 
 	// 2. Verify ownership.
@@ -96,13 +96,13 @@ func (s *Store) RevokeSessionTx(ctx context.Context, sessionID, ownerUserID [16]
 	// 3. End the session.
 	if err := h.Q.EndUserSession(ctx, sessionPgUUID); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RevokeSessionTx: end session: %w", err)
+		return telemetry.Store("RevokeSessionTx.end_session", err)
 	}
 
 	// 4. Revoke all non-revoked refresh tokens for this session.
 	if err := h.Q.RevokeSessionRefreshTokens(ctx, sessionPgUUID); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RevokeSessionTx: revoke tokens: %w", err)
+		return telemetry.Store("RevokeSessionTx.revoke_tokens", err)
 	}
 
 	// 5. Audit row.
@@ -117,14 +117,14 @@ func (s *Store) RevokeSessionTx(ctx context.Context, sessionID, ownerUserID [16]
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RevokeSessionTx: audit log: %w", err)
+		return telemetry.Store("RevokeSessionTx.audit_log", err)
 	}
 
 	if err := h.Commit(); err != nil {
 		// Unreachable via QuerierProxy: on the TxBound path commitFn is a no-op
 		// that always returns nil; on the non-TxBound path commitFn wraps
 		// pgx.Tx.Commit which the proxy cannot intercept.
-		return fmt.Errorf("store.RevokeSessionTx: commit: %w", err)
+		return telemetry.Store("RevokeSessionTx.commit", err)
 	}
 	return nil
 }

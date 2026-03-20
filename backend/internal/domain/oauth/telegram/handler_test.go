@@ -44,7 +44,7 @@ var jwtCfg = token.JWTConfig{
 // newTestHandler constructs a Handler wired with the given Servicer and shared
 // test JWTConfig. secureCookies is always false in tests.
 func newTestHandler(svc telegram.Servicer) *telegram.Handler {
-	return telegram.NewHandler(svc, testBotToken, jwtCfg, false)
+	return telegram.NewHandler(svc, testBotToken, jwtCfg, false, oauthsharedtest.NoopOAuthRecorder{})
 }
 
 // computeHash reproduces the Telegram HMAC-SHA256 algorithm for building

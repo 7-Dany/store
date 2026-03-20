@@ -3,12 +3,12 @@ package username
 import (
 	"context"
 	"errors"
-	"fmt"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -43,7 +43,7 @@ func (s *Store) CheckUsernameAvailable(ctx context.Context, username string) (bo
 	// CheckUsernameAvailable takes pgtype.Text; use ToText to convert.
 	exists, err := s.Queries.CheckUsernameAvailable(ctx, s.ToText(username))
 	if err != nil {
-		return false, fmt.Errorf("store.CheckUsernameAvailable: query: %w", err)
+		return false, telemetry.Store("CheckUsernameAvailable.query", err)
 	}
 	// EXISTS returns true when the username IS taken; negate for "available".
 	return !exists, nil
@@ -62,7 +62,7 @@ func (s *Store) UpdateUsernameTx(ctx context.Context, in UpdateUsernameInput) er
 	if err != nil {
 		// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 		// and always returns nil error. No test can trigger this branch.
-		return fmt.Errorf("store.UpdateUsernameTx: begin tx: %w", err)
+		return telemetry.Store("UpdateUsernameTx.begin_tx", err)
 	}
 
 	// 1. Fetch the current username and lock the row.
@@ -72,7 +72,7 @@ func (s *Store) UpdateUsernameTx(ctx context.Context, in UpdateUsernameInput) er
 		if s.IsNoRows(err) {
 			return authshared.ErrUserNotFound
 		}
-		return fmt.Errorf("store.UpdateUsernameTx: get user: %w", err)
+		return telemetry.Store("UpdateUsernameTx.get_user", err)
 	}
 
 	// 2. Same-username guard — row.Username is pgtype.Text; .String is safe because
@@ -93,7 +93,7 @@ func (s *Store) UpdateUsernameTx(ctx context.Context, in UpdateUsernameInput) er
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return ErrUsernameTaken
 		}
-		return fmt.Errorf("store.UpdateUsernameTx: set username: %w", err)
+		return telemetry.Store("UpdateUsernameTx.set_username", err)
 	}
 	if rowsAffected == 0 {
 		h.Rollback()
@@ -113,14 +113,14 @@ func (s *Store) UpdateUsernameTx(ctx context.Context, in UpdateUsernameInput) er
 		}),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.UpdateUsernameTx: audit log: %w", err)
+		return telemetry.Store("UpdateUsernameTx.audit_log", err)
 	}
 
 	if err := h.Commit(); err != nil {
 		// Unreachable via QuerierProxy: on the TxBound path Commit is a no-op
 		// that always returns nil; on the non-TxBound path Commit wraps
 		// pgx.Tx.Commit which the proxy cannot intercept.
-		return fmt.Errorf("store.UpdateUsernameTx: commit: %w", err)
+		return telemetry.Store("UpdateUsernameTx.commit", err)
 	}
 	return nil
 }

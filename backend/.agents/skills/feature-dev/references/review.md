@@ -130,6 +130,11 @@ abstraction or hand-rolls an alternative:
 | RBAC permission check | `deps.RBAC.Require(rbac.Perm*)` — never raw `db.CheckUserAccess` call | |
 | RBAC approval gate | `deps.RBAC.ApprovalGate(deps.ApprovalSubmitter)` when `access_type=request` possible | |
 | RBAC permission constant | `rbac.Perm*` constant — never a raw string literal | |
+| Package-level logger | `var log = telemetry.New("{feature}")` in service.go and handler.go | |
+| Error wrapping | `telemetry.Store/Service/Mailer/…` constructors — never `fmt.Errorf` | |
+| Handler default log | `log.Error(r.Context(), …)` — never bare `slog.ErrorContext` in domain handlers | |
+| New business metric (if applicable) | `domain/{domain}/shared/recorder.go` method + `telemetry/{domain}_hooks.go` + `metrics.go` registration | |
+| Frontend (if Gate 9 = Yes) | `prometheus.ts` query + snapshot field + `computeAnomalies()`/`deriveServices()` updated | |
 
 **RBAC-specific checks (apply only to `internal/domain/rbac/` packages):**
 - `deps.JWTAuth` must come **before** `deps.RBAC.Require(...)` in every `r.With(...)` chain.

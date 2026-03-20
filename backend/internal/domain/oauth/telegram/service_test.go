@@ -149,7 +149,7 @@ func TestService_HandleCallback(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
-		if !containsPrefix(err.Error(), "telegram.HandleCallback:") {
+		if !containsPrefix(err.Error(), "service.telegram.HandleCallback:") {
 			t.Errorf("expected error prefix 'telegram.HandleCallback:', got %q", err.Error())
 		}
 	})
@@ -175,7 +175,7 @@ func TestService_HandleCallback(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
-		if !containsPrefix(err.Error(), "telegram.HandleCallback:") {
+		if !containsPrefix(err.Error(), "service.telegram.HandleCallback:") {
 			t.Errorf("expected error prefix 'telegram.HandleCallback:', got %q", err.Error())
 		}
 	})
@@ -196,7 +196,7 @@ func TestService_HandleCallback(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
-		if !containsPrefix(err.Error(), "telegram.HandleCallback:") {
+		if !containsPrefix(err.Error(), "service.telegram.HandleCallback:") {
 			t.Errorf("expected error prefix 'telegram.HandleCallback:', got %q", err.Error())
 		}
 	})
@@ -563,7 +563,7 @@ func TestService_UnlinkTelegram(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
-		if !containsPrefix(err.Error(), "telegram.UnlinkTelegram:") {
+		if !containsPrefix(err.Error(), "service.telegram.UnlinkTelegram:") {
 			t.Errorf("expected error prefix 'telegram.UnlinkTelegram:', got %q", err.Error())
 		}
 	})

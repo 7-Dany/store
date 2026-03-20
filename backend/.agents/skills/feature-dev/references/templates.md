@@ -139,7 +139,46 @@ Leave no placeholder unfilled.
 
 ---
 
-## §8 — Open questions
+## §8 — Telemetry decisions
+
+Work through each gate from `references/conventions.md §Telemetry & Observability`.
+
+**Gate 1 — Logger:** Always yes.
+```go
+var log = telemetry.New("{feature}")
+```
+
+**Gate 2 — Error wrapping:** Always yes. Use `telemetry.Store/Service/…` constructors.
+
+**Gate 3 — Own metric needed?**
+{Answer: Yes / No. If No, stop here.}
+
+**Gate 4 — Family:**
+{Which family? Is it already automatic?}
+
+**Gate 5–6 — Instrument + labels:**
+| Metric name | Type | Labels (bounded constant set) | Cardinality est. |
+|---|---|---|---|
+| `{prefix}_{name}_total` | CounterVec | `{label}: {allowed values}` | {N} |
+
+**Gate 7 — Code locations:**
+| Artifact | File |
+|---|---|
+| Interface method | `domain/{domain}/shared/recorder.go` |
+| Registry field | `internal/platform/telemetry/metrics.go` |
+| Hook method | `internal/platform/telemetry/{domain}_hooks.go` |
+| Local narrow interface | `{feature}/service.go` |
+| Call site | `{feature}/service.go:{method}` |
+
+**Gate 8 — Alert needed?**
+{Yes / No. If yes: severity, channel, threshold.}
+
+**Gate 9 — Frontend change needed?**
+{Yes / No. If yes: specify which function in `prometheus.ts` and which dashboard component changes.}
+
+---
+
+## §9 — Open questions
 
 | # | Question | Blocked by |
 |---|---|---|
@@ -389,6 +428,41 @@ func (p *QuerierProxy) {QueryName}(ctx context.Context, {params}) ({result}, err
 
 Follow guard ordering from `0-design.md §5` exactly. No deviations.
 
+**Package-level declarations (top of file, before Service struct):**
+
+```go
+import "github.com/7-Dany/store/backend/internal/platform/telemetry"
+
+// var log is the package-level logger. One per package, never per-request.
+var log = telemetry.New("{feature}")
+
+// recorder is the narrow telemetry interface this sub-package needs.
+// *telemetry.Registry satisfies it structurally — no factory needed.
+// Omit this block entirely when 0-design.md §8 Gate 3 = No.
+type recorder interface {
+    On{EventName}({params})
+    // ...only the methods this sub-package calls
+}
+```
+
+**Service struct when recorder is needed:**
+
+```go
+type Service struct {
+    store    Storer
+    recorder recorder  // omit when Gate 3 = No
+}
+
+// NewService constructs a Service.
+// recorder satisfies the local narrow interface above.
+// Pass deps.Metrics from routes.go — no factory needed.
+func NewService(store Storer, recorder recorder) *Service {
+    return &Service{store: store, recorder: recorder}
+}
+```
+
+**Service method:**
+
 ```go
 // {MethodName} {description}.
 //
@@ -396,8 +470,16 @@ Follow guard ordering from `0-design.md §5` exactly. No deviations.
 func (s *Service) {MethodName}(ctx context.Context, in {Input}) ({Result}, error) {
     // 1. {Guard description}
     // Security: context.WithoutCancel so a client disconnect cannot skip {write}.
+
+    // On success — call recorder at the correct business event site.
+    // Omit when Gate 3 = No.
+    s.recorder.On{EventName}({args})
+
+    return result, nil
 }
 ```
+
+**Error wrapping in service:** Use `telemetry.Service("MethodName.step", err)` — never `fmt.Errorf`.
 
 ### 2. Servicer interface — `{feature}/handler.go`
 
@@ -479,6 +561,15 @@ func Test{MethodName}(t *testing.T) {
 
 ### 1. Handler method — `{feature}/handler.go`
 
+**Package-level logger (top of `handler.go`):**
+
+```go
+// var log is the package-level logger for this feature.
+var log = telemetry.New("{feature}")
+```
+
+**Handler method:**
+
 ```go
 // {MethodName} handles {METHOD} {path}.
 func (h *Handler) {MethodName}(w http.ResponseWriter, r *http.Request) {
@@ -501,7 +592,9 @@ func (h *Handler) {MethodName}(w http.ResponseWriter, r *http.Request) {
             respond.Error(w, http.Status{Code}, "{code_string}", err.Error())
         // ... all sentinels
         default:
-            slog.ErrorContext(r.Context(), "{domain}.{MethodName}: service error", "error", err)
+            // log.Error fires app_errors_total and writes fault into the HTTP carrier.
+            // Never use slog.ErrorContext directly in domain handlers.
+            log.Error(r.Context(), "{domain}.{MethodName}: service error", "error", err)
             respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
         }
         return
@@ -510,6 +603,8 @@ func (h *Handler) {MethodName}(w http.ResponseWriter, r *http.Request) {
     respond.JSON(w, http.Status{Code}, {Response}{...})
 }
 ```
+
+**Error wrapping in store:** Use `telemetry.Store("TypeName.step", err)` — never `fmt.Errorf`.
 
 ### 2. Routes — `{feature}/routes.go`
 
@@ -730,6 +825,11 @@ Use the same finding format as Part 1.
 | RBAC permission check | `deps.RBAC.Require(rbac.Perm*)` — never raw string | N/A or |
 | RBAC approval gate | `deps.RBAC.ApprovalGate(deps.ApprovalSubmitter)` when `access_type=request` possible | N/A or |
 | RBAC permission constant | `rbac.Perm*` constant — never a raw string literal | N/A or |
+| Package-level logger | `var log = telemetry.New("{feature}")` in service.go + handler.go | |
+| Error wrapping | `telemetry.Store/Service/Mailer/…` — never `fmt.Errorf` | |
+| Handler default log | `log.Error(r.Context(), …)` — never bare `slog.ErrorContext` in domain handlers | |
+| Telemetry triad (if Gate 3=Yes) | recorder.go + metrics.go field + {domain}_hooks.go all updated | N/A or |
+| Frontend (if Gate 9=Yes) | `prometheus.ts` query + snapshot field + `computeAnomalies()`/`deriveServices()` | N/A or |
 
 **RBAC-only checks (skip for auth/profile/oauth):**
 - [ ] `deps.JWTAuth` comes **before** `deps.RBAC.Require(...)` in every `r.With(...)` chain
@@ -820,6 +920,17 @@ Write immediately after Stage 0. Keep under 80 lines.
 
 ## Rate-limit prefixes
 {prefix: endpoint mapping}
+
+## Telemetry (from Stage 0 §8)
+- Gate 3: {Yes / No}
+- If Yes:
+  - Recorder method: `On{EventName}({params})` in `domain/{domain}/shared/recorder.go`
+  - Registry field: `{metricName}` in `telemetry/metrics.go`
+  - Hook file: `telemetry/{domain}_hooks.go`
+  - Narrow interface: `recorder` in `{feature}/service.go`
+  - Call site: `{feature}/service.go:{method}`
+  - Gate 8 alert: {severity / none}
+  - Gate 9 frontend: {function in prometheus.ts / none}
 
 ## Test case IDs (from Stage 0 §7)
 - S-layer: T-01 to T-{N}

@@ -3,7 +3,6 @@ package verification
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -24,6 +23,13 @@ type BackoffChecker interface {
 	Reset(ctx context.Context, key string)
 }
 
+// Recorder is the narrow observability interface for the verification handler.
+// *telemetry.Registry satisfies this interface structurally.
+type Recorder interface {
+	OnEmailVerified()
+	OnVerificationResent()
+}
+
 // Servicer defines the service methods Handler needs.
 type Servicer interface {
 	VerifyEmail(ctx context.Context, in VerifyEmailInput) error
@@ -33,13 +39,14 @@ type Servicer interface {
 // Handler is the HTTP layer for verification operations.
 type Handler struct {
 	svc           Servicer
+	recorder      Recorder
 	verifyBackoff BackoffChecker
 	mailer.OTPHandlerBase
 }
 
 // NewHandler constructs a Handler.
-func NewHandler(svc Servicer, backoff BackoffChecker, base mailer.OTPHandlerBase) *Handler {
-	return &Handler{svc: svc, verifyBackoff: backoff, OTPHandlerBase: base}
+func NewHandler(svc Servicer, backoff BackoffChecker, base mailer.OTPHandlerBase, recorder Recorder) *Handler {
+	return &Handler{svc: svc, verifyBackoff: backoff, OTPHandlerBase: base, recorder: recorder}
 }
 
 // ── VerifyEmail ───────────────────────────────────────────────────────────────
@@ -78,6 +85,7 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		// Success — clear any backoff state for this IP.
 		h.verifyBackoff.Reset(r.Context(), ip)
+		h.recorder.OnEmailVerified()
 		respond.JSON(w, http.StatusOK, map[string]string{
 			"message": "email verified successfully",
 		})
@@ -114,7 +122,7 @@ func (h *Handler) VerifyEmail(w http.ResponseWriter, r *http.Request) {
 		})
 
 	default:
-		slog.ErrorContext(r.Context(), "verification.VerifyEmail: service error", "error", err)
+		log.Error(r.Context(), "VerifyEmail: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
@@ -143,7 +151,7 @@ func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 		UserAgent: r.UserAgent(),
 	})
 	if err != nil {
-		slog.ErrorContext(r.Context(), "verification.ResendVerification: service error", "error", err)
+		log.Error(r.Context(), "ResendVerification: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -152,10 +160,14 @@ func (h *Handler) ResendVerification(w http.ResponseWriter, r *http.Request) {
 	// the rawCode == "" guard is enforced inside mailer.SendOTPEmail itself.
 	if err := mailer.SendOTPEmail(r.Context(), h.OTPHandlerBase, result.UserID, result.Email, result.RawCode, "verification"); err != nil {
 		// We know the account is real here, so 503 does not break anti-enumeration.
-		slog.ErrorContext(r.Context(), "verification.ResendVerification: mail delivery failed", "error", err)
+		log.Error(r.Context(), "ResendVerification: mail delivery failed", "error", err)
 		respond.Error(w, http.StatusServiceUnavailable, "mail_delivery_failed",
 			"could not send verification email — please try again later")
 		return
+	}
+
+	if result.RawCode != "" {
+		h.recorder.OnVerificationResent()
 	}
 
 	// Always respond with 202 — the caller cannot infer whether an email was sent.

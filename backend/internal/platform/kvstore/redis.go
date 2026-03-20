@@ -10,6 +10,8 @@ import (
 
 	redis_rate "github.com/go-redis/redis_rate/v10"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // RedisStore is a Store backed by a Redis instance.
@@ -30,8 +32,40 @@ type RedisStore struct {
 func NewRedisStore(url string) (*RedisStore, error) {
 	opts, err := redis.ParseURL(url)
 	if err != nil {
-		return nil, fmt.Errorf("kvstore.NewRedisStore: parse redis url: %w", err)
+		return nil, telemetry.KVStore("NewRedisStore.parse_url", err)
 	}
+
+	// Override connection-pool defaults to ensure fast failure detection.
+	//
+	// DialTimeout: how long a new TCP connection attempt may take before the
+	// pool gives up. The default (5 s) means the first request after Redis
+	// goes down blocks for 5 s before surfacing an error. 2 s is tight enough
+	// to detect outages quickly while still tolerating a slow-starting Redis.
+	//
+	// ReadTimeout / WriteTimeout: per-command deadline. Lowered from the
+	// default 3 s to match DialTimeout so every failed command surfaces within
+	// the same 2 s window.
+	//
+	// ConnMaxIdleTime: maximum time a connection may sit idle in the pool
+	// before it is closed and replaced on next checkout. Without this, idle
+	// connections are never health-checked and the pool appears healthy even
+	// when Redis has been unreachable for minutes. 30 s ensures that within
+	// one InfraPoller cycle (15 s poll + up to 30 s idle) a stale connection
+	// is discovered and StaleConns increments — making the dashboard reflect
+	// the outage within ~45 s worst-case instead of 3+ minutes.
+	if opts.DialTimeout == 0 {
+		opts.DialTimeout = 2 * time.Second
+	}
+	if opts.ReadTimeout == 0 {
+		opts.ReadTimeout = 2 * time.Second
+	}
+	if opts.WriteTimeout == 0 {
+		opts.WriteTimeout = 2 * time.Second
+	}
+	if opts.ConnMaxIdleTime == 0 {
+		opts.ConnMaxIdleTime = 30 * time.Second
+	}
+
 	client := redis.NewClient(opts)
 
 	// Ping: verify connectivity with a dedicated 5-second deadline.
@@ -39,7 +73,7 @@ func NewRedisStore(url string) (*RedisStore, error) {
 	defer pingCancel()
 	if err := client.Ping(pingCtx).Err(); err != nil {
 		_ = client.Close()
-		return nil, fmt.Errorf("kvstore.NewRedisStore: connect to redis: %w", err)
+		return nil, telemetry.KVStore("NewRedisStore.connect", err)
 	}
 
 	// ScriptLoad: pre-load Lua scripts with their own 5-second deadline so a
@@ -50,12 +84,12 @@ func NewRedisStore(url string) (*RedisStore, error) {
 	incrSHA, err := client.ScriptLoad(loadCtx, atomicBackoffIncrementScript).Result()
 	if err != nil {
 		_ = client.Close()
-		return nil, fmt.Errorf("kvstore.NewRedisStore: load backoff increment script: %w", err)
+		return nil, telemetry.KVStore("NewRedisStore.load_increment_script", err)
 	}
 	allowSHA, err := client.ScriptLoad(loadCtx, atomicBackoffAllowScript).Result()
 	if err != nil {
 		_ = client.Close()
-		return nil, fmt.Errorf("kvstore.NewRedisStore: load backoff allow script: %w", err)
+		return nil, telemetry.KVStore("NewRedisStore.load_allow_script", err)
 	}
 
 	return &RedisStore{
@@ -74,7 +108,7 @@ func (s *RedisStore) Get(ctx context.Context, key string) (string, error) {
 		return "", ErrNotFound
 	}
 	if err != nil {
-		return "", fmt.Errorf("kvstore.Get: redis get: %w", err)
+		return "", telemetry.KVStore("Get.redis_get", err)
 	}
 	return val, nil
 }
@@ -87,7 +121,7 @@ func (s *RedisStore) Set(ctx context.Context, key, value string, ttl time.Durati
 		return fmt.Errorf("kvstore.Set: negative ttl: %v", ttl)
 	}
 	if err := s.client.Set(ctx, key, value, ttl).Err(); err != nil {
-		return fmt.Errorf("kvstore.Set: redis set: %w", err)
+		return telemetry.KVStore("Set.redis_set", err)
 	}
 	return nil
 }
@@ -95,7 +129,7 @@ func (s *RedisStore) Set(ctx context.Context, key, value string, ttl time.Durati
 // Delete removes key from the store. It is a no-op if the key does not exist.
 func (s *RedisStore) Delete(ctx context.Context, key string) error {
 	if err := s.client.Del(ctx, key).Err(); err != nil {
-		return fmt.Errorf("kvstore.Delete: redis del: %w", err)
+		return telemetry.KVStore("Delete.redis_del", err)
 	}
 	return nil
 }
@@ -104,7 +138,7 @@ func (s *RedisStore) Delete(ctx context.Context, key string) error {
 func (s *RedisStore) Exists(ctx context.Context, key string) (bool, error) {
 	n, err := s.client.Exists(ctx, key).Result()
 	if err != nil {
-		return false, fmt.Errorf("kvstore.Exists: redis exists: %w", err)
+		return false, telemetry.KVStore("Exists.redis_exists", err)
 	}
 	return n > 0, nil
 }
@@ -130,7 +164,7 @@ func (s *RedisStore) Keys(ctx context.Context, prefix string) ([]string, error) 
 	for {
 		batch, nextCursor, err := s.client.Scan(ctx, cursor, pattern, batchSize).Result()
 		if err != nil {
-			return nil, fmt.Errorf("kvstore.Keys: redis scan: %w", err)
+			return nil, telemetry.KVStore("Keys.redis_scan", err)
 		}
 		keys = append(keys, batch...)
 		cursor = nextCursor
@@ -180,7 +214,7 @@ func (s *RedisStore) AtomicBucketAllow(ctx context.Context, key string, rate, bu
 	}
 	res, err := s.limiter.Allow(ctx, key, limit)
 	if err != nil {
-		return false, fmt.Errorf("kvstore.AtomicBucketAllow: redis atomic bucket allow: %w", err)
+		return false, telemetry.KVStore("AtomicBucketAllow.redis_allow", err)
 	}
 	return res.Allowed > 0, nil
 }
@@ -197,7 +231,7 @@ func (s *RedisStore) BlockToken(ctx context.Context, jti string, ttl time.Durati
 	// Security: detach from the request context so a client-timed disconnect
 	// cannot abort the blocklist write and leave a revoked token accepted.
 	if err := s.client.Set(context.WithoutCancel(ctx), key, "1", ttl).Err(); err != nil {
-		return fmt.Errorf("kvstore.BlockToken: redis block token: %w", err)
+		return telemetry.KVStore("BlockToken.redis_set", err)
 	}
 	return nil
 }
@@ -315,18 +349,18 @@ func (s *RedisStore) AtomicBackoffIncrement(ctx context.Context, key string, bas
 
 	result, err := s.evalScript(ctx, s.incrSHA, atomicBackoffIncrementScript, []string{key}, baseDelayMs, maxDelayMs, ttlMs)
 	if err != nil {
-		return time.Time{}, 0, fmt.Errorf("kvstore.AtomicBackoffIncrement: redis eval: %w", err)
+		return time.Time{}, 0, telemetry.KVStore("AtomicBackoffIncrement.redis_eval", err)
 	}
 
 	values, ok := result.([]any)
 	if !ok || len(values) != 2 {
-		return time.Time{}, 0, fmt.Errorf("kvstore.AtomicBackoffIncrement: unexpected result format")
+		return time.Time{}, 0, errors.New("kvstore.AtomicBackoffIncrement: unexpected result format")
 	}
 
 	failures, ok1 := values[0].(int64)
 	unlocksAtMs, ok2 := values[1].(int64)
 	if !ok1 || !ok2 {
-		return time.Time{}, 0, fmt.Errorf("kvstore.AtomicBackoffIncrement: unexpected value types")
+		return time.Time{}, 0, errors.New("kvstore.AtomicBackoffIncrement: unexpected value types")
 	}
 
 	return time.UnixMilli(unlocksAtMs), int(failures), nil
@@ -337,18 +371,18 @@ func (s *RedisStore) AtomicBackoffIncrement(ctx context.Context, key string, bas
 func (s *RedisStore) AtomicBackoffAllow(ctx context.Context, key string) (bool, time.Duration, error) {
 	result, err := s.evalScript(ctx, s.allowSHA, atomicBackoffAllowScript, []string{key})
 	if err != nil {
-		return false, 0, fmt.Errorf("kvstore.AtomicBackoffAllow: redis eval: %w", err)
+		return false, 0, telemetry.KVStore("AtomicBackoffAllow.redis_eval", err)
 	}
 
 	values, ok := result.([]any)
 	if !ok || len(values) != 2 {
-		return false, 0, fmt.Errorf("kvstore.AtomicBackoffAllow: unexpected result format")
+		return false, 0, errors.New("kvstore.AtomicBackoffAllow: unexpected result format")
 	}
 
 	allowedInt, ok1 := values[0].(int64)
 	remainingMs, ok2 := values[1].(int64)
 	if !ok1 || !ok2 {
-		return false, 0, fmt.Errorf("kvstore.AtomicBackoffAllow: unexpected value types")
+		return false, 0, errors.New("kvstore.AtomicBackoffAllow: unexpected value types")
 	}
 
 	return allowedInt == 1, time.Duration(remainingMs) * time.Millisecond, nil
@@ -374,9 +408,24 @@ func (s *RedisStore) AtomicBucketPeek(ctx context.Context, key string, rate, bur
 	// a pure read. res.Remaining reflects current available tokens.
 	res, err := s.limiter.AllowN(ctx, key, limit, 0)
 	if err != nil {
-		return false, fmt.Errorf("kvstore.AtomicBucketPeek: redis allow peek: %w", err)
+		return false, telemetry.KVStore("AtomicBucketPeek.redis_peek", err)
 	}
 	return res.Remaining >= 1, nil
+}
+
+// PoolStats returns the current Redis connection pool statistics.
+// Satisfies telemetry.RedisStatsProvider so the InfraPoller can report
+// redis_pool_* metrics without importing the kvstore package.
+func (s *RedisStore) PoolStats() *redis.PoolStats {
+	return s.client.PoolStats()
+}
+
+// Ping issues a PING command to Redis with the given context.
+// Satisfies telemetry.RedisStatsProvider so the InfraPoller can actively probe
+// Redis on every tick, surfacing outages within one 15-second poll cycle
+// regardless of whether any request traffic is hitting Redis at the time.
+func (s *RedisStore) Ping(ctx context.Context) error {
+	return s.client.Ping(ctx).Err()
 }
 
 // compile-time interface checks.
@@ -384,3 +433,13 @@ var _ Store = (*RedisStore)(nil)
 var _ TokenBlocklist = (*RedisStore)(nil)
 var _ AtomicBucketStore = (*RedisStore)(nil)
 var _ AtomicBackoffStore = (*RedisStore)(nil)
+
+// Ensure RedisStore satisfies the telemetry.RedisStatsProvider interface so
+// a missing Ping() method is caught at compile time, not at server startup.
+// Import cycle is avoided because telemetry does not import kvstore.
+type redisStatsProviderCheck interface {
+	PoolStats() *redis.PoolStats
+	Ping(ctx context.Context) error
+}
+
+var _ redisStatsProviderCheck = (*RedisStore)(nil)

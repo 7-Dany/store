@@ -3,10 +3,15 @@ package roles
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
 	"github.com/google/uuid"
+
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
+
+// log is the package-level structured logger for the roles feature.
+// One logger per package — shared across all files in the package.
+var log = telemetry.New("roles")
 
 // Storer is the data-access contract for the roles service.
 // Defined here per ADR-007 — the service owns its dependencies.
@@ -39,7 +44,7 @@ func NewService(store Storer) *Service {
 func (s *Service) ListRoles(ctx context.Context) ([]Role, error) {
 	roles, err := s.store.GetRoles(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("roles.ListRoles: %w", err)
+		return nil, telemetry.Service("roles.ListRoles: get", err)
 	}
 	return roles, nil
 }
@@ -53,7 +58,7 @@ func (s *Service) GetRole(ctx context.Context, roleID string) (Role, error) {
 	}
 	role, err := s.store.GetRoleByID(ctx, id)
 	if err != nil {
-		return Role{}, fmt.Errorf("roles.GetRole: %w", err)
+		return Role{}, telemetry.Service("roles.GetRole: get", err)
 	}
 	return role, nil
 }
@@ -62,7 +67,7 @@ func (s *Service) GetRole(ctx context.Context, roleID string) (Role, error) {
 func (s *Service) CreateRole(ctx context.Context, in CreateRoleInput) (Role, error) {
 	role, err := s.store.CreateRole(ctx, in)
 	if err != nil {
-		return Role{}, fmt.Errorf("roles.CreateRole: %w", err)
+		return Role{}, telemetry.Service("roles.CreateRole: insert", err)
 	}
 	return role, nil
 }
@@ -76,7 +81,7 @@ func (s *Service) UpdateRole(ctx context.Context, roleID string, in UpdateRoleIn
 	}
 	role, err := s.store.UpdateRole(ctx, id, in)
 	if err != nil {
-		return Role{}, fmt.Errorf("roles.UpdateRole: %w", err)
+		return Role{}, telemetry.Service("roles.UpdateRole: update", err)
 	}
 	return role, nil
 }
@@ -89,7 +94,7 @@ func (s *Service) DeleteRole(ctx context.Context, roleID string) error {
 		return ErrRoleNotFound
 	}
 	if err := s.store.DeactivateRole(ctx, id); err != nil {
-		return fmt.Errorf("roles.DeleteRole: %w", err)
+		return telemetry.Service("roles.DeleteRole: deactivate", err)
 	}
 	return nil
 }
@@ -104,11 +109,11 @@ func (s *Service) ListRolePermissions(ctx context.Context, roleID string) ([]Rol
 	// Verify the role exists before querying its permissions so that a valid
 	// UUID referencing a non-existent role returns 404 instead of an empty list.
 	if _, err := s.store.GetRoleByID(ctx, id); err != nil {
-		return nil, fmt.Errorf("roles.ListRolePermissions: %w", err)
+		return nil, telemetry.Service("roles.ListRolePermissions: get role", err)
 	}
 	perms, err := s.store.GetRolePermissions(ctx, id)
 	if err != nil {
-		return nil, fmt.Errorf("roles.ListRolePermissions: %w", err)
+		return nil, telemetry.Service("roles.ListRolePermissions: get perms", err)
 	}
 	return perms, nil
 }
@@ -126,7 +131,7 @@ func (s *Service) AddRolePermission(ctx context.Context, roleID string, in AddRo
 	// Fetch capability flags — validates the permission exists and is active.
 	caps, err := s.store.GetPermissionCaps(ctx, in.PermissionID)
 	if err != nil {
-		return fmt.Errorf("roles.AddRolePermission: %w", err)
+		return telemetry.Service("AddRolePermission.get_caps", err)
 	}
 
 	// Validate access_type against capability flags.
@@ -166,7 +171,7 @@ func (s *Service) AddRolePermission(ctx context.Context, roleID string, in AddRo
 	}
 
 	if err := s.store.AddRolePermission(ctx, rid, in); err != nil {
-		return fmt.Errorf("roles.AddRolePermission: %w", err)
+		return telemetry.Service("roles.AddRolePermission: insert", err)
 	}
 	return nil
 }
@@ -185,7 +190,7 @@ func (s *Service) RemoveRolePermission(ctx context.Context, roleID, permID, acti
 		return ErrRolePermissionNotFound
 	}
 	if err := s.store.RemoveRolePermission(ctx, rid, pid, actingUserID); err != nil {
-		return fmt.Errorf("roles.RemoveRolePermission: %w", err)
+		return telemetry.Service("roles.RemoveRolePermission: delete", err)
 	}
 	return nil
 }

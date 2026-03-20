@@ -3,7 +3,6 @@ package userpermissions
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	adminshared "github.com/7-Dany/store/backend/internal/domain/admin/shared"
@@ -38,7 +37,7 @@ func (h *Handler) ListPermissions(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrGrantNotFound) {
 			respond.Error(w, http.StatusNotFound, "user_not_found", "user not found")
 		} else {
-			slog.ErrorContext(r.Context(), "userpermissions.ListPermissions: service error", "error", err)
+			log.Error(r.Context(), "ListPermissions: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -106,7 +105,7 @@ func (h *Handler) RevokePermission(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrGrantNotFound) {
 			respond.Error(w, http.StatusNotFound, "grant_not_found", "permission grant not found")
 		} else {
-			slog.ErrorContext(r.Context(), "userpermissions.RevokePermission: service error", "error", err)
+			log.Error(r.Context(), "RevokePermission: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -136,7 +135,7 @@ func (h *Handler) writeGrantError(w http.ResponseWriter, r *http.Request, err er
 	case errors.Is(err, ErrPrivilegeEscalation):
 		respond.Error(w, http.StatusForbidden, "privilege_escalation", "granter does not hold this permission")
 	default:
-		slog.ErrorContext(r.Context(), "userpermissions.GrantPermission: service error", "error", err)
+		log.Error(r.Context(), "GrantPermission: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }

@@ -14,3 +14,6 @@ var ErrUserNotFound = errors.New("user not found")
 // Defined here so both the roles and userpermissions packages can return and
 // check the same sentinel without importing each other (ADR-010).
 var ErrScopeNotAllowed = errors.New("scope is not permitted for this permission")
+
+// ErrUserIDEmpty is returned when the user_id field is absent or blank after trimming.
+var ErrUserIDEmpty = errors.New("user_id is required")

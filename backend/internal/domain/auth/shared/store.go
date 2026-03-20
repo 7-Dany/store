@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/netip"
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5"
 	// github.com/jackc/pgx/v5/pgconn is not in the §1.3 DB-package gate list but
 	// is permitted here solely for *pgconn.PgError type inspection in IsDuplicateEmail.
@@ -34,6 +34,8 @@ type BaseStore struct {
 	Queries db.Querier
 	TxBound bool
 }
+
+var log = telemetry.New("authshared")
 
 // NewBaseStore constructs a BaseStore backed by pool.
 func NewBaseStore(pool *pgxpool.Pool) BaseStore {
@@ -124,7 +126,7 @@ func (b BaseStore) UUIDToBytes(u uuid.UUID) [16]byte {
 func (b BaseStore) ParseUUIDString(s string) (pgtype.UUID, error) {
 	u, err := uuid.Parse(s)
 	if err != nil {
-		return pgtype.UUID{}, fmt.Errorf("ParseUUIDString: %w", err)
+		return pgtype.UUID{}, telemetry.Store("ParseUUIDString.parse", err)
 	}
 	return b.UUIDToPgtypeUUID(u), nil
 }
@@ -207,7 +209,7 @@ func (b BaseStore) IsDuplicateUsername(err error) bool {
 // everything.
 func (b BaseStore) IncrementAttemptsTx(ctx context.Context, in IncrementInput) error {
 	if in.AttemptEvent == "" {
-		return fmt.Errorf("store.IncrementAttemptsTx: AttemptEvent must not be empty")
+		return telemetry.Store("IncrementAttemptsTx.validate", errors.New("AttemptEvent must not be empty"))
 	}
 
 	// Security: detach from the request context so a client-timed disconnect
@@ -229,7 +231,7 @@ func (b BaseStore) IncrementAttemptsTx(ctx context.Context, in IncrementInput) e
 		// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 		// and always returns nil error. No test can trigger this branch.
 		if err != nil {
-			return fmt.Errorf("store.IncrementAttemptsTx: begin tx: %w", err)
+			return telemetry.Store("IncrementAttemptsTx.begin tx", err)
 		}
 		q = h.Q
 		commitFn = h.Commit
@@ -238,7 +240,7 @@ func (b BaseStore) IncrementAttemptsTx(ctx context.Context, in IncrementInput) e
 		// Production path: fresh, independent transaction.
 		tx, err := b.Pool.Begin(safeCtx)
 		if err != nil {
-			return fmt.Errorf("store.IncrementAttemptsTx: begin tx: %w", err)
+			return telemetry.Store("IncrementAttemptsTx.begin tx", err)
 		}
 		q = db.New(tx)
 		commitFn = func() error { return tx.Commit(safeCtx) }
@@ -255,7 +257,7 @@ func (b BaseStore) IncrementAttemptsTx(ctx context.Context, in IncrementInput) e
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			rollbackFn("IncrementAttemptsTx/increment")
-			return fmt.Errorf("store.IncrementAttemptsTx: increment attempts: %w", err)
+			return telemetry.Store("IncrementAttemptsTx.increment attempts", err)
 		}
 		// Token already at ceiling; use MaxAttempts so the threshold check triggers.
 		newAttempts = in.MaxAttempts
@@ -272,7 +274,7 @@ func (b BaseStore) IncrementAttemptsTx(ctx context.Context, in IncrementInput) e
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		rollbackFn("IncrementAttemptsTx/audit-attempt")
-		return fmt.Errorf("store.IncrementAttemptsTx: audit log (%s): %w", in.AttemptEvent, err)
+		return telemetry.Store("IncrementAttemptsTx.audit log", err)
 	}
 
 	// 3. Lock account and emit account_locked audit row if threshold is reached.
@@ -282,7 +284,7 @@ func (b BaseStore) IncrementAttemptsTx(ctx context.Context, in IncrementInput) e
 	if newAttempts >= in.MaxAttempts {
 		if _, err := q.LockAccount(safeCtx, userPgUUID); err != nil {
 			rollbackFn("IncrementAttemptsTx/lock-account")
-			return fmt.Errorf("store.IncrementAttemptsTx: lock account: %w", err)
+			return telemetry.Store("IncrementAttemptsTx.lock account", err)
 		}
 		if err := q.InsertAuditLog(safeCtx, db.InsertAuditLogParams{
 			UserID:    userPgUUID,
@@ -293,7 +295,7 @@ func (b BaseStore) IncrementAttemptsTx(ctx context.Context, in IncrementInput) e
 			Metadata:  []byte("{}"),
 		}); err != nil {
 			rollbackFn("IncrementAttemptsTx/audit-locked")
-			return fmt.Errorf("store.IncrementAttemptsTx: audit log (account_locked): %w", err)
+			return telemetry.Store("IncrementAttemptsTx.audit log (account_locked)", err)
 		}
 	}
 
@@ -301,7 +303,7 @@ func (b BaseStore) IncrementAttemptsTx(ctx context.Context, in IncrementInput) e
 	// that always returns nil; on the non-TxBound path commitFn wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := commitFn(); err != nil {
-		return fmt.Errorf("store.IncrementAttemptsTx: commit: %w", err)
+		return telemetry.Store("IncrementAttemptsTx.commit", err)
 	}
 
 	return nil
@@ -314,7 +316,7 @@ func (b BaseStore) IncrementAttemptsTx(ctx context.Context, in IncrementInput) e
 func (b BaseStore) UpdatePasswordHashTx(ctx context.Context, userID [16]byte, newHash, ipAddress, userAgent string) error {
 	h, err := b.BeginOrBind(ctx)
 	if err != nil {
-		return fmt.Errorf("store.UpdatePasswordHashTx: begin tx: %w", err)
+		return telemetry.Store("UpdatePasswordHashTx.begin tx", err)
 	}
 
 	userPgUUID := b.ToPgtypeUUID(userID)
@@ -325,7 +327,7 @@ func (b BaseStore) UpdatePasswordHashTx(ctx context.Context, userID [16]byte, ne
 		UserID:       userPgUUID,
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.UpdatePasswordHashTx: update hash: %w", err)
+		return telemetry.Store("UpdatePasswordHashTx.update hash", err)
 	}
 
 	// 2. Revoke all active refresh tokens so no session survives the password change.
@@ -334,13 +336,13 @@ func (b BaseStore) UpdatePasswordHashTx(ctx context.Context, userID [16]byte, ne
 		Reason: "password_changed",
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.UpdatePasswordHashTx: revoke refresh tokens: %w", err)
+		return telemetry.Store("UpdatePasswordHashTx.revoke refresh tokens", err)
 	}
 
 	// 3. End all open sessions.
 	if err := h.Q.EndAllUserSessions(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.UpdatePasswordHashTx: end sessions: %w", err)
+		return telemetry.Store("UpdatePasswordHashTx.end sessions", err)
 	}
 
 	// 4. Audit row.
@@ -353,14 +355,14 @@ func (b BaseStore) UpdatePasswordHashTx(ctx context.Context, userID [16]byte, ne
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.UpdatePasswordHashTx: audit log: %w", err)
+		return telemetry.Store("UpdatePasswordHashTx.audit log", err)
 	}
 
 	// Unreachable via QuerierProxy: same structural reason as
 	// IncrementAttemptsTx above — h.Commit wraps pgx.Tx.Commit which
 	// the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.UpdatePasswordHashTx: commit: %w", err)
+		return telemetry.Store("UpdatePasswordHashTx.commit", err)
 	}
 	return nil
 }
@@ -371,6 +373,6 @@ func (b BaseStore) UpdatePasswordHashTx(ctx context.Context, userID [16]byte, ne
 // ErrTxClosed is expected when PostgreSQL has already aborted the transaction.
 func LogRollback(ctx context.Context, tx interface{ Rollback(context.Context) error }, label string) {
 	if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
-		slog.Error("store: rollback failed", "label", label, "error", err)
+		log.Warn(ctx, "rollback failed", "label", label, "error", err)
 	}
 }

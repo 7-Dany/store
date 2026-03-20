@@ -24,7 +24,7 @@ go.work
 go.work.sum
 
 # Dependency directories
-vendor/
+./vendor/
 
 # Environment and secrets — NEVER commit
 .env
@@ -57,3 +57,4 @@ mem.out
 __debug_bin*
 
 # docs for development
+*.zip

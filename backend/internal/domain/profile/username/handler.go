@@ -3,7 +3,6 @@ package username
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -61,7 +60,7 @@ func (h *Handler) Available(w http.ResponseWriter, r *http.Request) {
 			errors.Is(err, ErrUsernameInvalidFormat):
 			respond.Error(w, http.StatusUnprocessableEntity, "validation_error", err.Error())
 		default:
-			slog.ErrorContext(r.Context(), "username.Available: service error", "error", err)
+			log.Error(r.Context(), "Available: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -90,7 +89,7 @@ func (h *Handler) UpdateUsername(w http.ResponseWriter, r *http.Request) {
 	// Parse the JWT user ID string into the [16]byte that the service expects.
 	uid, err := uuid.Parse(userID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "username.UpdateUsername: parse user id", "error", err)
+		log.Error(r.Context(), "UpdateUsername: parse user id", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -115,10 +114,10 @@ func (h *Handler) UpdateUsername(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, profileshared.ErrUserNotFound):
 			// Authenticated user whose row is absent — surfacing 404 would confirm
 			// that a valid JWT references a deleted account, so treat as 500.
-			slog.ErrorContext(r.Context(), "username.UpdateUsername: user not found for authenticated request", "error", err)
+			log.Error(r.Context(), "UpdateUsername: user not found for authenticated request", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		default:
-			slog.ErrorContext(r.Context(), "username.UpdateUsername: service error", "error", err)
+			log.Error(r.Context(), "UpdateUsername: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return

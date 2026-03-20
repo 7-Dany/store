@@ -7,14 +7,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
-
-	// go get github.com/rs/cors
 	"github.com/rs/cors"
 
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/domain"
 	"github.com/7-Dany/store/backend/internal/platform/ratelimit"
 	"github.com/7-Dany/store/backend/internal/platform/respond"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // newRouter wires global middleware and mounts every versioned API sub-router.
@@ -22,26 +21,36 @@ import (
 // so they can start cleanup goroutines that respect graceful shutdown (RULES §2.6).
 // Domain routes receive deps and are responsible for their own feature-level
 // middleware (content-type, rate-limiting, JWT auth).
-func newRouter(ctx context.Context, deps *app.Deps) http.Handler {
+func newRouter(ctx context.Context, deps *app.Deps, registry *telemetry.Registry) http.Handler {
 	r := chi.NewRouter()
 
 	// ── Global middleware ─────────────────────────────────────────────────
+	//
+	// Order is intentional:
+	//   1. RequestID            — injects X-Request-ID; must be first so all
+	//                             subsequent middleware/handlers see the ID.
+	//   2. TrustedProxyRealIP  — rewrites RemoteAddr from X-Forwarded-For only
+	//                             for trusted upstream proxies; must precede any
+	//                             middleware that reads the client IP (rate limiters).
+	//   3. Logger              — chi's structured access logger.
+	//   4. RequestMiddleware   — injects the fault carrier, records HTTP metrics.
+	//                             Must be before PanicRecoveryMiddleware so the
+	//                             carrier is in context when a panic is recovered.
+	//   5. PanicRecoveryMiddleware — replaces chimiddleware.Recoverer. Recovers
+	//                             panics, writes them into the carrier, and returns 500.
 	r.Use(
-		chimiddleware.RequestID, // injects X-Request-ID into every request
-		// Security: TrustedProxyRealIP sets r.RemoteAddr from X-Forwarded-For only
-		// when the TCP peer matches a configured trusted-proxy CIDR. This prevents
-		// internet clients from forging their IP to bypass rate limiting.
+		chimiddleware.RequestID,
 		ratelimit.TrustedProxyRealIP(deps.TrustedProxyCIDRs),
-		chimiddleware.Logger,    // structured request/response logging
-		chimiddleware.Recoverer, // turns panics into 500 responses
+		chimiddleware.Logger,
+		telemetry.RequestMiddleware(registry),
+		telemetry.PanicRecoveryMiddleware,
+		// NOTE: chimiddleware.Recoverer removed — PanicRecoveryMiddleware is its
+		// full replacement and additionally records metrics.
 	)
 
-	// Security: defence-in-depth response headers. Applied unconditionally so
-	// every response from this server carries them regardless of route or auth state.
-	//   X-Content-Type-Options: prevents MIME-sniffing attacks where browsers
-	//     reinterpret a JSON response as an executable type.
-	//   X-Frame-Options: prevents clickjacking by disallowing this app from being
-	//     embedded in a <frame> or <iframe> on a third-party origin.
+	// Security: defence-in-depth response headers applied unconditionally.
+	//   X-Content-Type-Options: prevents MIME-sniffing attacks.
+	//   X-Frame-Options: prevents clickjacking via <frame>/<iframe> embedding.
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -50,8 +59,8 @@ func newRouter(ctx context.Context, deps *app.Deps) http.Handler {
 		})
 	})
 
-	// Security: CORS middleware restricts cross-origin requests to the configured
-	// allow-list. Must be applied before route registration so preflight OPTIONS
+	// Security: CORS restricts cross-origin requests to the configured
+	// allow-list. Applied before route registration so preflight OPTIONS
 	// requests are handled globally.
 	c := cors.New(cors.Options{
 		AllowedOrigins:   deps.AllowedOrigins,
@@ -62,8 +71,8 @@ func newRouter(ctx context.Context, deps *app.Deps) http.Handler {
 	})
 	r.Use(c.Handler)
 
-	// Security: Strict-Transport-Security enforces TLS for all future requests.
-	// Only injected when cfg.HTTPSEnabled is true to avoid breaking plain-HTTP
+	// Security: HSTS enforces TLS for all future requests.
+	// Only injected when HTTPSEnabled is true to avoid breaking plain-HTTP
 	// development environments.
 	if deps.HTTPSEnabled {
 		r.Use(func(next http.Handler) http.Handler {
@@ -74,12 +83,28 @@ func newRouter(ctx context.Context, deps *app.Deps) http.Handler {
 		})
 	}
 
-	// ── Health ───────────────────────────────────────────────────────────
+	// ── Metrics ───────────────────────────────────────────────────────────
+	// SECURITY: GET /metrics must NOT be reachable from the public internet.
+	// It exposes route enumeration, session counts, auth failure rates, infra
+	// sizing, and Bitcoin connectivity state to any unauthenticated scraper.
+	//
+	// Production hardening options (choose one before shipping):
+	//   Option A — internal port (preferred):
+	//     go http.ListenAndServe(cfg.InternalMetricsAddr, registry.Handler())
+	//     and remove this route entirely.
+	//   Option B — bearer token gate:
+	//     r.With(requireMetricsBearerToken(cfg.MetricsScrapeToken)).
+	//         Handle("/metrics", registry.Handler())
+	//
+	// r.Handle accepts http.Handler directly — correct for promhttp.HandlerFor output.
+	// TODO: add auth gate before shipping to production.
+	r.Handle("/metrics", registry.Handler())
+
+	// ── Health ────────────────────────────────────────────────────────────
 	// Rate limit: 3 req / min per IP, burst=3.
 	// Protects the health endpoint from being used as a free amplifier or
 	// enumeration vector while remaining invisible to legitimate monitoring
-	// tools (load balancers, uptime checkers) that poll at most once every
-	// few seconds.
+	// tools that poll at most once every few seconds.
 	healthLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "health:ip:", 3.0/60, 3, 5*time.Minute)
 	go healthLimiter.StartCleanup(ctx)
 

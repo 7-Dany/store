@@ -5,16 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/netip"
 
 	"github.com/7-Dany/store/backend/internal/db"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// log is the package-level structured logger for the rbac shared package.
+var log = telemetry.New("rbac.shared")
 
 // maxUserAgentBytes is the maximum number of bytes stored in the user_agent column.
 const maxUserAgentBytes = 512
@@ -110,7 +113,7 @@ func (b BaseStore) UUIDToBytes(u uuid.UUID) [16]byte {
 func (b BaseStore) ParseUUIDString(s string) (pgtype.UUID, error) {
 	u, err := uuid.Parse(s)
 	if err != nil {
-		return pgtype.UUID{}, fmt.Errorf("ParseUUIDString: %w", err)
+		return pgtype.UUID{}, telemetry.Store("ParseUUIDString.parse", err)
 	}
 	return b.UUIDToPgtypeUUID(u), nil
 }
@@ -221,7 +224,7 @@ func (b *BaseStore) WithActingUser(ctx context.Context, userID string, fn func()
 	// This guarantees the audit trigger reads the correct actor regardless of whether
 	// we are in a test transaction (TxBound=true) or production autocommit.
 	if err := b.Queries.SetActingUser(ctx, userID); err != nil {
-		return fmt.Errorf("rbacshared.WithActingUser: set acting_user: %w", err)
+		return telemetry.Store("WithActingUser.set_acting_user", err)
 	}
 	err := fn()
 	// Clear on a best-effort basis; errors here are non-fatal.
@@ -232,8 +235,10 @@ func (b *BaseStore) WithActingUser(ctx context.Context, userID string, fn func()
 // ── Standalone helpers ────────────────────────────────────────────────────────
 
 // LogRollback calls tx.Rollback and logs any error that is not ErrTxClosed.
+// Rollback failure is a best-effort secondary op — logged as Warn so the
+// primary error remains the actionable signal.
 func LogRollback(ctx context.Context, tx interface{ Rollback(context.Context) error }, label string) {
 	if err := tx.Rollback(ctx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
-		slog.Error("store: rollback failed", "label", label, "error", err)
+		log.Warn(ctx, "store: rollback failed", "label", label, "error", err)
 	}
 }

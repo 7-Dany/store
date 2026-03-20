@@ -3,7 +3,6 @@ package userroles
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	adminshared "github.com/7-Dany/store/backend/internal/domain/admin/shared"
@@ -39,7 +38,7 @@ func (h *Handler) GetUserRole(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrUserRoleNotFound):
 			respond.Error(w, http.StatusNotFound, "user_role_not_found", "user has no active role assignment")
 		default:
-			slog.ErrorContext(r.Context(), "userroles.GetUserRole: service error", "error", err)
+			log.Error(r.Context(), "GetUserRole: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -93,7 +92,7 @@ func (h *Handler) AssignRole(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrRoleNotFound):
 			respond.Error(w, http.StatusUnprocessableEntity, "role_not_found", "role not found")
 		default:
-			slog.ErrorContext(r.Context(), "userroles.AssignRole: service error", "error", err)
+			log.Error(r.Context(), "AssignRole: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -122,7 +121,7 @@ func (h *Handler) RemoveRole(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrLastOwnerRemoval):
 			respond.Error(w, http.StatusConflict, "last_owner_removal", "cannot remove the last active owner")
 		default:
-			slog.ErrorContext(r.Context(), "userroles.RemoveRole: service error", "error", err)
+			log.Error(r.Context(), "RemoveRole: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return

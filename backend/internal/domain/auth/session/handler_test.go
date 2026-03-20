@@ -28,7 +28,7 @@ func buildHandler(svc session.Servicer) *session.Handler {
 		JWTRefreshSecret: "test-refresh-secret-32-bytes-long",
 		AccessTTL:        15 * time.Minute,
 		SecureCookies:    false,
-	}, nil)
+	}, nil, authshared.NoopAuthRecorder{})
 }
 
 // ── Refresh tests ─────────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ func TestNewHandler_NilBlocklist(t *testing.T) {
 		JWTAccessSecret:  "access",
 		JWTRefreshSecret: "refresh",
 		AccessTTL:        time.Minute,
-	}, nil)
+	}, nil, authshared.NoopAuthRecorder{})
 	require.NotNil(t, h)
 }
 
@@ -401,7 +401,7 @@ func TestLogout_ValidAccessToken_BlocklistCalled(t *testing.T) {
 	svc := &authsharedtest.SessionFakeServicer{
 		LogoutFn: func(_ context.Context, _ session.LogoutTxInput) error { return nil },
 	}
-	h := session.NewHandler(svc, testCfg, blocklist)
+	h := session.NewHandler(svc, testCfg, blocklist, authshared.NoopAuthRecorder{})
 
 	// Sign a valid access token (JTI auto-generated internally).
 	accessTokenStr, err := token.GenerateAccessToken(
@@ -441,7 +441,7 @@ func TestLogout_ExpiredAccessToken_BlocklistNotCalled(t *testing.T) {
 	refreshExpiry := time.Now().Add(30 * 24 * time.Hour)
 
 	svc := &authsharedtest.SessionFakeServicer{}
-	h := session.NewHandler(svc, testCfg, blocklist)
+	h := session.NewHandler(svc, testCfg, blocklist, authshared.NoopAuthRecorder{})
 
 	// Build an access token with expiry one minute in the past.
 	expiredAccess := tokentest.MakeExpiredAccessToken(t,
@@ -475,7 +475,7 @@ func TestLogout_MalformedAccessToken_BlocklistNotCalled(t *testing.T) {
 	refreshExpiry := time.Now().Add(30 * 24 * time.Hour)
 
 	svc := &authsharedtest.SessionFakeServicer{}
-	h := session.NewHandler(svc, testCfg, blocklist)
+	h := session.NewHandler(svc, testCfg, blocklist, authshared.NoopAuthRecorder{})
 
 	refreshTokenStr := signRefreshToken(t, userID, sessionID, familyID, jti, refreshExpiry)
 	req := httptest.NewRequest(http.MethodPost, "/logout", nil)

@@ -2,12 +2,12 @@ package login
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -49,7 +49,7 @@ func (s *Store) GetUserForLogin(ctx context.Context, identifier string) (LoginUs
 		if s.IsNoRows(err) {
 			return LoginUser{}, authshared.ErrUserNotFound
 		}
-		return LoginUser{}, fmt.Errorf("store.GetUserForLogin: query: %w", err)
+		return LoginUser{}, telemetry.Store("GetUserForLogin.query", err)
 	}
 	var loginLockedUntil *time.Time
 	if row.LoginLockedUntil.Valid {
@@ -87,7 +87,7 @@ func (s *Store) LoginTx(ctx context.Context, in LoginTxInput) (LoggedInSession, 
 	// returns nil. On the non-TxBound path Pool.Begin can fail, but that path
 	// cannot be injected via QuerierProxy.
 	if err != nil {
-		return LoggedInSession{}, fmt.Errorf("store.LoginTx: begin tx: %w", err)
+		return LoggedInSession{}, telemetry.Store("LoginTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(in.UserID)
@@ -105,7 +105,7 @@ func (s *Store) LoginTx(ctx context.Context, in LoginTxInput) (LoggedInSession, 
 	})
 	if err != nil {
 		h.Rollback()
-		return LoggedInSession{}, fmt.Errorf("store.LoginTx: create session: %w", err)
+		return LoggedInSession{}, telemetry.Store("LoginTx.create_session", err)
 	}
 
 	sessionPgUUID := s.UUIDToPgtypeUUID(sessionRow.ID)
@@ -117,14 +117,14 @@ func (s *Store) LoginTx(ctx context.Context, in LoginTxInput) (LoggedInSession, 
 	})
 	if err != nil {
 		h.Rollback()
-		return LoggedInSession{}, fmt.Errorf("store.LoginTx: create refresh token: %w", err)
+		return LoggedInSession{}, telemetry.Store("LoginTx.create_token", err)
 	}
 
 	// 3. Stamp last_login_at. Intentionally inside the TX so a rollback
 	// doesn't leave a stale timestamp on a failed login persistence step.
 	if err := h.Q.UpdateLastLoginAt(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return LoggedInSession{}, fmt.Errorf("store.LoginTx: update last login at: %w", err)
+		return LoggedInSession{}, telemetry.Store("LoginTx.update_last_login", err)
 	}
 
 	// 4. Audit log.
@@ -137,14 +137,14 @@ func (s *Store) LoginTx(ctx context.Context, in LoginTxInput) (LoggedInSession, 
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return LoggedInSession{}, fmt.Errorf("store.LoginTx: audit log: %w", err)
+		return LoggedInSession{}, telemetry.Store("LoginTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path h.Commit is a no-op
 	// that always returns nil; on the non-TxBound path it wraps pgx.Tx.Commit
 	// which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return LoggedInSession{}, fmt.Errorf("store.LoginTx: commit: %w", err)
+		return LoggedInSession{}, telemetry.Store("LoginTx.commit", err)
 	}
 
 	return LoggedInSession{
@@ -171,7 +171,7 @@ func (s *Store) WriteLoginFailedAuditTx(ctx context.Context, userID [16]byte, re
 	// returns nil. On the non-TxBound path Pool.Begin can fail, but that path
 	// cannot be injected via QuerierProxy.
 	if err != nil {
-		return fmt.Errorf("store.WriteLoginFailedAuditTx: begin tx: %w", err)
+		return telemetry.Store("WriteLoginFailedAuditTx.begin_tx", err)
 	}
 
 	meta := s.MustJSON(map[string]string{"reason": reason})
@@ -188,14 +188,14 @@ func (s *Store) WriteLoginFailedAuditTx(ctx context.Context, userID [16]byte, re
 		Metadata:  meta,
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.WriteLoginFailedAuditTx: insert audit log: %w", err)
+		return telemetry.Store("WriteLoginFailedAuditTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path (tests) h.Commit is a
 	// no-op that always returns nil; on the non-TxBound path it wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.WriteLoginFailedAuditTx: commit: %w", err)
+		return telemetry.Store("WriteLoginFailedAuditTx.commit", err)
 	}
 	return nil
 }
@@ -225,7 +225,7 @@ func (s *Store) IncrementLoginFailuresTx(ctx context.Context, userID [16]byte, i
 	// but cannot be injected in tests because IncrementLoginFailuresTx bypasses
 	// QuerierProxy; no test-isolation path exists.
 	if err != nil {
-		return fmt.Errorf("store.IncrementLoginFailuresTx: begin tx: %w", err)
+		return telemetry.Store("IncrementLoginFailuresTx.begin_tx", err)
 	}
 
 	q := db.New(tx)
@@ -239,7 +239,7 @@ func (s *Store) IncrementLoginFailuresTx(ctx context.Context, userID [16]byte, i
 	row, err := q.IncrementLoginFailures(safeCtx, userPgUUID)
 	if err != nil {
 		authshared.LogRollback(safeCtx, tx, "IncrementLoginFailuresTx/increment")
-		return fmt.Errorf("store.IncrementLoginFailuresTx: increment: %w", err)
+		return telemetry.Store("IncrementLoginFailuresTx.increment", err)
 	}
 
 	// 2. Audit row: login_failed / wrong_password.
@@ -254,7 +254,7 @@ func (s *Store) IncrementLoginFailuresTx(ctx context.Context, userID [16]byte, i
 		Metadata:  s.MustJSON(map[string]string{"reason": "wrong_password"}),
 	}); err != nil {
 		authshared.LogRollback(safeCtx, tx, "IncrementLoginFailuresTx/audit-failed")
-		return fmt.Errorf("store.IncrementLoginFailuresTx: audit log (login_failed): %w", err)
+		return telemetry.Store("IncrementLoginFailuresTx.audit_failed", err)
 	}
 
 	// 3. If the threshold was just reached write a login_lockout audit row.
@@ -269,7 +269,7 @@ func (s *Store) IncrementLoginFailuresTx(ctx context.Context, userID [16]byte, i
 			Metadata:  s.MustJSON(map[string]string{"locked_until": row.LoginLockedUntil.Time.UTC().Format(time.RFC3339)}),
 		}); err != nil {
 			authshared.LogRollback(safeCtx, tx, "IncrementLoginFailuresTx/audit-lockout")
-			return fmt.Errorf("store.IncrementLoginFailuresTx: audit log (login_lockout): %w", err)
+			return telemetry.Store("IncrementLoginFailuresTx.audit_lockout", err)
 		}
 	}
 
@@ -277,7 +277,7 @@ func (s *Store) IncrementLoginFailuresTx(ctx context.Context, userID [16]byte, i
 	// opened by Pool.Begin; QuerierProxy only intercepts db.Querier methods and
 	// has no way to intercept Commit on a raw pgx.Tx.
 	if err := tx.Commit(safeCtx); err != nil {
-		return fmt.Errorf("store.IncrementLoginFailuresTx: commit: %w", err)
+		return telemetry.Store("IncrementLoginFailuresTx.commit", err)
 	}
 	return nil
 }
@@ -291,19 +291,19 @@ func (s *Store) ResetLoginFailuresTx(ctx context.Context, userID [16]byte) error
 	// returns nil. On the non-TxBound path Pool.Begin can fail, but that path
 	// cannot be injected via QuerierProxy.
 	if err != nil {
-		return fmt.Errorf("store.ResetLoginFailuresTx: begin tx: %w", err)
+		return telemetry.Store("ResetLoginFailuresTx.begin_tx", err)
 	}
 
 	if err := h.Q.ResetLoginFailures(ctx, s.ToPgtypeUUID(userID)); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.ResetLoginFailuresTx: query: %w", err)
+		return telemetry.Store("ResetLoginFailuresTx.query", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path h.Commit is a no-op
 	// that always returns nil; on the non-TxBound path it wraps pgx.Tx.Commit
 	// which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.ResetLoginFailuresTx: commit: %w", err)
+		return telemetry.Store("ResetLoginFailuresTx.commit", err)
 	}
 	return nil
 }

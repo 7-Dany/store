@@ -2,12 +2,12 @@ package verification
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -40,7 +40,7 @@ func (s *Store) WithQuerier(q db.Querier) *Store {
 func (s *Store) VerifyEmailTx(ctx context.Context, email, ipAddress, userAgent string, checkFn func(authshared.VerificationToken) error) error {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return fmt.Errorf("store.VerifyEmailTx: begin tx: %w", err)
+		return telemetry.Store("VerifyEmailTx.begin_tx", err)
 	}
 
 	// 1. Fetch token (query uses FOR UPDATE).
@@ -50,7 +50,7 @@ func (s *Store) VerifyEmailTx(ctx context.Context, email, ipAddress, userAgent s
 		if s.IsNoRows(err) {
 			return authshared.ErrTokenNotFound
 		}
-		return fmt.Errorf("store.VerifyEmailTx: get token: %w", err)
+		return telemetry.Store("VerifyEmailTx.get_token", err)
 	}
 
 	// 2. Map to domain type.
@@ -74,7 +74,7 @@ func (s *Store) VerifyEmailTx(ctx context.Context, email, ipAddress, userAgent s
 	consumed, err := h.Q.ConsumeEmailVerificationToken(ctx, s.UUIDToPgtypeUUID(row.ID))
 	if err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.VerifyEmailTx: consume token: %w", err)
+		return telemetry.Store("VerifyEmailTx.consume_token", err)
 	}
 	if consumed == 0 {
 		// A concurrent request won the FOR UPDATE race and already consumed this token.
@@ -85,14 +85,14 @@ func (s *Store) VerifyEmailTx(ctx context.Context, email, ipAddress, userAgent s
 	// 4b. Revoke all remaining pre-verification tokens for this user.
 	if err := h.Q.RevokePreVerificationTokens(ctx, row.UserID); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.VerifyEmailTx: revoke prior tokens: %w", err)
+		return telemetry.Store("VerifyEmailTx.revoke_tokens", err)
 	}
 
 	// 4c. Mark email verified.
 	marked, err := h.Q.MarkEmailVerified(ctx, row.UserID)
 	if err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.VerifyEmailTx: mark email verified: %w", err)
+		return telemetry.Store("VerifyEmailTx.mark_verified", err)
 	}
 	if marked == 0 {
 		// Distinguish locked account from already-verified in a single query
@@ -100,7 +100,7 @@ func (s *Store) VerifyEmailTx(ctx context.Context, email, ipAddress, userAgent s
 		state, stateErr := h.Q.GetUserVerifiedAndLocked(ctx, row.UserID)
 		if stateErr != nil {
 			h.Rollback()
-			return fmt.Errorf("store.VerifyEmailTx: get user state: %w", stateErr)
+			return telemetry.Store("VerifyEmailTx.get_user_state", stateErr)
 		}
 		h.Rollback()
 		if state.IsLocked || state.AdminLocked {
@@ -119,11 +119,11 @@ func (s *Store) VerifyEmailTx(ctx context.Context, email, ipAddress, userAgent s
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.VerifyEmailTx: audit log: %w", err)
+		return telemetry.Store("VerifyEmailTx.audit", err)
 	}
 
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.VerifyEmailTx: commit: %w", err)
+		return telemetry.Store("VerifyEmailTx.commit", err)
 	}
 
 	return nil
@@ -138,7 +138,7 @@ func (s *Store) GetUserForResend(ctx context.Context, email string) (ResendUser,
 		if s.IsNoRows(err) {
 			return ResendUser{}, authshared.ErrUserNotFound
 		}
-		return ResendUser{}, fmt.Errorf("store.GetUserForResend: query: %w", err)
+		return ResendUser{}, telemetry.Store("GetUserForResend.query", err)
 	}
 	return ResendUser{
 		ID:            s.UUIDToBytes(row.ID),
@@ -159,7 +159,7 @@ func (s *Store) GetLatestTokenCreatedAt(ctx context.Context, userID [16]byte) (t
 		if s.IsNoRows(err) {
 			return time.Time{}, nil
 		}
-		return time.Time{}, fmt.Errorf("store.GetLatestTokenCreatedAt: query: %w", err)
+		return time.Time{}, telemetry.Store("GetLatestTokenCreatedAt.query", err)
 	}
 	return t.UTC(), nil
 }
@@ -171,7 +171,7 @@ func (s *Store) GetLatestTokenCreatedAt(ctx context.Context, userID [16]byte) (t
 func (s *Store) ResendVerificationTx(ctx context.Context, in ResendStoreInput, codeHash string) error {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return fmt.Errorf("store.ResendVerificationTx: begin tx: %w", err)
+		return telemetry.Store("ResendVerificationTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(in.UserID)
@@ -179,7 +179,7 @@ func (s *Store) ResendVerificationTx(ctx context.Context, in ResendStoreInput, c
 	// 1. Invalidate all prior unused tokens.
 	if err := h.Q.InvalidateAllUserTokens(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.ResendVerificationTx: invalidate tokens: %w", err)
+		return telemetry.Store("ResendVerificationTx.invalidate_tokens", err)
 	}
 
 	// 2. Create new token.
@@ -191,7 +191,7 @@ func (s *Store) ResendVerificationTx(ctx context.Context, in ResendStoreInput, c
 		IpAddress:  s.IPToNullable(in.IPAddress),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.ResendVerificationTx: create token: %w", err)
+		return telemetry.Store("ResendVerificationTx.create_token", err)
 	}
 
 	// 3. Audit log.
@@ -204,11 +204,11 @@ func (s *Store) ResendVerificationTx(ctx context.Context, in ResendStoreInput, c
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.ResendVerificationTx: audit log: %w", err)
+		return telemetry.Store("ResendVerificationTx.audit", err)
 	}
 
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.ResendVerificationTx: commit: %w", err)
+		return telemetry.Store("ResendVerificationTx.commit", err)
 	}
 
 	return nil

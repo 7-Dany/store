@@ -95,19 +95,48 @@ if isDuplicateEmail(err) { return CreatedUser{}, ErrEmailTaken }
 
 **Handler error mapping** (in handler):
 ```go
+// var log = telemetry.New("{feature}") at package level — not inside the function.
 switch {
 case errors.Is(err, ErrInvalidCredentials):
     respond.Error(w, http.StatusUnauthorized, "invalid_credentials", err.Error())
 default:
-    slog.ErrorContext(r.Context(), "auth.Login: service error", "error", err)
+    log.Error(r.Context(), "{domain}.{Method}: service error", "error", err)
     respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 }
 ```
 
-**Error wrapping:**
+Never use `slog.ErrorContext` directly in domain handlers. `log.Error` routes
+through `TelemetryHandler` which auto-increments `app_errors_total` and writes
+the fault into the request carrier for `http_errors_total`.
+
+**Error wrapping — use the layer constructors, never `fmt.Errorf`:**
+
+| Layer | Constructor | Op format | Example |
+|---|---|---|---|
+| Store query | `telemetry.Store` | `"TypeName.query"` | `"GetUserForLogin.query"` |
+| Store TX step | `telemetry.Store` | `"TxName.step"` | `"LoginTx.create_session"` |
+| Store TX begin | `telemetry.Store` | `"TxName.begin_tx"` | |
+| Service op | `telemetry.Service` | `"MethodName.step"` | `"Login.login_tx"` |
+| Mailer | `telemetry.Mailer` | `"FnName.smtp_send"` | `"sendOTPEmail.smtp_send"` |
+| Redis / KV | `telemetry.KVStore` | `"FnName.redis_op"` | `"Get.redis_get"` |
+| JWT | `telemetry.Token` | `"FnName.step"` | `"MintTokens.sign_access"` |
+| Crypto | `telemetry.Crypto` | `"FnName.step"` | `"Decrypt.authenticate"` |
+| RBAC | `telemetry.RBAC` | `"FnName.step"` | `"Require.check_user_access"` |
+| OAuth outbound | `telemetry.OAuth` | `"FnName.endpoint"` | `"ExchangeCode.token_endpoint"` |
+| Worker/dispatch | `telemetry.Worker` | `"FnName.step"` | `"ClaimJob.query"` |
+
 ```go
-return RegisterResult{}, fmt.Errorf("register.Register: hash password: %w", err)
+// service layer
+return RegisterResult{}, telemetry.Service("Register.hash_password", err)
+// store layer
+return CreatedUser{}, telemetry.Store("CreateUserTx.create_user", err)
+// platform layers
+return telemetry.Mailer("sendOTPEmail.smtp_send", err)
+return telemetry.KVStore("Get.redis_get", err)
 ```
+
+All constructors return nil when err is nil — safe to use directly in return statements.
+Op strings are for logs only — they never become Prometheus label values.
 
 ---
 
@@ -393,3 +422,194 @@ Adding a new email type = three-file change:
 1. `internal/platform/mailer/templates/{name}.go` — key const, exported `*string` var
 2. `internal/platform/mailer/templates/registry.go` — one `Entry` in `Registry()` map
 3. Handler call site — `deps.Mailer.Send(mailertemplates.{Name}Key)(...)`
+
+---
+
+## Telemetry & Observability
+
+Every feature must satisfy the 9-gate decision process from
+`docs/design/monitoring/telemetry-checklist.md`. The summary for each stage
+of feature implementation is below.
+
+### One import rule
+
+Any package needing logging, error wrapping, or metrics imports **only**
+`internal/platform/telemetry`. Never import `log/slog`,
+`prometheus/client_golang`, or any other observability library directly.
+
+### Gate 1 — Logger (always required)
+
+Declare one package-level logger per feature file set:
+
+```go
+// At the top of service.go (or handler.go if it has error logging too)
+var log = telemetry.New("{feature}")          // e.g. telemetry.New("login")
+var log = telemetry.New("worker.{feature}")   // e.g. telemetry.New("worker.purge")
+```
+
+### Gate 2 — Error wrapping (always required)
+
+Use the layer constructors in the table above. These are free — `TelemetryHandler`
+automatically fires `app_errors_total` on every `log.Error` call. No Prometheus
+registration needed.
+
+**WARN vs ERROR discipline:**
+- `log.Warn` — best-effort secondary ops that don’t affect the primary response
+  (audit write failures, counter resets). Does NOT fire `app_errors_total`.
+- `log.Error` — primary-operation failures or dependency outages. Fires
+  `app_errors_total` and writes the fault into the HTTP carrier.
+
+### Gate 3 — Does this event need its own metric?
+
+Ask: **"Would I page someone specifically because of this signal, or investigate
+it independently of the HTTP error rate?"**
+
+| Answer | Action |
+|---|---|
+| No — a 500 error spike already captures it | Stop at Gate 2. Nothing else needed. |
+| Yes — it needs its own counter/gauge | Continue to Gates 4–9. |
+
+**Stops at Gate 2 (no new metric needed):**
+- A DB query fails → `app_errors_total` covers it.
+- A handler returns 422 → `http_requests_total{status="422"}` covers it.
+- A background job crashes → `app_errors_total{component="worker.*"}` covers it.
+
+**Needs a new metric:**
+- User places an order → business throughput, not an error.
+- Login fails with wrong password → security signal (already in Family 3 auth).
+- A new business domain event → see Gate 4.
+
+### Gate 4 — Which family?
+
+| Event is about… | Family | Already automatic? |
+|---|---|---|
+| HTTP request shape | 1 — HTTP | ✅ auto (RequestMiddleware) |
+| Any error in any package | 2 — App Errors | ✅ auto (TelemetryHandler) |
+| Auth / account / session | 3 — Auth | Explicit — add recorder method |
+| DB pool / Redis / goroutines | 4 — Infra | ✅ auto (InfraPoller) |
+| Job queue lifecycle | 5 — Job Queue | ✅ auto (MetricsRecorder) |
+| Bitcoin / payments | 6 — Bitcoin | Explicit — add recorder method |
+| New domain (e.g. orders) | New family | Justify it; add `{domain}_hooks.go` |
+
+If the family is auto-covered and no independent signal is needed — **stop**.
+
+### Gate 5–6 — Instrument + label safety
+
+| Event… | Instrument |
+|---|---|
+| Counts occurrences (never goes down) | `CounterVec`, name ends in `_total` |
+| Measures current state | `Gauge` |
+| Measures duration / distribution | `HistogramVec`, name ends in `_seconds` |
+
+**Label safety — mandatory:**
+- Values must come from a **bounded constant set** — never from user input,
+  URL path segments, error messages, UUIDs, or email addresses.
+- Document allowed values as Go constants next to the interface method.
+- Cardinality = product of all label value counts. Keep under 100 per metric.
+
+```go
+// Good — bounded constant set
+const (
+    OrderMethodCard   = "card"
+    OrderMethodBTC    = "bitcoin"
+)
+
+// Bad — unbounded; never do this
+r.orders.WithLabelValues(req.UserID).Inc()   // one series per user — cardinality bomb
+```
+
+### Gate 7 — Where does the code live?
+
+| What | Where |
+|---|---|
+| Interface method declaration + Noop struct | `domain/{domain}/shared/recorder.go` |
+| Counter/gauge field on Registry | `internal/platform/telemetry/metrics.go` |
+| Hook method on `*Registry` | `internal/platform/telemetry/{domain}_hooks.go` |
+| Registration in `NewRegistry()` | `internal/platform/telemetry/metrics.go` |
+| Local narrow interface in sub-package | `domain/{domain}/{feature}/service.go` |
+| Recorder call at the event site | same service file |
+
+**Sub-packages never import `domain/{domain}/shared/recorder.go` directly** —
+they define a local narrow interface covering only the methods they call.
+`*telemetry.Registry` satisfies it structurally.
+
+```go
+// domain/auth/login/service.go — narrow local interface
+type recorder interface {
+    OnLoginSuccess(provider string)
+    OnLoginFailed(provider, reason string)
+    OnUserLocked(reason string)
+}
+```
+
+**Provider / reason label safety for auth:** All `provider` values passed to
+`OnOAuth*` methods must be normalised through a bounded allowlist before the
+call. Never pass a raw URL path segment.
+
+### Gate 8 — Does it need an alert?
+
+| Severity | When |
+|---|---|
+| `critical` | SLO breached, funds at risk, any single occurrence unacceptable |
+| `warning` | Investigate within the hour |
+| `warning` + `team: security` | Auth / fraud anomaly — routes to `#security-alerts` |
+
+Add alert YAML to `docs/design/monitoring/monitoring-technical.md §20`.
+
+### Gate 9 — Frontend dashboard obligations
+
+Always check against the existing panels in
+`D:\Projects\store\frontend\lib\api\telemetry\prometheus.ts`.
+
+**Already covered — no frontend change needed:**
+- HTTP error rate, request rate, latency → existing area chart panels.
+- App errors by component → existing bar chart.
+- Service health (DB, Redis, mailer, jobs) → `deriveServices()` already covers
+  the standard infrastructure services.
+- Any anomaly with an alert rule → `computeAnomalies()` in `prometheus.ts`.
+
+**Needs a frontend change:**
+
+| Scenario | What to add to `prometheus.ts` | What to add to the dashboard |
+|---|---|---|
+| New security signal | New `instant()` query + field on `SecuritySnapshot` | Case in `computeAnomalies()` + stat card in `security-dashboard.tsx` |
+| New business stat (e.g. orders/min) | New `instant()` query + field on a new `{Domain}Snapshot` type | `StatCard` + `MetricAreaChart` |
+| New infrastructure dependency | New `instant()` query for error count; entry in `deriveServices()` | `ServiceHealth` row appears automatically |
+| New anomaly detection rule (no new metric) | Case in `computeAnomalies()` only | `AnomalyFeed` picks it up automatically |
+
+**Quick-reference by scenario:**
+
+```
+Scenario A: New API route, no special business event
+  ✅ var log = telemetry.New("orders")           ← Gate 1
+  ✅ return telemetry.Store("GetOrder.q", err)   ← Gate 2
+  Nothing else. HTTP + error metrics are free.
+
+Scenario B: New business event worth counting (e.g. order placed)
+  ✅ Gates 1-2 as above
+  ✅ domain/orders/shared/recorder.go           ← add OnOrderPlaced(method string)
+  ✅ telemetry/metrics.go                       ← add ordersPlaced *prometheus.CounterVec
+  ✅ telemetry/orders_hooks.go                  ← implement OnOrderPlaced on *Registry
+  ✅ telemetry/metrics.go NewRegistry()         ← register the counter
+  ✅ domain/orders/{feature}/service.go         ← narrow recorder interface + call site
+  Optional: alert + frontend stat card / chart
+
+Scenario C: New security signal (e.g. failed 2FA)
+  ✅ Everything in Scenario B
+  ✅ Alert with team: security in monitoring-technical.md §20
+  ✅ Case in computeAnomalies() in prometheus.ts
+  ✅ Stat card in security-dashboard.tsx
+
+Scenario D: New infrastructure dependency (e.g. external payment API)
+  ✅ Gates 1-2 as above
+  ✅ New gauge/counter in metrics.go for connectivity / error rate
+  ✅ Hook method or InfraPoller extension
+  ✅ Entry in deriveServices() in prometheus.ts
+  ✅ Warning alert if it can go down
+```
+
+### Tests
+
+Use `telemetry.NewNoopRegistry()` in all tests — it returns a fully wired
+`*Registry` on its own scoped Prometheus registry. Two test calls never
+collide on metric names and neither affects the application registry.

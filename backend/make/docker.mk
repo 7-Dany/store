@@ -1,6 +1,6 @@
 # ─── Docker Operations ────────────────────────────────────────────────────────
 
-.PHONY: docker-up docker-down docker-logs docker-setup
+.PHONY: docker-up docker-up-full docker-down docker-logs docker-setup
 .PHONY: docker-db-tables docker-db-schema docker-db-indexes docker-db-functions
 .PHONY: docker-db-size docker-db-table-sizes docker-db-connect docker-db-dump
 .PHONY: docker-db-restore docker-db-reset
@@ -8,57 +8,137 @@
 .PHONY: docker-migrate-reset docker-migrate-redo docker-migrate-version
 .PHONY: docker-seed docker-seed-reset docker-seed-status
 .PHONY: docker-redis-cli docker-redis-flush docker-redis-logs
+.PHONY: prometheus-up prometheus-down prometheus-logs prometheus-reload prometheus-status prometheus-open prometheus-purge
 
 REDIS_PORT_DOCKER    ?= 6380
 REDIS_PASSWORD       ?= changeme
 REDIS_CONTAINER      ?= $(COMPOSE_PROJECT_NAME)_redis
 
+PROMETHEUS_PORT      ?= 9090
+PROMETHEUS_CONTAINER ?= $(COMPOSE_PROJECT_NAME)_prometheus
+
 # ── Container Lifecycle ───────────────────────────────────────────────────────
+#
+# All targets use `docker-compose up -d --wait` which blocks until every
+# container with a healthcheck reports healthy, then exits 0. No manual
+# polling loops needed. Requires Docker Compose v2.1+ (Docker Desktop ships this).
 
-docker-up: ## Start PostgreSQL and Redis containers and wait until both are healthy
+docker-up: ## Start PostgreSQL and Redis and wait until both are healthy
 ifeq ($(DETECTED_OS),Windows)
-	@docker-compose up -d postgres redis
-	@Write-Host "[INFO] Waiting for PostgreSQL to be ready..." -ForegroundColor Cyan
-	@$$i = 0; while ($$i -lt 30) { $$status = docker inspect --format="{{.State.Health.Status}}" $(PGTAP_CONTAINER) 2>$$null; if ($$status -eq "healthy") { Write-Host "[OK] PostgreSQL is ready" -ForegroundColor Green; break }; Start-Sleep -Seconds 2; $$i++ }; if ($$i -eq 30) { Write-Host "[ERROR] Timed out waiting for PostgreSQL" -ForegroundColor Red; exit 1 }
-	@Write-Host "[INFO] Waiting for Redis to be ready..." -ForegroundColor Cyan
-	@$$i = 0; while ($$i -lt 30) { $$status = docker inspect --format="{{.State.Health.Status}}" $(REDIS_CONTAINER) 2>$$null; if ($$status -eq "healthy") { Write-Host "[OK] Redis is ready" -ForegroundColor Green; break }; Start-Sleep -Seconds 2; $$i++ }; if ($$i -eq 30) { Write-Host "[ERROR] Timed out waiting for Redis" -ForegroundColor Red; exit 1 }
+	@Write-Host "[INFO] Starting postgres + redis..." -ForegroundColor Cyan
+	@docker-compose up -d --wait postgres redis
+	@Write-Host "[OK] postgres + redis are ready" -ForegroundColor Green
 else
-	@docker-compose up -d postgres redis
-	@echo "[INFO] Waiting for PostgreSQL to be ready..."
-	@for i in $$(seq 1 30); do \
-		if docker inspect --format="{{.State.Health.Status}}" $(PGTAP_CONTAINER) 2>/dev/null | grep -q "healthy"; then \
-			echo "[OK] PostgreSQL is ready"; break; \
-		fi; \
-		if [ $$i -eq 30 ]; then echo "[ERROR] Timed out waiting for PostgreSQL"; exit 1; fi; \
-		sleep 2; \
-	done
-	@echo "[INFO] Waiting for Redis to be ready..."
-	@for i in $$(seq 1 30); do \
-		if docker inspect --format="{{.State.Health.Status}}" $(REDIS_CONTAINER) 2>/dev/null | grep -q "healthy"; then \
-			echo "[OK] Redis is ready"; break; \
-		fi; \
-		if [ $$i -eq 30 ]; then echo "[ERROR] Timed out waiting for Redis"; exit 1; fi; \
-		sleep 2; \
-	done
+	@echo "[INFO] Starting postgres + redis..."
+	@docker-compose up -d --wait postgres redis
+	@echo "[OK] postgres + redis are ready"
 endif
 
-docker-down: ## Stop PostgreSQL container
+docker-up-full: ## Start PostgreSQL, Redis, and Prometheus (full dev stack)
 ifeq ($(DETECTED_OS),Windows)
-	@docker-compose down
-	@Write-Host "[OK] PostgreSQL container stopped" -ForegroundColor Green
+	@Write-Host "[INFO] Starting postgres + redis + prometheus..." -ForegroundColor Cyan
+	@docker-compose up -d --wait postgres redis prometheus
+	@Write-Host "[OK] Full dev stack ready — Prometheus at http://localhost:$(PROMETHEUS_PORT)" -ForegroundColor Green
 else
-	@docker-compose down
-	@echo "[OK] PostgreSQL container stopped"
+	@echo "[INFO] Starting postgres + redis + prometheus..."
+	@docker-compose up -d --wait postgres redis prometheus
+	@echo "[OK] Full dev stack ready — Prometheus at http://localhost:$(PROMETHEUS_PORT)"
 endif
 
-docker-logs: ## Tail container logs
-	@docker-compose logs -f postgres
+docker-down: ## Stop all containers (postgres, redis, prometheus)
+ifeq ($(DETECTED_OS),Windows)
+	@docker-compose down
+	@Write-Host "[OK] All containers stopped" -ForegroundColor Green
+else
+	@docker-compose down
+	@echo "[OK] All containers stopped"
+endif
 
-docker-setup: docker-up docker-migrate-up db-test-schema-install-pgtap ## Start container, run migrations, install pgTAP
+docker-logs: ## Tail all container logs
+	@docker-compose logs -f
+
+docker-setup: docker-up docker-migrate-up db-test-schema-install-pgtap ## Start containers, run migrations, install pgTAP
 ifeq ($(DETECTED_OS),Windows)
 	@Write-Host "[OK] Docker environment ready" -ForegroundColor Green
 else
 	@echo "[OK] Docker environment ready"
+endif
+
+# ── Prometheus ────────────────────────────────────────────────────────────────
+# Prometheus stores time-series data for every metric your Go app exposes at
+# GET /metrics. It scrapes every 15s and keeps 30 days of history by default.
+# Config file: config/prometheus/prometheus.yml
+
+prometheus-up: ## Start Prometheus container only and wait until healthy
+ifeq ($(DETECTED_OS),Windows)
+	@Write-Host "[INFO] Starting Prometheus..." -ForegroundColor Cyan
+	@docker-compose up -d --wait prometheus
+	@Write-Host "[OK] Prometheus ready — http://localhost:$(PROMETHEUS_PORT)" -ForegroundColor Green
+else
+	@echo "[INFO] Starting Prometheus..."
+	@docker-compose up -d --wait prometheus
+	@echo "[OK] Prometheus ready — http://localhost:$(PROMETHEUS_PORT)"
+endif
+
+prometheus-down: ## Stop Prometheus container only (preserves stored data)
+ifeq ($(DETECTED_OS),Windows)
+	@docker-compose stop prometheus
+	@Write-Host "[OK] Prometheus stopped (data preserved in volume)" -ForegroundColor Green
+else
+	@docker-compose stop prometheus
+	@echo "[OK] Prometheus stopped (data preserved in volume)"
+endif
+
+prometheus-logs: ## Tail Prometheus container logs
+	@docker-compose logs -f prometheus
+
+prometheus-reload: ## Hot-reload Prometheus config without restart (edit prometheus.yml then run this)
+	# Requires --web.enable-lifecycle in docker-compose.yml (already set)
+ifeq ($(DETECTED_OS),Windows)
+	@Write-Host "[INFO] Reloading Prometheus config..." -ForegroundColor Cyan
+	@try { Invoke-WebRequest -Uri "http://localhost:$(PROMETHEUS_PORT)/-/reload" -Method POST -UseBasicParsing | Out-Null; Write-Host "[OK] Prometheus config reloaded" -ForegroundColor Green } catch { Write-Host "[ERROR] Could not reach Prometheus — is it running?" -ForegroundColor Red; exit 1 }
+else
+	@echo "[INFO] Reloading Prometheus config..."
+	@curl -sf -X POST http://localhost:$(PROMETHEUS_PORT)/-/reload && echo "[OK] Prometheus config reloaded" || (echo "[ERROR] Could not reach Prometheus — is it running?"; exit 1)
+endif
+
+prometheus-status: ## Show which targets Prometheus is scraping and their state
+ifeq ($(DETECTED_OS),Windows)
+	@Write-Host "[INFO] Prometheus scrape targets:" -ForegroundColor Cyan
+	@try { $$r = Invoke-WebRequest -Uri "http://localhost:$(PROMETHEUS_PORT)/api/v1/targets" -UseBasicParsing | ConvertFrom-Json; $$r.data.activeTargets | ForEach-Object { Write-Host ("  " + $$_.labels.job + " — " + $$_.health + " — last scrape: " + $$_.lastScrape) } } catch { Write-Host "[ERROR] Could not reach Prometheus — run: make prometheus-up" -ForegroundColor Red }
+else
+	@echo "[INFO] Prometheus scrape targets:"
+	@curl -sf http://localhost:$(PROMETHEUS_PORT)/api/v1/targets 2>/dev/null \
+		| grep -o '"job":"[^"]*"\|"health":"[^"]*"\|"lastScrape":"[^"]*"' \
+		| paste - - - \
+		| sed 's/"job":"//g; s/"health":"//g; s/"lastScrape":"//g; s/"//g' \
+		| awk '{printf "  %-30s %-10s %s\n", $$1, $$2, $$3}' \
+		|| echo "[ERROR] Could not reach Prometheus — run: make prometheus-up"
+endif
+
+prometheus-open: ## Open Prometheus UI in the default browser
+ifeq ($(DETECTED_OS),Windows)
+	@Start-Process "http://localhost:$(PROMETHEUS_PORT)"
+else ifeq ($(DETECTED_OS),macOS)
+	@open "http://localhost:$(PROMETHEUS_PORT)"
+else
+	@xdg-open "http://localhost:$(PROMETHEUS_PORT)" 2>/dev/null || echo "Open http://localhost:$(PROMETHEUS_PORT) in your browser"
+endif
+
+prometheus-purge: ## Stop Prometheus and delete all stored metric data (irreversible)
+ifeq ($(DETECTED_OS),Windows)
+	@Write-Host "[WARNING] This will delete ALL Prometheus metric history" -ForegroundColor Yellow
+	@$$response = Read-Host "Type 'yes' to confirm"; if ($$response -ne 'yes') { Write-Host "Aborted"; exit 0 }
+	@docker-compose stop prometheus
+	@docker volume rm $$(docker volume ls -q | Select-String "prometheus_data") 2>$$null; Write-Host "[OK] Prometheus data purged" -ForegroundColor Green
+	@Write-Host "[INFO] Run 'make prometheus-up' to restart with a clean slate" -ForegroundColor Cyan
+else
+	@echo "[WARNING] This will delete ALL Prometheus metric history"
+	@read -p "Type 'yes' to confirm: " response; \
+	if [ "$$response" != "yes" ]; then echo "Aborted"; exit 0; fi
+	@docker-compose stop prometheus
+	@docker volume rm $$(docker volume ls -q | grep prometheus_data) 2>/dev/null; echo "[OK] Prometheus data purged"
+	@echo "[INFO] Run 'make prometheus-up' to restart with a clean slate"
 endif
 
 # ── Docker DB ─────────────────────────────────────────────────────────────────

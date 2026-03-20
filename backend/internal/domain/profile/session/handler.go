@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
@@ -41,7 +40,7 @@ func (h *Handler) Sessions(w http.ResponseWriter, r *http.Request) {
 
 	sessions, err := h.svc.GetActiveSessions(r.Context(), userID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "profile.Sessions: service error", "error", err)
+		log.Error(r.Context(), "Sessions: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -87,7 +86,7 @@ func (h *Handler) RevokeSession(w http.ResponseWriter, r *http.Request) {
 			respond.Error(w, http.StatusNotFound, "not_found", "session not found")
 			return
 		}
-		slog.ErrorContext(r.Context(), "profile.RevokeSession: service error", "error", err)
+		log.Error(r.Context(), "RevokeSession: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}

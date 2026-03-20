@@ -68,7 +68,7 @@ func TestMintTokens_EmptyAccessSecret(t *testing.T) {
 	_, err := token.MintTokens(w, in, cfg)
 
 	require.Error(t, err)
-	require.ErrorContains(t, err, "token.MintTokens: sign access token")
+	require.ErrorContains(t, err, "handler.MintTokens.sign_access_token")
 
 	// No cookie should have been set.
 	resp := w.Result()
@@ -94,7 +94,7 @@ func TestMintTokens_EmptyRefreshSecret(t *testing.T) {
 	}
 	_, err := token.MintTokens(w, in, cfg)
 	require.Error(t, err)
-	require.ErrorContains(t, err, "token.MintTokens: sign refresh token")
+	require.ErrorContains(t, err, "handler.MintTokens.sign_refresh_token")
 	require.Empty(t, w.Result().Cookies(), "no cookie must be set when refresh signing fails")
 }
 
@@ -117,7 +117,7 @@ func TestMintTokens_PastRefreshExpiry(t *testing.T) {
 	}
 	_, err := token.MintTokens(w, in, cfg)
 	require.Error(t, err)
-	require.ErrorContains(t, err, "token.MintTokens: sign refresh token")
+	require.ErrorContains(t, err, "handler.MintTokens.sign_refresh_token")
 }
 
 // TestMintTokens_AccessTokenParseable asserts that the access token in the

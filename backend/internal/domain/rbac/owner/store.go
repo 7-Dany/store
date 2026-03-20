@@ -3,13 +3,12 @@ package owner
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	rbacshared "github.com/7-Dany/store/backend/internal/domain/rbac/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -43,7 +42,7 @@ func (s *Store) WithQuerier(q db.Querier) *Store {
 func (s *Store) CountActiveOwners(ctx context.Context) (int64, error) {
 	c, err := s.Queries.CountActiveOwners(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("store.CountActiveOwners: %w", err)
+		return 0, telemetry.Store("CountActiveOwners.query", err)
 	}
 	return c, nil
 }
@@ -52,7 +51,7 @@ func (s *Store) CountActiveOwners(ctx context.Context) (int64, error) {
 func (s *Store) GetOwnerRoleID(ctx context.Context) ([16]byte, error) {
 	id, err := s.Queries.GetOwnerRoleID(ctx)
 	if err != nil {
-		return [16]byte{}, fmt.Errorf("store.GetOwnerRoleID: %w", err)
+		return [16]byte{}, telemetry.Store("GetOwnerRoleID.query", err)
 	}
 	return [16]byte(id), nil
 }
@@ -65,7 +64,7 @@ func (s *Store) GetActiveUserByID(ctx context.Context, userID [16]byte) (AssignO
 		if s.IsNoRows(err) {
 			return AssignOwnerUser{}, rbacshared.ErrUserNotFound
 		}
-		return AssignOwnerUser{}, fmt.Errorf("store.GetActiveUserByID: %w", err)
+		return AssignOwnerUser{}, telemetry.Store("GetActiveUserByID.query", err)
 	}
 	return AssignOwnerUser{
 		IsActive:      row.IsActive,
@@ -82,7 +81,7 @@ func (s *Store) AssignOwnerTx(ctx context.Context, in AssignOwnerTxInput) (Assig
 	if err != nil {
 		// Unreachable via QuerierProxy: BeginOrBind with TxBound=true always returns
 		// the injected querier with nil error. No test can trigger this branch.
-		return AssignOwnerResult{}, fmt.Errorf("store.AssignOwnerTx: begin tx: %w", err)
+		return AssignOwnerResult{}, telemetry.Store("AssignOwnerTx.begin_tx", err)
 	}
 
 	row, err := h.Q.AssignUserRole(ctx, db.AssignUserRoleParams{
@@ -94,9 +93,9 @@ func (s *Store) AssignOwnerTx(ctx context.Context, in AssignOwnerTxInput) (Assig
 	})
 	if err != nil {
 		if rErr := h.Rollback(); rErr != nil {
-			slog.ErrorContext(ctx, "store.AssignOwnerTx: rollback", "error", rErr)
+			log.Warn(ctx, "AssignOwnerTx: rollback failed", "error", rErr)
 		}
-		return AssignOwnerResult{}, fmt.Errorf("store.AssignOwnerTx: assign role: %w", err)
+		return AssignOwnerResult{}, telemetry.Store("AssignOwnerTx.assign_role", err)
 	}
 
 	// Audit with context.WithoutCancel — client disconnect must not suppress
@@ -110,16 +109,16 @@ func (s *Store) AssignOwnerTx(ctx context.Context, in AssignOwnerTxInput) (Assig
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		if rErr := h.Rollback(); rErr != nil {
-			slog.ErrorContext(ctx, "store.AssignOwnerTx: rollback after audit", "error", rErr)
+			log.Warn(ctx, "AssignOwnerTx: rollback after audit failed", "error", rErr)
 		}
-		return AssignOwnerResult{}, fmt.Errorf("store.AssignOwnerTx: audit log: %w", err)
+		return AssignOwnerResult{}, telemetry.Store("AssignOwnerTx.audit_log", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path Commit is a no-op
 	// returning nil; on the non-TxBound path Commit wraps pgx.Tx.Commit which
 	// QuerierProxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return AssignOwnerResult{}, fmt.Errorf("store.AssignOwnerTx: commit: %w", err)
+		return AssignOwnerResult{}, telemetry.Store("AssignOwnerTx.commit", err)
 	}
 
 	return AssignOwnerResult{
@@ -140,7 +139,7 @@ func (s *Store) GetTransferTargetUser(ctx context.Context, userID [16]byte) (Tra
 		if s.IsNoRows(err) {
 			return TransferTargetUser{}, rbacshared.ErrUserNotFound
 		}
-		return TransferTargetUser{}, fmt.Errorf("store.GetTransferTargetUser: %w", err)
+		return TransferTargetUser{}, telemetry.Store("GetTransferTargetUser.query", err)
 	}
 
 	ownerCheck, err := s.Queries.CheckUserAccess(ctx, db.CheckUserAccessParams{
@@ -148,7 +147,7 @@ func (s *Store) GetTransferTargetUser(ctx context.Context, userID [16]byte) (Tra
 		Permission: pgtype.Text{String: "", Valid: true},
 	})
 	if err != nil {
-		return TransferTargetUser{}, fmt.Errorf("store.GetTransferTargetUser: check owner: %w", err)
+		return TransferTargetUser{}, telemetry.Store("GetTransferTargetUser.check_owner", err)
 	}
 
 	// row.Email is pgtype.Text — extract the string value.
@@ -168,7 +167,7 @@ func (s *Store) HasPendingTransferToken(ctx context.Context) (bool, error) {
 		if s.IsNoRows(err) {
 			return false, nil
 		}
-		return false, fmt.Errorf("store.HasPendingTransferToken: %w", err)
+		return false, telemetry.Store("HasPendingTransferToken.query", err)
 	}
 	return true, nil
 }
@@ -183,7 +182,7 @@ func (s *Store) InsertTransferToken(
 ) ([16]byte, time.Time, error) {
 	metadata, err := json.Marshal(map[string]string{"initiated_by": initiatedByStr})
 	if err != nil {
-		return [16]byte{}, time.Time{}, fmt.Errorf("store.InsertTransferToken: marshal metadata: %w", err)
+		return [16]byte{}, time.Time{}, telemetry.Store("InsertTransferToken.marshal_metadata", err)
 	}
 	row, err := s.Queries.InsertOwnershipTransferToken(ctx, db.InsertOwnershipTransferTokenParams{
 		TargetUserID: s.ToPgtypeUUID(targetUserID),
@@ -193,7 +192,7 @@ func (s *Store) InsertTransferToken(
 		Metadata: metadata,
 	})
 	if err != nil {
-		return [16]byte{}, time.Time{}, fmt.Errorf("store.InsertTransferToken: %w", err)
+		return [16]byte{}, time.Time{}, telemetry.Store("InsertTransferToken.insert", err)
 	}
 	// row.ID is uuid.UUID (non-nullable primary key) — convert directly to [16]byte.
 	return [16]byte(row.ID), row.ExpiresAt.Time, nil
@@ -215,14 +214,14 @@ func (s *Store) GetPendingTransferToken(ctx context.Context) (PendingTransferInf
 		if s.IsNoRows(err) {
 			return PendingTransferInfo{}, ErrTransferTokenInvalid
 		}
-		return PendingTransferInfo{}, fmt.Errorf("store.GetPendingTransferToken: %w", err)
+		return PendingTransferInfo{}, telemetry.Store("GetPendingTransferToken.query", err)
 	}
 
 	var meta struct {
 		InitiatedBy string `json:"initiated_by"`
 	}
 	if err := json.Unmarshal(row.Metadata, &meta); err != nil {
-		return PendingTransferInfo{}, fmt.Errorf("store.GetPendingTransferToken: parse metadata: %w", err)
+		return PendingTransferInfo{}, telemetry.Store("GetPendingTransferToken.parse_metadata", err)
 	}
 
 	// row.ID is uuid.UUID (non-nullable PK) — convert directly.
@@ -240,7 +239,7 @@ func (s *Store) GetPendingTransferToken(ctx context.Context) (PendingTransferInf
 func (s *Store) DeletePendingTransferToken(ctx context.Context, initiatedBy string) error {
 	rows, err := s.Queries.DeletePendingOwnershipTransferToken(ctx, initiatedBy)
 	if err != nil {
-		return fmt.Errorf("store.DeletePendingTransferToken: %w", err)
+		return telemetry.Store("DeletePendingTransferToken.delete", err)
 	}
 	if rows == 0 {
 		return ErrNoPendingTransfer
@@ -291,28 +290,27 @@ func (s *Store) AcceptTransferTx(ctx context.Context, in AcceptTransferTxInput) 
 	if err != nil {
 		// Unreachable via QuerierProxy: BeginOrBind with TxBound=true always returns
 		// the injected querier with nil error. No test can trigger this branch.
-		return time.Time{}, fmt.Errorf("store.AcceptTransferTx: begin tx: %w", err)
+		return time.Time{}, telemetry.Store("AcceptTransferTx.begin_tx", err)
 	}
 
 	rb := func(label string, origErr error) (time.Time, error) {
 		if rErr := h.Rollback(); rErr != nil {
-			slog.ErrorContext(ctx, "store.AcceptTransferTx: rollback failed",
-				"label", label, "error", rErr)
+			// Rollback failure is a best-effort secondary op — log as Warn so the
+			// primary error (origErr) is still visible and not masked.
+			log.Warn(ctx, "AcceptTransferTx: rollback failed", "label", label, "error", rErr)
 		}
 		return time.Time{}, origErr
 	}
 
 	// Step 1 — Suppress fn_prevent_owner_role_escalation for this TX only.
 	if err := h.Q.SetSkipEscalationCheck(ctx); err != nil {
-		return rb("set_skip_escalation",
-			fmt.Errorf("store.AcceptTransferTx: set skip escalation: %w", err))
+		return rb("set_skip_escalation", telemetry.Store("AcceptTransferTx.set_skip_escalation", err))
 	}
 
 	// Step 2 — Consume the token (AND used_at IS NULL → idempotency guard).
 	rows, err := h.Q.ConsumeOwnershipTransferToken(ctx, s.ToPgtypeUUID(in.TokenID))
 	if err != nil {
-		return rb("consume_token",
-			fmt.Errorf("store.AcceptTransferTx: consume token: %w", err))
+		return rb("consume_token", telemetry.Store("AcceptTransferTx.consume_token", err))
 	}
 	if rows == 0 {
 		return rb("token_already_consumed", ErrTransferTokenInvalid)
@@ -324,8 +322,7 @@ func (s *Store) AcceptTransferTx(ctx context.Context, in AcceptTransferTxInput) 
 		Permission: pgtype.Text{String: "", Valid: true},
 	})
 	if err != nil {
-		return rb("check_prev_owner",
-			fmt.Errorf("store.AcceptTransferTx: check prev owner: %w", err))
+		return rb("check_prev_owner", telemetry.Store("AcceptTransferTx.check_prev_owner", err))
 	}
 	if !asBoolAny(ownerCheck.IsOwner) {
 		return rb("initiator_not_owner", ErrInitiatorNotOwner)
@@ -340,8 +337,7 @@ func (s *Store) AcceptTransferTx(ctx context.Context, in AcceptTransferTxInput) 
 		ExpiresAt:     pgtype.Timestamptz{Valid: false}, // permanent grant
 	})
 	if err != nil {
-		return rb("assign_new_owner",
-			fmt.Errorf("store.AcceptTransferTx: assign new owner role: %w", err))
+		return rb("assign_new_owner", telemetry.Store("AcceptTransferTx.assign_new_owner", err))
 	}
 
 	// Step 5 — Remove owner role from previous owner.
@@ -352,8 +348,7 @@ func (s *Store) AcceptTransferTx(ctx context.Context, in AcceptTransferTxInput) 
 		_, err := h.Q.RemoveUserRole(ctx, s.ToPgtypeUUID(in.PreviousOwnerID))
 		return err
 	}); err != nil {
-		return rb("remove_prev_owner",
-			fmt.Errorf("store.AcceptTransferTx: remove prev owner role: %w", err))
+		return rb("remove_prev_owner", telemetry.Store("AcceptTransferTx.remove_prev_owner", err))
 	}
 
 	transferredAt := time.Now().UTC()
@@ -372,8 +367,7 @@ func (s *Store) AcceptTransferTx(ctx context.Context, in AcceptTransferTxInput) 
 		UserAgent: s.ToText(s.TruncateUserAgent(in.UserAgent)),
 		Metadata:  auditMeta,
 	}); err != nil {
-		return rb("audit_accept",
-			fmt.Errorf("store.AcceptTransferTx: audit log: %w", err))
+		return rb("audit_accept", telemetry.Store("AcceptTransferTx.audit_log", err))
 	}
 
 	// Step 7 — Revoke previous owner's refresh tokens (WithoutCancel).
@@ -381,15 +375,14 @@ func (s *Store) AcceptTransferTx(ctx context.Context, in AcceptTransferTxInput) 
 		UserID: s.ToPgtypeUUID(in.PreviousOwnerID),
 		Reason: "ownership_transferred",
 	}); err != nil {
-		return rb("revoke_sessions",
-			fmt.Errorf("store.AcceptTransferTx: revoke sessions: %w", err))
+		return rb("revoke_sessions", telemetry.Store("AcceptTransferTx.revoke_sessions", err))
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path Commit is a no-op
 	// returning nil; on the non-TxBound path Commit wraps pgx.Tx.Commit which
 	// QuerierProxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return time.Time{}, fmt.Errorf("store.AcceptTransferTx: commit: %w", err)
+		return time.Time{}, telemetry.Store("AcceptTransferTx.commit", err)
 	}
 
 	return transferredAt, nil

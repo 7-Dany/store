@@ -3,7 +3,6 @@ package login
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -12,6 +11,13 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/token"
 )
 
+// Recorder is the narrow observability interface for the login handler.
+// *telemetry.Registry satisfies this interface structurally.
+type Recorder interface {
+	OnLoginSuccess(provider string)
+	OnLoginFailed(provider string, reason string)
+}
+
 // Servicer is the subset of the service that the handler requires.
 type Servicer interface {
 	Login(ctx context.Context, in LoginInput) (LoggedInSession, error)
@@ -19,7 +25,8 @@ type Servicer interface {
 
 // Handler is the HTTP layer for the login feature.
 type Handler struct {
-	svc Servicer
+	svc      Servicer
+	recorder Recorder
 	token.JWTConfig
 }
 
@@ -33,14 +40,14 @@ type Handler struct {
 //
 // cfg.SecureCookies should be true in production (HTTPS) and false for local HTTP
 // development. The refresh cookie's Secure flag is set accordingly.
-func NewHandler(svc Servicer, cfg token.JWTConfig) *Handler {
+func NewHandler(svc Servicer, cfg token.JWTConfig, recorder Recorder) *Handler {
 	if len(cfg.JWTAccessSecret) < 32 {
 		panic("login.NewHandler: JWTAccessSecret must be at least 32 bytes")
 	}
 	if len(cfg.JWTRefreshSecret) < 32 {
 		panic("login.NewHandler: JWTRefreshSecret must be at least 32 bytes")
 	}
-	return &Handler{svc: svc, JWTConfig: cfg}
+	return &Handler{svc: svc, JWTConfig: cfg, recorder: recorder}
 }
 
 // Login handles POST /login.
@@ -76,10 +83,11 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 			RefreshExpiry: session.RefreshExpiry,
 		}, h.JWTConfig)
 		if signErr != nil {
-			slog.ErrorContext(r.Context(), "login.Login: sign tokens", "error", signErr)
+			log.Error(r.Context(), "Login: sign tokens failed", "error", signErr)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 			return
 		}
+		h.recorder.OnLoginSuccess("email")
 		respond.JSON(w, http.StatusOK, loginResponse{
 			TokenResult:         result,
 			ScheduledDeletionAt: session.ScheduledDeletionAt,
@@ -89,23 +97,29 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case errors.Is(err, authshared.ErrInvalidCredentials):
+		h.recorder.OnLoginFailed("email", authshared.LoginReasonInvalidCredentials)
 		respond.Error(w, http.StatusUnauthorized, "invalid_credentials", err.Error())
 	case errors.Is(err, authshared.ErrEmailNotVerified):
+		h.recorder.OnLoginFailed("email", authshared.LoginReasonEmailUnverified)
 		respond.Error(w, http.StatusForbidden, "email_not_verified", err.Error())
 	case errors.Is(err, authshared.ErrAccountInactive):
+		h.recorder.OnLoginFailed("email", authshared.LoginReasonAccountInactive)
 		respond.Error(w, http.StatusForbidden, "account_inactive", err.Error())
 	case errors.Is(err, authshared.ErrAdminLocked):
 		// Admin-imposed lock: 423 with a distinct code so clients know the OTP
 		// self-unlock flow will not work and the user must contact support.
+		h.recorder.OnLoginFailed("email", authshared.LoginReasonAccountLocked)
 		respond.Error(w, http.StatusLocked, "admin_locked", err.Error())
 	case errors.Is(err, authshared.ErrAccountLocked):
 		// OTP brute-force lock: 423 so clients prompt the user to use the
 		// self-unlock flow.
+		h.recorder.OnLoginFailed("email", authshared.LoginReasonAccountLocked)
 		respond.Error(w, http.StatusLocked, "account_locked", err.Error())
 	case errors.Is(err, authshared.ErrLoginLocked):
 		// Security: only *LoginLockedError carries RetryAfter. The plain
 		// ErrLoginLocked sentinel (e.g. from a test double) emits 429
 		// without Retry-After — callers should always return the typed error.
+		h.recorder.OnLoginFailed("email", authshared.LoginReasonRateLimit)
 		var lle *authshared.LoginLockedError
 		if errors.As(err, &lle) {
 			secs := max(int(lle.RetryAfter.Seconds()), 1)
@@ -113,7 +127,7 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		}
 		respond.Error(w, http.StatusTooManyRequests, "login_locked", err.Error())
 	default:
-		slog.ErrorContext(r.Context(), "login.Login: service error", "error", err)
+		log.Error(r.Context(), "Login: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }

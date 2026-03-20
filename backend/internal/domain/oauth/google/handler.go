@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -22,9 +21,19 @@ import (
 
 const kvStateTTL = 10 * time.Minute
 
+// Recorder is the narrow observability interface for the Google OAuth handler.
+// *telemetry.Registry satisfies this interface structurally.
+type Recorder interface {
+	OnOAuthSuccess(provider string)
+	OnOAuthFailed(provider string, reason string)
+	OnOAuthLinked(provider string)
+	OnOAuthUnlinked(provider string)
+}
+
 // Handler is the HTTP layer for Google OAuth: initiate, callback, and unlink.
 type Handler struct {
 	svc           Servicer
+	recorder      Recorder
 	kv            kvstore.Store
 	cfg           token.JWTConfig
 	clientID      string
@@ -32,6 +41,7 @@ type Handler struct {
 	successURL    string
 	errorURL      string
 	secureCookies bool
+	stateSecret   string // HMAC key for the cookie fallback when KV is unavailable
 }
 
 // NewHandler constructs a Handler with the given dependencies.
@@ -41,9 +51,11 @@ func NewHandler(
 	cfg token.JWTConfig,
 	clientID, redirectURI, successURL, errorURL string,
 	secureCookies bool,
+	recorder Recorder,
 ) *Handler {
 	return &Handler{
 		svc:           svc,
+		recorder:      recorder,
 		kv:            kv,
 		cfg:           cfg,
 		clientID:      clientID,
@@ -51,6 +63,9 @@ func NewHandler(
 		successURL:    successURL,
 		errorURL:      errorURL,
 		secureCookies: secureCookies,
+		// Use the JWT access secret as the HMAC key for the cookie fallback.
+		// It is already present, has high entropy, and is rotated alongside tokens.
+		stateSecret: cfg.JWTAccessSecret,
 	}
 }
 
@@ -85,7 +100,7 @@ func (h *Handler) HandleInitiate(w http.ResponseWriter, r *http.Request) {
 	// 3. Generate PKCE code_verifier: 32 random bytes, base64url-encoded.
 	verifierBytes := make([]byte, 32)
 	if _, err := rand.Read(verifierBytes); err != nil {
-		slog.ErrorContext(r.Context(), "google.HandleInitiate: rand.Read", "error", err)
+		log.Error(r.Context(), "HandleInitiate: rand.Read failed", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -95,24 +110,29 @@ func (h *Handler) HandleInitiate(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256([]byte(codeVerifier))
 	codeChallenge := base64.RawURLEncoding.EncodeToString(sum[:])
 
-	// 5. Persist state to KV.
-	// json.Marshal on a struct containing only string fields never returns an error.
+	// 5. Persist state — primary path: KV store. Fallback: signed HttpOnly cookie.
+	// The cookie fallback preserves CSRF protection via HMAC-SHA256 even when
+	// Redis is unavailable, so OAuth keeps working during a Redis outage.
 	statePayload, _ := json.Marshal(OAuthState{CodeVerifier: codeVerifier, LinkUserID: linkUserID})
 	kvKey := "goauth:state:" + state
 	if err := h.kv.Set(r.Context(), kvKey, string(statePayload), kvStateTTL); err != nil {
-		slog.ErrorContext(r.Context(), "google.HandleInitiate: kv set", "error", err)
-		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
-		return
+		log.Warn(r.Context(), "HandleInitiate: kv set failed, falling back to signed cookie", "error", err)
+		if cookieErr := setStateCookie(w, state, string(statePayload), h.secureCookies, h.stateSecret); cookieErr != nil {
+			log.Error(r.Context(), "HandleInitiate: cookie fallback also failed", "error", cookieErr)
+			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+			return
+		}
+	} else {
+		log.Debug(r.Context(), "HandleInitiate: state stored in KV",
+			"state", state,
+			"link_user_id", linkUserID,
+			"ttl", kvStateTTL,
+		)
 	}
-	slog.DebugContext(r.Context(), "google.HandleInitiate: state stored in KV",
-		"state", state,
-		"link_user_id", linkUserID,
-		"ttl", kvStateTTL,
-	)
 
 	// 6 + 7. Build URL and redirect.
 	authURL := buildAuthURL(h.clientID, h.redirectURI, state, codeChallenge)
-	slog.DebugContext(r.Context(), "google.HandleInitiate: redirecting to Google")
+	log.Debug(r.Context(), "HandleInitiate: redirecting to Google")
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
@@ -158,21 +178,36 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Load state from KV.
+	// 3. Load state — primary path: KV store. Fallback: signed cookie.
+	// Always clear the fallback cookie on callback so it doesn't linger.
 	kvKey := "goauth:state:" + state
-	raw, err := h.kv.Get(r.Context(), kvKey)
-	if err != nil {
-		h.redirectError(w, r, "invalid_state")
-		return
+	raw, kvErr := h.kv.Get(r.Context(), kvKey)
+	var usingCookieFallback bool
+	if kvErr != nil {
+		// KV unavailable or key not found — try the signed cookie fallback.
+		cookieRaw, cookieErr := readStateCookie(r, state, h.stateSecret)
+		if cookieErr != nil {
+			log.Warn(r.Context(), "HandleCallback: state not found in KV or cookie",
+				"kv_err", kvErr, "cookie_err", cookieErr)
+			clearStateCookie(w, h.secureCookies)
+			h.redirectError(w, r, "invalid_state")
+			return
+		}
+		raw = cookieRaw
+		usingCookieFallback = true
+		log.Debug(r.Context(), "HandleCallback: resolved state from signed cookie fallback")
 	}
 
-	// 4. Delete state entry unconditionally (single-use contract) — non-fatal;
-	// runs before unmarshal so a corrupt value cannot be retried within its TTL.
-	if err := h.kv.Delete(r.Context(), kvKey); err != nil {
-		slog.ErrorContext(r.Context(), "google.HandleCallback: delete state key", "error", err)
+	// 4. Delete state entry (single-use contract).
+	// Always clear the fallback cookie; also delete from KV when it was used.
+	clearStateCookie(w, h.secureCookies)
+	if !usingCookieFallback {
+		if err := h.kv.Delete(r.Context(), kvKey); err != nil {
+			log.Warn(r.Context(), "HandleCallback: delete state key failed", "error", err)
+		}
 	}
 
-	// 5. Unmarshal KV value.
+	// 5. Unmarshal state payload.
 	var oauthState OAuthState
 	if err := json.Unmarshal([]byte(raw), &oauthState); err != nil {
 		h.redirectError(w, r, "invalid_state")
@@ -187,7 +222,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 7. Delegate to service.
-	slog.DebugContext(r.Context(), "google.HandleCallback: state resolved, delegating to service",
+	log.Debug(r.Context(), "HandleCallback: state resolved, delegating to service",
 		"has_link_user_id", oauthState.LinkUserID != "",
 		"ip", respond.ClientIP(r),
 	)
@@ -201,15 +236,18 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrTokenExchangeFailed):
+			h.recorder.OnOAuthFailed("google", "token_exchange_failed")
 			h.redirectError(w, r, "token_exchange_failed")
 		case errors.Is(err, ErrInvalidIDToken):
+			h.recorder.OnOAuthFailed("google", "provider_error")
 			h.redirectError(w, r, "invalid_id_token")
 		case errors.Is(err, oauthshared.ErrProviderAlreadyLinked):
 			h.redirectError(w, r, "provider_already_linked")
 		case errors.Is(err, oauthshared.ErrAccountLocked):
 			h.redirectError(w, r, "account_locked")
 		default:
-			slog.ErrorContext(r.Context(), "google.HandleCallback: service error", "error", err)
+			h.recorder.OnOAuthFailed("google", "unknown")
+			log.Error(r.Context(), "HandleCallback: service error", "error", err)
 			h.redirectError(w, r, "server_error")
 		}
 		return
@@ -217,7 +255,8 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// ── Link mode: no session cookies, redirect with action=linked ────────────
 	if result.Linked {
-		slog.DebugContext(r.Context(), "google.HandleCallback: link mode — redirecting",
+		h.recorder.OnOAuthLinked("google")
+		log.Debug(r.Context(), "HandleCallback: link mode — redirecting",
 			"success_url", h.successURL,
 		)
 		http.Redirect(w, r, h.successURL+"?provider=google&action=linked", http.StatusFound)
@@ -225,7 +264,7 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Login / Register mode: mint tokens, set cookies, redirect ─────────────
-	slog.DebugContext(r.Context(), "google.HandleCallback: minting tokens",
+	log.Debug(r.Context(), "HandleCallback: minting tokens",
 		"new_user", result.NewUser,
 		"user_id", fmt.Sprintf("%x", result.Session.UserID),
 		"session_id", fmt.Sprintf("%x", result.Session.SessionID),
@@ -238,7 +277,8 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		RefreshExpiry: result.Session.RefreshExpiry,
 	}, h.cfg)
 	if mintErr != nil {
-		slog.ErrorContext(r.Context(), "google.HandleCallback: mint tokens", "error", mintErr)
+		h.recorder.OnOAuthFailed("google", "unknown")
+		log.Error(r.Context(), "HandleCallback: mint tokens failed", "error", mintErr)
 		h.redirectError(w, r, "server_error")
 		return
 	}
@@ -259,7 +299,8 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	})
 	// token.MintTokens already set the refresh_token HttpOnly cookie via SetRefreshCookie.
 
-	slog.DebugContext(r.Context(), "google.HandleCallback: cookies set, redirecting to frontend",
+	h.recorder.OnOAuthSuccess("google")
+	log.Debug(r.Context(), "HandleCallback: cookies set, redirecting to frontend",
 		"success_url", h.successURL,
 		"new_user", result.NewUser,
 	)
@@ -294,12 +335,13 @@ func (h *Handler) HandleUnlink(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, oauthshared.ErrLastAuthMethod):
 			respond.Error(w, http.StatusUnprocessableEntity, "last_auth_method", err.Error())
 		default:
-			slog.ErrorContext(r.Context(), "google.HandleUnlink: service error", "error", err)
+			log.Error(r.Context(), "HandleUnlink: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
 	}
 
 	// 3. Success.
+	h.recorder.OnOAuthUnlinked("google")
 	respond.JSON(w, http.StatusOK, map[string]string{"message": "google account unlinked successfully"})
 }

@@ -2,13 +2,15 @@
 package respond
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
+
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // contentType is the canonical Content-Type for every JSON response,
@@ -28,6 +30,8 @@ type APIError struct {
 	Message string `json:"message"` // human-readable: displayed in the UI
 }
 
+var log = telemetry.New("respond")
+
 // JSON writes v as JSON with the given HTTP status code.
 // If marshalling fails it writes a 500 application/json error body instead.
 // A nil v is marshalled as JSON null; use NoContent for 204 responses with
@@ -35,7 +39,7 @@ type APIError struct {
 func JSON(w http.ResponseWriter, status int, v any) {
 	b, err := json.Marshal(v)
 	if err != nil {
-		slog.Error("respond.JSON: marshal failed",
+		log.Error(context.Background(), "JSON: marshal failed",
 			"error", err,
 			"value_type", fmt.Sprintf("%T", v),
 		)
@@ -106,7 +110,7 @@ func writeRaw(w http.ResponseWriter, status int, b []byte) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	if _, err := w.Write(b); err != nil {
-		slog.Debug("respond: write failed", "error", err)
+		log.Debug(context.Background(), "write failed", "error", err)
 	}
 }
 

@@ -2,11 +2,11 @@ package register
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -43,7 +43,7 @@ func (s *Store) WithQuerier(q db.Querier) *Store {
 func (s *Store) CreateUserTx(ctx context.Context, in CreateUserInput) (CreatedUser, error) {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return CreatedUser{}, fmt.Errorf("store.CreateUserTx: begin tx: %w", err)
+		return CreatedUser{}, telemetry.Store("CreateUserTx.begin_tx", err)
 	}
 	// idempotent after Commit; covers panics and the commit-failure path.
 	defer h.Rollback()
@@ -62,7 +62,7 @@ func (s *Store) CreateUserTx(ctx context.Context, in CreateUserInput) (CreatedUs
 		case s.IsDuplicateUsername(err):
 			return CreatedUser{}, authshared.ErrUsernameTaken
 		}
-		return CreatedUser{}, fmt.Errorf("store.CreateUserTx: create user: %w", err)
+		return CreatedUser{}, telemetry.Store("CreateUserTx.create_user", err)
 	}
 
 	userPgUUID := s.UUIDToPgtypeUUID(userRow.ID)
@@ -75,7 +75,7 @@ func (s *Store) CreateUserTx(ctx context.Context, in CreateUserInput) (CreatedUs
 		TtlSeconds: in.TTL.Seconds(),
 		IpAddress:  s.IPToNullable(in.IPAddress),
 	}); err != nil {
-		return CreatedUser{}, fmt.Errorf("store.CreateUserTx: create verification token: %w", err)
+		return CreatedUser{}, telemetry.Store("CreateUserTx.create_token", err)
 	}
 
 	// 3. Audit row.
@@ -87,11 +87,11 @@ func (s *Store) CreateUserTx(ctx context.Context, in CreateUserInput) (CreatedUs
 		UserAgent: s.ToText(s.TruncateUserAgent(in.UserAgent)),
 		Metadata:  []byte("{}"),
 	}); err != nil {
-		return CreatedUser{}, fmt.Errorf("store.CreateUserTx: audit log: %w", err)
+		return CreatedUser{}, telemetry.Store("CreateUserTx.audit", err)
 	}
 
 	if err := h.Commit(); err != nil {
-		return CreatedUser{}, fmt.Errorf("store.CreateUserTx: commit: %w", err)
+		return CreatedUser{}, telemetry.Store("CreateUserTx.commit", err)
 	}
 
 	return CreatedUser{
@@ -106,7 +106,7 @@ func (s *Store) CreateUserTx(ctx context.Context, in CreateUserInput) (CreatedUs
 func (s *Store) WriteRegisterFailedAuditTx(ctx context.Context, userID [16]byte, ipAddress, userAgent string) error {
 	h, err := s.BeginOrBind(ctx)
 	if err != nil {
-		return fmt.Errorf("store.WriteRegisterFailedAuditTx: begin tx: %w", err)
+		return telemetry.Store("WriteRegisterFailedAuditTx.begin_tx", err)
 	}
 	// idempotent after Commit; covers panics and the commit-failure path.
 	defer h.Rollback()
@@ -120,11 +120,11 @@ func (s *Store) WriteRegisterFailedAuditTx(ctx context.Context, userID [16]byte,
 		UserAgent: s.ToText(s.TruncateUserAgent(userAgent)),
 		Metadata:  []byte("{}"),
 	}); err != nil {
-		return fmt.Errorf("store.WriteRegisterFailedAuditTx: audit log: %w", err)
+		return telemetry.Store("WriteRegisterFailedAuditTx.audit", err)
 	}
 
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.WriteRegisterFailedAuditTx: commit: %w", err)
+		return telemetry.Store("WriteRegisterFailedAuditTx.commit", err)
 	}
 	return nil
 }

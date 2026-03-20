@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -24,7 +25,7 @@ func HashPassword(plaintext string) (string, error) {
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(plaintext), bcryptCost)
 	if err != nil {
-		return "", fmt.Errorf("authshared.HashPassword: bcrypt: %w", err)
+		return "", telemetry.Service("HashPassword.bcrypt", err)
 	}
 	return string(hash), nil
 }
@@ -40,9 +41,9 @@ func CheckPassword(hash, plaintext string) error {
 		return ErrInvalidCredentials
 	}
 	if errors.Is(err, bcrypt.ErrHashTooShort) {
-		return fmt.Errorf("authshared.CheckPassword: malformed hash: %w", err)
+		return telemetry.Service("CheckPassword.malformed_hash", err)
 	}
-	return fmt.Errorf("authshared.CheckPassword: %w", err)
+	return telemetry.Service("CheckPassword.compare", err)
 }
 
 // GetDummyPasswordHash returns a stable bcrypt hash of a fixed sentinel

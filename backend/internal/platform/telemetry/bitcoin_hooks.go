@@ -1,0 +1,195 @@
+package telemetry
+
+import "strconv"
+
+// Bitcoin hook methods implement the bitcoinshared.BitcoinRecorder interface
+// structurally. The interface is defined in domain/bitcoin/shared/recorder.go;
+// *Registry satisfies it without importing that package (no import cycle).
+//
+// All methods are nil-safe: calling them on a nil *Registry is a no-op.
+// Stage 2+ fields have an additional nil guard for the gauge itself, so the
+// package compiles and runs correctly in Stage 0 deployments.
+
+// ── Stage 0 — ZMQ infrastructure ─────────────────────────────────────────────
+
+// SetZMQConnected sets bitcoin_zmq_connected to 1 (connected) or 0 (disconnected).
+func (r *Registry) SetZMQConnected(connected bool) {
+	if r == nil {
+		return
+	}
+	if connected {
+		r.bitcoinZMQConnected.Set(1)
+	} else {
+		r.bitcoinZMQConnected.Set(0)
+	}
+}
+
+// SetRPCConnected sets bitcoin_rpc_connected to 1 (connected) or 0 (disconnected).
+func (r *Registry) SetRPCConnected(connected bool) {
+	if r == nil {
+		return
+	}
+	if connected {
+		r.bitcoinRPCConnected.Set(1)
+	} else {
+		r.bitcoinRPCConnected.Set(0)
+	}
+}
+
+// SetZMQLastMessageAge records the seconds elapsed since the last ZMQ message.
+func (r *Registry) SetZMQLastMessageAge(seconds float64) {
+	if r == nil {
+		return
+	}
+	r.bitcoinZMQLastMessageAge.Set(seconds)
+}
+
+// OnHandlerPanic increments the bitcoin_handler_panics_total counter for the
+// named handler.
+func (r *Registry) OnHandlerPanic(handler string) {
+	if r == nil {
+		return
+	}
+	r.bitcoinHandlerPanics.WithLabelValues(handler).Inc()
+}
+
+// SetHandlerGoroutines records the current number of in-flight ZMQ handler goroutines.
+func (r *Registry) SetHandlerGoroutines(count int) {
+	if r == nil {
+		return
+	}
+	r.bitcoinHandlerGoroutines.Set(float64(count))
+}
+
+// OnMessageDropped increments dropped_zmq_messages_total for the given reason.
+func (r *Registry) OnMessageDropped(reason string) {
+	if r == nil {
+		return
+	}
+	r.bitcoinDroppedMessages.WithLabelValues(reason).Inc()
+}
+
+// SetSSEConnections records the number of active Bitcoin SSE connections.
+func (r *Registry) SetSSEConnections(count int) {
+	if r == nil {
+		return
+	}
+	r.bitcoinSSEConnections.Set(float64(count))
+}
+
+// OnTokenConsumeFailed increments bitcoin_token_consume_failures_total for the given reason.
+func (r *Registry) OnTokenConsumeFailed(reason string) {
+	if r == nil {
+		return
+	}
+	r.bitcoinTokenConsumeFailures.WithLabelValues(reason).Inc()
+}
+
+// ── Stage 2a — Invoice ────────────────────────────────────────────────────────
+
+// OnInvoiceDetected records the detection latency in the invoice detection histogram.
+func (r *Registry) OnInvoiceDetected(durationSeconds float64) {
+	if r == nil || r.bitcoinInvoiceDetection == nil {
+		return
+	}
+	r.bitcoinInvoiceDetection.Observe(durationSeconds)
+}
+
+// SetInvoiceCount sets the current invoice count gauge for the given status.
+func (r *Registry) SetInvoiceCount(status string, count float64) {
+	if r == nil || r.bitcoinInvoiceState == nil {
+		return
+	}
+	r.bitcoinInvoiceState.WithLabelValues(status).Set(count)
+}
+
+// SetRateFeedStaleness records the seconds since the last exchange rate update.
+func (r *Registry) SetRateFeedStaleness(seconds float64) {
+	if r == nil || r.bitcoinRateFeedStaleness == nil {
+		return
+	}
+	r.bitcoinRateFeedStaleness.Set(seconds)
+}
+
+// SetReconciliationLag records the number of blocks the reconciliation job is
+// behind the chain tip.
+func (r *Registry) SetReconciliationLag(blocks float64) {
+	if r == nil || r.bitcoinReconciliationLag == nil {
+		return
+	}
+	r.bitcoinReconciliationLag.Set(blocks)
+}
+
+// ── Stage 2b — Settlement ─────────────────────────────────────────────────────
+
+// SetBalanceDrift records the accounting drift in satoshis.
+// Must be zero at all times. Any nonzero value triggers a CRITICAL alert.
+func (r *Registry) SetBalanceDrift(satoshis int64) {
+	if r == nil || r.bitcoinBalanceDrift == nil {
+		return
+	}
+	r.bitcoinBalanceDrift.Set(float64(satoshis))
+}
+
+// SetReconciliationHold sets the reconciliation hold gauge to 1 (active) or 0 (inactive).
+func (r *Registry) SetReconciliationHold(active bool) {
+	if r == nil || r.bitcoinReconciliationHold == nil {
+		return
+	}
+	if active {
+		r.bitcoinReconciliationHold.Set(1)
+	} else {
+		r.bitcoinReconciliationHold.Set(0)
+	}
+}
+
+// OnReorgDetected increments bitcoin_reorg_detected_total.
+func (r *Registry) OnReorgDetected() {
+	if r == nil || r.bitcoinReorgDetected == nil {
+		return
+	}
+	r.bitcoinReorgDetected.Inc()
+}
+
+// ── Stage 2c — Payouts ────────────────────────────────────────────────────────
+
+// OnPayoutFailed increments bitcoin_payout_failure_total.
+func (r *Registry) OnPayoutFailed() {
+	if r == nil || r.bitcoinPayoutFailures == nil {
+		return
+	}
+	r.bitcoinPayoutFailures.Inc()
+}
+
+// SetFeeEstimate records the current fee estimate for the given confirmation target.
+// targetBlocks is converted to a string label; use small bounded values (1, 3, 6, etc.).
+func (r *Registry) SetFeeEstimate(targetBlocks int, satPerVbyte float64) {
+	if r == nil || r.bitcoinFeeEstimate == nil {
+		return
+	}
+	r.bitcoinFeeEstimate.WithLabelValues(strconv.Itoa(targetBlocks)).Set(satPerVbyte)
+}
+
+// OnSweepStuck increments bitcoin_sweep_stuck_total.
+func (r *Registry) OnSweepStuck() {
+	if r == nil || r.bitcoinSweepStuck == nil {
+		return
+	}
+	r.bitcoinSweepStuck.Inc()
+}
+
+// SetWalletBackupAge records the seconds since the last successful wallet backup.
+func (r *Registry) SetWalletBackupAge(seconds float64) {
+	if r == nil || r.bitcoinWalletBackupAge == nil {
+		return
+	}
+	r.bitcoinWalletBackupAge.Set(seconds)
+}
+
+// SetUTXOCount records the current number of UTXOs in the Bitcoin wallet.
+func (r *Registry) SetUTXOCount(count float64) {
+	if r == nil || r.bitcoinUTXOCount == nil {
+		return
+	}
+	r.bitcoinUTXOCount.Set(count)
+}

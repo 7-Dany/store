@@ -3,13 +3,15 @@ package password
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
+
+var log = telemetry.New("password")
 
 // changePasswordMaxAttempts is the per-user threshold for consecutive wrong
 // old-password submissions on POST /change-password. Once reached the service
@@ -42,7 +44,6 @@ type Storer interface {
 	// GetPasswordResetTokenForVerify returns the active token for email without
 	// locking it. Returns authshared.ErrTokenNotFound when no active token exists.
 	GetPasswordResetTokenForVerify(ctx context.Context, email string) (authshared.VerificationToken, error)
-
 	// GetUserPasswordHash returns the current password hash for the user.
 	// Returns authshared.ErrUserNotFound on no-rows.
 	GetUserPasswordHash(ctx context.Context, userID [16]byte) (CurrentCredentials, error)
@@ -55,16 +56,9 @@ type Storer interface {
 	// The service compares the returned count against changePasswordMaxAttempts to
 	// decide whether to return ErrTooManyAttempts (redirect to forgot-password) or
 	// the standard ErrInvalidCredentials.
-	//
-	// NOTE: counter persistence requires a DB migration:
-	//   ALTER TABLE users ADD COLUMN failed_change_password_attempts int2 NOT NULL DEFAULT 0;
-	// Until that migration is applied the real Store returns a stub count and the
-	// IP rate limiter (5 req/15 min, cpw:ip:) is the primary per-user defence.
 	IncrementChangePasswordFailuresTx(ctx context.Context, userID [16]byte, ipAddress, userAgent string) (int16, error)
 	// ResetChangePasswordFailuresTx resets the per-user failed-attempt counter to
 	// zero after a successful password change so the user gets a clean slate.
-	//
-	// NOTE: no-op until the DB migration above is applied.
 	ResetChangePasswordFailuresTx(ctx context.Context, userID [16]byte) error
 }
 
@@ -94,7 +88,7 @@ func NewService(store Storer, tokenTTL time.Duration) *Service {
 // authshared.GenerateCodeHash (bcrypt at otpBcryptCost). An attacker measuring
 // response times cannot distinguish registered from unknown emails.
 func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInput) (authshared.OTPIssuanceResult, error) {
-	slog.DebugContext(ctx, "password.RequestPasswordReset: start", "email", in.Email, "ip", in.IPAddress)
+	log.Debug(ctx, "RequestPasswordReset: start", "email", in.Email, "ip", in.IPAddress)
 
 	// 1. Look up the account. Unknown email → silent no-op (anti-enumeration).
 	user, err := s.store.GetUserForPasswordReset(ctx, in.Email)
@@ -104,15 +98,15 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 			// match the bcrypt cost of authshared.GenerateCodeHash on the happy path
 			// (Conventions §7, ADR-006).
 			_ = authshared.GetDummyOTPHash()
-			slog.DebugContext(ctx, "password.RequestPasswordReset: suppressed — email not found", "email", in.Email)
+			log.Debug(ctx, "RequestPasswordReset: suppressed — email not found", "email", in.Email)
 			return authshared.OTPIssuanceResult{}, nil
 		}
-		return authshared.OTPIssuanceResult{}, fmt.Errorf("password.RequestPasswordReset: get user: %w", err)
+		return authshared.OTPIssuanceResult{}, telemetry.Service("password.RequestPasswordReset: get user", err)
 	}
 
 	// 2. Unverified, locked, or inactive → silent no-op (anti-enumeration).
 	if !user.EmailVerified || user.IsLocked || !user.IsActive {
-		slog.DebugContext(ctx, "password.RequestPasswordReset: suppressed — account not eligible",
+		log.Debug(ctx, "RequestPasswordReset: suppressed — account not eligible",
 			"email", in.Email,
 			"email_verified", user.EmailVerified,
 			"is_locked", user.IsLocked,
@@ -126,7 +120,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 	const resetCooldown = 60 * time.Second
 	issuedAt, cooldownErr := s.store.GetPasswordResetTokenCreatedAt(ctx, in.Email)
 	if cooldownErr == nil && time.Since(issuedAt) < resetCooldown {
-		slog.DebugContext(ctx, "password.RequestPasswordReset: suppressed — cooldown active",
+		log.Debug(ctx, "RequestPasswordReset: suppressed — cooldown active",
 			"email", in.Email,
 			"issued_at", issuedAt,
 			"elapsed", time.Since(issuedAt).Round(time.Second),
@@ -136,18 +130,18 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 	}
 	if cooldownErr != nil && !errors.Is(cooldownErr, authshared.ErrTokenNotFound) {
 		return authshared.OTPIssuanceResult{},
-			fmt.Errorf("password.RequestPasswordReset: cooldown check: %w", cooldownErr)
+			telemetry.Service("RequestPasswordReset.cooldown check", cooldownErr)
 	}
 
 	// 3. Generate OTP.
-	slog.DebugContext(ctx, "password.RequestPasswordReset: generating OTP", "email", in.Email)
+	log.Debug(ctx, "RequestPasswordReset: generating OTP", "email", in.Email)
 	raw, codeHash, err := authshared.GenerateCodeHash()
 	if err != nil {
-		return authshared.OTPIssuanceResult{}, fmt.Errorf("password.RequestPasswordReset: generate code hash: %w", err)
+		return authshared.OTPIssuanceResult{}, telemetry.Service("RequestPasswordReset.generate_code", err)
 	}
 
 	// 4. Persist token + audit row.
-	slog.DebugContext(ctx, "password.RequestPasswordReset: persisting token", "email", in.Email)
+	log.Debug(ctx, "RequestPasswordReset: persisting token", "email", in.Email)
 	if err := s.store.RequestPasswordResetTx(ctx, RequestPasswordResetStoreInput{
 		UserID:    user.ID,
 		Email:     in.Email,
@@ -158,14 +152,14 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 	}); err != nil {
 		if errors.Is(err, authshared.ErrResetTokenCooldown) {
 			// Cooldown: a valid token already exists; return silently (anti-enumeration).
-			slog.DebugContext(ctx, "password.RequestPasswordReset: suppressed — active token already exists (DB cooldown)", "email", in.Email)
+			log.Debug(ctx, "RequestPasswordReset: suppressed — active token already exists (DB cooldown)", "email", in.Email)
 			return authshared.OTPIssuanceResult{}, nil
 		}
 		return authshared.OTPIssuanceResult{},
-			fmt.Errorf("password.RequestPasswordReset: request password reset tx: %w", err)
+			telemetry.Service("RequestPasswordReset.reset_tx", err)
 	}
 
-	slog.InfoContext(ctx, "password.RequestPasswordReset: OTP issued", "email", in.Email)
+	log.Info(ctx, "RequestPasswordReset: OTP issued", "email", in.Email)
 	return authshared.NewOTPIssuanceResult(user.ID, in.Email, raw), nil
 }
 
@@ -177,7 +171,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in ForgotPasswordInp
 // Timing invariant: CheckPassword always runs, even if the user is not found.
 // The dummy password hash is used on the no-rows path.
 func (s *Service) UpdatePasswordHash(ctx context.Context, in ChangePasswordInput) error {
-	slog.DebugContext(ctx, "password.UpdatePasswordHash: start", "user_id", in.UserID, "ip", in.IPAddress)
+	log.Debug(ctx, "UpdatePasswordHash: start", "user_id", in.UserID, "ip", in.IPAddress)
 
 	uid, err := authshared.ParseUserID("password.UpdatePasswordHash", in.UserID)
 	if err != nil {
@@ -200,20 +194,20 @@ func (s *Service) UpdatePasswordHash(ctx context.Context, in ChangePasswordInput
 		return authshared.ErrUserNotFound
 	}
 	if lookupErr != nil {
-		return fmt.Errorf("password.UpdatePasswordHash: get password hash: %w", lookupErr)
+		return telemetry.Service("UpdatePasswordHash.get password hash", lookupErr)
 	}
 
 	if pwErr != nil {
-		slog.DebugContext(ctx, "password.UpdatePasswordHash: wrong current password", "user_id", in.UserID)
+		log.Debug(ctx, "UpdatePasswordHash: wrong current password", "user_id", in.UserID)
 		if !errors.Is(pwErr, authshared.ErrInvalidCredentials) {
-			return fmt.Errorf("password.UpdatePasswordHash: password check: %w", pwErr)
+			return telemetry.Service("UpdatePasswordHash.password_check", pwErr)
 		}
 		// Security: WithoutCancel so a client disconnect cannot abort the failed-attempt record.
 		count, incrErr := s.store.IncrementChangePasswordFailuresTx(
 			context.WithoutCancel(ctx), uid, in.IPAddress, in.UserAgent,
 		)
 		if incrErr != nil {
-			slog.ErrorContext(ctx, "password.UpdatePasswordHash: increment change password failures", "error", incrErr)
+			log.Warn(ctx, "UpdatePasswordHash: increment failures failed", "error", incrErr)
 		}
 		if count >= changePasswordMaxAttempts {
 			return authshared.ErrTooManyAttempts
@@ -235,7 +229,7 @@ func (s *Service) UpdatePasswordHash(ctx context.Context, in ChangePasswordInput
 	if err != nil {
 		// Unreachable in practice: ValidatePassword enforces ≤72-byte passwords,
 		// so bcrypt.GenerateFromPassword never returns an error here.
-		return fmt.Errorf("password.UpdatePasswordHash: hash password: %w", err)
+		return telemetry.Service("UpdatePasswordHash.hash_password", err)
 	}
 
 	// Security: WithoutCancel so a client disconnect cannot abort the revocation.
@@ -246,7 +240,7 @@ func (s *Service) UpdatePasswordHash(ctx context.Context, in ChangePasswordInput
 		in.IPAddress,
 		in.UserAgent,
 	); err != nil {
-		return fmt.Errorf("password.UpdatePasswordHash: update password: %w", err)
+		return telemetry.Service("UpdatePasswordHash.update password", err)
 	}
 
 	// Reset the per-user attempt counter so the user starts fresh on next change.
@@ -254,10 +248,10 @@ func (s *Service) UpdatePasswordHash(ctx context.Context, in ChangePasswordInput
 	if resetErr := s.store.ResetChangePasswordFailuresTx(
 		context.WithoutCancel(ctx), uid,
 	); resetErr != nil {
-		slog.ErrorContext(ctx, "password.UpdatePasswordHash: reset change password failures", "error", resetErr)
+		log.Warn(ctx, "UpdatePasswordHash: reset failures failed", "error", resetErr)
 	}
 
-	slog.InfoContext(ctx, "password.UpdatePasswordHash: success", "user_id", in.UserID)
+	log.Info(ctx, "UpdatePasswordHash: success", "user_id", in.UserID)
 	return nil
 }
 
@@ -282,7 +276,7 @@ func (s *Service) VerifyResetCode(ctx context.Context, in VerifyResetCodeInput) 
 			_ = authshared.GetDummyOTPHash()
 			return "", authshared.ErrTokenNotFound
 		}
-		return "", fmt.Errorf("password.VerifyResetCode: get token: %w", err)
+		return "", telemetry.Service("password.VerifyResetCode: get token", err)
 	}
 
 	// 2. Check expiry, attempt budget, and code hash.
@@ -304,7 +298,7 @@ func (s *Service) VerifyResetCode(ctx context.Context, in VerifyResetCodeInput) 
 				AttemptEvent: audit.EventPasswordResetAttemptFailed,
 			},
 		); incErr != nil {
-			slog.ErrorContext(ctx, "password.VerifyResetCode: increment attempts", "error", incErr)
+			log.Warn(ctx, "VerifyResetCode: increment attempts failed", "error", incErr)
 		}
 		return "", authshared.ErrInvalidCode
 	}
@@ -353,11 +347,11 @@ func (s *Service) ConsumePasswordResetToken(ctx context.Context, in ResetPasswor
 	// to fail on any supported platform (crypto/rand failure requires OS-level fault).
 	newHash, err := authshared.HashPassword(in.NewPassword)
 	if err != nil {
-		return [16]byte{}, fmt.Errorf("password.ConsumePasswordResetToken: hash password: %w", err)
+		return [16]byte{}, telemetry.Service("ConsumePasswordResetToken.hash_password", err)
 	}
 
 	var userID [16]byte
-	slog.DebugContext(ctx, "password.ConsumePasswordResetToken: new hash computed, consuming token", "email", in.Email)
+	log.Debug(ctx, "ConsumePasswordResetToken: new hash computed, consuming token", "email", in.Email)
 
 	err = authshared.ConsumeOTPToken(
 		ctx,
@@ -390,7 +384,7 @@ func (s *Service) ConsumePasswordResetToken(ctx context.Context, in ResetPasswor
 		},
 	)
 	if err == nil {
-		slog.InfoContext(ctx, "password.ConsumePasswordResetToken: success", "email", in.Email)
+		log.Info(ctx, "ConsumePasswordResetToken: success", "email", in.Email)
 	}
 	return userID, err
 }

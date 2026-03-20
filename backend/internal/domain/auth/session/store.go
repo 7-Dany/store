@@ -2,11 +2,11 @@ package session
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -44,7 +44,7 @@ func (s *Store) GetRefreshTokenByJTI(ctx context.Context, jti [16]byte) (StoredR
 		if s.IsNoRows(err) {
 			return StoredRefreshToken{}, authshared.ErrTokenNotFound
 		}
-		return StoredRefreshToken{}, fmt.Errorf("store.GetRefreshTokenByJTI: query: %w", err)
+		return StoredRefreshToken{}, telemetry.Store("GetRefreshTokenByJTI.query", err)
 	}
 	return StoredRefreshToken{
 		JTI:       row.Jti.Bytes,
@@ -66,7 +66,7 @@ func (s *Store) GetUserVerifiedAndLocked(ctx context.Context, userID [16]byte) (
 		if s.IsNoRows(err) {
 			return UserStatusResult{}, authshared.ErrUserNotFound
 		}
-		return UserStatusResult{}, fmt.Errorf("store.GetUserVerifiedAndLocked: query: %w", err)
+		return UserStatusResult{}, telemetry.Store("GetUserVerifiedAndLocked.query", err)
 	}
 	return UserStatusResult{
 		EmailVerified: row.EmailVerified,
@@ -91,7 +91,7 @@ func (s *Store) RotateRefreshTokenTx(ctx context.Context, in RotateTxInput) (Rot
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return RotatedSession{}, fmt.Errorf("store.RotateRefreshTokenTx: begin tx: %w", err)
+		return RotatedSession{}, telemetry.Store("RotateRefreshTokenTx.begin_tx", err)
 	}
 
 	currentJTIPg := s.ToPgtypeUUID(in.CurrentJTI)
@@ -108,7 +108,7 @@ func (s *Store) RotateRefreshTokenTx(ctx context.Context, in RotateTxInput) (Rot
 	})
 	if err != nil {
 		h.Rollback()
-		return RotatedSession{}, fmt.Errorf("store.RotateRefreshTokenTx: revoke current token: %w", err)
+		return RotatedSession{}, telemetry.Store("RotateRefreshTokenTx.revoke_current", err)
 	}
 	if tag.RowsAffected() == 0 {
 		// Security: 0 rows affected means the token was already rotated by a
@@ -126,19 +126,19 @@ func (s *Store) RotateRefreshTokenTx(ctx context.Context, in RotateTxInput) (Rot
 	})
 	if err != nil {
 		h.Rollback()
-		return RotatedSession{}, fmt.Errorf("store.RotateRefreshTokenTx: create child token: %w", err)
+		return RotatedSession{}, telemetry.Store("RotateRefreshTokenTx.create_child", err)
 	}
 
 	// 3. Stamp last_active_at on the session so active-device visibility is accurate.
 	if err := h.Q.UpdateSessionLastActive(ctx, sessionPgUUID); err != nil {
 		h.Rollback()
-		return RotatedSession{}, fmt.Errorf("store.RotateRefreshTokenTx: update session last active: %w", err)
+		return RotatedSession{}, telemetry.Store("RotateRefreshTokenTx.update_session", err)
 	}
 
 	// 4. Stamp last_login_at. Mirrors what LoginTx does.
 	if err := h.Q.UpdateLastLoginAt(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return RotatedSession{}, fmt.Errorf("store.RotateRefreshTokenTx: update last login at: %w", err)
+		return RotatedSession{}, telemetry.Store("RotateRefreshTokenTx.update_login", err)
 	}
 
 	// 5. Audit log.
@@ -151,14 +151,14 @@ func (s *Store) RotateRefreshTokenTx(ctx context.Context, in RotateTxInput) (Rot
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return RotatedSession{}, fmt.Errorf("store.RotateRefreshTokenTx: audit log: %w", err)
+		return RotatedSession{}, telemetry.Store("RotateRefreshTokenTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path commitFn is a no-op
 	// that always returns nil; on the non-TxBound path commitFn wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return RotatedSession{}, fmt.Errorf("store.RotateRefreshTokenTx: commit: %w", err)
+		return RotatedSession{}, telemetry.Store("RotateRefreshTokenTx.commit", err)
 	}
 
 	return RotatedSession{
@@ -179,7 +179,7 @@ func (s *Store) RevokeFamilyTokensTx(ctx context.Context, userID, familyID [16]b
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return fmt.Errorf("store.RevokeFamilyTokensTx: begin tx: %w", err)
+		return telemetry.Store("RevokeFamilyTokensTx.begin_tx", err)
 	}
 
 	// 1. Revoke every non-revoked token in the family.
@@ -188,7 +188,7 @@ func (s *Store) RevokeFamilyTokensTx(ctx context.Context, userID, familyID [16]b
 		FamilyID: s.ToPgtypeUUID(familyID),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RevokeFamilyTokensTx: revoke family: %w", err)
+		return telemetry.Store("RevokeFamilyTokensTx.revoke", err)
 	}
 
 	// 2. Audit log.
@@ -203,14 +203,14 @@ func (s *Store) RevokeFamilyTokensTx(ctx context.Context, userID, familyID [16]b
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RevokeFamilyTokensTx: audit log: %w", err)
+		return telemetry.Store("RevokeFamilyTokensTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path commitFn is a no-op
 	// that always returns nil; on the non-TxBound path commitFn wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.RevokeFamilyTokensTx: commit: %w", err)
+		return telemetry.Store("RevokeFamilyTokensTx.commit", err)
 	}
 	return nil
 }
@@ -228,7 +228,7 @@ func (s *Store) RevokeAllUserTokensTx(ctx context.Context, userID [16]byte, reas
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return fmt.Errorf("store.RevokeAllUserTokensTx: begin tx: %w", err)
+		return telemetry.Store("RevokeAllUserTokensTx.begin_tx", err)
 	}
 
 	userPgUUID := s.ToPgtypeUUID(userID)
@@ -239,14 +239,14 @@ func (s *Store) RevokeAllUserTokensTx(ctx context.Context, userID [16]byte, reas
 		Reason: reason,
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RevokeAllUserTokensTx: revoke refresh tokens: %w", err)
+		return telemetry.Store("RevokeAllUserTokensTx.revoke_tokens", err)
 	}
 
 	// 2. Close all open sessions. Ordered after token revocation so the token
 	// ledger is already clean if a concurrent refresh races the commit.
 	if err := h.Q.EndAllUserSessions(ctx, userPgUUID); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RevokeAllUserTokensTx: end sessions: %w", err)
+		return telemetry.Store("RevokeAllUserTokensTx.end_sessions", err)
 	}
 
 	// 3. Audit log.
@@ -261,14 +261,14 @@ func (s *Store) RevokeAllUserTokensTx(ctx context.Context, userID [16]byte, reas
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.RevokeAllUserTokensTx: audit log: %w", err)
+		return telemetry.Store("RevokeAllUserTokensTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path commitFn is a no-op
 	// that always returns nil; on the non-TxBound path commitFn wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.RevokeAllUserTokensTx: commit: %w", err)
+		return telemetry.Store("RevokeAllUserTokensTx.commit", err)
 	}
 	return nil
 }
@@ -283,7 +283,7 @@ func (s *Store) WriteRefreshFailedAuditTx(ctx context.Context, ipAddress, userAg
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return fmt.Errorf("store.WriteRefreshFailedAuditTx: begin tx: %w", err)
+		return telemetry.Store("WriteRefreshFailedAuditTx.begin_tx", err)
 	}
 
 	// 1. Audit row with NULL userID — no trusted identity is available at this
@@ -299,14 +299,14 @@ func (s *Store) WriteRefreshFailedAuditTx(ctx context.Context, ipAddress, userAg
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.WriteRefreshFailedAuditTx: audit log: %w", err)
+		return telemetry.Store("WriteRefreshFailedAuditTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path commitFn is a no-op
 	// that always returns nil; on the non-TxBound path commitFn wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.WriteRefreshFailedAuditTx: commit: %w", err)
+		return telemetry.Store("WriteRefreshFailedAuditTx.commit", err)
 	}
 	return nil
 }
@@ -326,7 +326,7 @@ func (s *Store) LogoutTx(ctx context.Context, in LogoutTxInput) error {
 	// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 	// and always returns nil error. No test can trigger this branch.
 	if err != nil {
-		return fmt.Errorf("store.LogoutTx: begin tx: %w", err)
+		return telemetry.Store("LogoutTx.begin_tx", err)
 	}
 
 	jtiPg := s.ToPgtypeUUID(in.JTI)
@@ -339,13 +339,13 @@ func (s *Store) LogoutTx(ctx context.Context, in LogoutTxInput) error {
 		Jti:    jtiPg,
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.LogoutTx: revoke token: %w", err)
+		return telemetry.Store("LogoutTx.revoke_token", err)
 	}
 
 	// 2. End the device session (AND ended_at IS NULL is idempotent).
 	if err := h.Q.EndUserSession(ctx, sessionPg); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.LogoutTx: end session: %w", err)
+		return telemetry.Store("LogoutTx.end_session", err)
 	}
 
 	// 3. Audit log.
@@ -358,14 +358,14 @@ func (s *Store) LogoutTx(ctx context.Context, in LogoutTxInput) error {
 		Metadata:  []byte("{}"),
 	}); err != nil {
 		h.Rollback()
-		return fmt.Errorf("store.LogoutTx: audit log: %w", err)
+		return telemetry.Store("LogoutTx.audit", err)
 	}
 
 	// Unreachable via QuerierProxy: on the TxBound path commitFn is a no-op
 	// that always returns nil; on the non-TxBound path commitFn wraps
 	// pgx.Tx.Commit which the proxy cannot intercept.
 	if err := h.Commit(); err != nil {
-		return fmt.Errorf("store.LogoutTx: commit: %w", err)
+		return telemetry.Store("LogoutTx.commit", err)
 	}
 	return nil
 }

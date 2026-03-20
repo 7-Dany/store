@@ -2,13 +2,14 @@ package userlock
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
 
-	platformrbac "github.com/7-Dany/store/backend/internal/platform/rbac"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
+	platformrbac "github.com/7-Dany/store/backend/internal/platform/rbac"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 )
+
+var log = telemetry.New("userlock")
 
 // adminLockKeyPrefix is the KV key prefix written when a user is admin-locked.
 // Token middleware checks this key to invalidate all outstanding JWTs.
@@ -66,7 +67,7 @@ func (s *Service) LockUser(ctx context.Context, targetUserID, actingUserID strin
 	// 2. Parse actingUserID — comes from JWT; parse failure indicates misconfiguration
 	actorID, err := parseID(actingUserID)
 	if err != nil {
-		return fmt.Errorf("userlock.LockUser: invalid acting user id: %w", err)
+		return telemetry.Service("LockUser.parse_actor_id", err)
 	}
 	// 3. Self-lock guard
 	if targetID == actorID {
@@ -80,7 +81,7 @@ func (s *Service) LockUser(ctx context.Context, targetUserID, actingUserID strin
 	// 5. Owner check
 	isOwner, err := s.store.IsOwnerUser(ctx, targetID)
 	if err != nil {
-		return fmt.Errorf("userlock.LockUser: is owner check: %w", err)
+		return telemetry.Service("LockUser.is_owner_check", err)
 	}
 	if isOwner {
 		return platformrbac.ErrCannotLockOwner
@@ -91,7 +92,7 @@ func (s *Service) LockUser(ctx context.Context, targetUserID, actingUserID strin
 		LockedBy: actorID,
 		Reason:   in.Reason,
 	}); err != nil {
-		return fmt.Errorf("userlock.LockUser: lock tx: %w", err)
+		return telemetry.Service("LockUser.lock_tx", err)
 	}
 	// 7. Invalidate all outstanding JWTs for the user by writing the admin-lock
 	// key to KV. token.Auth reads this key on every authenticated request and
@@ -102,7 +103,7 @@ func (s *Service) LockUser(ctx context.Context, targetUserID, actingUserID strin
 	if s.kvStore != nil {
 		kvKey := adminLockKeyPrefix + uuid.UUID(targetID).String()
 		if kvErr := s.kvStore.Set(context.WithoutCancel(ctx), kvKey, "1", 0); kvErr != nil {
-			slog.ErrorContext(ctx, "userlock.LockUser: set admin_lock KV key", "user_id", uuid.UUID(targetID).String(), "error", kvErr)
+		  log.Warn(ctx, "LockUser: set admin_lock KV key failed", "user_id", uuid.UUID(targetID).String(), "error", kvErr)
 		}
 	}
 	return nil
@@ -124,7 +125,7 @@ func (s *Service) UnlockUser(ctx context.Context, targetUserID, actingUserID str
 	// 2. Parse actingUserID — validate only; the string form is passed to the
 	// store's WithActingUser for the audit trigger, so the parsed value is unused.
 	if _, err := parseID(actingUserID); err != nil {
-		return fmt.Errorf("userlock.UnlockUser: invalid acting user id: %w", err)
+		return telemetry.Service("UnlockUser.parse_actor_id", err)
 	}
 	// 3. Existence gate
 	if _, err := s.store.GetLockStatus(ctx, targetID); err != nil {
@@ -132,7 +133,7 @@ func (s *Service) UnlockUser(ctx context.Context, targetUserID, actingUserID str
 	}
 	// 4. Unlock
 	if err := s.store.UnlockUserTx(ctx, targetID, actingUserID); err != nil {
-		return fmt.Errorf("userlock.UnlockUser: unlock: %w", err)
+		return telemetry.Service("UnlockUser.unlock", err)
 	}
 	// 5. Delete the admin-lock KV key so previously rejected tokens can flow
 	// through again (assuming they are not expired or JTI-blocked).
@@ -141,7 +142,7 @@ func (s *Service) UnlockUser(ctx context.Context, targetUserID, actingUserID str
 	if s.kvStore != nil {
 		kvKey := adminLockKeyPrefix + uuid.UUID(targetID).String()
 		if kvErr := s.kvStore.Delete(context.WithoutCancel(ctx), kvKey); kvErr != nil {
-			slog.ErrorContext(ctx, "userlock.UnlockUser: delete admin_lock KV key", "user_id", uuid.UUID(targetID).String(), "error", kvErr)
+		  log.Warn(ctx, "UnlockUser: delete admin_lock KV key failed", "user_id", uuid.UUID(targetID).String(), "error", kvErr)
 		}
 	}
 	return nil

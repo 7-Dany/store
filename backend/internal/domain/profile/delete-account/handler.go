@@ -5,7 +5,6 @@ package deleteaccount
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -102,7 +101,7 @@ func (h *Handler) enqueueEmail(reqCtx context.Context, logPrefix, userID, toEmai
 		Deliver: h.mailer.Send(templateKey),
 	}); err != nil {
 		mailCancel()
-		slog.WarnContext(reqCtx, logPrefix+": enqueue mail failed (best-effort)", "error", err)
+		log.Warn(reqCtx, logPrefix+": enqueue mail failed (best-effort)", "error", err)
 	}
 }
 
@@ -143,7 +142,7 @@ func (h *Handler) mapDeleteError(w http.ResponseWriter, r *http.Request, err err
 	case errors.Is(err, authshared.ErrTooManyAttempts):
 		respond.Error(w, http.StatusTooManyRequests, "too_many_attempts", err.Error())
 	default:
-		slog.ErrorContext(r.Context(), "deleteaccount.Delete: service error", "error", err)
+		log.Error(r.Context(), "Delete: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
@@ -303,7 +302,7 @@ func (h *Handler) CancelDeletion(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrNotPendingDeletion):
 			respond.Error(w, http.StatusConflict, "not_pending_deletion", err.Error())
 		default:
-			slog.ErrorContext(r.Context(), "deleteaccount.CancelDeletion: service error", "error", err)
+			log.Error(r.Context(), "CancelDeletion: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -333,7 +332,7 @@ func (h *Handler) DeletionMethod(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrAlreadyPendingDeletion):
 			respond.Error(w, http.StatusConflict, "already_pending_deletion", err.Error())
 		default:
-			slog.ErrorContext(r.Context(), "deleteaccount.DeletionMethod: service error", "error", err)
+			log.Error(r.Context(), "DeletionMethod: service error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return

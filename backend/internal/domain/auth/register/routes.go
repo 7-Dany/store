@@ -36,7 +36,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 		Send:    deps.Mailer.Send(mailertemplates.VerificationKey),
 		Queue:   deps.MailQueue,
 		Timeout: deps.MailDeliveryTimeout,
-	})
+	}, deps.Metrics)
 
 	r.With(limiter.Limit).Post("/register", h.Register)
 }

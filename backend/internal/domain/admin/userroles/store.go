@@ -3,12 +3,12 @@ package userroles
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"github.com/7-Dany/store/backend/internal/db"
 	rbacshared "github.com/7-Dany/store/backend/internal/domain/rbac/shared"
 	platformrbac "github.com/7-Dany/store/backend/internal/platform/rbac"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -45,7 +45,7 @@ func (s *Store) GetUserRole(ctx context.Context, userID [16]byte) (UserRole, err
 		if s.IsNoRows(err) {
 			return UserRole{}, ErrUserRoleNotFound
 		}
-		return UserRole{}, fmt.Errorf("store.GetUserRole: %w", err)
+		return UserRole{}, telemetry.Store("GetUserRole.query", err)
 	}
 	return mapUserRole(row), nil
 }
@@ -58,7 +58,7 @@ func (s *Store) AssignUserRoleTx(ctx context.Context, in AssignRoleTxInput) (Use
 	if err != nil {
 		// Unreachable: BeginOrBind with TxBound=true never calls Pool.Begin
 		// and always returns nil error. No test can trigger this branch.
-		return UserRole{}, fmt.Errorf("store.AssignUserRoleTx: begin: %w", err)
+		return UserRole{}, telemetry.Store("AssignUserRoleTx.begin", err)
 	}
 	defer func() { _ = h.Rollback() }()
 
@@ -70,7 +70,7 @@ func (s *Store) AssignUserRoleTx(ctx context.Context, in AssignRoleTxInput) (Use
 		if s.IsNoRows(err) {
 			return UserRole{}, ErrRoleNotFound
 		}
-		return UserRole{}, fmt.Errorf("store.AssignUserRoleTx: check role: %w", err)
+		return UserRole{}, telemetry.Store("AssignUserRoleTx.check_role", err)
 	}
 	if !role.IsActive {
 		return UserRole{}, ErrRoleNotFound
@@ -92,20 +92,20 @@ func (s *Store) AssignUserRoleTx(ctx context.Context, in AssignRoleTxInput) (Use
 		ExpiresAt:     expiresAt,
 	})
 	if err != nil {
-		return UserRole{}, fmt.Errorf("store.AssignUserRoleTx: upsert: %w", err)
+		return UserRole{}, telemetry.Store("AssignUserRoleTx.upsert", err)
 	}
 
 	// 3. Re-read to get role_name, is_owner_role, and granted_reason.
 	row, err := h.Q.GetUserRole(ctx, s.ToPgtypeUUID(in.UserID))
 	if err != nil {
-		return UserRole{}, fmt.Errorf("store.AssignUserRoleTx: re-read: %w", err)
+		return UserRole{}, telemetry.Store("AssignUserRoleTx.re_read", err)
 	}
 
 	if err := h.Commit(); err != nil {
 		// Unreachable via QuerierProxy: on the TxBound path Commit is a no-op;
 		// on the non-TxBound path it wraps pgx.Tx.Commit which the proxy cannot
 		// intercept.
-		return UserRole{}, fmt.Errorf("store.AssignUserRoleTx: commit: %w", err)
+		return UserRole{}, telemetry.Store("AssignUserRoleTx.commit", err)
 	}
 	return mapUserRole(row), nil
 }
@@ -128,7 +128,7 @@ func (s *Store) RemoveUserRole(ctx context.Context, userID [16]byte, actingUserI
 		if isOrphanedOwnerViolation(err) {
 			return ErrLastOwnerRemoval
 		}
-		return fmt.Errorf("store.RemoveUserRole: %w", err)
+		return telemetry.Store("RemoveUserRole.delete", err)
 	}
 	if rowsAffected == 0 {
 		return ErrUserRoleNotFound

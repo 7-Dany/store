@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/google/uuid"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	oauthshared "github.com/7-Dany/store/backend/internal/domain/oauth/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
+
+var log = telemetry.New("google")
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Interfaces
@@ -97,24 +99,24 @@ var _ Servicer = (*Service)(nil)
 //	    No email match → OAuthRegisterTx (new user).
 func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (CallbackResult, error) {
 	// 1. Exchange authorization code for Google tokens.
-	slog.DebugContext(ctx, "google.HandleCallback: exchanging code",
+	log.Debug(ctx, "HandleCallback: exchanging code",
 		"link_user_id", in.LinkUserID,
 		"ip", in.IPAddress,
 	)
 	tokens, err := s.provider.ExchangeCode(ctx, in.Code, in.CodeVerifier)
 	if err != nil {
-		slog.ErrorContext(ctx, "google.HandleCallback: code exchange failed", "error", err)
+		log.Error(ctx, "HandleCallback: code exchange failed", "error", err)
 		return CallbackResult{}, ErrTokenExchangeFailed
 	}
-	slog.DebugContext(ctx, "google.HandleCallback: code exchange OK")
+	log.Debug(ctx, "HandleCallback: code exchange OK")
 
 	// 2. Verify ID token and extract claims.
 	claims, err := s.provider.VerifyIDToken(ctx, tokens.IDToken)
 	if err != nil {
-		slog.ErrorContext(ctx, "google.HandleCallback: ID token verification failed", "error", err)
+		log.Error(ctx, "HandleCallback: ID token verification failed", "error", err)
 		return CallbackResult{}, ErrInvalidIDToken
 	}
-	slog.DebugContext(ctx, "google.HandleCallback: ID token verified",
+	log.Debug(ctx, "HandleCallback: ID token verified",
 		"sub", claims.Sub,
 		"email", claims.Email,
 		"name", claims.Name,
@@ -123,30 +125,30 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 	// 3. Encrypt access token before persisting.
 	encryptedToken, err := s.encryptor.Encrypt(tokens.AccessToken)
 	if err != nil {
-		slog.ErrorContext(ctx, "google.HandleCallback: access token encryption failed", "error", err)
-		return CallbackResult{}, fmt.Errorf("google.HandleCallback: encrypt access token: %w", err)
+		log.Error(ctx, "HandleCallback: access token encryption failed", "error", err)
+		return CallbackResult{}, telemetry.Service("HandleCallback.encrypt", err)
 	}
-	slog.DebugContext(ctx, "google.HandleCallback: access token encrypted OK",
+	log.Debug(ctx, "HandleCallback: access token encrypted OK",
 		"encrypted_len", len(encryptedToken),
 	)
 
 	// ── LINK MODE ────────────────────────────────────────────────────────────
 	if in.LinkUserID != "" {
-		slog.DebugContext(ctx, "google.HandleCallback: entering link mode", "link_user_id", in.LinkUserID)
+		log.Debug(ctx, "HandleCallback: entering link mode", "link_user_id", in.LinkUserID)
 		parsed, err := uuid.Parse(in.LinkUserID)
 		if err != nil {
-			return CallbackResult{}, fmt.Errorf("google.HandleCallback: parse link user id: %w", err)
+			return CallbackResult{}, telemetry.Service("HandleCallback.parse_link_user_id", err)
 		}
 		linkUserID := [16]byte(parsed)
 
 		// 4. Resolve the linking user; any store error is unexpected (ID came from JWT).
 		user, err := s.store.GetUserForOAuthCallback(ctx, linkUserID)
 		if err != nil {
-			slog.ErrorContext(ctx, "google.HandleCallback: get link user failed", "link_user_id", in.LinkUserID, "error", err)
-			return CallbackResult{}, fmt.Errorf("google.HandleCallback: get link user: %w", err)
+			log.Error(ctx, "HandleCallback: get link user failed", "link_user_id", in.LinkUserID, "error", err)
+			return CallbackResult{}, telemetry.Service("HandleCallback.get_link_user", err)
 		}
 		if user.IsLocked || user.AdminLocked {
-			slog.DebugContext(ctx, "google.HandleCallback: link user is locked", "link_user_id", in.LinkUserID)
+			log.Debug(ctx, "HandleCallback: link user is locked", "link_user_id", in.LinkUserID)
 			return CallbackResult{}, oauthshared.ErrAccountLocked
 		}
 
@@ -159,11 +161,11 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 			}
 			// Same user → fall through; upsert is idempotent.
 		} else if !errors.Is(err, oauthshared.ErrIdentityNotFound) {
-			return CallbackResult{}, fmt.Errorf("google.HandleCallback: get identity by provider uid: %w", err)
+			return CallbackResult{}, telemetry.Service("HandleCallback.get_identity_link", err)
 		}
 
 		// 6. Upsert the identity row.
-		slog.DebugContext(ctx, "google.HandleCallback: upserting identity (link mode)",
+		log.Debug(ctx, "HandleCallback: upserting identity (link mode)",
 			"user_id", in.LinkUserID,
 			"provider_uid", claims.Sub,
 			"provider_email", claims.Email,
@@ -177,10 +179,10 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 			AvatarURL:     claims.Picture,
 			AccessToken:   encryptedToken,
 		}); err != nil {
-			slog.ErrorContext(ctx, "google.HandleCallback: upsert identity failed (link mode)", "error", err)
-			return CallbackResult{}, fmt.Errorf("google.HandleCallback: upsert identity: %w", err)
+			log.Error(ctx, "HandleCallback: upsert identity failed (link mode)", "error", err)
+			return CallbackResult{}, telemetry.Service("HandleCallback.upsert_identity_link", err)
 		}
-		slog.DebugContext(ctx, "google.HandleCallback: identity upserted OK (link mode)", "user_id", in.LinkUserID)
+		log.Debug(ctx, "HandleCallback: identity upserted OK (link mode)", "user_id", in.LinkUserID)
 
 		// 7. Write audit log. WithoutCancel so a client disconnect cannot abort it.
 		if err := s.store.InsertAuditLogTx(context.WithoutCancel(ctx), OAuthAuditInput{
@@ -190,15 +192,15 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 			UserAgent: in.UserAgent,
 			Metadata:  map[string]any{"provider": "google"},
 		}); err != nil {
-			return CallbackResult{}, fmt.Errorf("google.HandleCallback: insert audit: %w", err)
+			return CallbackResult{}, telemetry.Service("HandleCallback.insert_audit_link", err)
 		}
 
-		slog.DebugContext(ctx, "google.HandleCallback: link mode complete", "user_id", in.LinkUserID)
+		log.Debug(ctx, "HandleCallback: link mode complete", "user_id", in.LinkUserID)
 		return CallbackResult{Linked: true}, nil
 	}
 
 	// ── LOGIN / REGISTER MODE ─────────────────────────────────────────────────
-	slog.DebugContext(ctx, "google.HandleCallback: entering login/register mode",
+	log.Debug(ctx, "HandleCallback: entering login/register mode",
 		"sub", claims.Sub,
 		"email", claims.Email,
 	)
@@ -210,23 +212,23 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 	identity, err := s.store.GetIdentityByProviderUID(ctx, claims.Sub)
 	if err == nil {
 		// Existing identity → refresh it and issue a session.
-		slog.DebugContext(ctx, "google.HandleCallback: existing identity found → login path",
+		log.Debug(ctx, "HandleCallback: existing identity found → login path",
 			"user_id", fmt.Sprintf("%x", identity.UserID),
 			"sub", claims.Sub,
 		)
 		user, err := s.store.GetUserForOAuthCallback(ctx, identity.UserID)
 		if err != nil {
-			slog.ErrorContext(ctx, "google.HandleCallback: get user failed (login path)", "error", err)
-			return CallbackResult{}, fmt.Errorf("google.HandleCallback: get user: %w", err)
+			log.Error(ctx, "HandleCallback: get user failed (login path)", "error", err)
+			return CallbackResult{}, telemetry.Service("HandleCallback.get_user_login", err)
 		}
 		if user.IsLocked || user.AdminLocked {
-			slog.DebugContext(ctx, "google.HandleCallback: user is locked (login path)",
+			log.Debug(ctx, "HandleCallback: user is locked (login path)",
 				"user_id", fmt.Sprintf("%x", identity.UserID),
 			)
 			return CallbackResult{}, oauthshared.ErrAccountLocked
 		}
 
-		slog.DebugContext(ctx, "google.HandleCallback: upserting identity (login path)",
+		log.Debug(ctx, "HandleCallback: upserting identity (login path)",
 			"user_id", fmt.Sprintf("%x", identity.UserID),
 			"provider_email", claims.Email,
 		)
@@ -239,13 +241,13 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 			AvatarURL:     claims.Picture,
 			AccessToken:   encryptedToken,
 		}); err != nil {
-			slog.ErrorContext(ctx, "google.HandleCallback: upsert identity failed (login path)", "error", err)
-			return CallbackResult{}, fmt.Errorf("google.HandleCallback: upsert identity: %w", err)
+			log.Error(ctx, "HandleCallback: upsert identity failed (login path)", "error", err)
+			return CallbackResult{}, telemetry.Service("HandleCallback.upsert_identity_login", err)
 		}
 
 		// WithoutCancel: the Tx writes the audit log internally; protect it from
 		// a client disconnect.
-		slog.DebugContext(ctx, "google.HandleCallback: running OAuthLoginTx",
+		log.Debug(ctx, "HandleCallback: running OAuthLoginTx",
 			"user_id", fmt.Sprintf("%x", identity.UserID),
 		)
 		session, err = s.store.OAuthLoginTx(context.WithoutCancel(ctx), OAuthLoginTxInput{
@@ -256,10 +258,10 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 			AvatarURL: claims.Picture,
 		})
 		if err != nil {
-			slog.ErrorContext(ctx, "google.HandleCallback: OAuthLoginTx failed", "error", err)
-			return CallbackResult{}, fmt.Errorf("google.HandleCallback: login tx: %w", err)
+			log.Error(ctx, "HandleCallback: OAuthLoginTx failed", "error", err)
+			return CallbackResult{}, telemetry.Service("HandleCallback.login_tx", err)
 		}
-		slog.DebugContext(ctx, "google.HandleCallback: OAuthLoginTx OK",
+		log.Debug(ctx, "HandleCallback: OAuthLoginTx OK",
 			"user_id", fmt.Sprintf("%x", identity.UserID),
 			"session_id", fmt.Sprintf("%x", session.SessionID),
 		)
@@ -270,18 +272,18 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 		existing, emailErr := s.store.GetUserByEmailForOAuth(ctx, claims.Email)
 		if emailErr == nil {
 			// Email match → auto-link and issue a session.
-			slog.DebugContext(ctx, "google.HandleCallback: email-match found → auto-link path",
-				"user_id", fmt.Sprintf("%x", existing.ID),
-				"email", claims.Email,
+			log.Debug(ctx, "HandleCallback: email-match found → auto-link path",
+			"user_id", fmt.Sprintf("%x", existing.ID),
+			"email", claims.Email,
 			)
 			if existing.IsLocked || existing.AdminLocked {
-				slog.DebugContext(ctx, "google.HandleCallback: email-match user is locked",
-					"user_id", fmt.Sprintf("%x", existing.ID),
-				)
+			log.Debug(ctx, "HandleCallback: email-match user is locked",
+			"user_id", fmt.Sprintf("%x", existing.ID),
+			)
 				return CallbackResult{}, oauthshared.ErrAccountLocked
 			}
 
-			slog.DebugContext(ctx, "google.HandleCallback: upserting identity (email-match path)",
+			log.Debug(ctx, "HandleCallback: upserting identity (email-match path)",
 				"user_id", fmt.Sprintf("%x", existing.ID),
 				"provider_email", claims.Email,
 			)
@@ -294,11 +296,11 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 				AvatarURL:     claims.Picture,
 				AccessToken:   encryptedToken,
 			}); err != nil {
-				slog.ErrorContext(ctx, "google.HandleCallback: upsert identity failed (email-match path)", "error", err)
-				return CallbackResult{}, fmt.Errorf("google.HandleCallback: upsert identity: %w", err)
+				log.Error(ctx, "HandleCallback: upsert identity failed (email-match path)", "error", err)
+				return CallbackResult{}, telemetry.Service("HandleCallback.upsert_identity_email", err)
 			}
 
-			slog.DebugContext(ctx, "google.HandleCallback: running OAuthLoginTx (email-match path)",
+			log.Debug(ctx, "HandleCallback: running OAuthLoginTx (email-match path)",
 				"user_id", fmt.Sprintf("%x", existing.ID),
 			)
 			session, err = s.store.OAuthLoginTx(context.WithoutCancel(ctx), OAuthLoginTxInput{
@@ -309,10 +311,10 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 				AvatarURL: claims.Picture,
 			})
 			if err != nil {
-				slog.ErrorContext(ctx, "google.HandleCallback: OAuthLoginTx failed (email-match path)", "error", err)
-				return CallbackResult{}, fmt.Errorf("google.HandleCallback: login tx: %w", err)
+				log.Error(ctx, "HandleCallback: OAuthLoginTx failed (email-match path)", "error", err)
+				return CallbackResult{}, telemetry.Service("HandleCallback.login_tx_email", err)
 			}
-			slog.DebugContext(ctx, "google.HandleCallback: OAuthLoginTx OK (email-match path)",
+			log.Debug(ctx, "HandleCallback: OAuthLoginTx OK (email-match path)",
 				"user_id", fmt.Sprintf("%x", existing.ID),
 				"session_id", fmt.Sprintf("%x", session.SessionID),
 			)
@@ -320,7 +322,7 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 
 		} else if errors.Is(emailErr, oauthshared.ErrIdentityNotFound) {
 			// Brand-new user — register.
-			slog.DebugContext(ctx, "google.HandleCallback: no existing account → register path",
+			log.Debug(ctx, "HandleCallback: no existing account → register path",
 				"email", claims.Email,
 			)
 			session, err = s.store.OAuthRegisterTx(context.WithoutCancel(ctx), OAuthRegisterTxInput{
@@ -334,10 +336,10 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 				UserAgent:     in.UserAgent,
 			})
 			if err != nil {
-				slog.ErrorContext(ctx, "google.HandleCallback: OAuthRegisterTx failed", "error", err)
-				return CallbackResult{}, fmt.Errorf("google.HandleCallback: register tx: %w", err)
+				log.Error(ctx, "HandleCallback: OAuthRegisterTx failed", "error", err)
+				return CallbackResult{}, telemetry.Service("google.HandleCallback: register tx", err)
 			}
-			slog.DebugContext(ctx, "google.HandleCallback: OAuthRegisterTx OK",
+			log.Debug(ctx, "HandleCallback: OAuthRegisterTx OK",
 				"user_id", fmt.Sprintf("%x", session.UserID),
 				"session_id", fmt.Sprintf("%x", session.SessionID),
 				"email", claims.Email,
@@ -345,14 +347,14 @@ func (s *Service) HandleCallback(ctx context.Context, in CallbackInput) (Callbac
 			newUser = true
 
 		} else {
-			return CallbackResult{}, fmt.Errorf("google.HandleCallback: get user by email: %w", emailErr)
+			return CallbackResult{}, telemetry.Service("HandleCallback.get_user_by_email", emailErr)
 		}
 
 	} else {
-		return CallbackResult{}, fmt.Errorf("google.HandleCallback: get identity by provider uid: %w", err)
+		return CallbackResult{}, telemetry.Service("HandleCallback.get_identity", err)
 	}
 
-	slog.DebugContext(ctx, "google.HandleCallback: complete",
+	log.Debug(ctx, "HandleCallback: complete",
 		"new_user", newUser,
 		"user_id", fmt.Sprintf("%x", session.UserID),
 		"session_id", fmt.Sprintf("%x", session.SessionID),
@@ -376,7 +378,7 @@ func (s *Service) UnlinkGoogle(ctx context.Context, userID [16]byte, ipAddress, 
 	// 1. Fetch auth-method counts for the last-method guard.
 	methods, err := s.store.GetUserAuthMethods(ctx, userID)
 	if err != nil {
-		return fmt.Errorf("google.UnlinkGoogle: get auth methods: %w", err)
+		return telemetry.Service("UnlinkGoogle.get_auth_methods", err)
 	}
 
 	// 2. Confirm the identity exists before evaluating the guard.
@@ -385,7 +387,7 @@ func (s *Service) UnlinkGoogle(ctx context.Context, userID [16]byte, ipAddress, 
 		return oauthshared.ErrIdentityNotFound
 	}
 	if err != nil {
-		return fmt.Errorf("google.UnlinkGoogle: get identity: %w", err)
+		return telemetry.Service("UnlinkGoogle.get_identity", err)
 	}
 
 	// 3. Last-auth-method guard: sum password (1 or 0) + linked identities.
@@ -401,7 +403,7 @@ func (s *Service) UnlinkGoogle(ctx context.Context, userID [16]byte, ipAddress, 
 	// 4. Delete the identity row.
 	rows, err := s.store.DeleteUserIdentity(ctx, userID)
 	if err != nil {
-		return fmt.Errorf("google.UnlinkGoogle: delete identity: %w", err)
+		return telemetry.Service("google.UnlinkGoogle: delete identity", err)
 	}
 	if rows == 0 {
 		// Lost a race — another request deleted the row first.
@@ -410,13 +412,13 @@ func (s *Service) UnlinkGoogle(ctx context.Context, userID [16]byte, ipAddress, 
 
 	// 5. Write audit log. WithoutCancel so a client disconnect cannot abort it (D-17).
 	if err := s.store.InsertAuditLogTx(context.WithoutCancel(ctx), OAuthAuditInput{
-		UserID:    userID,
-		Event:     audit.EventOAuthUnlinked,
-		IPAddress: ipAddress,
-		UserAgent: userAgent,
-		Metadata:  map[string]any{"provider": "google"},
+	UserID:    userID,
+	Event:     audit.EventOAuthUnlinked,
+	IPAddress: ipAddress,
+	UserAgent: userAgent,
+	Metadata:  map[string]any{"provider": "google"},
 	}); err != nil {
-		return fmt.Errorf("google.UnlinkGoogle: insert audit: %w", err)
+	return telemetry.Service("UnlinkGoogle.insert_audit", err)
 	}
 
 	return nil

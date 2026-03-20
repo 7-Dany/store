@@ -3,7 +3,6 @@ package me
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"net/http"
 
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
@@ -45,7 +44,7 @@ func (h *Handler) Me(w http.ResponseWriter, r *http.Request) {
 			respond.Error(w, http.StatusNotFound, "not_found", "user not found")
 			return
 		}
-		slog.ErrorContext(r.Context(), "profile.Me: service error", "error", err)
+		log.Error(r.Context(), "Me: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -96,7 +95,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, ErrAvatarURLInvalid):
 			respond.Error(w, http.StatusUnprocessableEntity, "validation_error", "avatar_url must be a valid http or https URL")
 		default:
-			slog.ErrorContext(r.Context(), "profile.UpdateProfile: unexpected validation error", "error", err)
+			log.Error(r.Context(), "UpdateProfile: unexpected validation error", "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
@@ -104,7 +103,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 
 	uid, err := authshared.ParseUserID("profile.UpdateProfile", userID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "profile.UpdateProfile: parse user id", "error", err)
+		log.Error(r.Context(), "UpdateProfile: parse user id", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -116,7 +115,7 @@ func (h *Handler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 		IPAddress:   respond.ClientIP(r),
 		UserAgent:   r.UserAgent(),
 	}); err != nil {
-		slog.ErrorContext(r.Context(), "profile.UpdateProfile: service error", "error", err)
+		log.Error(r.Context(), "UpdateProfile: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -136,7 +135,7 @@ func (h *Handler) Identities(w http.ResponseWriter, r *http.Request) {
 
 	identities, err := h.svc.GetUserIdentities(r.Context(), userID)
 	if err != nil {
-		slog.ErrorContext(r.Context(), "profile.Identities: service error", "error", err)
+		log.Error(r.Context(), "Identities: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}

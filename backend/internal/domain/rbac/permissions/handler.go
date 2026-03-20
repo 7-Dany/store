@@ -2,7 +2,6 @@ package permissions
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 
 	"github.com/7-Dany/store/backend/internal/platform/respond"
@@ -29,7 +28,7 @@ func NewHandler(svc Servicer) *Handler {
 func (h *Handler) ListPermissions(w http.ResponseWriter, r *http.Request) {
 	perms, err := h.svc.ListPermissions(r.Context())
 	if err != nil {
-		slog.ErrorContext(r.Context(), "permissions.ListPermissions: service error", "error", err)
+		log.Error(r.Context(), "ListPermissions: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -40,7 +39,7 @@ func (h *Handler) ListPermissions(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) ListPermissionGroups(w http.ResponseWriter, r *http.Request) {
 	groups, err := h.svc.ListPermissionGroups(r.Context())
 	if err != nil {
-		slog.ErrorContext(r.Context(), "permissions.ListPermissionGroups: service error", "error", err)
+		log.Error(r.Context(), "ListPermissionGroups: service error", "error", err)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}

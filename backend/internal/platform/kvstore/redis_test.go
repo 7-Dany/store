@@ -76,7 +76,7 @@ func TestRedisStore_NewRedisStore_InvalidURL_Integration(t *testing.T) {
 	t.Parallel()
 	_, err := kvstore.NewRedisStore("not-a-valid-redis-url")
 	require.Error(t, err)
-	require.ErrorContains(t, err, "parse redis url")
+	require.ErrorContains(t, err, "kvstore.NewRedisStore.parse_url")
 }
 
 // TestRedisStore_NewRedisStore_UnreachableHost_Integration verifies that a dial
@@ -86,7 +86,7 @@ func TestRedisStore_NewRedisStore_UnreachableHost_Integration(t *testing.T) {
 	t.Parallel()
 	_, err := kvstore.NewRedisStore("redis://127.0.0.1:19999/0")
 	require.Error(t, err)
-	require.ErrorContains(t, err, "connect to redis")
+	require.ErrorContains(t, err, "kvstore.NewRedisStore.connect")
 }
 
 // ── Get / Set ─────────────────────────────────────────────────────────────────
@@ -725,7 +725,7 @@ func TestRedisStore_NewRedisStore_IncrScriptLoadFails_Integration(t *testing.T) 
 	addr := fakeFlakyRedisAddr(t, "fail_incr")
 	_, err := kvstore.NewRedisStore(addr)
 	require.Error(t, err)
-	require.ErrorContains(t, err, "load backoff increment script")
+	require.ErrorContains(t, err, "kvstore.NewRedisStore.load_increment_script")
 }
 
 // TestRedisStore_NewRedisStore_AllowScriptLoadFails_Integration verifies that a
@@ -736,7 +736,7 @@ func TestRedisStore_NewRedisStore_AllowScriptLoadFails_Integration(t *testing.T)
 	addr := fakeFlakyRedisAddr(t, "fail_allow")
 	_, err := kvstore.NewRedisStore(addr)
 	require.Error(t, err)
-	require.ErrorContains(t, err, "load backoff allow script")
+	require.ErrorContains(t, err, "kvstore.NewRedisStore.load_allow_script")
 }
 
 // ── AtomicBucketAllow clamping ────────────────────────────────────────────────

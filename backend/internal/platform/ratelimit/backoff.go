@@ -3,7 +3,6 @@ package ratelimit
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -104,7 +103,7 @@ func (l *BackoffLimiter) RecordFailure(ctx context.Context, key string) time.Dur
 		if err == nil {
 			return time.Until(unlocksAt)
 		}
-		slog.WarnContext(ctx, "ratelimit: backoff atomic increment error, falling back to local path",
+		log.Warn(ctx, "backoff atomic increment error, falling back to local path",
 			"key", storeKey, "error", err)
 	}
 
@@ -178,7 +177,7 @@ func (l *BackoffLimiter) Allow(ctx context.Context, key string) (bool, time.Dura
 		// here) — the fallback is fail-open. Monitor for sustained WarnContext
 		// bursts. Consider a circuit-breaker that blocks all requests during
 		// prolonged Redis outages rather than allowing them.
-		slog.WarnContext(ctx, "ratelimit: backoff atomic allow error, falling back to local path",
+		log.Warn(ctx, "backoff atomic allow error, falling back to local path",
 			"key", storeKey, "error", err)
 	}
 

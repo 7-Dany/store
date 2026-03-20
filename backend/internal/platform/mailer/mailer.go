@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"html/template"
 	"io"
-	"log/slog"
 	"mime/quotedprintable"
 	"net"
 	"net/mail"
@@ -19,7 +18,10 @@ import (
 	"github.com/google/uuid"
 
 	mailertemplates "github.com/7-Dany/store/backend/internal/platform/mailer/templates"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
+
+var log = telemetry.New("mailer")
 
 // ErrSendFailed is a sentinel error returned by test doubles.
 var ErrSendFailed = fmt.Errorf("mailer: send failed")
@@ -106,7 +108,7 @@ func NewWithAuth(cfg Config, auth smtp.Auth) (*SMTPMailer, error) {
 		return nil, fmt.Errorf("mailer: OTPValidMinutes must be between 1 and 30 (or 0 to use the default of 15), got %d", cfg.OTPValidMinutes)
 	}
 	if strings.TrimSpace(cfg.From) == "" {
-		return nil, fmt.Errorf("mailer: cfg.From must not be empty")
+		return nil, fmt.Errorf("mailer: cfg.From must not be empty") //nolint:goerr113
 	}
 	if _, err := mail.ParseAddress(cfg.From); err != nil {
 		return nil, fmt.Errorf("mailer: cfg.From %q is not a valid RFC 5322 address: %w", cfg.From, err)
@@ -174,16 +176,16 @@ func (m *SMTPMailer) sendOTPEmail(ctx context.Context, toEmail, code, key string
 		ValidMins: m.cfg.OTPValidMinutes,
 		Year:      time.Now().Year(),
 	}); err != nil {
-		return fmt.Errorf("mailer: render template: %w", err)
+		return telemetry.Mailer("sendOTPEmail.render_template", err)
 	}
 
 	msg, err := buildMessage(m.cfg.Host, m.cfg.From, toEmail, subject, buf.String())
 	if err != nil {
-		return fmt.Errorf("mailer: build message: %w", err)
+		return telemetry.Mailer("sendOTPEmail.build_message", err)
 	}
 
 	addr := fmt.Sprintf("%s:%d", m.cfg.Host, m.cfg.Port)
-	slog.DebugContext(ctx, "mailer: dialing SMTP",
+	log.Debug(ctx, "dialing SMTP",
 		"addr", addr,
 		"from", m.cfg.From,
 		"to", emailToken(toEmail),
@@ -191,15 +193,15 @@ func (m *SMTPMailer) sendOTPEmail(ctx context.Context, toEmail, code, key string
 		"template", key,
 	)
 	if err := sendWithContext(ctx, addr, m.auth, m.cfg.From, []string{toEmail}, msg); err != nil {
-		slog.ErrorContext(ctx, "mailer: SMTP send failed",
+		log.Error(ctx, "SMTP send failed",
 			"addr", addr,
 			"to", emailToken(toEmail),
 			"template", key,
 			"error", err,
 		)
-		return fmt.Errorf("mailer: smtp send: %w", err)
+		return telemetry.Mailer("sendOTPEmail.smtp_send", err)
 	}
-	slog.DebugContext(ctx, "mailer: SMTP send succeeded", "to", emailToken(toEmail), "template", key)
+	log.Debug(ctx, "SMTP send succeeded", "to", emailToken(toEmail), "template", key)
 	return nil
 }
 
@@ -242,12 +244,12 @@ func sendWithContext(ctx context.Context, addr string, a smtp.Auth, from string,
 
 	if ok, _ := c.Extension("STARTTLS"); ok {
 		if err := c.StartTLS(&tls.Config{ServerName: host}); err != nil {
-			return fmt.Errorf("mailer.sendWithContext: STARTTLS: %w", err)
+			return telemetry.Mailer("sendWithContext.starttls", err)
 		}
 	}
 	if a != nil {
 		if err := c.Auth(a); err != nil {
-			return fmt.Errorf("mailer.sendWithContext: smtp auth: %w", err)
+			return telemetry.Mailer("sendWithContext.smtp_auth", err)
 		}
 	}
 	if err := c.Mail(from); err != nil {
@@ -292,7 +294,7 @@ func sanitiseHeader(s string) string {
 func buildMessage(host, from, to, subject, htmlBody string) ([]byte, error) {
 	msgID, err := uuidNewRandom()
 	if err != nil {
-		return nil, fmt.Errorf("mailer.buildMessage: generate message-id: %w", err)
+		return nil, telemetry.Mailer("buildMessage.generate_message_id", err)
 	}
 
 	var buf bytes.Buffer
@@ -308,10 +310,10 @@ func buildMessage(host, from, to, subject, htmlBody string) ([]byte, error) {
 
 	qpw := newBodyWriter(&buf)
 	if _, err := qpw.Write([]byte(htmlBody)); err != nil {
-		return nil, fmt.Errorf("mailer.buildMessage: qp encode body: %w", err)
+		return nil, telemetry.Mailer("buildMessage.qp_encode_body", err)
 	}
 	if err := qpw.Close(); err != nil {
-		return nil, fmt.Errorf("mailer.buildMessage: qp close: %w", err)
+		return nil, telemetry.Mailer("buildMessage.qp_close", err)
 	}
 	return buf.Bytes(), nil
 }
@@ -336,7 +338,7 @@ func sendOTP(
 	// request (unknown email / already-verified / cooldown path). Return
 	// immediately without sending mail so callers don't need their own guard.
 	if rawCode == "" {
-		slog.DebugContext(ctx, logPrefix+": sendOTP suppressed — empty rawCode (anti-enumeration)")
+		log.Debug(ctx, logPrefix+": sendOTP suppressed — empty rawCode (anti-enumeration)")
 		return nil
 	}
 
@@ -357,7 +359,7 @@ func sendOTP(
 			return nil
 		} else {
 			asyncCancel()
-			slog.WarnContext(ctx, logPrefix+": queue enqueue failed, falling back to sync delivery",
+			log.Warn(ctx, logPrefix+": queue enqueue failed, falling back to sync delivery",
 				"error", err, "email_token", emailToken(email))
 		}
 	}
@@ -367,7 +369,7 @@ func sendOTP(
 	defer cancel()
 
 	if err := deliver(syncCtx, email, rawCode); err != nil {
-		slog.ErrorContext(ctx, logPrefix+": sync mail delivery failed", "error", err, "email_token", emailToken(email))
+		log.Error(ctx, logPrefix+": sync mail delivery failed", "error", err, "email_token", emailToken(email))
 		return err
 	}
 	return nil

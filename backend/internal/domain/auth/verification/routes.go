@@ -49,7 +49,7 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 		Send:    deps.Mailer.Send(mailertemplates.VerificationKey),
 		Queue:   deps.MailQueue,
 		Timeout: deps.MailDeliveryTimeout,
-	})
+	}, deps.Metrics)
 
 	ratelimit.RouteWithIP(r, http.MethodPost, "/verification", h.VerifyEmail, ipLimiter)
 	ratelimit.RouteWithIP(r, http.MethodPost, "/verification/resend", h.ResendVerification, resendLimiter)

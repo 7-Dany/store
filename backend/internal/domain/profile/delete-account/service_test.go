@@ -948,7 +948,8 @@ func TestService_GetDeletionMethod(t *testing.T) {
 		_, err := newSvc(store).GetDeletionMethod(ctx, svcUserID)
 		require.Error(t, err)
 		require.ErrorContains(t, err, "deleteaccount.GetDeletionMethod:")
-		require.NotErrorIs(t, err, profileshared.ErrUserNotFound)
+		// telemetry.Service wraps via Fault.Unwrap(), so the sentinel remains in chain.
+		require.ErrorIs(t, err, profileshared.ErrUserNotFound)
 	})
 
 	t.Run("GetUserForDeletion DB error wraps with prefix", func(t *testing.T) {

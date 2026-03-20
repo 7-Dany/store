@@ -3,7 +3,6 @@ package deleteaccount
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strconv"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/db"
 	authshared "github.com/7-Dany/store/backend/internal/domain/auth/shared"
 	profileshared "github.com/7-Dany/store/backend/internal/domain/profile/shared"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // Storer is the subset of persistence methods the Service requires.
@@ -61,6 +61,12 @@ type Storer interface {
 	CancelDeletionTx(ctx context.Context, in CancelDeletionInput) error
 }
 
+var log = telemetry.New("delete-account")
+
+// errNoEmail is returned when an email-only operation is reached for a user
+// that has no email address — an internal routing invariant violation.
+var errNoEmail = errors.New("user has no email (internal routing error)")
+
 // Service is the business-logic layer for DELETE /me and POST /me/cancel-deletion.
 type Service struct {
 	store            Storer
@@ -97,9 +103,9 @@ func (s *Service) ResolveUserForDeletion(ctx context.Context, userID string) (De
 	user, err := s.store.GetUserForDeletion(ctx, uid)
 	if err != nil {
 		if errors.Is(err, profileshared.ErrUserNotFound) {
-			return DeletionUser{}, UserAuthMethods{}, fmt.Errorf("deleteaccount.ResolveUserForDeletion: user not found for authenticated JWT: %w", err)
+			return DeletionUser{}, UserAuthMethods{}, telemetry.Service("deleteaccount.ResolveUserForDeletion: user not found", err)
 		}
-		return DeletionUser{}, UserAuthMethods{}, fmt.Errorf("deleteaccount.ResolveUserForDeletion: get user: %w", err)
+		return DeletionUser{}, UserAuthMethods{}, telemetry.Service("deleteaccount.ResolveUserForDeletion: get user", err)
 	}
 
 	// 3. Guard: deletion already pending.
@@ -110,7 +116,7 @@ func (s *Service) ResolveUserForDeletion(ctx context.Context, userID string) (De
 	// 4. Fetch auth methods for dispatch.
 	authMethods, err := s.store.GetUserAuthMethods(ctx, uid)
 	if err != nil {
-		return DeletionUser{}, UserAuthMethods{}, fmt.Errorf("deleteaccount.ResolveUserForDeletion: get auth methods: %w", err)
+		return DeletionUser{}, UserAuthMethods{}, telemetry.Service("deleteaccount.ResolveUserForDeletion: get auth methods", err)
 	}
 
 	// 5. Return.
@@ -138,9 +144,9 @@ func (s *Service) DeleteWithPassword(ctx context.Context, in DeleteWithPasswordI
 	user, err := s.store.GetUserForDeletion(ctx, uid)
 	if err != nil {
 		if errors.Is(err, profileshared.ErrUserNotFound) {
-			return DeletionScheduled{}, fmt.Errorf("deleteaccount.DeleteWithPassword: user not found for authenticated JWT: %w", err)
+			return DeletionScheduled{}, telemetry.Service("deleteaccount.DeleteWithPassword: user not found", err)
 		}
-		return DeletionScheduled{}, fmt.Errorf("deleteaccount.DeleteWithPassword: get user: %w", err)
+		return DeletionScheduled{}, telemetry.Service("deleteaccount.DeleteWithPassword: get user", err)
 	}
 
 	// 3. Guard: deletion already pending.
@@ -167,9 +173,9 @@ func (s *Service) DeleteWithPassword(ctx context.Context, in DeleteWithPasswordI
 	})
 	if err != nil {
 		if errors.Is(err, profileshared.ErrUserNotFound) {
-			return DeletionScheduled{}, fmt.Errorf("deleteaccount.DeleteWithPassword: schedule deletion: user not found: %w", err)
+			return DeletionScheduled{}, telemetry.Service("deleteaccount.DeleteWithPassword: schedule deletion: user not found", err)
 		}
-		return DeletionScheduled{}, fmt.Errorf("deleteaccount.DeleteWithPassword: schedule deletion: %w", err)
+		return DeletionScheduled{}, telemetry.Service("deleteaccount.DeleteWithPassword: schedule deletion", err)
 	}
 
 	return result, nil
@@ -195,9 +201,9 @@ func (s *Service) InitiateEmailDeletion(ctx context.Context, in ScheduleDeletion
 	user, err := s.store.GetUserForDeletion(ctx, uid)
 	if err != nil {
 		if errors.Is(err, profileshared.ErrUserNotFound) {
-			return authshared.OTPIssuanceResult{}, fmt.Errorf("deleteaccount.InitiateEmailDeletion: user not found for authenticated JWT: %w", err)
+			return authshared.OTPIssuanceResult{}, telemetry.Service("InitiateEmailDeletion.user_not_found", err)
 		}
-		return authshared.OTPIssuanceResult{}, fmt.Errorf("deleteaccount.InitiateEmailDeletion: get user: %w", err)
+		return authshared.OTPIssuanceResult{}, telemetry.Service("InitiateEmailDeletion.get_user", err)
 	}
 
 	// 3. Guard: deletion already pending.
@@ -207,7 +213,7 @@ func (s *Service) InitiateEmailDeletion(ctx context.Context, in ScheduleDeletion
 
 	// 4. Guard: must have email (handler invariant).
 	if user.Email == nil {
-		return authshared.OTPIssuanceResult{}, fmt.Errorf("deleteaccount.InitiateEmailDeletion: user has no email (internal routing error)")
+		return authshared.OTPIssuanceResult{}, telemetry.Service("InitiateEmailDeletion.no_email", errNoEmail)
 	}
 
 	// 5. Issue OTP and write audit row.
@@ -219,7 +225,7 @@ func (s *Service) InitiateEmailDeletion(ctx context.Context, in ScheduleDeletion
 		UserAgent:  in.UserAgent,
 	})
 	if err != nil {
-		return authshared.OTPIssuanceResult{}, fmt.Errorf("deleteaccount.InitiateEmailDeletion: send OTP: %w", err)
+		return authshared.OTPIssuanceResult{}, telemetry.Service("deleteaccount.InitiateEmailDeletion: send otp", err)
 	}
 
 	// 6. Return issuance result for handler to enqueue email.
@@ -251,9 +257,9 @@ func (s *Service) ConfirmEmailDeletion(ctx context.Context, in ConfirmOTPDeletio
 	user, err := s.store.GetUserForDeletion(ctx, uid)
 	if err != nil {
 		if errors.Is(err, profileshared.ErrUserNotFound) {
-			return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmEmailDeletion: user not found for authenticated JWT: %w", err)
+			return DeletionScheduled{}, telemetry.Service("deleteaccount.ConfirmEmailDeletion: user not found", err)
 		}
-		return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmEmailDeletion: get user: %w", err)
+		return DeletionScheduled{}, telemetry.Service("deleteaccount.ConfirmEmailDeletion: get user", err)
 	}
 
 	// 3. Guard: deletion already pending.
@@ -272,7 +278,7 @@ func (s *Service) ConfirmEmailDeletion(ctx context.Context, in ConfirmOTPDeletio
 		if errors.Is(err, authshared.ErrTokenNotFound) {
 			return DeletionScheduled{}, authshared.ErrTokenNotFound
 		}
-		return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmEmailDeletion: get token: %w", err)
+		return DeletionScheduled{}, telemetry.Service("deleteaccount.ConfirmEmailDeletion: get token", err)
 	}
 
 	// 6. Validate the OTP (expiry, attempt budget, hash).
@@ -289,7 +295,7 @@ func (s *Service) ConfirmEmailDeletion(ctx context.Context, in ConfirmOTPDeletio
 				IPAddress:    in.IPAddress,
 				UserAgent:    in.UserAgent,
 			}); incErr != nil {
-				return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmEmailDeletion: increment attempts: %w", incErr)
+				return DeletionScheduled{}, telemetry.Service("deleteaccount.ConfirmEmailDeletion: increment attempts", incErr)
 			}
 			return DeletionScheduled{}, authshared.ErrInvalidCode
 		}
@@ -311,9 +317,9 @@ func (s *Service) ConfirmEmailDeletion(ctx context.Context, in ConfirmOTPDeletio
 			return DeletionScheduled{}, authshared.ErrTokenAlreadyUsed
 		}
 		if errors.Is(err, profileshared.ErrUserNotFound) {
-			return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmEmailDeletion: confirm deletion: user not found: %w", err)
+			return DeletionScheduled{}, telemetry.Service("deleteaccount.ConfirmEmailDeletion: confirm deletion: user not found", err)
 		}
-		return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmEmailDeletion: confirm deletion: %w", err)
+		return DeletionScheduled{}, telemetry.Service("deleteaccount.ConfirmEmailDeletion: confirm deletion", err)
 	}
 
 	return result, nil
@@ -346,9 +352,9 @@ func (s *Service) ConfirmTelegramDeletion(ctx context.Context, in ConfirmTelegra
 	user, err := s.store.GetUserForDeletion(ctx, uid)
 	if err != nil {
 		if errors.Is(err, profileshared.ErrUserNotFound) {
-			return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmTelegramDeletion: user not found for authenticated JWT: %w", err)
+			return DeletionScheduled{}, telemetry.Service("ConfirmTelegramDeletion.user_not_found", err)
 		}
-		return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmTelegramDeletion: get user: %w", err)
+		return DeletionScheduled{}, telemetry.Service("ConfirmTelegramDeletion.get_user", err)
 	}
 
 	// 3. Guard: deletion already pending.
@@ -380,7 +386,7 @@ func (s *Service) ConfirmTelegramDeletion(ctx context.Context, in ConfirmTelegra
 			// No telegram identity linked — treat as unauthorised.
 			return DeletionScheduled{}, authshared.ErrInvalidCredentials
 		}
-		return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmTelegramDeletion: get identity: %w", err)
+		return DeletionScheduled{}, telemetry.Service("ConfirmTelegramDeletion.get_identity", err)
 	}
 
 	// 8. Ownership check: provider_uid must match the Telegram payload id.
@@ -398,9 +404,9 @@ func (s *Service) ConfirmTelegramDeletion(ctx context.Context, in ConfirmTelegra
 	})
 	if err != nil {
 		if errors.Is(err, profileshared.ErrUserNotFound) {
-			return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmTelegramDeletion: schedule deletion: user not found: %w", err)
+			return DeletionScheduled{}, telemetry.Service("ConfirmTelegramDeletion.schedule_deletion_user_not_found", err)
 		}
-		return DeletionScheduled{}, fmt.Errorf("deleteaccount.ConfirmTelegramDeletion: schedule deletion: %w", err)
+		return DeletionScheduled{}, telemetry.Service("ConfirmTelegramDeletion.schedule_deletion", err)
 	}
 
 	return result, nil
@@ -426,7 +432,7 @@ func (s *Service) CancelDeletion(ctx context.Context, in CancelDeletionInput) er
 		if errors.Is(err, ErrNotPendingDeletion) {
 			return ErrNotPendingDeletion
 		}
-		return fmt.Errorf("deleteaccount.CancelDeletion: %w", err)
+		return telemetry.Service("deleteaccount.CancelDeletion: cancel deletion tx", err)
 	}
 
 	return nil
@@ -457,9 +463,9 @@ func (s *Service) GetDeletionMethod(ctx context.Context, userID string) (Deletio
 	user, err := s.store.GetUserForDeletion(ctx, uid)
 	if err != nil {
 		if errors.Is(err, profileshared.ErrUserNotFound) {
-			return DeletionMethodResult{}, fmt.Errorf("deleteaccount.GetDeletionMethod: user not found for authenticated JWT: %s", err)
+			return DeletionMethodResult{}, telemetry.Service("deleteaccount.GetDeletionMethod: user not found", err)
 		}
-		return DeletionMethodResult{}, fmt.Errorf("deleteaccount.GetDeletionMethod: get user: %w", err)
+		return DeletionMethodResult{}, telemetry.Service("deleteaccount.GetDeletionMethod: get user", err)
 	}
 
 	// 3. Guard: deletion already pending.
@@ -470,7 +476,7 @@ func (s *Service) GetDeletionMethod(ctx context.Context, userID string) (Deletio
 	// 4. Fetch auth methods.
 	authMethods, err := s.store.GetUserAuthMethods(ctx, uid)
 	if err != nil {
-		return DeletionMethodResult{}, fmt.Errorf("deleteaccount.GetDeletionMethod: get auth methods: %w", err)
+		return DeletionMethodResult{}, telemetry.Service("deleteaccount.GetDeletionMethod: get auth methods", err)
 	}
 
 	// 5. Derive method using the same priority as empty-body dispatch.

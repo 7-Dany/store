@@ -47,9 +47,8 @@ func newVerificationHandler(t *testing.T, svc verification.Servicer, mailerErr e
 		base = mailertest.NoopBase()
 	}
 	base.Timeout = 5 * time.Second
-	return verification.NewHandler(svc, &authsharedtest.NopBackoffChecker{}, base)
+	return verification.NewHandler(svc, &authsharedtest.NopBackoffChecker{}, base, authshared.NoopAuthRecorder{})
 }
-
 
 // ── VerifyEmail tests ─────────────────────────────────────────────────────────
 
@@ -235,7 +234,7 @@ type fakeBackoffChecker struct {
 	// allowResult controls whether Allow returns ok=true or ok=false.
 	allowResult bool
 	// remaining is the duration returned by Allow when allowResult is false.
-	remaining            time.Duration
+	remaining           time.Duration
 	RecordFailureCalled bool
 	ResetCalled         bool
 }
@@ -258,6 +257,7 @@ func TestHandler_VerifyEmail_BackoffGate_Returns429(t *testing.T) {
 		&authsharedtest.VerificationFakeServicer{},
 		fake,
 		mailertest.NoopBase(),
+		authshared.NoopAuthRecorder{},
 	)
 	w := httptest.NewRecorder()
 	h.VerifyEmail(w, newVerifyRequest(t, map[string]any{
@@ -287,7 +287,7 @@ func TestHandler_VerifyEmail_ErrInvalidCode_RecordsBackoffFailure(t *testing.T) 
 			return authshared.ErrInvalidCode
 		},
 	}
-	h := verification.NewHandler(svc, fake, mailertest.NoopBase())
+	h := verification.NewHandler(svc, fake, mailertest.NoopBase(), authshared.NoopAuthRecorder{})
 	w := httptest.NewRecorder()
 	h.VerifyEmail(w, newVerifyRequest(t, map[string]any{
 		"email": "alice@example.com",
@@ -305,7 +305,7 @@ func TestHandler_VerifyEmail_ErrTooManyAttempts_RecordsBackoffFailure(t *testing
 			return authshared.ErrTooManyAttempts
 		},
 	}
-	h := verification.NewHandler(svc, fake, mailertest.NoopBase())
+	h := verification.NewHandler(svc, fake, mailertest.NoopBase(), authshared.NoopAuthRecorder{})
 	w := httptest.NewRecorder()
 	h.VerifyEmail(w, newVerifyRequest(t, map[string]any{
 		"email": "alice@example.com",
@@ -322,6 +322,7 @@ func TestHandler_VerifyEmail_Success_ResetsBackoff(t *testing.T) {
 		&authsharedtest.VerificationFakeServicer{},
 		fake,
 		mailertest.NoopBase(),
+		authshared.NoopAuthRecorder{},
 	)
 	w := httptest.NewRecorder()
 	h.VerifyEmail(w, newVerifyRequest(t, map[string]any{
@@ -340,7 +341,7 @@ func TestHandler_VerifyEmail_ErrAlreadyVerified_ResetsBackoff(t *testing.T) {
 			return authshared.ErrAlreadyVerified
 		},
 	}
-	h := verification.NewHandler(svc, fake, mailertest.NoopBase())
+	h := verification.NewHandler(svc, fake, mailertest.NoopBase(), authshared.NoopAuthRecorder{})
 	w := httptest.NewRecorder()
 	h.VerifyEmail(w, newVerifyRequest(t, map[string]any{
 		"email": "alice@example.com",

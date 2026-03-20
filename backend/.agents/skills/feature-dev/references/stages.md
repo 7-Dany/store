@@ -42,8 +42,17 @@ complete test-case inventory.
 | `oauth/` | `oauth/shared/testutil` (package `oauthsharedtest`) |
 | `rbac/` | `rbac/shared/testutil` (package `rbacsharedtest`) |
 
-**Stage 0 must produce §7 (test case inventory).** See the derivation algorithm
-at the bottom of this file.
+**Stage 0 must produce §7 (test case inventory)** and **§8 (telemetry decisions)**.
+See the derivation algorithm at the bottom of this file and the telemetry gate
+summary in `references/conventions.md §Telemetry & Observability`.
+
+**For features that produce business events worth counting (Gate 3 = Yes),
+also read:**
+
+| File | Why |
+|---|---|
+| `internal/platform/telemetry/metrics.go` (field declarations only, head 80 lines) | Confirm existing Registry fields; avoid duplicate metric names |
+| `domain/{domain}/shared/recorder.go` (if exists) | Existing interface methods — append, never redefine |
 
 ---
 
@@ -89,6 +98,8 @@ at the bottom of this file.
 | `{feature}/models.go` | Required |
 | Domain testutil `fake_servicer.go` (see Stage 0 table) | Required — existing layout |
 | `0-design.md §5` (guard ordering) + `§7` (S-layer test cases) | Required |
+| `0-design.md §8` (telemetry decisions) | Required — confirms Gate 3 outcome and recorder interface |
+| `domain/{domain}/shared/recorder.go` | If Gate 3 = Yes — append new method(s) |
 | `shared/otp.go` | If OTP used |
 | `docs/rules/RULES.md §3.4, §3.6, §3.7` | Required |
 
@@ -197,7 +208,7 @@ Additionally verify against `0-design.md §5`:
   Flag any deviation — even "harmless" reorderings.
 - All `fmt.Errorf` uses `%w`, not `%v`.
 - No sentinel defined in the wrong package.
-- Default branch in every error switch logs via `slog.ErrorContext`.
+- Default branch in every error switch logs via `log.Error` (package-level `*telemetry.Logger`) — never `slog.ErrorContext` directly in domain handlers.
 - Every `go limiter.StartCleanup(ctx)` passes the application root `ctx`.
 
 For RBAC-gated routes also check:
@@ -260,6 +271,17 @@ Verify against `context.md` and `0-design.md §4` (new SQL queries / audit event
 - [ ] Forwarding method added to domain testutil `querier_proxy.go`
 - [ ] `Fail{MethodName} bool` field added to `QuerierProxy` struct
 - [ ] Zero-value stub added to `querier_proxy_test.go` `nopQuerier`
+
+**§S-4 Telemetry triad** — when `0-design.md §8` has Gate 3 = Yes:
+- [ ] New method declared in `domain/{domain}/shared/recorder.go`
+- [ ] Noop implementation updated in same file
+- [ ] New field registered in `internal/platform/telemetry/metrics.go` `NewRegistry()`
+- [ ] Hook method added to `internal/platform/telemetry/{domain}_hooks.go`
+- [ ] Local narrow `recorder` interface declared in `{feature}/service.go`
+- [ ] Recorder injected via `routes.go` (`deps.Metrics` — no factory needed)
+- [ ] Call site placed at the correct business event location
+- [ ] Label values come from a bounded constant set (never raw input)
+- [ ] If Gate 9 = Yes (frontend): `prometheus.ts` query + `SecuritySnapshot` field + `computeAnomalies()` / `deriveServices()` updated
 
 Finding format: same as Pass 1.
 
@@ -375,6 +397,8 @@ This stage has no code deliverable. It is a structured update checklist.
 - [ ] `docs/rules/{domain}.md` feature table is current
 - [ ] `context/{feature}/` folder deleted
 - [ ] No `context/{feature}/` path exists under the skill root
+- [ ] **Telemetry (if Gate 3 = Yes in §8):** `domain/{domain}/shared/recorder.go` updated; `telemetry/metrics.go` + `telemetry/{domain}_hooks.go` updated; `go build ./internal/platform/telemetry/...` passes
+- [ ] **Frontend (if Gate 9 = Yes in §8):** `prometheus.ts` queries + `SecuritySnapshot` type fields committed; `computeAnomalies()` / `deriveServices()` cases added; dashboard component updated
 
 ---
 

@@ -108,6 +108,7 @@ func newHandler(svc google.Servicer, kv kvstore.Store) *google.Handler {
 		svc, kv, testJWTConfig(),
 		testClientID, testRedirectURI, testSuccessURL, testErrorURL,
 		false, // secureCookies=false for tests
+		oauthsharedtest.NoopOAuthRecorder{},
 	)
 }
 

@@ -24,6 +24,10 @@ type BitcoinRecorder interface {
 	SetZMQLastMessageAge(seconds float64)
 	// OnHandlerPanic increments the handler panic counter for the named handler.
 	OnHandlerPanic(handler string)
+	// OnHandlerTimeout increments the handler timeout counter for the named handler.
+	// Called when a handler's context deadline expires before the handler returns.
+	// The goroutine continues running until it honours ctx.Done().
+	OnHandlerTimeout(handler string)
 	// SetHandlerGoroutines records the current number of in-flight handler goroutines.
 	SetHandlerGoroutines(count int)
 	// OnMessageDropped increments the dropped ZMQ messages counter for the given reason.
@@ -73,26 +77,27 @@ type BitcoinRecorder interface {
 // Use in Bitcoin domain unit tests that do not need metric assertions.
 type NoopBitcoinRecorder struct{}
 
-func (NoopBitcoinRecorder) SetZMQConnected(bool)         {}
-func (NoopBitcoinRecorder) SetRPCConnected(bool)         {}
-func (NoopBitcoinRecorder) SetZMQLastMessageAge(float64) {}
-func (NoopBitcoinRecorder) OnHandlerPanic(string)        {}
-func (NoopBitcoinRecorder) SetHandlerGoroutines(int)     {}
-func (NoopBitcoinRecorder) OnMessageDropped(string)      {}
-func (NoopBitcoinRecorder) SetSSEConnections(int)        {}
-func (NoopBitcoinRecorder) OnTokenConsumeFailed(string)  {}
-func (NoopBitcoinRecorder) OnInvoiceDetected(float64)    {}
+func (NoopBitcoinRecorder) SetZMQConnected(bool)            {}
+func (NoopBitcoinRecorder) SetRPCConnected(bool)            {}
+func (NoopBitcoinRecorder) SetZMQLastMessageAge(float64)    {}
+func (NoopBitcoinRecorder) OnHandlerPanic(string)           {}
+func (NoopBitcoinRecorder) OnHandlerTimeout(string)         {}
+func (NoopBitcoinRecorder) SetHandlerGoroutines(int)        {}
+func (NoopBitcoinRecorder) OnMessageDropped(string)         {}
+func (NoopBitcoinRecorder) SetSSEConnections(int)           {}
+func (NoopBitcoinRecorder) OnTokenConsumeFailed(string)     {}
+func (NoopBitcoinRecorder) OnInvoiceDetected(float64)       {}
 func (NoopBitcoinRecorder) SetInvoiceCount(string, float64) {}
-func (NoopBitcoinRecorder) SetRateFeedStaleness(float64) {}
-func (NoopBitcoinRecorder) SetReconciliationLag(float64) {}
-func (NoopBitcoinRecorder) SetBalanceDrift(int64)        {}
-func (NoopBitcoinRecorder) SetReconciliationHold(bool)   {}
-func (NoopBitcoinRecorder) OnReorgDetected()             {}
-func (NoopBitcoinRecorder) OnPayoutFailed()              {}
-func (NoopBitcoinRecorder) SetFeeEstimate(int, float64)  {}
-func (NoopBitcoinRecorder) OnSweepStuck()                {}
-func (NoopBitcoinRecorder) SetWalletBackupAge(float64)   {}
-func (NoopBitcoinRecorder) SetUTXOCount(float64)         {}
+func (NoopBitcoinRecorder) SetRateFeedStaleness(float64)    {}
+func (NoopBitcoinRecorder) SetReconciliationLag(float64)    {}
+func (NoopBitcoinRecorder) SetBalanceDrift(int64)           {}
+func (NoopBitcoinRecorder) SetReconciliationHold(bool)      {}
+func (NoopBitcoinRecorder) OnReorgDetected()                {}
+func (NoopBitcoinRecorder) OnPayoutFailed()                 {}
+func (NoopBitcoinRecorder) SetFeeEstimate(int, float64)     {}
+func (NoopBitcoinRecorder) OnSweepStuck()                   {}
+func (NoopBitcoinRecorder) SetWalletBackupAge(float64)      {}
+func (NoopBitcoinRecorder) SetUTXOCount(float64)            {}
 
 // Compile-time assertion: NoopBitcoinRecorder must satisfy BitcoinRecorder.
 // NoopBitcoinRecorder is a struct, not a pointer, so use a zero value — not nil.

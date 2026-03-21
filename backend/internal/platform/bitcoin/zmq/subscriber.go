@@ -13,17 +13,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/go-zeromq/zmq4"
-
 	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-// DefaultSubscriberHWM is the high-water mark set on both ZMQ SUB sockets
-// (zmq4.WithHWM) and the sizing basis for the internal event channels
-// (buffered at HWM×2). Raising this value increases memory use on both the
-// Bitcoin Core side (send buffer) and here (receive buffer + channel).
+// DefaultSubscriberHWM is the sizing basis for the internal event channels
+// (buffered at HWM×2 = 10,000 slots). Overflow protection is provided
+// entirely by the non-blocking channel select in onEvent — messages that
+// arrive when the channel is full are dropped and metered.
 const DefaultSubscriberHWM = 5000
 
 const (
@@ -50,7 +48,7 @@ const (
 	shutdownTimeout = 30 * time.Second
 
 	// reconnectBase and reconnectCeiling bound the exponential backoff used
-	// when a ZMQ socket dial or recv fails.
+	// when a connection attempt or receive fails.
 	reconnectBase    = 1 * time.Second
 	reconnectCeiling = 60 * time.Second
 )
@@ -83,6 +81,9 @@ type ZMQRecorder interface {
 	OnMessageDropped(reason string)
 }
 
+// compile-time check that *telemetry.Registry satisfies ZMQRecorder.
+var _ ZMQRecorder = (*telemetry.Registry)(nil)
+
 // noopRecorder discards all metric calls. Substituted when New() receives nil.
 type noopRecorder struct{}
 
@@ -114,14 +115,14 @@ type readerState struct {
 	lastSeqSeen bool   // false until the first message in this session
 }
 
-// readerConfig parameterises a single ZMQ reader loop. All four callbacks are
-// required and must not be nil.
+// readerConfig parameterises a single reader loop. All callbacks are required
+// and must not be nil.
 type readerConfig struct {
-	endpoint   string                          // ZMQ TCP endpoint, e.g. "tcp://127.0.0.1:28332"
-	topic      []byte                          // ZMQ subscription topic, e.g. []byte("hashblock")
-	onDialOK   func()                          // called after each successful Dial + Subscribe
-	onDialFail func()                          // called after each failed Dial or Subscribe
-	onRecvErr  func()                          // called after each failed Recv
+	endpoint   string                          // TCP endpoint, e.g. "tcp://127.0.0.1:28332"
+	topic      []byte                          // subscription topic, e.g. []byte("hashblock")
+	onDialOK   func()                          // called after each successful connect + subscribe
+	onDialFail func()                          // called after each failed connect
+	onRecvErr  func()                          // called after each failed receive
 	onEvent    func(hash [32]byte, seq uint32) // called for each valid frame
 }
 
@@ -132,23 +133,62 @@ type readerConfig struct {
 // This keeps domain packages decoupled from the ZMQ implementation and makes
 // them trivially testable with a mock.
 type Subscriber interface {
+	// RegisterBlockHandler registers h to be called on every new block event.
+	// Must be called before Run(). Panics if h is nil or if Run() has already started.
 	RegisterBlockHandler(func(context.Context, BlockEvent))
+
+	// RegisterDisplayTxHandler registers h for mempool transactions on the SSE
+	// display path. Must be called before Run(). Panics if h is nil or if Run() has already started.
 	RegisterDisplayTxHandler(func(context.Context, TxEvent))
+
+	// RegisterSettlementTxHandler registers h for mempool transactions on the
+	// settlement path. Must be called before Run(). Panics if h is nil or if Run() has already started.
 	RegisterSettlementTxHandler(func(context.Context, TxEvent))
+
+	// RegisterRecoveryHandler registers h to be called after each reconnect or
+	// sequence gap, before event delivery resumes. Must be called before Run().
+	// Panics if h is nil or if Run() has already started.
 	RegisterRecoveryHandler(func(context.Context, RecoveryEvent))
+
+	// Run blocks until ctx is cancelled, returning ctx.Err() on normal shutdown.
+	// Run never returns on transient errors — it reconnects with exponential backoff
+	// and never surfaces transient failures to the caller. Panics if called more than once.
+	//
+	// Run in a goroutine and cancel the context to initiate shutdown:
+	//
+	//	go func() {
+	//	    if err := sub.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	//	        slog.Error("zmq: subscriber exit", "error", err)
+	//	        appCancelFn()
+	//	    }
+	//	}()
+	//	defer sub.Shutdown()
 	Run(context.Context) error
+
+	// Shutdown drains all in-flight handler goroutines, then returns. It blocks
+	// for up to 30 s. Must be called after cancelling the ctx passed to Run().
 	Shutdown()
+
+	// IsConnected reports whether the subscriber appears healthy based on local
+	// liveness signals. Returns false if either dial has failed or the last block
+	// is older than the configured idle timeout.
 	IsConnected() bool
+
+	// LastSeenHash returns the most recently received block hash in RPC-compatible
+	// big-endian hex encoding. Returns "" before the first block is received.
 	LastSeenHash() string
 }
 
-// subscriber is the concrete ZMQ implementation of the Subscriber interface.
-// It manages two ZMQ SUB sockets — one for hashblock events, one for hashtx
-// events — decodes raw frames into typed Go events, and fans them out to
+// subscriber is the concrete ZMTP implementation of the Subscriber interface.
+// It manages two ZMTP 3.1 SUB connections — one for hashblock events, one for
+// hashtx events — decodes raw frames into typed Go events, and fans them out to
 // registered handlers via a fixed worker pool.
 //
+// Zero external dependencies: this package owns its own ZMTP implementation
+// in conn.go. No third-party ZMQ library is required.
+//
 // Zero domain imports: this is a pure platform concern. Domain packages register
-// handlers via the Subscriber interface and never interact with ZMQ frames.
+// handlers via the Subscriber interface and never interact with raw frames.
 //
 // Typical usage:
 //
@@ -177,7 +217,7 @@ type subscriber struct {
 	settleTxHandlers  []func(context.Context, TxEvent)
 	recoveryHandlers  []func(context.Context, RecoveryEvent)
 
-	// Internal delivery channels between ZMQ reader goroutines and the worker pool.
+	// Internal delivery channels between reader goroutines and the worker pool.
 	blockCh chan BlockEvent
 	txCh    chan TxEvent
 
@@ -188,7 +228,7 @@ type subscriber struct {
 	live atomic.Pointer[liveness]
 
 	// Dial health — each reader maintains its own flag so IsConnected() can
-	// distinguish a healthy block socket from a healthy tx socket.
+	// distinguish a healthy block connection from a healthy tx connection.
 	blockDialOK atomic.Bool
 	txDialOK    atomic.Bool
 
@@ -214,16 +254,22 @@ type subscriber struct {
 	// still tracked by wg and must honour ctx.Done() to release the goroutine.
 	handlerTimeout time.Duration
 
+	// shutdownDrainTimeout is the maximum time Shutdown() waits before logging
+	// an error and returning. Defaults to shutdownTimeout (30 s). Overridable
+	// in tests via direct field assignment before the first Shutdown() call.
+	shutdownDrainTimeout time.Duration
+
 	// recorder receives all observability calls. Never nil after construction.
 	recorder ZMQRecorder
 }
 
-// New constructs a Subscriber backed by two ZMQ SUB sockets and returns the
-// Subscriber interface — callers depend on the interface, not the concrete type.
+// New constructs a Subscriber backed by two ZMTP 3.1 SUB connections and
+// returns the Subscriber interface — callers depend on the interface, not
+// the concrete type.
 //
 // Panics if either endpoint is not a loopback TCP address — the ZMQ port must
 // never be reachable from outside the machine running Bitcoin Core. IPC
-// endpoints are not supported on Windows; use tcp://127.0.0.1:<port>.
+// endpoints are not supported; use tcp://127.0.0.1:<port>.
 //
 // Returns an error if idleTimeout is outside [30s, 3600s]. Zero is not
 // accepted — server.go must translate BTC_ZMQ_IDLE_TIMEOUT=0 to a
@@ -257,13 +303,14 @@ func New(blockEndpoint, txEndpoint string, idleTimeout time.Duration, recorder Z
 	}
 
 	return &subscriber{
-		blockEndpoint:  blockEndpoint,
-		txEndpoint:     txEndpoint,
-		blockCh:        make(chan BlockEvent, defaultChannelDepth),
-		txCh:           make(chan TxEvent, defaultChannelDepth),
-		idleTimeout:    idleTimeout,
-		handlerTimeout: defaultHandlerTimeout,
-		recorder:       recorder,
+		blockEndpoint:        blockEndpoint,
+		txEndpoint:           txEndpoint,
+		blockCh:              make(chan BlockEvent, defaultChannelDepth),
+		txCh:                 make(chan TxEvent, defaultChannelDepth),
+		idleTimeout:          idleTimeout,
+		handlerTimeout:       defaultHandlerTimeout,
+		shutdownDrainTimeout: shutdownTimeout,
+		recorder:             recorder,
 	}, nil
 }
 
@@ -319,15 +366,25 @@ func (s *subscriber) mustRegister(method string, nonNil bool) {
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 // Run blocks until ctx is cancelled, returning ctx.Err() on normal shutdown.
-// Run never returns on transient ZMQ errors — it reconnects with exponential
-// backoff (1s initial, 60s ceiling, ±50% jitter) and never surfaces transient
-// failures to the caller.
+// Run never returns on transient errors — it reconnects with exponential
+// backoff (1 s initial, 60 s ceiling, ±50% jitter) and never surfaces
+// transient failures to the caller.
 //
 // Run starts defaultWorkerCount block workers and defaultWorkerCount tx workers
-// before entering the ZMQ reader loops. Workers are drained by Shutdown() after
+// before entering the reader loops. Workers are drained by Shutdown() after
 // ctx is cancelled.
 //
 // Run panics if called more than once.
+//
+// Launch in a goroutine and cancel the context to initiate shutdown:
+//
+//	go func() {
+//	    if err := sub.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+//	        slog.Error("zmq: subscriber exit", "error", err)
+//	        appCancelFn()
+//	    }
+//	}()
+//	defer sub.Shutdown()
 func (s *subscriber) Run(ctx context.Context) error {
 	if !s.started.CompareAndSwap(false, true) {
 		panic("zmq: Run: must not be called more than once")
@@ -349,7 +406,7 @@ func (s *subscriber) Run(ctx context.Context) error {
 }
 
 // Shutdown drains all in-flight handler goroutines, then returns. It blocks
-// until every goroutine calls wg.Done() or shutdownTimeout (30 s) elapses,
+// until every goroutine calls wg.Done() or shutdownDrainTimeout elapses,
 // whichever comes first. On timeout it logs an error and returns — it never
 // blocks indefinitely.
 //
@@ -364,7 +421,6 @@ func (s *subscriber) Run(ctx context.Context) error {
 func (s *subscriber) Shutdown() {
 	// context.Background() is intentional: the run ctx has already been
 	// cancelled by this point, so we use a background context for shutdown logs.
-	// Trace context is not available here.
 	bg := context.Background()
 
 	drained := make(chan struct{})
@@ -373,7 +429,7 @@ func (s *subscriber) Shutdown() {
 		close(drained)
 	}()
 
-	t := time.NewTimer(shutdownTimeout)
+	t := time.NewTimer(s.shutdownDrainTimeout)
 	defer t.Stop()
 
 	select {
@@ -381,16 +437,16 @@ func (s *subscriber) Shutdown() {
 		logger.Info(bg, "zmq: subscriber drained — all handler goroutines finished")
 	case <-t.C:
 		logger.Error(bg, "zmq: subscriber shutdown timed out — some goroutines may still be running",
-			"timeout", shutdownTimeout)
+			"timeout", s.shutdownDrainTimeout)
 	}
 }
 
 // IsConnected reports whether the subscriber appears healthy based on local
 // liveness signals. It does NOT issue any network call.
 //
-// Returns false when either socket's last dial attempt failed, or when a block
-// was received but more than idleTimeout ago. Returns true on fresh startup
-// (both sockets dialled successfully, no block received yet) — this prevents
+// Returns false when either connection's last dial attempt failed, or when a
+// block was received but more than idleTimeout ago. Returns true on fresh
+// startup (both connections established, no block received yet) — this prevents
 // spurious "disconnected" alerts immediately after deployment.
 func (s *subscriber) IsConnected() bool {
 	if !s.blockDialOK.Load() || !s.txDialOK.Load() {
@@ -398,7 +454,7 @@ func (s *subscriber) IsConnected() bool {
 	}
 	p := s.live.Load()
 	if p == nil {
-		// Dial succeeded but no block received yet — treat as connected.
+		// Both connections up but no block received yet — treat as connected.
 		return true
 	}
 	return time.Since(p.at) < s.idleTimeout
@@ -438,8 +494,9 @@ func (s *subscriber) startWorkers(ctx context.Context) {
 		})
 	}
 
-	// Tx workers: display and settlement handlers share a single goroutine per worker slot.
-	// A stall or panic in a settlement handler cannot affect SSE display delivery, and vice versa, because each type is
+	// Tx workers: display and settlement handlers share a single goroutine per
+	// worker slot (ADR-BTC-01). A stall or panic in a settlement handler cannot
+	// affect SSE display delivery, and vice versa, because each type is
 	// invoked separately via invokeHandler's per-call goroutine.
 	for range defaultWorkerCount {
 		s.wg.Go(func() {
@@ -462,7 +519,7 @@ func (s *subscriber) startWorkers(ctx context.Context) {
 
 // ── Reader configs ────────────────────────────────────────────────────────────
 
-// blockReaderConfig returns the readerConfig for the hashblock ZMQ socket.
+// blockReaderConfig returns the readerConfig for the hashblock endpoint.
 // The block reader is the primary liveness source: it updates the live atomic
 // and drives the SetZMQConnected gauge.
 func (s *subscriber) blockReaderConfig() readerConfig {
@@ -490,14 +547,14 @@ func (s *subscriber) blockReaderConfig() readerConfig {
 			case s.blockCh <- event:
 			default:
 				// Buffer full — drop and meter. The read loop must never block
-				// or it stalls all ZMQ delivery for this socket.
+				// or it stalls delivery for the entire block socket.
 				s.recorder.OnMessageDropped("hwm")
 			}
 		},
 	}
 }
 
-// txReaderConfig returns the readerConfig for the hashtx ZMQ socket.
+// txReaderConfig returns the readerConfig for the hashtx endpoint.
 // The tx reader does not drive the SetZMQConnected gauge — the block stream
 // is the authoritative liveness signal.
 func (s *subscriber) txReaderConfig() readerConfig {
@@ -518,14 +575,19 @@ func (s *subscriber) txReaderConfig() readerConfig {
 	}
 }
 
-// ── ZMQ reader loop ───────────────────────────────────────────────────────────
+// ── Reader loop ───────────────────────────────────────────────────────────────
 
-// runReader connects to a single ZMQ SUB socket described by cfg and reads
-// until ctx is cancelled, reconnecting with exponential backoff on any
-// transient error.
+// runReader connects to the endpoint described by cfg and reads until ctx is
+// cancelled, reconnecting with exponential backoff on any transient error.
 //
 // state persists across reconnects so sequence gap detection works correctly
 // after re-establishing the connection.
+//
+// Connection lifecycle per iteration:
+//  1. dialZMTP: TCP + ZMTP 3.1 NULL handshake + SUBSCRIBE — returns ready conn.
+//  2. Receive loop: call RecvMessage(ctx) → processFrame → onEvent until error.
+//  3. On ctx cancellation: close conn and return.
+//  4. On transient error: close conn, log, backoff, reconnect.
 func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *readerState) {
 	backoff := reconnectBase
 	everConnected := false
@@ -535,43 +597,15 @@ func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *rea
 			return
 		}
 
-		sockCtx, sockCancel := context.WithCancel(ctx)
-		sock := zmq4.NewSub(sockCtx, zmq4.WithDialerTimeout(5*time.Second))
-
-		if err := sock.Dial(cfg.endpoint); err != nil {
-			sock.Close()
-			sockCancel()
+		conn, err := dialZMTP(ctx, cfg.endpoint, cfg.topic)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
 			cfg.onDialFail()
-			logger.Warn(ctx, "zmq: socket dial failed — retrying",
+			logger.Warn(ctx, "zmq: connection failed — retrying",
 				"topic", string(cfg.topic), "endpoint", cfg.endpoint,
 				"backoff", backoff, "error", err)
-			if !sleepCtx(ctx, backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
-			continue
-		}
-
-		// Set the receive HWM before subscribing.
-		if err := sock.SetOption(zmq4.OptionHWM, DefaultSubscriberHWM); err != nil {
-			sock.Close()
-			sockCancel()
-			cfg.onDialFail()
-			logger.Warn(ctx, "zmq: socket SetOption(HWM) failed — retrying",
-				"topic", string(cfg.topic), "backoff", backoff, "error", err)
-			if !sleepCtx(ctx, backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
-			continue
-		}
-
-		if err := sock.SetOption(zmq4.OptionSubscribe, string(cfg.topic)); err != nil {
-			sock.Close()
-			sockCancel()
-			cfg.onDialFail()
-			logger.Warn(ctx, "zmq: socket subscribe failed — retrying",
-				"topic", string(cfg.topic), "backoff", backoff, "error", err)
 			if !sleepCtx(ctx, backoff) {
 				return
 			}
@@ -590,27 +624,11 @@ func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *rea
 		everConnected = true
 		backoff = reconnectBase // reset after a successful connection
 
-		for {
-			msg, err := sock.Recv()
-			if err != nil {
-				if ctx.Err() != nil {
-					sock.Close()
-					sockCancel()
-					return
-				}
-				cfg.onRecvErr()
-				logger.Warn(ctx, "zmq: socket recv error — reconnecting",
-					"topic", string(cfg.topic), "error", err)
-				break
-			}
-			if err := s.processFrame(ctx, msg, cfg.topic, state, cfg.onEvent); err != nil {
-				logger.Warn(ctx, "zmq: frame rejected",
-					"topic", string(cfg.topic), "error", err)
-			}
-		}
-
-		sock.Close()
-		sockCancel()
+		// receiveLoop runs the receive loop for one connection session.
+		// defer conn.Close() inside the closure ensures a single, authoritative
+		// close on every exit path — both ctx-cancel and transient receive error —
+		// eliminating the double-close that results from closing in two places.
+		s.receiveLoop(ctx, cfg, state, conn)
 
 		if ctx.Err() != nil {
 			return
@@ -622,47 +640,69 @@ func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *rea
 	}
 }
 
+// receiveLoop runs the blocking receive loop for one established connection,
+// closing conn on return regardless of exit reason. It is a helper for
+// runReader; callers must not reuse conn after receiveLoop returns.
+func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn) {
+	defer conn.Close()
+	for {
+		frames, err := conn.RecvMessage(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			cfg.onRecvErr()
+			logger.Warn(ctx, "zmq: receive error — reconnecting",
+				"topic", string(cfg.topic), "error", err)
+			return
+		}
+		if err := s.processFrame(ctx, frames, cfg.topic, state, cfg.onEvent); err != nil {
+			logger.Warn(ctx, "zmq: frame rejected",
+				"topic", string(cfg.topic), "error", err)
+		}
+	}
+}
+
 // ── Frame processing ──────────────────────────────────────────────────────────
 
-// processFrame decodes one raw ZMQ message, validates its frame structure,
+// processFrame decodes one raw multipart message, validates its frame structure,
 // detects sequence gaps, and calls onEvent with the decoded hash and sequence
 // number for the caller to dispatch to the appropriate channel.
 //
 // Messages whose topic frame does not match topic are silently dropped (nil
-// returned) — unexpected topics such as "rawtx" on the hashblock socket are
-// not errors.
+// returned) — unexpected topics on the wrong socket are not errors.
 //
 // state is per-session and persists across calls. The zero value is correct for
 // the first call after a (re)connect: lastSeqSeen=false prevents a false gap
 // on the very first message when there is no valid baseline sequence to compare.
 func (s *subscriber) processFrame(
 	ctx context.Context,
-	msg zmq4.Msg,
+	msg [][]byte,
 	topic []byte,
 	state *readerState,
 	onEvent func(hash [32]byte, seq uint32),
 ) error {
-	if len(msg.Frames) != 3 {
+	if len(msg) != 3 {
 		return telemetry.ZMQ("processFrame.validate",
-			fmt.Errorf("expected 3 frames, got %d", len(msg.Frames)))
+			fmt.Errorf("expected 3 frames, got %d", len(msg)))
 	}
 
-	// bytes.Equal avoids the string allocation that string(msg.Frames[0]) would
-	// cause on every message — important on the tx hot path at ~100 msg/s.
-	if !bytes.Equal(msg.Frames[0], topic) {
+	// bytes.Equal avoids the string allocation that string(msg[0]) would cause
+	// on every message — important on the tx hot path at ~100 msg/s.
+	if !bytes.Equal(msg[0], topic) {
 		return nil
 	}
 
-	if len(msg.Frames[1]) != 32 {
+	if len(msg[1]) != 32 {
 		return telemetry.ZMQ("processFrame.validate",
-			fmt.Errorf("expected 32-byte hash frame, got %d bytes", len(msg.Frames[1])))
+			fmt.Errorf("expected 32-byte hash frame, got %d bytes", len(msg[1])))
 	}
-	if len(msg.Frames[2]) != 4 {
+	if len(msg[2]) != 4 {
 		return telemetry.ZMQ("processFrame.validate",
-			fmt.Errorf("expected 4-byte sequence frame, got %d bytes", len(msg.Frames[2])))
+			fmt.Errorf("expected 4-byte sequence frame, got %d bytes", len(msg[2])))
 	}
 
-	seq := binary.LittleEndian.Uint32(msg.Frames[2])
+	seq := binary.LittleEndian.Uint32(msg[2])
 
 	// uint32 wrap-around (seq = 0 after MaxUint32) is handled correctly:
 	// state.lastSeq+1 also wraps to 0, so seq == state.lastSeq+1 and no gap
@@ -678,7 +718,7 @@ func (s *subscriber) processFrame(
 	state.lastSeqSeen = true
 
 	var hash [32]byte
-	copy(hash[:], msg.Frames[1])
+	copy(hash[:], msg[1])
 	onEvent(hash, seq)
 
 	return nil
@@ -694,7 +734,7 @@ func (s *subscriber) processFrame(
 //
 // Note: with N recovery handlers each timing out at handlerTimeout, this method
 // can block the reader goroutine for up to N×handlerTimeout in the worst case.
-// During this window the ZMQ socket's internal HWM starts accumulating. Design
+// During this window the peer's TCP send buffer accumulates frames. Design
 // recovery handlers to be fast.
 func (s *subscriber) fireRecovery(ctx context.Context, lastSeq uint32) {
 	if len(s.recoveryHandlers) == 0 {
@@ -807,11 +847,11 @@ func nextBackoff(current time.Duration) time.Duration {
 // address. IPC endpoints are always rejected — use tcp://127.0.0.1:<port>.
 //
 // This is a panic, not a returned error, so a misconfigured endpoint fails at
-// startup rather than at the first dial attempt. The ZMQ port must never be
-// reachable from outside the machine running Bitcoin Core.
+// startup rather than at the first connection attempt. The ZMQ port must never
+// be reachable from outside the machine running Bitcoin Core.
 func requireLoopbackTCP(endpoint, envName string) {
 	if strings.HasPrefix(endpoint, "ipc://") {
-		panic(fmt.Sprintf("zmq: %s: ipc:// endpoints are not supported on Windows; use tcp://127.0.0.1:<port>", envName))
+		panic(fmt.Sprintf("zmq: %s: ipc:// endpoints are not supported; use tcp://127.0.0.1:<port>", envName))
 	}
 	if !strings.HasPrefix(endpoint, "tcp://") {
 		panic(fmt.Sprintf("zmq: %s: endpoint must be a loopback TCP address (tcp://127.0.0.1:port), got %q", envName, endpoint))
@@ -830,5 +870,5 @@ func requireLoopbackTCP(endpoint, envName string) {
 	}
 }
 
-// Compile-time assertion that *subscriber satisfies Subscriber.
+// compile-time assertion that *subscriber satisfies Subscriber.
 var _ Subscriber = (*subscriber)(nil)

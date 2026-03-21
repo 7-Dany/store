@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	zmq4 "github.com/go-zeromq/zmq4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -96,34 +95,34 @@ func newTestSubscriberWithRecorder(t *testing.T) (*subscriber, *testRecorder) {
 	return s.(*subscriber), rec
 }
 
-// buildZMQMsg constructs a 3-frame zmq4.Msg in Bitcoin Core's hashblock/hashtx
-// format.
+// buildZMQMsg constructs a 3-element [][]byte in Bitcoin Core's hashblock/hashtx
+// multipart message format:
 //
-//   - topic:   "hashblock" or "hashtx"
-//   - hashHex: 64-char big-endian hex (RPC order) — reversed to ZMQ little-endian
-//   - seq:     sequence number, encoded as little-endian uint32
-func buildZMQMsg(topic string, hashHex string, seq uint32) zmq4.Msg {
+//	[0] topic bytes   ("hashblock" or "hashtx")
+//	[1] 32-byte hash  (ZMQ little-endian, reversed from RPC big-endian)
+//	[2] 4-byte sequence number (little-endian uint32)
+//
+// hashHex must be 64-char big-endian hex (RPC / explorer order).
+func buildZMQMsg(topic string, hashHex string, seq uint32) [][]byte {
 	hashBE, _ := hex.DecodeString(hashHex)
 	var hashLE [32]byte
 	for i, b := range hashBE {
 		hashLE[31-i] = b
 	}
 	seqBytes := binary.LittleEndian.AppendUint32(nil, seq)
-	return zmq4.Msg{
-		Frames: [][]byte{[]byte(topic), hashLE[:], seqBytes},
-	}
+	return [][]byte{[]byte(topic), hashLE[:], seqBytes}
 }
 
-// buildRawZMQMsg builds a 3-frame message with arbitrary byte slices, used to
-// test frame validation edge cases.
-func buildRawZMQMsg(topic, hash, seq []byte) zmq4.Msg {
-	return zmq4.Msg{Frames: [][]byte{topic, hash, seq}}
+// buildRawMsg builds a 3-element [][]byte with arbitrary byte slices, used
+// to test frame validation edge cases without byte-order conversion.
+func buildRawMsg(topic, hash, seq []byte) [][]byte {
+	return [][]byte{topic, hash, seq}
 }
 
 // processBlockFrame calls processFrame with the standard block reader onEvent:
 // updates liveness and sends to blockCh (or drops on full). Used by tests that
 // exercise the full decode path without starting Run().
-func processBlockFrame(sub *subscriber, ctx context.Context, msg zmq4.Msg, state *readerState) error {
+func processBlockFrame(sub *subscriber, ctx context.Context, msg [][]byte, state *readerState) error {
 	return sub.processFrame(ctx, msg, []byte("hashblock"), state, func(hash [32]byte, seq uint32) {
 		event := BlockEvent{Hash: hash, Sequence: seq}
 		sub.live.Store(&liveness{hash: event.HashHex(), at: time.Now()})
@@ -137,7 +136,7 @@ func processBlockFrame(sub *subscriber, ctx context.Context, msg zmq4.Msg, state
 
 // processTxFrame calls processFrame with the standard tx reader onEvent:
 // sends to txCh or drops on full.
-func processTxFrame(sub *subscriber, ctx context.Context, msg zmq4.Msg, state *readerState) error {
+func processTxFrame(sub *subscriber, ctx context.Context, msg [][]byte, state *readerState) error {
 	return sub.processFrame(ctx, msg, []byte("hashtx"), state, func(hash [32]byte, seq uint32) {
 		event := TxEvent{Hash: hash, Sequence: seq}
 		select {
@@ -274,13 +273,13 @@ func TestRequireLoopbackTCP(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		endpoint string
+		endpoint  string
 		wantPanic bool
 	}{
 		{"tcp://127.0.0.1:28332", false},
 		{"tcp://127.0.0.1:1", false},
 		{"tcp://127.0.0.1:65535", false},
-		{"tcp://[::1]:28332", false},    // IPv6 loopback
+		{"tcp://[::1]:28332", false},     // IPv6 loopback
 		{"tcp://127.1.2.3:28332", false}, // still loopback range
 
 		{"tcp://0.0.0.0:28332", true},
@@ -458,7 +457,7 @@ func TestProcessFrame_WrongFrameCount_ReturnsError(t *testing.T) {
 	} {
 		state := readerState{}
 		err := sub.processFrame(context.Background(),
-			zmq4.Msg{Frames: frames}, []byte("hashblock"), &state,
+			frames, []byte("hashblock"), &state,
 			func([32]byte, uint32) {})
 		require.Error(t, err, "frame count %d should return error", len(frames))
 		require.Empty(t, sub.blockCh)
@@ -470,7 +469,7 @@ func TestProcessFrame_WrongTopic_SkippedSilently(t *testing.T) {
 	sub := newTestSubscriber(t)
 
 	// "rawtx" is a valid ZMQ topic but unexpected on the hashblock socket.
-	msg := buildRawZMQMsg([]byte("rawtx"), make([]byte, 32), binary.LittleEndian.AppendUint32(nil, 1))
+	msg := buildRawMsg([]byte("rawtx"), make([]byte, 32), binary.LittleEndian.AppendUint32(nil, 1))
 	state := readerState{}
 	err := sub.processFrame(context.Background(), msg, []byte("hashblock"), &state,
 		func([32]byte, uint32) {})
@@ -483,7 +482,7 @@ func TestProcessFrame_ShortHashFrame_ReturnsError(t *testing.T) {
 	sub := newTestSubscriber(t)
 
 	for _, hashLen := range []int{0, 1, 16, 31} {
-		msg := buildRawZMQMsg(
+		msg := buildRawMsg(
 			[]byte("hashblock"),
 			make([]byte, hashLen),
 			binary.LittleEndian.AppendUint32(nil, 1),
@@ -499,7 +498,7 @@ func TestProcessFrame_LongHashFrame_ReturnsError(t *testing.T) {
 	t.Parallel()
 	sub := newTestSubscriber(t)
 
-	msg := buildRawZMQMsg(
+	msg := buildRawMsg(
 		[]byte("hashblock"),
 		make([]byte, 33),
 		binary.LittleEndian.AppendUint32(nil, 1),
@@ -515,7 +514,7 @@ func TestProcessFrame_ShortSeqFrame_ReturnsError(t *testing.T) {
 	sub := newTestSubscriber(t)
 
 	for _, seqLen := range []int{0, 1, 2, 3} {
-		msg := buildRawZMQMsg(
+		msg := buildRawMsg(
 			[]byte("hashblock"),
 			make([]byte, 32),
 			make([]byte, seqLen),
@@ -1289,6 +1288,177 @@ func TestTxReaderConfig_OnDialFail_DoesNotTouchGauge(t *testing.T) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Shutdown — timeout path
+// ═════════════════════════════════════════════════════════════════════════════
+
+// TestShutdown_Timeout_ReturnsAfterDeadline verifies that Shutdown() returns
+// after shutdownDrainTimeout even when a goroutine is still running, rather
+// than blocking indefinitely.
+func TestShutdown_Timeout_ReturnsAfterDeadline(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+	sub.shutdownDrainTimeout = 60 * time.Millisecond // much shorter than the real 30 s
+
+	_, cancel := context.WithCancel(t.Context())
+
+	unblock := make(chan struct{})
+	t.Cleanup(func() { close(unblock) })
+
+	// Simulate an in-flight goroutine that outlives the drain window.
+	sub.wg.Go(func() {
+		<-unblock // will not unblock until Cleanup fires after the test
+	})
+
+	cancel() // signal shutdown
+
+	start := time.Now()
+	sub.Shutdown() // must return after ~60 ms, not block on the goroutine
+	elapsed := time.Since(start)
+
+	require.Less(t, elapsed, 2*time.Second,
+		"Shutdown() must return after shutdownDrainTimeout even with a stuck goroutine")
+	require.GreaterOrEqual(t, elapsed, 50*time.Millisecond,
+		"Shutdown() must wait the full drain timeout before giving up")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Reader config callbacks — previously untested paths
+// ═════════════════════════════════════════════════════════════════════════════
+
+// TestTxReaderConfig_OnDialOK_SetsTxDialOKTrue verifies that the tx reader's
+// onDialOK callback sets txDialOK to true without touching the ZMQ gauge
+// (only the block reader drives SetZMQConnected).
+func TestTxReaderConfig_OnDialOK_SetsTxDialOKTrue(t *testing.T) {
+	t.Parallel()
+	sub, rec := newTestSubscriberWithRecorder(t)
+
+	cfg := sub.txReaderConfig()
+	cfg.onDialOK()
+
+	require.True(t, sub.txDialOK.Load(), "txDialOK must be true after onDialOK")
+	require.Empty(t, rec.connectedValues(),
+		"tx reader onDialOK must not call SetZMQConnected")
+}
+
+// TestTxReaderConfig_OnRecvErr_SetsTxDialOKFalse verifies that the tx reader's
+// onRecvErr callback clears txDialOK without calling SetZMQConnected.
+func TestTxReaderConfig_OnRecvErr_SetsTxDialOKFalse(t *testing.T) {
+	t.Parallel()
+	sub, rec := newTestSubscriberWithRecorder(t)
+	sub.txDialOK.Store(true) // start healthy
+
+	cfg := sub.txReaderConfig()
+	cfg.onRecvErr()
+
+	require.False(t, sub.txDialOK.Load(), "txDialOK must be false after onRecvErr")
+	require.Empty(t, rec.connectedValues(),
+		"tx reader onRecvErr must not call SetZMQConnected")
+}
+
+// TestBlockReaderConfig_OnRecvErr_SetsConnectedFalse verifies that the block
+// reader's onRecvErr callback clears blockDialOK and calls SetZMQConnected(false).
+func TestBlockReaderConfig_OnRecvErr_SetsConnectedFalse(t *testing.T) {
+	t.Parallel()
+	sub, rec := newTestSubscriberWithRecorder(t)
+	sub.blockDialOK.Store(true)
+
+	cfg := sub.blockReaderConfig()
+	cfg.onRecvErr()
+
+	require.False(t, sub.blockDialOK.Load(), "blockDialOK must be false after onRecvErr")
+	vals := rec.connectedValues()
+	require.NotEmpty(t, vals)
+	require.False(t, vals[len(vals)-1], "SetZMQConnected(false) must be called on block onRecvErr")
+}
+
+// TestBlockReaderConfig_OnEvent_HWMDrop verifies that calling the block
+// onEvent callback when blockCh is full records an "hwm" drop and does not
+// block or panic.
+func TestBlockReaderConfig_OnEvent_HWMDrop(t *testing.T) {
+	t.Parallel()
+	sub, rec := newTestSubscriberWithRecorder(t)
+
+	// Fill blockCh to capacity so the next onEvent triggers the HWM drop path.
+	for i := range cap(sub.blockCh) {
+		sub.blockCh <- BlockEvent{Sequence: uint32(i)}
+	}
+
+	cfg := sub.blockReaderConfig()
+	var hash [32]byte
+	cfg.onEvent(hash, 99999)
+
+	require.Contains(t, rec.droppedReasons(), "hwm",
+		"onEvent when blockCh is full must record an hwm drop")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Handler registration — accumulation
+// ═════════════════════════════════════════════════════════════════════════════
+
+// TestRegister_MultipleHandlers_AllAppended verifies that registering N handlers
+// of the same type results in exactly N entries in the corresponding slice —
+// no handler is silently discarded or deduplicated.
+func TestRegister_MultipleHandlers_AllAppended(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+
+	for range 3 {
+		sub.RegisterBlockHandler(func(context.Context, BlockEvent) {})
+	}
+	for range 2 {
+		sub.RegisterDisplayTxHandler(func(context.Context, TxEvent) {})
+	}
+	for range 4 {
+		sub.RegisterSettlementTxHandler(func(context.Context, TxEvent) {})
+	}
+	for range 2 {
+		sub.RegisterRecoveryHandler(func(context.Context, RecoveryEvent) {})
+	}
+
+	require.Len(t, sub.blockHandlers, 3, "3 block handlers must be registered")
+	require.Len(t, sub.displayTxHandlers, 2, "2 display tx handlers must be registered")
+	require.Len(t, sub.settleTxHandlers, 4, "4 settlement tx handlers must be registered")
+	require.Len(t, sub.recoveryHandlers, 2, "2 recovery handlers must be registered")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// invokeHandler — normal completion inflight counter
+// ═════════════════════════════════════════════════════════════════════════════
+
+// TestInvokeHandler_NormalCompletion_InflightReturnsToZero verifies that the
+// inflight goroutine counter reaches exactly 0 after a normally-completing
+// handler exits, and that wg.Done() is called (Shutdown() does not deadlock).
+func TestInvokeHandler_NormalCompletion_InflightReturnsToZero(t *testing.T) {
+	t.Parallel()
+	sub, _ := newTestSubscriberWithRecorder(t)
+	sub.handlerTimeout = 500 * time.Millisecond
+
+	ctx := t.Context()
+
+	var called atomic.Bool
+	invokeHandler(sub, ctx, func(_ context.Context, _ BlockEvent) {
+		called.Store(true)
+	}, BlockEvent{}, "block")
+
+	// Handler ran synchronously (invokeHandler blocks until done or timeout).
+	require.True(t, called.Load(), "handler must have been called")
+	require.EqualValues(t, 0, sub.inflightGoroutines.Load(),
+		"inflight counter must return to 0 after normal handler completion")
+
+	// Shutdown() must return immediately — no goroutines remain tracked.
+	done := make(chan struct{})
+	go func() {
+		sub.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("wg.Wait() did not return — wg.Done() was not called by invokeHandler")
+	}
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Fuzz — processFrame must never panic on arbitrary input
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -1321,7 +1491,7 @@ func FuzzProcessFrame(f *testing.F) {
 		sub := iface.(*subscriber)
 		sub.handlerTimeout = 10 * time.Millisecond
 
-		msg := zmq4.Msg{Frames: [][]byte{topicData, hashData, seqData}}
+		msg := [][]byte{topicData, hashData, seqData}
 		state := readerState{}
 		// Must never panic regardless of input.
 		_ = sub.processFrame(context.Background(), msg, []byte("hashblock"), &state,

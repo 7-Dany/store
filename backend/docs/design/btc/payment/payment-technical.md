@@ -277,3 +277,13 @@ terminated unexpectedly."
 | TI-6-02 | `TestOutageLog_SecondInstance_SkipsInsert` | INTG RACE | **G-M1**: second instance sees lock held; does NOT insert duplicate; logs INFO |
 | TI-6-03 | `TestOutageLog_AdvisoryLockKey_DerivedFromNetwork` | UNIT | hashtext('btc_outage_log:mainnet') is stable and documented |
 | TI-6-04 | `TestOutageLog_LockReleasedOnReconnect` | INTG | Advisory lock released when ended_at set; next disconnect acquires fresh lock |
+
+### Tests forwarded from zmq-technical.md
+
+This test was originally specified in `zmq-technical.md` but requires a live ZMQ
+server to force a disconnect/reconnect cycle. Implement it as an integration test
+here when the payment package's ZMQ recovery handler is wired.
+
+| ID | Test | Notes |
+|---|---|---|
+| T-45 | `TestSubscriber_ReconnectEmitsRecoveryEvent` | Disconnect the ZMQ socket; verify RecoveryEvent fires on reconnect before the first post-reconnect BlockEvent; verify `LastSeenSequence` equals the last sequence seen before disconnect |

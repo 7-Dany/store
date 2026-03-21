@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,7 @@ func (i *item) expired(now time.Time) bool {
 type InMemoryStore struct {
 	mu              sync.RWMutex
 	items           map[string]*item
+	sets            map[string]map[string]struct{} // protected by mu
 	cleanupInterval time.Duration
 }
 
@@ -49,6 +51,7 @@ type InMemoryStore struct {
 func NewInMemoryStore(cleanupInterval time.Duration) *InMemoryStore {
 	return &InMemoryStore{
 		items:           make(map[string]*item),
+		sets:            make(map[string]map[string]struct{}),
 		cleanupInterval: cleanupInterval,
 	}
 }
@@ -291,7 +294,340 @@ func (s *InMemoryStore) AtomicBackoffAllow(
 	return false, rem, nil
 }
 
+// RefreshTTL resets the TTL of an existing, non-expired key without modifying its value.
+// Returns (true, nil) when the key exists and the TTL was updated.
+// Returns (false, nil) when the key is absent or expired (caller should treat as expiry).
+// Returns (false, error) when ttl ≤ 0.
+func (s *InMemoryStore) RefreshTTL(_ context.Context, key string, ttl time.Duration) (bool, error) {
+	if ttl <= 0 {
+		return false, fmt.Errorf("kvstore.RefreshTTL: ttl must be positive, got %v", ttl)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	it, ok := s.items[key]
+	if !ok || it.expired(time.Now()) {
+		delete(s.items, key)
+		return false, nil
+	}
+	it.expiresAt = time.Now().Add(ttl)
+	return true, nil
+}
+
+// ── AtomicCounterStore ──────────────────────────────────────────────────────────────────────
+
+// AtomicIncrement atomically increments the counter at key by 1 under s.mu.
+// If ttl > 0 the key's TTL is set (new key) or refreshed (existing key).
+// If ttl == 0 the key is permanent; existing TTL is preserved on subsequent calls.
+func (s *InMemoryStore) AtomicIncrement(_ context.Context, key string, ttl time.Duration) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	it, ok := s.items[key]
+	var count int64
+	if !ok || it.expired(now) {
+		it = &item{value: "1"}
+		count = 1
+	} else {
+		n, _ := strconv.ParseInt(it.value, 10, 64)
+		count = n + 1
+		it.value = strconv.FormatInt(count, 10)
+	}
+	if ttl > 0 {
+		it.expiresAt = now.Add(ttl)
+	}
+	// ttl == 0: zero expiresAt means permanent — no change needed.
+	s.items[key] = it
+	return count, nil
+}
+
+// AtomicDecrement atomically decrements the counter at key by 1, flooring at 0.
+// If ttl > 0 and the resulting count > 0, the TTL is refreshed (C-03 fix).
+// Returns 0 when the key does not exist.
+func (s *InMemoryStore) AtomicDecrement(_ context.Context, key string, ttl time.Duration) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	it, ok := s.items[key]
+	if !ok || it.expired(now) {
+		delete(s.items, key)
+		return 0, nil
+	}
+	n, _ := strconv.ParseInt(it.value, 10, 64)
+	if n <= 0 {
+		// Corruption repair: negative value means no connections are held.
+		// Delete the key entirely so callers see a clean absent state (consistent
+		// with the n==0 path below, and so Get returns ErrNotFound).
+		delete(s.items, key)
+		return 0, nil
+	}
+	n--
+	it.value = strconv.FormatInt(n, 10)
+	if ttl > 0 && n > 0 {
+		it.expiresAt = now.Add(ttl)
+	}
+	if n == 0 {
+		delete(s.items, key)
+	}
+	return n, nil
+}
+
+// AtomicAcquire atomically increments the counter if current count < max.
+// Returns the new count on success, -1 when at cap, 0 on error.
+func (s *InMemoryStore) AtomicAcquire(_ context.Context, key string, max int, ttl time.Duration) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	it, ok := s.items[key]
+	var current int64
+	if ok && !it.expired(now) {
+		current, _ = strconv.ParseInt(it.value, 10, 64)
+		if current < 0 {
+			current = 0 // corruption repair
+		}
+	} else {
+		it = &item{}
+		current = 0
+	}
+	if current >= int64(max) {
+		return -1, nil
+	}
+	current++
+	it.value = strconv.FormatInt(current, 10)
+	if ttl > 0 {
+		it.expiresAt = now.Add(ttl)
+	}
+	s.items[key] = it
+	return current, nil
+}
+
+// ── ListStore ─────────────────────────────────────────────────────────────────────────────
+
+// lists stores list state separately from the string KV items map.
+// Protected by s.mu.
+type listEntry struct {
+	elements []string
+}
+
+func (s *InMemoryStore) listKey(key string) string { return "\x00list:\x00" + key }
+
+// LPush prepends one or more values to the list at key.
+func (s *InMemoryStore) LPush(_ context.Context, key string, values ...string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := s.listKey(key)
+	var elems []string
+	if it, ok := s.items[k]; ok {
+		_ = json.Unmarshal([]byte(it.value), &elems)
+	}
+	// LPUSH prepends in order — each value goes to the front.
+	new := make([]string, 0, len(values)+len(elems))
+	for i := len(values) - 1; i >= 0; i-- {
+		new = append(new, values[i])
+	}
+	new = append(new, elems...)
+	data, _ := json.Marshal(new)
+	s.items[k] = &item{value: string(data)}
+	return int64(len(new)), nil
+}
+
+// BRPop pops the rightmost element. InMemoryStore does NOT block — returns
+// ErrNotFound immediately if the list is empty. Use a polling loop.
+func (s *InMemoryStore) BRPop(_ context.Context, _ time.Duration, keys ...string) (string, string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, key := range keys {
+		k := s.listKey(key)
+		it, ok := s.items[k]
+		if !ok {
+			continue
+		}
+		var elems []string
+		_ = json.Unmarshal([]byte(it.value), &elems)
+		if len(elems) == 0 {
+			continue
+		}
+		val := elems[len(elems)-1]
+		elems = elems[:len(elems)-1]
+		if len(elems) == 0 {
+			delete(s.items, k)
+		} else {
+			data, _ := json.Marshal(elems)
+			s.items[k] = &item{value: string(data)}
+		}
+		return key, val, nil
+	}
+	return "", "", ErrNotFound
+}
+
+// LLen returns the current list length.
+func (s *InMemoryStore) LLen(_ context.Context, key string) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	k := s.listKey(key)
+	it, ok := s.items[k]
+	if !ok {
+		return 0, nil
+	}
+	var elems []string
+	_ = json.Unmarshal([]byte(it.value), &elems)
+	return int64(len(elems)), nil
+}
+
+// ── PubSubStore ─────────────────────────────────────────────────────────────────────────
+
+// pubsubMu guards pubsubSubs. It is separate from s.mu to avoid
+// holding the main store lock during channel sends.
+var pubsubMu sync.RWMutex
+var pubsubSubs = make(map[*InMemoryStore]map[string][]chan PubSubMessage)
+
+// Publish sends payload to all in-process subscribers of channel.
+func (s *InMemoryStore) Publish(_ context.Context, channel, payload string) (int64, error) {
+	pubsubMu.RLock()
+	chans, ok := pubsubSubs[s][channel]
+	pubsubMu.RUnlock()
+	if !ok {
+		return 0, nil
+	}
+	var count int64
+	for _, ch := range chans {
+		select {
+		case ch <- PubSubMessage{Channel: channel, Payload: payload}:
+			count++
+		default:
+			// Subscriber channel full — message dropped (no buffering guarantee).
+		}
+	}
+	return count, nil
+}
+
+// Subscribe returns a buffered channel of PubSubMessages and a cancel func.
+// The channel is closed when cancel() is called or ctx is cancelled.
+func (s *InMemoryStore) Subscribe(ctx context.Context, channels ...string) (<-chan PubSubMessage, func()) {
+	ch := make(chan PubSubMessage, 64)
+	pubsubMu.Lock()
+	if pubsubSubs[s] == nil {
+		pubsubSubs[s] = make(map[string][]chan PubSubMessage)
+	}
+	for _, c := range channels {
+		pubsubSubs[s][c] = append(pubsubSubs[s][c], ch)
+	}
+	pubsubMu.Unlock()
+
+	cancel := func() {
+		pubsubMu.Lock()
+		for _, c := range channels {
+			list := pubsubSubs[s][c]
+			newList := list[:0]
+			for _, existing := range list {
+				if existing != ch {
+					newList = append(newList, existing)
+				}
+			}
+			if len(newList) == 0 {
+				delete(pubsubSubs[s], c)
+			} else {
+				pubsubSubs[s][c] = newList
+			}
+		}
+		pubsubMu.Unlock()
+		close(ch)
+	}
+
+	go func() {
+		<-ctx.Done()
+		cancel()
+	}()
+
+	return ch, cancel
+}
+
+// ── SetStore ───────────────────────────────────────────────────────────────────────────────
+
+// SAdd adds members to the set at key. Returns the count of newly added members.
+func (s *InMemoryStore) SAdd(_ context.Context, key string, members ...string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sets[key] == nil {
+		s.sets[key] = make(map[string]struct{})
+	}
+	var added int64
+	for _, m := range members {
+		if _, exists := s.sets[key][m]; !exists {
+			s.sets[key][m] = struct{}{}
+			added++
+		}
+	}
+	return added, nil
+}
+
+// SRem removes members from the set at key. Returns the count of removed members.
+func (s *InMemoryStore) SRem(_ context.Context, key string, members ...string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set := s.sets[key]
+	if set == nil {
+		return 0, nil
+	}
+	var removed int64
+	for _, m := range members {
+		if _, exists := set[m]; exists {
+			delete(set, m)
+			removed++
+		}
+	}
+	if len(set) == 0 {
+		delete(s.sets, key)
+	}
+	return removed, nil
+}
+
+// SCard returns the number of members in the set at key.
+func (s *InMemoryStore) SCard(_ context.Context, key string) (int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return int64(len(s.sets[key])), nil
+}
+
+// SScan returns all members matching the glob pattern in one shot.
+// InMemoryStore does not do cursor-based iteration; nextCursor is always 0.
+func (s *InMemoryStore) SScan(_ context.Context, key string, _ uint64, match string, _ int64) ([]string, uint64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	set := s.sets[key]
+	var out []string
+	for m := range set {
+		if match == "" || match == "*" || m == match {
+			out = append(out, m)
+		}
+	}
+	return out, 0, nil
+}
+
+// ── OnceStore ───────────────────────────────────────────────────────────────────────────
+
+// ConsumeOnce atomically creates key with ttl only if it does not already
+// exist. Returns true when the key was newly created (caller owns the slot),
+// false when it already existed (already consumed).
+func (s *InMemoryStore) ConsumeOnce(_ context.Context, key string, ttl time.Duration) (bool, error) {
+	if ttl <= 0 {
+		return false, fmt.Errorf("kvstore.ConsumeOnce: ttl must be positive, got %v", ttl)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	if it, ok := s.items[key]; ok && !it.expired(now) {
+		return false, nil // already exists
+	}
+	s.items[key] = &item{value: "1", expiresAt: now.Add(ttl)}
+	return true, nil
+}
+
 // compile-time interface checks.
 var _ Store = (*InMemoryStore)(nil)
 var _ TokenBlocklist = (*InMemoryStore)(nil)
 var _ AtomicBackoffStore = (*InMemoryStore)(nil)
+var _ AtomicCounterStore = (*InMemoryStore)(nil)
+var _ ListStore = (*InMemoryStore)(nil)
+var _ PubSubStore = (*InMemoryStore)(nil)
+var _ SetStore = (*InMemoryStore)(nil)
+var _ OnceStore = (*InMemoryStore)(nil)

@@ -80,11 +80,16 @@ type Registry struct {
 	schedulesFired *prometheus.CounterVec
 	jobsRequeued   prometheus.Counter
 
+	// ── Family 7 — Platform ────────────────────────────────────────────────────────────────
+	platformConnCounterReleaseFailures *prometheus.CounterVec
+	platformConnCounterHeartbeatMisses *prometheus.CounterVec
+
 	// ── Family 6 — Bitcoin ────────────────────────────────────────────────
 	bitcoinZMQConnected         prometheus.Gauge
 	bitcoinRPCConnected         prometheus.Gauge
 	bitcoinZMQLastMessageAge    prometheus.Gauge
 	bitcoinHandlerPanics        *prometheus.CounterVec
+	bitcoinHandlerTimeouts      *prometheus.CounterVec
 	bitcoinHandlerGoroutines    prometheus.Gauge
 	bitcoinDroppedMessages      *prometheus.CounterVec
 	bitcoinSSEConnections       prometheus.Gauge
@@ -376,6 +381,10 @@ func NewRegistry() *Registry {
 		Name: "bitcoin_handler_panics_total",
 		Help: "Total recovered panics in Bitcoin ZMQ event handlers by handler name.",
 	}, []string{"handler"})
+	r.bitcoinHandlerTimeouts = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "bitcoin_handler_timeouts_total",
+		Help: "Total Bitcoin ZMQ event handler invocations cancelled by timeout. The goroutine continues running until it respects ctx.Done().",
+	}, []string{"handler"})
 	r.bitcoinHandlerGoroutines = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "bitcoin_handler_goroutines_inflight",
 		Help: "Number of in-flight ZMQ event handler goroutines.",
@@ -442,6 +451,20 @@ func NewRegistry() *Registry {
 		Help: "Number of blocks the reconciliation job is behind the chain tip.",
 	})
 
+	// Family 7 — Platform
+	r.platformConnCounterReleaseFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "platform_connection_counter_release_failures_total",
+		Help: "Number of times ConnectionCounter.Release() failed to decrement. " +
+			"A non-zero value means connection slots may be permanently leaked.",
+	}, []string{"key_prefix"})
+
+	r.platformConnCounterHeartbeatMisses = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "platform_connection_counter_heartbeat_misses_total",
+		Help: "Number of times ConnectionCounter.Heartbeat() found the counter key missing " +
+			"while connections were expected to be active. Indicates the per-connection " +
+			"cap may have been transiently bypassed.",
+	}, []string{"key_prefix"})
+
 	// ── Register everything ───────────────────────────────────────────────
 	reg.MustRegister(
 		collectors.NewGoCollector(),
@@ -505,6 +528,7 @@ func NewRegistry() *Registry {
 		r.bitcoinRPCConnected,
 		r.bitcoinZMQLastMessageAge,
 		r.bitcoinHandlerPanics,
+		r.bitcoinHandlerTimeouts,
 		r.bitcoinHandlerGoroutines,
 		r.bitcoinDroppedMessages,
 		r.bitcoinSSEConnections,
@@ -521,6 +545,9 @@ func NewRegistry() *Registry {
 		r.bitcoinInvoiceDetection,
 		r.bitcoinRateFeedStaleness,
 		r.bitcoinReconciliationLag,
+		// Family 7
+		r.platformConnCounterReleaseFailures,
+		r.platformConnCounterHeartbeatMisses,
 	)
 
 	return r

@@ -159,6 +159,62 @@ type Config struct {
 	// signatures on Login Widget payloads. Required when Telegram OAuth is enabled.
 	// Generate at https://t.me/BotFather. Keep out of version control.
 	TelegramBotToken string
+
+	// ── Bitcoin ──────────────────────────────────────────────────────────────────────
+	// BitcoinEnabled gates all bitcoin wiring. When false (default), no bitcoin
+	// validation runs and all bitcoin deps are nil.
+	BitcoinEnabled bool // BTC_ENABLED
+	// BitcoinRPCHost is the Bitcoin Core RPC host. Default: "127.0.0.1".
+	BitcoinRPCHost string // BTC_RPC_HOST
+	// BitcoinRPCPort is the Bitcoin Core RPC port. Validated numeric 1–65535.
+	BitcoinRPCPort string // BTC_RPC_PORT
+	// BitcoinRPCUser is the RPC username. Required when bitcoin enabled.
+	BitcoinRPCUser string // BTC_RPC_USER
+	// BitcoinRPCPass is the RPC password. Required. NEVER log raw.
+	BitcoinRPCPass string // BTC_RPC_PASS
+	// BitcoinZMQBlock is the ZMQ endpoint for hashblock events. Default: "tcp://127.0.0.1:28332".
+	BitcoinZMQBlock string // BTC_ZMQ_BLOCK
+	// BitcoinZMQTx is the ZMQ endpoint for hashtx events. Default: "tcp://127.0.0.1:28333".
+	BitcoinZMQTx string // BTC_ZMQ_TX
+	// BitcoinZMQIdleTimeout is the ZMQ idle timeout seconds. 0 = use network default; valid range 30–3600.
+	BitcoinZMQIdleTimeout int // BTC_ZMQ_IDLE_TIMEOUT
+	// BitcoinNetwork is "testnet4" or "mainnet".
+	BitcoinNetwork string // BTC_NETWORK
+	// BitcoinSSETokenTTL is the SSE one-time token TTL in seconds. Range 1–300; default 60.
+	BitcoinSSETokenTTL int // BTC_SSE_TOKEN_TTL
+	// BitcoinSSETokenBindIP binds the SSE token to the issuing IP. Default: true.
+	BitcoinSSETokenBindIP bool // BTC_SSE_TOKEN_BIND_IP
+	// BitcoinSessionSecret is the HMAC key for bitcoin session cookies. ≥32 bytes.
+	BitcoinSessionSecret string // BTC_SESSION_SECRET
+	// BitcoinSSESigningSecret is the HMAC key for SSE tokens. ≥32 bytes; must differ from session secret.
+	BitcoinSSESigningSecret string // BTC_SSE_SIGNING_SECRET
+	// BitcoinMaxSSEPerUser is the per-user SSE connection cap. Range 1–10; default 3.
+	BitcoinMaxSSEPerUser int // BTC_MAX_SSE_PER_USER
+	// BitcoinMaxSSEProcess is the process-wide SSE connection cap. Range 10–10000; default 100.
+	BitcoinMaxSSEProcess int // BTC_MAX_SSE_PROCESS
+	// BitcoinMaxWatchPerUser is the per-user address watch cap. Range 1–1000; default 100.
+	BitcoinMaxWatchPerUser int // BTC_MAX_WATCH_PER_USER
+	// BitcoinCacheTTL is the block-data cache TTL in seconds. Range 1–60; default 5.
+	BitcoinCacheTTL int // BTC_CACHE_TTL
+	// BitcoinBlockRPCTimeoutSeconds is the per-RPC call timeout. Range 2–60; default 10.
+	BitcoinBlockRPCTimeoutSeconds int // BTC_BLOCK_RPC_TIMEOUT_SECONDS
+	// BitcoinHandlerTimeoutMs is the HTTP handler timeout in ms. Range 100–120000; default 30000.
+	// Must satisfy: HandlerTimeoutMs > 2×BlockRPCTimeoutSeconds×1000 + 2000.
+	BitcoinHandlerTimeoutMs int // BTC_HANDLER_TIMEOUT_MS
+	// BitcoinPendingMempoolMaxSize is the max mempool pending tx count. Range 100–100000; default 10000.
+	BitcoinPendingMempoolMaxSize int // BTC_PENDING_MEMPOOL_MAX_SIZE
+	// BitcoinMempoolPendingMaxAgeDays is the max pending tx age in days. Range 1–90; default 14.
+	BitcoinMempoolPendingMaxAgeDays int // BTC_MEMPOOL_PENDING_MAX_AGE_DAYS
+	// BitcoinFallbackAuditLog is the path for the Bitcoin fallback audit log. Default: "" (stdout JSON).
+	BitcoinFallbackAuditLog string // BTC_FALLBACK_AUDIT_LOG
+	// BitcoinReconciliationStartHeight is the block height for reconciliation. ≥0; default 0.
+	BitcoinReconciliationStartHeight int // BTC_RECONCILIATION_START_HEIGHT
+	// BitcoinReconciliationCheckpointInterval is the checkpoint interval in blocks. Range 1–500; default 100.
+	BitcoinReconciliationCheckpointInterval int // BTC_RECONCILIATION_CHECKPOINT_INTERVAL
+	// BitcoinReconciliationAllowGenesisScan allows scanning from genesis on mainnet. Default: false.
+	BitcoinReconciliationAllowGenesisScan bool // BTC_RECONCILIATION_ALLOW_GENESIS_SCAN
+	// BitcoinAuditHMACKey is the HMAC key for audit PII obfuscation. ≥32 bytes; must differ from secrets.
+	BitcoinAuditHMACKey string // BTC_AUDIT_HMAC_KEY
 }
 
 // Load reads every environment variable, applies defaults, validates required
@@ -216,6 +272,34 @@ func Load() (*Config, error) {
 		OAuthErrorURL:      os.Getenv("OAUTH_ERROR_URL"),
 		TelegramBotToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
 	}
+
+	// Bitcoin
+	cfg.BitcoinEnabled = parseBoolEnv("BTC_ENABLED")
+	cfg.BitcoinRPCHost = getEnv("BTC_RPC_HOST", "127.0.0.1")
+	cfg.BitcoinRPCPort = getEnv("BTC_RPC_PORT", "8332")
+	cfg.BitcoinRPCUser = os.Getenv("BTC_RPC_USER")
+	cfg.BitcoinRPCPass = os.Getenv("BTC_RPC_PASS")
+	cfg.BitcoinZMQBlock = getEnv("BTC_ZMQ_BLOCK", "tcp://127.0.0.1:28332")
+	cfg.BitcoinZMQTx = getEnv("BTC_ZMQ_TX", "tcp://127.0.0.1:28333")
+	cfg.BitcoinZMQIdleTimeout = getEnvInt("BTC_ZMQ_IDLE_TIMEOUT", 0)
+	cfg.BitcoinNetwork = os.Getenv("BTC_NETWORK")
+	cfg.BitcoinSSETokenTTL = getEnvInt("BTC_SSE_TOKEN_TTL", 60)
+	cfg.BitcoinSSETokenBindIP = parseBoolEnvDefault("BTC_SSE_TOKEN_BIND_IP", true)
+	cfg.BitcoinSessionSecret = os.Getenv("BTC_SESSION_SECRET")
+	cfg.BitcoinSSESigningSecret = os.Getenv("BTC_SSE_SIGNING_SECRET")
+	cfg.BitcoinMaxSSEPerUser = getEnvInt("BTC_MAX_SSE_PER_USER", 3)
+	cfg.BitcoinMaxSSEProcess = getEnvInt("BTC_MAX_SSE_PROCESS", 100)
+	cfg.BitcoinMaxWatchPerUser = getEnvInt("BTC_MAX_WATCH_PER_USER", 100)
+	cfg.BitcoinCacheTTL = getEnvInt("BTC_CACHE_TTL", 5)
+	cfg.BitcoinBlockRPCTimeoutSeconds = getEnvInt("BTC_BLOCK_RPC_TIMEOUT_SECONDS", 10)
+	cfg.BitcoinHandlerTimeoutMs = getEnvInt("BTC_HANDLER_TIMEOUT_MS", 30000)
+	cfg.BitcoinPendingMempoolMaxSize = getEnvInt("BTC_PENDING_MEMPOOL_MAX_SIZE", 10000)
+	cfg.BitcoinMempoolPendingMaxAgeDays = getEnvInt("BTC_MEMPOOL_PENDING_MAX_AGE_DAYS", 14)
+	cfg.BitcoinFallbackAuditLog = getEnv("BTC_FALLBACK_AUDIT_LOG", "")
+	cfg.BitcoinReconciliationStartHeight = getEnvInt("BTC_RECONCILIATION_START_HEIGHT", 0)
+	cfg.BitcoinReconciliationCheckpointInterval = getEnvInt("BTC_RECONCILIATION_CHECKPOINT_INTERVAL", 100)
+	cfg.BitcoinReconciliationAllowGenesisScan = parseBoolEnv("BTC_RECONCILIATION_ALLOW_GENESIS_SCAN")
+	cfg.BitcoinAuditHMACKey = os.Getenv("BTC_AUDIT_HMAC_KEY")
 
 	// Parse ALLOWED_ORIGINS before validation so the required-field check
 	// can include it.
@@ -462,6 +546,94 @@ func (c *Config) validate() error {
 		}
 	}
 
+	if c.BitcoinEnabled {
+		if err := c.validateBitcoin(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// validateBitcoin checks all bitcoin-specific configuration.
+// Only called when BitcoinEnabled is true.
+func (c *Config) validateBitcoin() error {
+	if c.BitcoinRPCUser == "" {
+		return fmt.Errorf("config: BTC_RPC_USER is required when BTC_ENABLED=true")
+	}
+	if c.BitcoinRPCPass == "" {
+		return fmt.Errorf("config: BTC_RPC_PASS is required when BTC_ENABLED=true")
+	}
+	port, portErr := strconv.Atoi(c.BitcoinRPCPort)
+	if portErr != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("config: BTC_RPC_PORT must be a numeric port in range 1–65535, got %q", c.BitcoinRPCPort)
+	}
+	if c.BitcoinNetwork != "testnet4" && c.BitcoinNetwork != "mainnet" {
+		return fmt.Errorf("config: BTC_NETWORK must be \"testnet4\" or \"mainnet\", got %q", c.BitcoinNetwork)
+	}
+	if len(c.BitcoinSessionSecret) < 32 {
+		return fmt.Errorf("config: BTC_SESSION_SECRET must be at least 32 bytes")
+	}
+	if len(c.BitcoinSSESigningSecret) < 32 {
+		return fmt.Errorf("config: BTC_SSE_SIGNING_SECRET must be at least 32 bytes")
+	}
+	if c.BitcoinSessionSecret == c.BitcoinSSESigningSecret {
+		return fmt.Errorf("config: BTC_SESSION_SECRET and BTC_SSE_SIGNING_SECRET must be distinct")
+	}
+	if len(c.BitcoinAuditHMACKey) < 32 {
+		return fmt.Errorf("config: BTC_AUDIT_HMAC_KEY must be at least 32 bytes")
+	}
+	if c.BitcoinAuditHMACKey == c.BitcoinSessionSecret {
+		return fmt.Errorf("config: BTC_AUDIT_HMAC_KEY must differ from BTC_SESSION_SECRET")
+	}
+	if c.BitcoinAuditHMACKey == c.BitcoinSSESigningSecret {
+		return fmt.Errorf("config: BTC_AUDIT_HMAC_KEY must differ from BTC_SSE_SIGNING_SECRET")
+	}
+	type rc struct{ name string; val, lo, hi int }
+	for _, r := range []rc{
+		{"BTC_SSE_TOKEN_TTL", c.BitcoinSSETokenTTL, 1, 300},
+		{"BTC_MAX_WATCH_PER_USER", c.BitcoinMaxWatchPerUser, 1, 1000},
+		{"BTC_MAX_SSE_PER_USER", c.BitcoinMaxSSEPerUser, 1, 10},
+		{"BTC_MAX_SSE_PROCESS", c.BitcoinMaxSSEProcess, 10, 10000},
+		{"BTC_CACHE_TTL", c.BitcoinCacheTTL, 1, 60},
+		{"BTC_BLOCK_RPC_TIMEOUT_SECONDS", c.BitcoinBlockRPCTimeoutSeconds, 2, 60},
+		{"BTC_HANDLER_TIMEOUT_MS", c.BitcoinHandlerTimeoutMs, 100, 120000},
+		{"BTC_PENDING_MEMPOOL_MAX_SIZE", c.BitcoinPendingMempoolMaxSize, 100, 100000},
+		{"BTC_MEMPOOL_PENDING_MAX_AGE_DAYS", c.BitcoinMempoolPendingMaxAgeDays, 1, 90},
+		{"BTC_RECONCILIATION_CHECKPOINT_INTERVAL", c.BitcoinReconciliationCheckpointInterval, 1, 500},
+	} {
+		if r.val < r.lo || r.val > r.hi {
+			return fmt.Errorf("config: %s must be between %d and %d, got %d", r.name, r.lo, r.hi, r.val)
+		}
+	}
+	if c.BitcoinReconciliationStartHeight < 0 {
+		return fmt.Errorf("config: BTC_RECONCILIATION_START_HEIGHT must be ≥0, got %d", c.BitcoinReconciliationStartHeight)
+	}
+	if c.BitcoinZMQIdleTimeout != 0 && (c.BitcoinZMQIdleTimeout < 30 || c.BitcoinZMQIdleTimeout > 3600) {
+		return fmt.Errorf("config: BTC_ZMQ_IDLE_TIMEOUT must be 0 or in range 30–3600, got %d", c.BitcoinZMQIdleTimeout)
+	}
+	minHandlerMs := 2*c.BitcoinBlockRPCTimeoutSeconds*1000 + 2000
+	if c.BitcoinHandlerTimeoutMs <= minHandlerMs {
+		return fmt.Errorf(
+			"config: BTC_HANDLER_TIMEOUT_MS (%d) must be > 2×BTC_BLOCK_RPC_TIMEOUT_SECONDS×1000+2000 (%d)",
+			c.BitcoinHandlerTimeoutMs, minHandlerMs)
+	}
+	if c.BitcoinNetwork == "mainnet" && c.BitcoinReconciliationStartHeight == 0 {
+		if !c.BitcoinReconciliationAllowGenesisScan {
+			return fmt.Errorf("config: BTC_RECONCILIATION_START_HEIGHT=0 on mainnet requires BTC_RECONCILIATION_ALLOW_GENESIS_SCAN=true")
+		}
+		slog.Error("config: scanning from bitcoin genesis on mainnet — ensure this is intentional")
+	}
+	if c.BitcoinNetwork == "testnet4" && c.BitcoinRPCPort == "8332" {
+		slog.Warn("config: BTC_RPC_PORT=8332 is the mainnet default; did you mean 48332 for testnet4?")
+	}
+	if c.BitcoinNetwork == "testnet4" &&
+		(c.BitcoinZMQBlock == "tcp://127.0.0.1:28332" || c.BitcoinZMQTx == "tcp://127.0.0.1:28333") {
+		slog.Warn("config: BTC_ZMQ_BLOCK/BTC_ZMQ_TX are set to mainnet default ports; verify testnet4 ZMQ config")
+	}
+	if c.BitcoinZMQBlock == c.BitcoinZMQTx {
+		return fmt.Errorf("config: BTC_ZMQ_BLOCK and BTC_ZMQ_TX must be different endpoints, both are %q", c.BitcoinZMQBlock)
+	}
 	return nil
 }
 
@@ -527,6 +699,25 @@ func parseBoolEnv(key string) bool {
 		slog.Warn("config: unrecognised boolean env var; defaulting to false",
 			"key", key, "value", v)
 		return false
+	}
+	return b
+}
+
+// parseBoolEnvDefault returns defaultVal when the env var is absent.
+// parseBoolEnv always returns false for absent vars; this helper is needed for
+// fields that default to true (e.g. BTC_SSE_TOKEN_BIND_IP).
+// Logs a WARNING with accepted values listed when an unrecognised value is given.
+func parseBoolEnvDefault(key string, defaultVal bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		slog.Warn("config: unrecognised boolean env var; using default",
+			"key", key, "value", v, "default", defaultVal,
+			"accepted_values", "1, t, T, TRUE, true, True, 0, f, F, FALSE, false, False")
+		return defaultVal
 	}
 	return b
 }

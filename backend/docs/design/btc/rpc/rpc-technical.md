@@ -353,3 +353,13 @@ BitcoinRedis   *redis.Client
 |---|---|---|
 | T-80 | `TestStartup_RPCPortInvalid_Rejected` | BTC_RPC_PORT non-numeric → error |
 | T-93 | `TestStartup_NetworkInvalid` | BTC_NETWORK not "mainnet" or "testnet4" → error |
+
+### Tests forwarded from zmq-technical.md
+
+These tests were originally specified in `zmq-technical.md` but require the RPC
+client. Implement them here when this package is built.
+
+| ID | Test | Notes |
+|---|---|---|
+| T-47 | `TestSubscriber_RPCFailureDoesNotFlipIsConnected` | RPC failure must not affect `IsConnected()` — ZMQ liveness is based on ZMQ messages only, not RPC responses |
+| T-48 | `TestSubscriber_404SkippedGracefully` | unknown txid from RPC (“No such transaction”) → no panic, no metric increment, log at WARN only |

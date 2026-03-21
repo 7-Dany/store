@@ -16,14 +16,17 @@ import (
 
 // RedisStore is a Store backed by a Redis instance.
 //
-// It uses atomic Lua scripts for token-bucket and backoff operations, making
-// it safe for multi-instance deployments where a process-local mutex cannot
-// provide the required isolation.
+// It uses atomic Lua scripts for token-bucket, backoff, and counter operations,
+// making it safe for multi-instance deployments where a process-local mutex
+// cannot provide the required isolation.
 type RedisStore struct {
-	client   *redis.Client
-	limiter  *redis_rate.Limiter
-	incrSHA  string // SHA of atomicBackoffIncrementScript pre-loaded at startup
-	allowSHA string // SHA of atomicBackoffAllowScript pre-loaded at startup
+	client         *redis.Client
+	limiter        *redis_rate.Limiter
+	incrSHA        string // SHA of atomicBackoffIncrementScript pre-loaded at startup
+	allowSHA       string // SHA of atomicBackoffAllowScript pre-loaded at startup
+	counterIncrSHA string // SHA of atomicCounterIncrementScript
+	counterDecrSHA string // SHA of atomicCounterDecrementScript
+	counterAcqSHA  string // SHA of atomicCounterAcquireScript
 }
 
 // NewRedisStore dials a Redis server at the given URL and returns a RedisStore.
@@ -91,12 +94,30 @@ func NewRedisStore(url string) (*RedisStore, error) {
 		_ = client.Close()
 		return nil, telemetry.KVStore("NewRedisStore.load_allow_script", err)
 	}
+	counterIncrSHA, err := client.ScriptLoad(loadCtx, atomicCounterIncrementScript).Result()
+	if err != nil {
+		_ = client.Close()
+		return nil, telemetry.KVStore("NewRedisStore.load_counter_incr_script", err)
+	}
+	counterDecrSHA, err := client.ScriptLoad(loadCtx, atomicCounterDecrementScript).Result()
+	if err != nil {
+		_ = client.Close()
+		return nil, telemetry.KVStore("NewRedisStore.load_counter_decr_script", err)
+	}
+	counterAcqSHA, err := client.ScriptLoad(loadCtx, atomicCounterAcquireScript).Result()
+	if err != nil {
+		_ = client.Close()
+		return nil, telemetry.KVStore("NewRedisStore.load_counter_acq_script", err)
+	}
 
 	return &RedisStore{
-		client:   client,
-		limiter:  redis_rate.NewLimiter(client),
-		incrSHA:  incrSHA,
-		allowSHA: allowSHA,
+		client:         client,
+		limiter:        redis_rate.NewLimiter(client),
+		incrSHA:        incrSHA,
+		allowSHA:       allowSHA,
+		counterIncrSHA: counterIncrSHA,
+		counterDecrSHA: counterDecrSHA,
+		counterAcqSHA:  counterAcqSHA,
 	}, nil
 }
 
@@ -239,6 +260,240 @@ func (s *RedisStore) BlockToken(ctx context.Context, jti string, ttl time.Durati
 // IsTokenBlocked reports whether jti exists in the Redis blocklist.
 func (s *RedisStore) IsTokenBlocked(ctx context.Context, jti string) (bool, error) {
 	return s.Exists(ctx, blocklistKeyPrefix+jti)
+}
+
+// atomicCounterIncrementScript atomically increments a plain integer counter.
+// ARGV[1]: ttl in milliseconds (0 = permanent; existing TTL preserved on 0).
+// Returns: new count.
+// Requires Redis 6.0+ for SET ... KEEPTTL in the ttl==0 branch.
+const atomicCounterIncrementScript = `
+local key = KEYS[1]
+local ttlMs = tonumber(ARGV[1])
+local current = tonumber(redis.call('GET', key))
+if current == nil then
+    current = 0
+elseif current < 0 then
+    current = 0  -- corruption repair
+end
+local next = current + 1
+if ttlMs > 0 then
+    redis.call('SET', key, next, 'PX', ttlMs)
+elseif redis.call('EXISTS', key) == 1 then
+    redis.call('SET', key, next, 'KEEPTTL')
+else
+    redis.call('SET', key, next)
+end
+return next
+`
+
+// atomicCounterDecrementScript atomically decrements a plain integer counter, flooring at 0.
+// ARGV[1]: ttl in milliseconds for TTL refresh when count > 0 after decrement (0 = no refresh).
+// Returns: new count (never negative).
+// Requires Redis 6.0+ for SET ... KEEPTTL in the corruption repair path.
+const atomicCounterDecrementScript = `
+local key = KEYS[1]
+local ttlMs = tonumber(ARGV[1])
+local current = tonumber(redis.call('GET', key))
+if current == nil then
+    return 0
+end
+if current <= 0 then
+    -- Corruption repair: reset to 0, preserve TTL.
+    redis.call('SET', key, 0, 'KEEPTTL')
+    return 0
+end
+local next = current - 1
+if next == 0 then
+    redis.call('DEL', key)
+elseif ttlMs > 0 then
+    redis.call('SET', key, next, 'PX', ttlMs)
+else
+    redis.call('SET', key, next, 'KEEPTTL')
+end
+return next
+`
+
+// atomicCounterAcquireScript atomically increments if current count < max.
+// ARGV[1]: max (integer ceiling).
+// ARGV[2]: ttl in milliseconds (0 = permanent).
+// Returns: new count on success; -1 when at or above cap.
+// Requires Redis 6.0+ for SET ... KEEPTTL.
+const atomicCounterAcquireScript = `
+local key = KEYS[1]
+local max = tonumber(ARGV[1])
+local ttlMs = tonumber(ARGV[2])
+local current = tonumber(redis.call('GET', key))
+if current == nil then
+    current = 0
+elseif current < 0 then
+    current = 0  -- corruption repair
+end
+if current >= max then
+    return -1
+end
+local next = current + 1
+if ttlMs > 0 then
+    redis.call('SET', key, next, 'PX', ttlMs)
+elseif redis.call('EXISTS', key) == 1 then
+    redis.call('SET', key, next, 'KEEPTTL')
+else
+    redis.call('SET', key, next)
+end
+return next
+`
+
+// RefreshTTL resets the TTL of an existing Redis key.
+// Redis EXPIRE returns 1 when key exists and TTL was set, 0 when key does not exist.
+func (s *RedisStore) RefreshTTL(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	if ttl <= 0 {
+		return false, fmt.Errorf("kvstore.RefreshTTL: ttl must be positive, got %v", ttl)
+	}
+	// Expire returns true when the key exists and the TTL was set,
+	// false when the key does not exist. go-redis v9 returns bool, not int.
+	existed, err := s.client.Expire(ctx, key, ttl).Result()
+	if err != nil {
+		return false, telemetry.KVStore("RefreshTTL.redis_expire", err)
+	}
+	return existed, nil
+}
+
+// AtomicIncrement atomically increments the counter at key by 1.
+func (s *RedisStore) AtomicIncrement(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	result, err := s.evalScript(ctx, s.counterIncrSHA, atomicCounterIncrementScript,
+		[]string{key}, ttl.Milliseconds())
+	if err != nil {
+		return 0, telemetry.KVStore("AtomicIncrement.redis_eval", err)
+	}
+	n, ok := result.(int64)
+	if !ok {
+		return 0, errors.New("kvstore.AtomicIncrement: unexpected result type")
+	}
+	return n, nil
+}
+
+// AtomicDecrement atomically decrements the counter at key by 1, flooring at 0.
+func (s *RedisStore) AtomicDecrement(ctx context.Context, key string, ttl time.Duration) (int64, error) {
+	result, err := s.evalScript(ctx, s.counterDecrSHA, atomicCounterDecrementScript,
+		[]string{key}, ttl.Milliseconds())
+	if err != nil {
+		return 0, telemetry.KVStore("AtomicDecrement.redis_eval", err)
+	}
+	n, ok := result.(int64)
+	if !ok {
+		return 0, errors.New("kvstore.AtomicDecrement: unexpected result type")
+	}
+	return n, nil
+}
+
+// AtomicAcquire atomically increments the counter if current count < max.
+// Returns -1 when at or above cap.
+func (s *RedisStore) AtomicAcquire(ctx context.Context, key string, max int, ttl time.Duration) (int64, error) {
+	result, err := s.evalScript(ctx, s.counterAcqSHA, atomicCounterAcquireScript,
+		[]string{key}, max, ttl.Milliseconds())
+	if err != nil {
+		return 0, telemetry.KVStore("AtomicAcquire.redis_eval", err)
+	}
+	n, ok := result.(int64)
+	if !ok {
+		return 0, errors.New("kvstore.AtomicAcquire: unexpected result type")
+	}
+	return n, nil
+}
+
+// LPush prepends one or more values to the list at key.
+func (s *RedisStore) LPush(ctx context.Context, key string, values ...string) (int64, error) {
+	args := make([]any, len(values))
+	for i, v := range values {
+		args[i] = v
+	}
+	n, err := s.client.LPush(ctx, key, args...).Result()
+	if err != nil {
+		return 0, telemetry.KVStore("LPush.redis_lpush", err)
+	}
+	return n, nil
+}
+
+// BRPop pops the rightmost element from the first non-empty list, blocking up to timeout.
+// Returns ("", "", ErrNotFound) on timeout.
+func (s *RedisStore) BRPop(ctx context.Context, timeout time.Duration, keys ...string) (string, string, error) {
+	result, err := s.client.BRPop(ctx, timeout, keys...).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", "", ErrNotFound
+	}
+	if err != nil {
+		return "", "", telemetry.KVStore("BRPop.redis_brpop", err)
+	}
+	if len(result) != 2 {
+		return "", "", errors.New("kvstore.BRPop: unexpected result length")
+	}
+	return result[0], result[1], nil
+}
+
+// LLen returns the current list length.
+func (s *RedisStore) LLen(ctx context.Context, key string) (int64, error) {
+	n, err := s.client.LLen(ctx, key).Result()
+	if err != nil {
+		return 0, telemetry.KVStore("LLen.redis_llen", err)
+	}
+	return n, nil
+}
+
+// Publish sends payload to all subscribers of channel.
+func (s *RedisStore) Publish(ctx context.Context, channel, payload string) (int64, error) {
+	n, err := s.client.Publish(ctx, channel, payload).Result()
+	if err != nil {
+		return 0, telemetry.KVStore("Publish.redis_publish", err)
+	}
+	return n, nil
+}
+
+// Subscribe returns a channel of PubSubMessages and a cancel func.
+// Reconnects with exponential backoff (1s initial, 60s ceiling) on disconnect.
+// Messages published during reconnect windows are permanently lost — callers
+// must use periodic full reloads as the authoritative recovery path.
+func (s *RedisStore) Subscribe(ctx context.Context, channels ...string) (<-chan PubSubMessage, func()) {
+	ch := make(chan PubSubMessage, 64)
+	ctxSub, cancelSub := context.WithCancel(ctx)
+
+	go func() {
+		defer close(ch)
+		backoff := time.Second
+		const maxBackoff = 60 * time.Second
+		for {
+			sub := s.client.Subscribe(ctxSub, channels...)
+			msgCh := sub.Channel()
+			broken := false
+			for !broken {
+				select {
+				case msg, ok := <-msgCh:
+					if !ok {
+						broken = true
+					} else {
+						select {
+						case ch <- PubSubMessage{Channel: msg.Channel, Payload: msg.Payload}:
+						default:
+						}
+					}
+				case <-ctxSub.Done():
+					_ = sub.Close()
+					return
+				}
+			}
+			_ = sub.Close()
+			// Reconnect with backoff.
+			select {
+			case <-time.After(backoff):
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			case <-ctxSub.Done():
+				return
+			}
+		}
+	}()
+
+	return ch, cancelSub
 }
 
 // atomicBackoffIncrementScript is a Lua script that atomically increments the
@@ -428,11 +683,73 @@ func (s *RedisStore) Ping(ctx context.Context) error {
 	return s.client.Ping(ctx).Err()
 }
 
+// SAdd adds one or more members to the set at key.
+func (s *RedisStore) SAdd(ctx context.Context, key string, members ...string) (int64, error) {
+	args := make([]any, len(members))
+	for i, m := range members {
+		args[i] = m
+	}
+	n, err := s.client.SAdd(ctx, key, args...).Result()
+	if err != nil {
+		return 0, telemetry.KVStore("SAdd.redis_sadd", err)
+	}
+	return n, nil
+}
+
+// SRem removes one or more members from the set at key.
+func (s *RedisStore) SRem(ctx context.Context, key string, members ...string) (int64, error) {
+	args := make([]any, len(members))
+	for i, m := range members {
+		args[i] = m
+	}
+	n, err := s.client.SRem(ctx, key, args...).Result()
+	if err != nil {
+		return 0, telemetry.KVStore("SRem.redis_srem", err)
+	}
+	return n, nil
+}
+
+// SCard returns the number of members in the set at key.
+func (s *RedisStore) SCard(ctx context.Context, key string) (int64, error) {
+	n, err := s.client.SCard(ctx, key).Result()
+	if err != nil {
+		return 0, telemetry.KVStore("SCard.redis_scard", err)
+	}
+	return n, nil
+}
+
+// SScan incrementally iterates over members of the set at key.
+func (s *RedisStore) SScan(ctx context.Context, key string, cursor uint64, match string, count int64) ([]string, uint64, error) {
+	members, nextCursor, err := s.client.SScan(ctx, key, cursor, match, count).Result()
+	if err != nil {
+		return nil, 0, telemetry.KVStore("SScan.redis_sscan", err)
+	}
+	return members, nextCursor, nil
+}
+
+// ConsumeOnce atomically sets key with ttl only if it does not already exist
+// (Redis SET NX PX). Returns true when the key was newly created.
+func (s *RedisStore) ConsumeOnce(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	if ttl <= 0 {
+		return false, fmt.Errorf("kvstore.ConsumeOnce: ttl must be positive, got %v", ttl)
+	}
+	ok, err := s.client.SetNX(ctx, key, "1", ttl).Result()
+	if err != nil {
+		return false, telemetry.KVStore("ConsumeOnce.redis_setnx", err)
+	}
+	return ok, nil
+}
+
 // compile-time interface checks.
 var _ Store = (*RedisStore)(nil)
 var _ TokenBlocklist = (*RedisStore)(nil)
 var _ AtomicBucketStore = (*RedisStore)(nil)
 var _ AtomicBackoffStore = (*RedisStore)(nil)
+var _ AtomicCounterStore = (*RedisStore)(nil)
+var _ ListStore = (*RedisStore)(nil)
+var _ PubSubStore = (*RedisStore)(nil)
+var _ SetStore = (*RedisStore)(nil)
+var _ OnceStore = (*RedisStore)(nil)
 
 // Ensure RedisStore satisfies the telemetry.RedisStatsProvider interface so
 // a missing Ping() method is caught at compile time, not at server startup.

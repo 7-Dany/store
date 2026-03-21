@@ -508,5 +508,20 @@ svc.Shutdown()  // 15s ceiling
 
 | ID | Test | Notes |
 |---|---|---|
-| T-89 | `TestHandlerTimeout_BlockingHandlerCancelled` | handler ignores ctx; timeout fires; worker freed |
-| T-104 | `TestSSEHandler_PanicInLoop_SlotReleased` | panic in SSE event loop → doCleanup via sync.Once |
+| T-89 | `TestHandlerTimeout_BlockingHandlerCancelled` | handler ignores ctx; timeout fires; worker freed — **implemented in this package** |
+| T-104 | `TestSSEHandler_PanicInLoop_SlotReleased` | panic in SSE event loop → doCleanup via sync.Once — **belongs in `domain/bitcoin/events/handler_test.go`** |
+
+### Tests that belong in other packages
+
+These tests were specified against the ZMQ subscriber but require infrastructure
+(live ZMQ server, Redis, RPC client) that this package explicitly does not import.
+They are recorded here for traceability and must be implemented in the packages
+that own the relevant infrastructure.
+
+| ID | Test | Target package | Reason |
+|---|---|---|---|
+| T-45 | `TestSubscriber_ReconnectEmitsRecoveryEvent` | Integration test suite or `payment` package | Requires a real ZMQ server to disconnect/reconnect; unit test mocking a live socket is brittle |
+| T-46 | `TestSubscriber_OverflowWritesRedis` | `domain/bitcoin/events` settlement handler tests | The overflow→Redis path lives in the settlement_tx handler, not in the ZMQ subscriber itself |
+| T-47 | `TestSubscriber_RPCFailureDoesNotFlipIsConnected` | `platform/bitcoin/rpc` package tests | IsConnected() is based on ZMQ messages only; the RPC client is a separate concern |
+| T-48 | `TestSubscriber_404SkippedGracefully` | `platform/bitcoin/rpc` package tests | Unknown txid handling is an RPC client concern, not a ZMQ subscriber concern |
+| T-104 | `TestSSEHandler_PanicInLoop_SlotReleased` | `domain/bitcoin/events/handler_test.go` | The SSE event loop and doCleanup sync.Once live in the events handler, not here |

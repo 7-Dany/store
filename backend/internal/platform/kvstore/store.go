@@ -49,6 +49,14 @@ type Store interface {
 	// Close releases any resources held by the store (connections, goroutines,
 	// file handles, etc.).
 	Close() error
+
+	// RefreshTTL resets the TTL of an existing key without modifying its value.
+	// Returns (true, nil)  — key existed, TTL updated.
+	// Returns (false, nil) — key does not exist (expired or never created).
+	//                        Caller should treat this as expiry and take recovery action.
+	// Returns (false, err) — store error; caller should log and retry.
+	// Passing ttl ≤ 0 returns an error; a zero TTL would delete the key immediately.
+	RefreshTTL(ctx context.Context, key string, ttl time.Duration) (existed bool, err error)
 }
 
 // TokenBlocklist provides immediate access-token revocation by maintaining a
@@ -108,6 +116,124 @@ type AtomicBucketStore interface {
 	// Returns (false, nil) when the bucket is empty (caller should 429).
 	// Returns (false, err) on a transient store error.
 	AtomicBucketPeek(ctx context.Context, key string, rate, burst float64, idleTTL time.Duration) (bool, error)
+}
+
+// AtomicCounterStore is an optional extension of Store for backends that
+// support atomic increment, decrement, and acquire operations.
+// Both InMemoryStore and RedisStore implement this interface.
+// RefreshTTL is inherited from the embedded Store interface.
+type AtomicCounterStore interface {
+	Store
+
+	// AtomicIncrement increments the counter at key by 1.
+	// New key initialised to 1. ttl>0 sets/refreshes the TTL. ttl==0 is permanent.
+	// If key exists and ttl>0, existing TTL is refreshed.
+	// If key exists and ttl==0, existing TTL is preserved.
+	// Returns the new count.
+	AtomicIncrement(ctx context.Context, key string, ttl time.Duration) (int64, error)
+
+	// AtomicDecrement decrements the counter at key by 1, flooring at 0.
+	// Returns 0 when key does not exist. Never returns a negative value.
+	// If ttl>0 AND resulting count>0, the TTL is refreshed. This prevents
+	// the safety TTL from expiring while other connections remain open (C-03 fix).
+	AtomicDecrement(ctx context.Context, key string, ttl time.Duration) (int64, error)
+
+	// AtomicAcquire increments the counter if current count < max.
+	// Returns the new count (≥1) on success.
+	// Returns (-1, nil) when already at or above max — caller returns 429/503.
+	// Returns (0, err) on store error — caller fails closed.
+	AtomicAcquire(ctx context.Context, key string, max int, ttl time.Duration) (int64, error)
+}
+
+// PubSubMessage is a message received from a PubSubStore subscription.
+type PubSubMessage struct {
+	Channel string
+	Payload string
+}
+
+// ListStore is an optional extension of Store for backends that support
+// list operations (LPUSH/BRPOP/LLEN). Used by the bitcoin settlement overflow queue.
+type ListStore interface {
+	Store
+
+	// LPush prepends one or more values to the list at key.
+	// Creates the list if it does not exist.
+	// Returns the new list length after all values are pushed.
+	LPush(ctx context.Context, key string, values ...string) (int64, error)
+
+	// BRPop pops the rightmost element from the first non-empty list.
+	// Blocks up to timeout if all lists are empty.
+	// Returns ("", "", ErrNotFound) on timeout (both Redis and InMemoryStore).
+	// InMemoryStore does NOT block — returns ErrNotFound immediately when empty.
+	// Use a polling loop with a ticker when using InMemoryStore.
+	BRPop(ctx context.Context, timeout time.Duration, keys ...string) (key, value string, err error)
+
+	// LLen returns the current list length. Returns 0 when key does not exist.
+	LLen(ctx context.Context, key string) (int64, error)
+}
+
+// PubSubStore is an optional extension of Store for backends that support
+// publish/subscribe messaging. Used for cross-instance cache invalidation.
+type PubSubStore interface {
+	Store
+
+	// Publish sends payload to all subscribers of channel.
+	// Returns subscriber count (0 is not an error).
+	Publish(ctx context.Context, channel, payload string) (int64, error)
+
+	// Subscribe returns a channel receiving messages and a cancel func.
+	// The message channel is closed when cancel() is called or ctx is cancelled.
+	// Callers MUST always call the returned cancel func.
+	//
+	// RedisStore: reconnects with exponential backoff (1s initial, 60s ceiling).
+	// Messages published during a reconnect window are permanently lost.
+	// Callers must NOT assume guaranteed delivery — use periodic full reloads
+	// as the authoritative recovery path.
+	//
+	// InMemoryStore: single-process only; no reconnection. Messages sent before
+	// Subscribe is called are lost. Not suitable for multi-instance deployments.
+	Subscribe(ctx context.Context, channels ...string) (<-chan PubSubMessage, func())
+}
+
+// SetStore is an optional extension of Store for backends that support
+// Redis-style set operations. Used by the bitcoin domain for watch address sets.
+type SetStore interface {
+	Store
+
+	// SAdd adds one or more members to the set at key.
+	// Creates the set if it does not exist.
+	// Returns the number of members actually added (excluding already-present ones).
+	SAdd(ctx context.Context, key string, members ...string) (int64, error)
+
+	// SRem removes one or more members from the set at key.
+	// Missing members are ignored.
+	// Returns the number of members actually removed.
+	SRem(ctx context.Context, key string, members ...string) (int64, error)
+
+	// SCard returns the number of members in the set at key.
+	// Returns 0 when key does not exist.
+	SCard(ctx context.Context, key string) (int64, error)
+
+	// SScan incrementally iterates over members of the set at key.
+	// Pass cursor=0 to start a new iteration; iteration is complete when the
+	// returned cursor is 0. match filters members by glob pattern ("" = all).
+	// count is a hint for how many elements to return per call.
+	//
+	// InMemoryStore returns all matching members in one shot (cursor always 0).
+	SScan(ctx context.Context, key string, cursor uint64, match string, count int64) (members []string, nextCursor uint64, err error)
+}
+
+// OnceStore is an optional extension of Store for atomic one-time-use keys.
+// Used by the bitcoin domain for SSE JTI one-time token consumption.
+type OnceStore interface {
+	Store
+
+	// ConsumeOnce atomically creates key with the given TTL only if it does not
+	// already exist (Redis SET NX PX).
+	// Returns true when the key was newly created — the caller owns the slot.
+	// Returns false when the key already existed — the token was already consumed.
+	// ttl must be positive; a zero or negative TTL returns an error.
+	ConsumeOnce(ctx context.Context, key string, ttl time.Duration) (consumed bool, err error)
 }
 
 // AtomicBackoffStore is an optional extension of Store for backends that can

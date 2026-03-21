@@ -33,6 +33,13 @@ const (
 	PermRequestManage      = "request:manage"
 	PermRequestApprove     = "request:approve"
 	PermProductManage      = "product:manage"
+
+	// Bitcoin payment domain permissions.
+	// Stage 0: not yet enforced — all authenticated users may access bitcoin endpoints.
+	// Stage 2+: apply rbac.Require(rbac.PermBitcoinWatch) to POST /watch and GET /events.
+	PermBitcoinWatch  = "bitcoin:watch"   // register addresses for SSE notification
+	PermBitcoinStatus = "bitcoin:status"  // read ZMQ subscriber health (GET /status)
+	PermBitcoinManage = "bitcoin:manage"  // admin: adjust watch limits, flush caches
 )
 
 // ── ConditionalEscalator ──────────────────────────────────────────────────────

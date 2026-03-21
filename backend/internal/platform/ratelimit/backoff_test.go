@@ -46,6 +46,9 @@ func (s *nonAtomicStore) Keys(ctx context.Context, prefix string) ([]string, err
 }
 func (s *nonAtomicStore) StartCleanup(ctx context.Context) { s.inner.StartCleanup(ctx) }
 func (s *nonAtomicStore) Close() error                     { return s.inner.Close() }
+func (s *nonAtomicStore) RefreshTTL(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	return s.inner.RefreshTTL(ctx, key, ttl)
+}
 
 // corruptJSONStore behaves like nonAtomicStore but seeds a corrupt JSON value
 // for a specific key, exercising the json.Unmarshal error branch in loadEntry.

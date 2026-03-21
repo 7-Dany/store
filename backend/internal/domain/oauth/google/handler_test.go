@@ -77,6 +77,10 @@ func (f *fakeKV) Keys(_ context.Context, prefix string) ([]string, error) {
 }
 func (f *fakeKV) StartCleanup(_ context.Context) {}
 func (f *fakeKV) Close() error                   { return nil }
+func (f *fakeKV) RefreshTTL(_ context.Context, key string, _ time.Duration) (bool, error) {
+	_, ok := f.data[key]
+	return ok, nil
+}
 
 // compile-time check.
 var _ kvstore.Store = (*fakeKV)(nil)
@@ -226,8 +230,10 @@ func TestHandleInitiate_InvalidBearer_TreatedAsUnauthenticated(t *testing.T) {
 	assert.Equal(t, "", state.LinkUserID)
 }
 
-// T-04: KV set failure → 500 internal_error.
-func TestHandleInitiate_KVSetFailure_Returns500(t *testing.T) {
+// T-04: KV set failure → handler falls back to a signed HttpOnly cookie and
+// still redirects 302 to Google. The cookie CSRF guarantee is preserved via
+// HMAC-SHA256 even when Redis is unavailable.
+func TestHandleInitiate_KVSetFailure_FallsBackToCookieAndRedirects(t *testing.T) {
 	kv := newFakeKV()
 	kv.SetFn = func(_ context.Context, _, _ string, _ time.Duration) error {
 		return errors.New("kv unavailable")
@@ -237,8 +243,20 @@ func TestHandleInitiate_KVSetFailure_Returns500(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.HandleInitiate(w, newInitiateRequest())
 
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
-	assertJSONCode(t, w, "internal_error")
+	// Fallback cookie must have been set.
+	var fallbackCookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "goauth_state_fb" {
+			fallbackCookie = c
+			break
+		}
+	}
+	require.NotNil(t, fallbackCookie, "expected goauth_state_fb fallback cookie to be set")
+	assert.True(t, fallbackCookie.HttpOnly, "fallback cookie must be HttpOnly")
+
+	// Redirect must still go to Google.
+	assert.Equal(t, http.StatusFound, w.Code)
+	assert.Contains(t, w.Header().Get("Location"), "accounts.google.com")
 }
 
 // T-05: Two requests produce distinct state KV keys.

@@ -7,6 +7,7 @@ package server
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/config"
 	"github.com/7-Dany/store/backend/internal/db"
+	"github.com/7-Dany/store/backend/internal/platform/bitcoin/zmq"
 	"github.com/7-Dany/store/backend/internal/platform/crypto"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/mailer"
@@ -136,9 +138,44 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		AccessTTL:        cfg.AccessTokenTTL,
 		SecureCookies:    !cfg.HTTPSDisabled,
 	}
+	// Validate at startup so misconfigurations (short/identical secrets, TTL ceiling,
+	// insecure cookies in production) surface before the server accepts traffic.
+	// isDev=cfg.HTTPSDisabled: HTTP-only local environments may use insecure cookies.
+	if err := token.ValidateJWTConfig(jwtCfg, cfg.HTTPSDisabled); err != nil {
+		q.Shutdown()
+		pool.Close()
+		kvStore.Close() //nolint:errcheck
+		return nil, nil, fmt.Errorf("server: jwt config: %w", err)
+	}
 
 	// ── RBAC checker ─────────────────────────────────────────────────────
 	rbacChecker := rbac.NewChecker(db.New(pool))
+
+	// ── Bitcoin ZMQ subscriber ────────────────────────────────────────────
+	// Constructed only when BTC_ENABLED=true. Run() is launched here so the
+	// subscriber is live before the HTTP server accepts traffic — domain
+	// routes register handlers during wiring and events are delivered as soon
+	// as Bitcoin Core connects. btcSub is nil when bitcoin is disabled, and
+	// all bitcoin dep fields in app.Deps are guarded by BitcoinEnabled.
+	var btcSub zmq.Subscriber
+	if cfg.BitcoinEnabled {
+		var zmqErr error
+		btcSub, zmqErr = newBitcoinZMQ(cfg, registry)
+		if zmqErr != nil {
+			q.Shutdown()
+			pool.Close()
+			kvStore.Close() //nolint:errcheck
+			return nil, nil, fmt.Errorf("server: bitcoin zmq: %w", zmqErr)
+		}
+		// Run blocks until ctx is cancelled. Launch in a background goroutine
+		// and log abnormal exits — do NOT call os.Exit or log.Fatal here;
+		// the cleanup func must still run to drain the queue and close the pool.
+		go func() {
+			if err := btcSub.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				slog.Error("server: ZMQ subscriber abnormal exit", "error", err)
+			}
+		}()
+	}
 
 	// ── Shared deps ───────────────────────────────────────────────────────
 	deps := &app.Deps{
@@ -168,6 +205,9 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 			ErrorURL:           cfg.OAuthErrorURL,
 			TelegramBotToken:   cfg.TelegramBotToken,
 		},
+		BitcoinEnabled: cfg.BitcoinEnabled,
+		BitcoinZMQ:     btcSub,
+		BitcoinNetwork: cfg.BitcoinNetwork,
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────
@@ -179,14 +219,24 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Shutdown order matters and must not be changed:
-	//   1. q.Shutdown() — drains the mail queue first; in-flight mailer goroutines
-	//      may call DB-backed operations, so the pool must still be open.
-	//   2. pool.Close() — safe only after the queue is drained.
-	// kvStore.Close() is handled separately via the ctx.Done() goroutine above
-	// and may fire before cleanup() is called; that is intentional because the
-	// KV store is not used by in-flight pool operations.
+	// Shutdown order must not be changed — see zmq-technical.md §9:
+	//   1. btcSub.Shutdown() — drain ZMQ handler goroutines (30 s ceiling).
+	//      In-flight handlers may hold pool and KV store references; draining
+	//      first prevents use-after-close panics in those handlers.
+	//   2. q.Shutdown() — drain the mail queue. In-flight mailer goroutines
+	//      may call DB-backed audit writes, so the pool must still be open.
+	//   3. pool.Close() — safe only after the queue is drained.
+	//
+	// kvStore.Close() is driven by the ctx.Done() goroutine above and may fire
+	// concurrently with cleanup(); that is intentional because KV store ops
+	// (rate limiters) are not part of in-flight request work at this point.
+	//
+	// This func is called by main.go AFTER srv.Shutdown() returns, so all
+	// HTTP handler contexts are already cancelled before it executes.
 	cleanup := func() {
+		if btcSub != nil {
+			btcSub.Shutdown()
+		}
 		q.Shutdown()
 		pool.Close()
 	}
@@ -229,4 +279,26 @@ func newKVStore(ctx context.Context, cfg *config.Config) (kvstore.Store, error) 
 		slog.WarnContext(ctx, "server: Redis unavailable, falling back to in-memory KV store", "error", err)
 	}
 	return kvstore.NewInMemoryStore(5 * time.Minute), nil
+}
+
+// newBitcoinZMQ constructs the ZMQ subscriber from config. It translates
+// BTC_ZMQ_IDLE_TIMEOUT=0 to a network-appropriate default before calling
+// zmq.New(), which rejects zero as a programming error (the default must be
+// resolved here, not inside the platform package).
+func newBitcoinZMQ(cfg *config.Config, recorder zmq.ZMQRecorder) (zmq.Subscriber, error) {
+	// Translate idle timeout 0 → network default.
+	// 0 means "use the default" at the config layer; zmq.New() rejects it
+	// explicitly so misconfigured callers are caught immediately.
+	idleTimeout := time.Duration(cfg.BitcoinZMQIdleTimeout) * time.Second
+	if idleTimeout == 0 {
+		if cfg.BitcoinNetwork == "mainnet" {
+			// Mainnet produces one block roughly every 10 minutes.
+			// 600 s gives a full block interval before the liveness gauge flips.
+			idleTimeout = 600 * time.Second
+		} else {
+			// testnet4 produces blocks faster; 120 s is sufficient.
+			idleTimeout = 120 * time.Second
+		}
+	}
+	return zmq.New(cfg.BitcoinZMQBlock, cfg.BitcoinZMQTx, idleTimeout, recorder)
 }

@@ -138,22 +138,46 @@ func TestEventConstants_ExactValues(t *testing.T) {
 		{audit.EventOwnerTransferInitiated,  "owner_transfer_initiated"},
 		{audit.EventOwnerTransferAccepted,   "owner_transfer_accepted"},
 		{audit.EventOwnerTransferCancelled,  "owner_transfer_cancelled"},
+		{audit.EventBitcoinAddressWatched,            "bitcoin_address_watched"},
+		{audit.EventBitcoinTxDetected,                "bitcoin_tx_detected"},
+		{audit.EventBitcoinSSETokenIssued,            "bitcoin_sse_token_issued"},
+		{audit.EventBitcoinSSETokenConsumeFailure,    "bitcoin_sse_token_consume_failure"},
+		{audit.EventBitcoinSSECapExceeded,            "bitcoin_sse_cap_exceeded"},
+		{audit.EventBitcoinSSEConnected,              "bitcoin_sse_connected"},
+		{audit.EventBitcoinSSEDisconnected,           "bitcoin_sse_disconnected"},
+		{audit.EventBitcoinRedisFallback,             "bitcoin_redis_fallback"},
+		{audit.EventBitcoinInvoiceReorgAdminRequired, "bitcoin_invoice_reorg_admin_required"},
+		{audit.EventBitcoinWatchLimitExceeded,        "bitcoin_watch_limit_exceeded"},
+		{audit.EventBitcoinWatchRateLimitHit,         "bitcoin_watch_rate_limit_hit"},
+		{audit.EventBitcoinWatchInvalidAddress,       "bitcoin_watch_invalid_address"},
+		{audit.EventBitcoinSSEAuditWriteFailure,      "bitcoin_sse_audit_write_failure"},
 	}
 
-	// Enforce exhaustiveness: AllEvents() must contain exactly as many entries
-	// as this table. This catches the case where a constant is added to the
-	// const block and to AllEvents() but forgotten here, or vice-versa.
-	require.Len(t, allEvents, len(cases),
-		"AllEvents() returns %d entries but this table has %d; "+
-			"keep audit.go const block, AllEvents(), and this table in sync",
-		len(allEvents), len(cases))
+	// Map-based exhaustiveness check: names the missing constant rather than
+	// printing a count mismatch.
+	caseMap := make(map[audit.EventType]string, len(cases))
+	for _, c := range cases {
+		caseMap[c.constant] = c.want
+	}
 
-	for _, tc := range cases {
-		t.Run(tc.want, func(t *testing.T) {
-			t.Parallel()
-			require.Equal(t, tc.want, string(tc.constant),
-				"constant value changed — historical audit rows use the old value; add a data migration before changing it")
-		})
+	// Every constant in AllEvents() must have a test case.
+	for _, ev := range audit.AllEvents() {
+		expected, ok := caseMap[ev]
+		require.True(t, ok,
+			"audit constant %q is in AllEvents() but missing from test cases — add it to TestEventConstants_ExactValues", ev)
+		require.Equal(t, string(expected), string(ev),
+			"constant value changed — historical audit rows use the old value; add a data migration before changing it")
+	}
+
+	// Every test case must be in AllEvents().
+	allSet := make(map[audit.EventType]struct{}, len(audit.AllEvents()))
+	for _, ev := range audit.AllEvents() {
+		allSet[ev] = struct{}{}
+	}
+	for _, c := range cases {
+		_, ok := allSet[c.constant]
+		require.True(t, ok,
+			"test case for %q is not in AllEvents() — remove it or add to AllEvents()", c.constant)
 	}
 }
 

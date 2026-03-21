@@ -53,6 +53,16 @@ func (r *Registry) OnHandlerPanic(handler string) {
 	r.bitcoinHandlerPanics.WithLabelValues(handler).Inc()
 }
 
+// OnHandlerTimeout increments the bitcoin_handler_timeouts_total counter for
+// the named handler. Called when a handler's context expires before the handler
+// returns — the goroutine continues running but the worker slot is released.
+func (r *Registry) OnHandlerTimeout(handler string) {
+	if r == nil {
+		return
+	}
+	r.bitcoinHandlerTimeouts.WithLabelValues(handler).Inc()
+}
+
 // SetHandlerGoroutines records the current number of in-flight ZMQ handler goroutines.
 func (r *Registry) SetHandlerGoroutines(count int) {
 	if r == nil {

@@ -796,3 +796,6 @@ func (f *failingKV) Exists(_ context.Context, _ string) (bool, error)          {
 func (f *failingKV) Keys(_ context.Context, _ string) ([]string, error)        { return nil, nil }
 func (f *failingKV) StartCleanup(_ context.Context)                            {}
 func (f *failingKV) Close() error                                              { return nil }
+func (f *failingKV) RefreshTTL(_ context.Context, _ string, _ time.Duration) (bool, error) {
+	return false, nil
+}

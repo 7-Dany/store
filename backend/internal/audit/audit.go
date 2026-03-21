@@ -191,6 +191,74 @@ const (
 	// EventOwnerTransferCancelled is emitted when the initiating owner cancels the
 	// pending transfer. Written with context.WithoutCancel.
 	EventOwnerTransferCancelled EventType = "owner_transfer_cancelled"
+
+	// ── Bitcoin payment domain ───────────────────────────────────────────────────────────────────────
+
+	// EventBitcoinAddressWatched: at least one new address successfully registered
+	// (added_count > 0). Re-registration of existing addresses is silent.
+	EventBitcoinAddressWatched EventType = "bitcoin_address_watched"
+
+	// EventBitcoinTxDetected: watched address appeared in a new mempool or confirmed tx.
+	EventBitcoinTxDetected EventType = "bitcoin_tx_detected"
+
+	// EventBitcoinSSETokenIssued: POST /bitcoin/events/token successfully created a
+	// one-time SSE token. Metadata: userID, sha256(jti), exp, sourceIP.
+	EventBitcoinSSETokenIssued EventType = "bitcoin_sse_token_issued"
+
+	// EventBitcoinSSETokenConsumeFailure: GET /bitcoin/events rejected a token at
+	// the token-validation layer. Metadata: reason (already_used | ip_mismatch |
+	// sid_mismatch | expired), partial sha256(jti), sourceIP.
+	// IMPORTANT: capacity-limit rejections use EventBitcoinSSECapExceeded, NOT this
+	// event. Mixing them corrupts security analytics.
+	EventBitcoinSSETokenConsumeFailure EventType = "bitcoin_sse_token_consume_failure"
+
+	// EventBitcoinSSECapExceeded: GET /bitcoin/events rejected because a capacity
+	// ceiling was reached. Metadata: reason (user_cap | process_cap), userID, sourceIP.
+	// Separate from EventBitcoinSSETokenConsumeFailure so capacity events do not
+	// trigger replay-detection alerts.
+	EventBitcoinSSECapExceeded EventType = "bitcoin_sse_cap_exceeded"
+
+	// EventBitcoinSSEConnected: SSE stream successfully established.
+	// Metadata: userID, sourceIP.
+	EventBitcoinSSEConnected EventType = "bitcoin_sse_connected"
+
+	// EventBitcoinSSEDisconnected: SSE stream closed for any reason (client disconnect,
+	// write error, ping failure, ctx cancellation). Written via doCleanup() using
+	// context.Background() — never the cancelled handler context.
+	// Metadata: userID, sourceIP, durationMs.
+	EventBitcoinSSEDisconnected EventType = "bitcoin_sse_disconnected"
+
+	// EventBitcoinRedisFallback: a Bitcoin domain Redis operation failed and the
+	// system entered degraded mode. Written to stdout JSON AND BTC_FALLBACK_AUDIT_LOG.
+	// Metadata: operation, error summary.
+	EventBitcoinRedisFallback EventType = "bitcoin_redis_fallback"
+
+	// EventBitcoinInvoiceReorgAdminRequired: a blockchain reorg affected an invoice
+	// whose funds have already been swept. Admin must verify whether the sweep tx was
+	// also reversed. Metadata: invoice_id, previous_status.
+	EventBitcoinInvoiceReorgAdminRequired EventType = "bitcoin_invoice_reorg_admin_required"
+
+	// EventBitcoinWatchLimitExceeded: POST /watch rejected because the per-user address
+	// cap or 7-day registration window was reached. Metadata: userID, sourceIP,
+	// reason (count_cap | registration_window_expired).
+	EventBitcoinWatchLimitExceeded EventType = "bitcoin_watch_limit_exceeded"
+
+	// EventBitcoinWatchRateLimitHit: POST /watch rejected by IP rate limiter.
+	// Metadata: sourceIP.
+	EventBitcoinWatchRateLimitHit EventType = "bitcoin_watch_rate_limit_hit"
+
+	// EventBitcoinWatchInvalidAddress: POST /watch rejected because an address failed
+	// validateAndNormalise. Metadata: userID, sourceIP, address_count,
+	// invalid_address_hmac (HMAC-SHA256(BTC_AUDIT_HMAC_KEY, invalidAddr) — cross-event
+	// correlation without retaining raw address PII).
+	// IMPORTANT: separate from EventBitcoinWatchLimitExceeded — do not conflate
+	// format-validation failures with cap-limit hits in security analytics.
+	EventBitcoinWatchInvalidAddress EventType = "bitcoin_watch_invalid_address"
+
+	// EventBitcoinSSEAuditWriteFailure: written to fallback log only when audit.Write
+	// fails inside doCleanup for EventBitcoinSSEDisconnected. Enables detection of
+	// audit trail gaps via bitcoin_audit_write_failures_total metric and fallback log.
+	EventBitcoinSSEAuditWriteFailure EventType = "bitcoin_sse_audit_write_failure"
 )
 
 // AllEvents returns a slice of every audit event constant defined in this package.
@@ -240,5 +308,18 @@ func AllEvents() []EventType {
 		EventOwnerTransferInitiated,
 		EventOwnerTransferAccepted,
 		EventOwnerTransferCancelled,
+		EventBitcoinAddressWatched,
+		EventBitcoinTxDetected,
+		EventBitcoinSSETokenIssued,
+		EventBitcoinSSETokenConsumeFailure,
+		EventBitcoinSSECapExceeded,
+		EventBitcoinSSEConnected,
+		EventBitcoinSSEDisconnected,
+		EventBitcoinRedisFallback,
+		EventBitcoinInvoiceReorgAdminRequired,
+		EventBitcoinWatchLimitExceeded,
+		EventBitcoinWatchRateLimitHit,
+		EventBitcoinWatchInvalidAddress,
+		EventBitcoinSSEAuditWriteFailure,
 	}
 }

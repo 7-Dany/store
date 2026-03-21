@@ -1472,3 +1472,327 @@ func TestLoad_RejectsEmptyAppName(t *testing.T) {
 		t.Errorf("error should mention APP_NAME, got: %v", err)
 	}
 }
+
+// ─────────────────────────────────────────────────────────────
+// Bitcoin configuration tests
+// ─────────────────────────────────────────────────────────────
+
+// validBitcoinConfig returns a Config with all bitcoin fields set to valid values.
+func validBitcoinConfig() *Config {
+	cfg := validBaseConfig()
+	cfg.BitcoinEnabled = true
+	cfg.BitcoinRPCHost = "127.0.0.1"
+	cfg.BitcoinRPCPort = "8332"
+	cfg.BitcoinRPCUser = "rpcuser"
+	cfg.BitcoinRPCPass = "rpcpass-secret-value-here"
+	cfg.BitcoinZMQBlock = "tcp://127.0.0.1:28332"
+	cfg.BitcoinZMQTx = "tcp://127.0.0.1:28333"
+	cfg.BitcoinZMQIdleTimeout = 0
+	cfg.BitcoinNetwork = "testnet4"
+	cfg.BitcoinSSETokenTTL = 60
+	cfg.BitcoinSSETokenBindIP = true
+	cfg.BitcoinSessionSecret = "btc-session-secret-32-bytes-xxxxxY"
+	cfg.BitcoinSSESigningSecret = "btc-sse-signing-secret-32-bytes-ZZ"
+	cfg.BitcoinAuditHMACKey = "btc-audit-hmac-key-32-bytes-AAABBB"
+	cfg.BitcoinMaxSSEPerUser = 3
+	cfg.BitcoinMaxSSEProcess = 100
+	cfg.BitcoinMaxWatchPerUser = 100
+	cfg.BitcoinCacheTTL = 5
+	cfg.BitcoinBlockRPCTimeoutSeconds = 10
+	cfg.BitcoinHandlerTimeoutMs = 30000
+	cfg.BitcoinPendingMempoolMaxSize = 10000
+	cfg.BitcoinMempoolPendingMaxAgeDays = 14
+	cfg.BitcoinFallbackAuditLog = ""
+	cfg.BitcoinReconciliationStartHeight = 100
+	cfg.BitcoinReconciliationCheckpointInterval = 100
+	cfg.BitcoinReconciliationAllowGenesisScan = false
+	return cfg
+}
+
+func TestConfig_Bitcoin_DisabledByDefault(t *testing.T) {
+	cfg := validBaseConfig()
+	// BitcoinEnabled is false (zero value) — validate() must succeed without any bitcoin vars.
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("validate() with bitcoin disabled should pass, got: %v", err)
+	}
+	if cfg.BitcoinEnabled {
+		t.Fatal("BitcoinEnabled should default to false")
+	}
+}
+
+func TestConfig_Bitcoin_ValidConfig_Passes(t *testing.T) {
+	cfg := validBitcoinConfig()
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("valid bitcoin config should pass, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_RequiredFieldsMissing(t *testing.T) {
+	cfg := validBitcoinConfig()
+	cfg.BitcoinRPCUser = ""
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for missing BTC_RPC_USER")
+	}
+	if !strings.Contains(err.Error(), "BTC_RPC_USER") {
+		t.Errorf("error should mention BTC_RPC_USER, got: %v", err)
+	}
+
+	cfg2 := validBitcoinConfig()
+	cfg2.BitcoinRPCPass = ""
+	err2 := cfg2.validate()
+	if err2 == nil {
+		t.Fatal("expected error for missing BTC_RPC_PASS")
+	}
+	if !strings.Contains(err2.Error(), "BTC_RPC_PASS") {
+		t.Errorf("error should mention BTC_RPC_PASS, got: %v", err2)
+	}
+}
+
+func TestConfig_Bitcoin_NetworkInvalid(t *testing.T) {
+	cfg := validBitcoinConfig()
+	cfg.BitcoinNetwork = "regtest"
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for BTC_NETWORK=regtest")
+	}
+	if !strings.Contains(err.Error(), "BTC_NETWORK") {
+		t.Errorf("error should mention BTC_NETWORK, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_SecretsTooShort(t *testing.T) {
+	cfg := validBitcoinConfig()
+	cfg.BitcoinSessionSecret = "tooshort" // < 32 bytes
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for short BTC_SESSION_SECRET")
+	}
+	if !strings.Contains(err.Error(), "BTC_SESSION_SECRET") {
+		t.Errorf("error should mention BTC_SESSION_SECRET, got: %v", err)
+	}
+
+	cfg2 := validBitcoinConfig()
+	cfg2.BitcoinSSESigningSecret = "tooshort"
+	err2 := cfg2.validate()
+	if err2 == nil {
+		t.Fatal("expected error for short BTC_SSE_SIGNING_SECRET")
+	}
+	if !strings.Contains(err2.Error(), "BTC_SSE_SIGNING_SECRET") {
+		t.Errorf("error should mention BTC_SSE_SIGNING_SECRET, got: %v", err2)
+	}
+}
+
+func TestConfig_Bitcoin_SecretsIdentical(t *testing.T) {
+	cfg := validBitcoinConfig()
+	cfg.BitcoinSSESigningSecret = cfg.BitcoinSessionSecret
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error when session and signing secrets are identical")
+	}
+	if !strings.Contains(err.Error(), "distinct") {
+		t.Errorf("error should mention 'distinct', got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_CrossFieldHandlerTimeout(t *testing.T) {
+	// BTC_HANDLER_TIMEOUT_MS=5000, BTC_BLOCK_RPC_TIMEOUT_SECONDS=10
+	// minHandlerMs = 2*10*1000+2000 = 22000; 5000 <= 22000 → error.
+	cfg := validBitcoinConfig()
+	cfg.BitcoinBlockRPCTimeoutSeconds = 10
+	cfg.BitcoinHandlerTimeoutMs = 5000
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected cross-field handler timeout error")
+	}
+	if !strings.Contains(err.Error(), "BTC_HANDLER_TIMEOUT_MS") {
+		t.Errorf("error should mention BTC_HANDLER_TIMEOUT_MS, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_CrossFieldHandlerTimeoutDefaults(t *testing.T) {
+	// Default values: HandlerTimeoutMs=30000, BlockRPCTimeoutSeconds=10
+	// minHandlerMs = 22000; 30000 > 22000 → valid.
+	cfg := validBitcoinConfig()
+	cfg.BitcoinBlockRPCTimeoutSeconds = 10
+	cfg.BitcoinHandlerTimeoutMs = 30000
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("default timeout values should satisfy constraint, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_ZMQIdleTimeoutRange(t *testing.T) {
+	tests := []struct {
+		val     int
+		wantErr bool
+	}{
+		{29, true},
+		{30, false},
+		{3600, false},
+		{3601, true},
+		{0, false}, // 0 = use default
+	}
+	for _, tc := range tests {
+		cfg := validBitcoinConfig()
+		cfg.BitcoinZMQIdleTimeout = tc.val
+		err := cfg.validate()
+		if tc.wantErr && err == nil {
+			t.Errorf("ZMQIdleTimeout=%d: expected error, got nil", tc.val)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("ZMQIdleTimeout=%d: expected no error, got: %v", tc.val, err)
+		}
+	}
+}
+
+func TestConfig_Bitcoin_ParseBoolEnvDefault_True(t *testing.T) {
+	// BTC_SSE_TOKEN_BIND_IP absent → default true.
+	result := parseBoolEnvDefault("BTC_SSE_TOKEN_BIND_IP_TEST_ABSENT_XYZ", true)
+	if !result {
+		t.Error("absent env var should return defaultVal=true")
+	}
+}
+
+func TestConfig_Bitcoin_ParseBoolEnvDefault_ExplicitFalse(t *testing.T) {
+	t.Setenv("BTC_SSE_TOKEN_BIND_IP_TEST_XYZ", "false")
+	result := parseBoolEnvDefault("BTC_SSE_TOKEN_BIND_IP_TEST_XYZ", true)
+	if result {
+		t.Error("BTC_SSE_TOKEN_BIND_IP=false should return false")
+	}
+}
+
+func TestConfig_Bitcoin_ParseBoolEnvDefault_InvalidValue_UsesDefault(t *testing.T) {
+	t.Setenv("BTC_SSE_TOKEN_BIND_IP_TEST_BAD", "yes") // unrecognised
+	result := parseBoolEnvDefault("BTC_SSE_TOKEN_BIND_IP_TEST_BAD", true)
+	if !result {
+		t.Error("invalid value should fall back to defaultVal=true")
+	}
+}
+
+func TestConfig_Bitcoin_Testnet4WithMainnetRPCPort_EmitsWarning(t *testing.T) {
+	// testnet4 + port 8332 should NOT return an error (just a warning).
+	cfg := validBitcoinConfig()
+	cfg.BitcoinNetwork = "testnet4"
+	cfg.BitcoinRPCPort = "8332"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("testnet4 + port 8332 should not error, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_CheckpointIntervalRange(t *testing.T) {
+	tests := []struct {
+		val     int
+		wantErr bool
+	}{
+		{0, true},
+		{1, false},
+		{500, false},
+		{501, true},
+	}
+	for _, tc := range tests {
+		cfg := validBitcoinConfig()
+		cfg.BitcoinReconciliationCheckpointInterval = tc.val
+		err := cfg.validate()
+		if tc.wantErr && err == nil {
+			t.Errorf("CheckpointInterval=%d: expected error, got nil", tc.val)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("CheckpointInterval=%d: expected no error, got: %v", tc.val, err)
+		}
+	}
+}
+
+func TestConfig_Bitcoin_ReconciliationStartHeight_MainnetZero_HardError(t *testing.T) {
+	cfg := validBitcoinConfig()
+	cfg.BitcoinNetwork = "mainnet"
+	cfg.BitcoinReconciliationStartHeight = 0
+	cfg.BitcoinReconciliationAllowGenesisScan = false
+	cfg.BitcoinRPCPort = "8333" // avoid port warning
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error: mainnet + height=0 + no genesis flag")
+	}
+	if !strings.Contains(err.Error(), "ALLOW_GENESIS_SCAN") {
+		t.Errorf("error should mention ALLOW_GENESIS_SCAN, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_ReconciliationStartHeight_MainnetZero_AllowGenesisScan_LogsError(t *testing.T) {
+	// genesis flag=true → no validation error (but slog.Error is called).
+	cfg := validBitcoinConfig()
+	cfg.BitcoinNetwork = "mainnet"
+	cfg.BitcoinReconciliationStartHeight = 0
+	cfg.BitcoinReconciliationAllowGenesisScan = true
+	cfg.BitcoinRPCPort = "8333"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("ALLOW_GENESIS_SCAN=true should not error, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_RPCPort_NonNumeric_ReturnsError(t *testing.T) {
+	cfg := validBitcoinConfig()
+	cfg.BitcoinRPCPort = "abc"
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for non-numeric BTC_RPC_PORT")
+	}
+	if !strings.Contains(err.Error(), "BTC_RPC_PORT") {
+		t.Errorf("error should mention BTC_RPC_PORT, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_RPCPort_ZeroReturnsError(t *testing.T) {
+	cfg := validBitcoinConfig()
+	cfg.BitcoinRPCPort = "0"
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for BTC_RPC_PORT=0")
+	}
+	if !strings.Contains(err.Error(), "BTC_RPC_PORT") {
+		t.Errorf("error should mention BTC_RPC_PORT, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_RPCPort_65535_Valid(t *testing.T) {
+	cfg := validBitcoinConfig()
+	cfg.BitcoinRPCPort = "65535"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("BTC_RPC_PORT=65535 should be valid, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_AuditHMACKey_TooShort_ReturnsError(t *testing.T) {
+	cfg := validBitcoinConfig()
+	cfg.BitcoinAuditHMACKey = "tooshort"
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error for short BTC_AUDIT_HMAC_KEY")
+	}
+	if !strings.Contains(err.Error(), "BTC_AUDIT_HMAC_KEY") {
+		t.Errorf("error should mention BTC_AUDIT_HMAC_KEY, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_AuditHMACKey_EqualToSessionSecret_ReturnsError(t *testing.T) {
+	cfg := validBitcoinConfig()
+	cfg.BitcoinAuditHMACKey = cfg.BitcoinSessionSecret
+	err := cfg.validate()
+	if err == nil {
+		t.Fatal("expected error when audit HMAC key equals session secret")
+	}
+	if !strings.Contains(err.Error(), "BTC_AUDIT_HMAC_KEY") {
+		t.Errorf("error should mention BTC_AUDIT_HMAC_KEY, got: %v", err)
+	}
+}
+
+func TestConfig_Bitcoin_Testnet4WithMainnetZMQPorts_EmitsWarning(t *testing.T) {
+	// testnet4 + default ZMQ ports should NOT return an error (just a warning).
+	cfg := validBitcoinConfig()
+	cfg.BitcoinNetwork = "testnet4"
+	cfg.BitcoinZMQBlock = "tcp://127.0.0.1:28332"
+	cfg.BitcoinZMQTx = "tcp://127.0.0.1:28333"
+	cfg.BitcoinRPCPort = "48332" // avoid the port 8332 warning too
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("testnet4 + default ZMQ ports should not error, got: %v", err)
+	}
+}

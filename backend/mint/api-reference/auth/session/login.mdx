@@ -22,7 +22,7 @@ api: "POST /auth/login"
 
 **Anti-enumeration** — Wrong password and unknown identifier both return `401 invalid_credentials` with an identical response body and equivalent timing. A dummy bcrypt comparison is always run on the unknown-identifier path to prevent timing-based account enumeration.
 
-**Refresh token delivery** — On success, the refresh token is delivered both in the JSON response body and as an `HttpOnly`, `SameSite=Strict` cookie scoped to `/api/v1/auth`. Browser clients should rely on the cookie; native and server-side clients can read the token from the body.
+**Refresh token delivery** — On success, the refresh token is delivered exclusively as an `HttpOnly`, `SameSite=Strict` cookie scoped to `/api/v1/auth`. It is not present in the JSON response body. This prevents JavaScript from reading the token even if an XSS payload intercepts the response. Native and server-side clients must read the token from the `Set-Cookie` header.
 
 **Time-based lockout** — Ten consecutive wrong-password attempts set a 15-minute lockout on the account. The lockout check runs after the password check passes, so a locked account returns `429 login_locked` (not `401 invalid_credentials`) when the correct password is supplied. This distinction is intentional — the lockout window itself limits exploitation, and it allows legitimate users to know their password is still correct while they wait.
 
@@ -45,7 +45,6 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 ```json 200
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_expiry": "2026-04-04T19:15:35Z",
   "expires_in": 900
 }
@@ -54,7 +53,6 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 ```json 200 (pending deletion)
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_expiry": "2026-04-04T19:15:35Z",
   "expires_in": 900,
   "scheduled_deletion_at": "2026-05-04T19:15:35Z"
@@ -94,12 +92,11 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
 
 <AccordionGroup>
   <Accordion title="200 — OK">
-    Authentication successful. The access token is a short-lived JWT (default 15 minutes) for use in the `Authorization: Bearer` header on subsequent requests. The refresh token has a 30-day TTL and is set as an `HttpOnly` cookie in addition to being returned in the body.
+    Authentication successful. The access token is a short-lived JWT (default 15 minutes) for use in the `Authorization: Bearer` header on subsequent requests. The refresh token has a 30-day TTL and is delivered only as an `HttpOnly`, `SameSite=Strict` cookie — it is not present in the JSON body.
 
     ```json
     {
       "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-      "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
       "refresh_expiry": "2026-04-04T19:15:35Z",
       "expires_in": 900
     }
@@ -110,7 +107,6 @@ Clients that exceed this limit will receive a `429 Too Many Requests` response w
     ```json
     {
       "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-      "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
       "refresh_expiry": "2026-04-04T19:15:35Z",
       "expires_in": 900,
       "scheduled_deletion_at": "2026-05-04T19:15:35Z"

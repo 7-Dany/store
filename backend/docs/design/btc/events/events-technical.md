@@ -597,3 +597,13 @@ All use `ratelimit.TrustedProxyRealIP` via upstream middleware (mounted in `rout
 | T-60 | `TestLogRedaction_AppLogsNoToken` | cookie value must not appear in app logs |
 | T-68 | `TestLogRedaction_NginxLogsNoToken` | cookie value must not appear in nginx logs |
 | T-167 | `TestDoCleanup_AuditWriteFailure_FallbackLogged` | audit.Write fails → fallback metric + log |
+
+### Tests forwarded from zmq-technical.md
+
+These tests were originally specified in `zmq-technical.md` but require events
+package infrastructure. Implement them here when this package is built.
+
+| ID | Test | Notes |
+|---|---|---|
+| T-46 | `TestSubscriber_OverflowWritesRedis` | settlement_tx handler full → LPush to `btc:settlement:overflow`; Redis unavailable → ERROR log + metric |
+| T-104 | `TestSSEHandler_PanicInLoop_SlotReleased` | panic in SSE event loop → doCleanup fires via sync.Once; slot released; audit written via context.Background() |

@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/7-Dany/store/backend/internal/platform/bitcoin/zmq"
 	"github.com/7-Dany/store/backend/internal/platform/crypto"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/mailer"
@@ -32,9 +33,18 @@ type Deps struct {
 	Pool *pgxpool.Pool
 
 	// ── KV store & blocklist ──────────────────────────────────────────────────
-	// KVStore is the single shared backend for all rate-limiters. Using one
-	// instance means one Redis connection pool and one in-memory eviction
-	// goroutine across the entire application.
+	// KVStore is the single shared key-value backend. In production it is a
+	// *kvstore.RedisStore; in development without Redis it falls back to
+	// *kvstore.InMemoryStore.
+	//
+	// All domains use this field — cast to the required optional interface at
+	// the call site:
+	//   kvstore.AtomicCounterStore  — SSE connection caps
+	//   kvstore.SetStore            — bitcoin watch address sets
+	//   kvstore.OnceStore           — bitcoin SSE JTI one-time consumption
+	//   kvstore.ListStore           — bitcoin settlement overflow queue
+	//   kvstore.PubSubStore         — bitcoin cache invalidation
+	//
 	// Closed by server.New via a context-cancellation goroutine — domain code
 	// must not call Close() directly.
 	KVStore kvstore.Store
@@ -46,7 +56,6 @@ type Deps struct {
 	// kvstore.TokenBlocklist (Redis does; the in-memory fallback does not).
 	// Routes that revoke tokens check for nil before use.
 	Blocklist kvstore.TokenBlocklist
-
 	// ── Mail ──────────────────────────────────────────────────────────────────
 	// Mailer sends transactional email synchronously.
 	// Prefer MailQueue for async delivery from request handlers.
@@ -135,6 +144,24 @@ type Deps struct {
 	// nil-safe: all *Registry hook methods are no-ops when called on nil.
 	// Tests that do not need metric assertions can leave this field unset.
 	Metrics *telemetry.Registry
+
+	// ── Bitcoin ──────────────────────────────────────────────────────────────
+	// BitcoinEnabled mirrors config.Config.BitcoinEnabled. When false, all
+	// bitcoin fields below are nil/empty and no bitcoin routes are wired.
+	BitcoinEnabled bool
+	// BitcoinZMQ is the ZMQ subscriber for hashblock and hashtx events.
+	// Nil when BitcoinEnabled is false. Constructed in server.New from
+	// cfg.BitcoinZMQBlock, cfg.BitcoinZMQTx, and the idle timeout derived
+	// from cfg.BitcoinZMQIdleTimeout and cfg.BitcoinNetwork.
+	BitcoinZMQ zmq.Subscriber
+	// BitcoinRPC is the Bitcoin Core JSON-RPC client.
+	// Nil when BitcoinEnabled is false.
+	// Type is interface{} until the rpc package is implemented; server.New
+	// will assign a *rpc.Client once it exists.
+	BitcoinRPC interface{}
+	// BitcoinNetwork is the active Bitcoin network ("testnet4" or "mainnet").
+	// Empty string when BitcoinEnabled is false.
+	BitcoinNetwork string
 }
 
 // OAuthConfig holds the Google OAuth 2.0 configuration values.

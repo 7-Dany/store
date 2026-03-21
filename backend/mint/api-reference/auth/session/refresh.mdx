@@ -25,7 +25,9 @@ authMethod: "none"
 
 ## Behaviour
 
-**Cookie-only delivery** — The refresh token is read exclusively from the `refresh_token` HttpOnly cookie. There is no request body. Browser clients send the cookie automatically; native clients must set the `Cookie: refresh_token=<token>` header manually.
+**Cookie-only authentication** — The refresh token is read exclusively from the `refresh_token` HttpOnly cookie. There is no request body. Browser clients send the cookie automatically; native clients must set the `Cookie: refresh_token=<token>` header manually.
+
+**Cookie-only response** — On success, the new refresh token is also delivered exclusively via `Set-Cookie`. It is not present in the JSON response body, preventing JavaScript from reading it even if an XSS payload intercepts the response. Native clients must read the token from the `Set-Cookie` response header.
 
 **Atomic rotation** — Each valid refresh token can be used exactly once. On success, the old token is atomically revoked in the database and a new refresh token is issued and set as an HttpOnly cookie. The new access token is returned in the JSON response body.
 
@@ -43,7 +45,6 @@ The limiter fires before token validation — every request to this endpoint con
 ```json 200
 {
   "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "refresh_expiry": "2026-04-04T19:15:35Z",
   "expires_in": 900
 }
@@ -68,12 +69,11 @@ The limiter fires before token validation — every request to this endpoint con
 
 <AccordionGroup>
   <Accordion title="200 — OK">
-    Rotation succeeded. A new short-lived access token (default 15 minutes) is returned in the JSON body. A new long-lived refresh token is set as an `HttpOnly`, `SameSite=Strict` cookie scoped to `/api/v1/auth`. The old refresh token is now permanently invalid.
+    Rotation succeeded. A new short-lived access token (default 15 minutes) is returned in the JSON body. A new long-lived refresh token is set as an `HttpOnly`, `SameSite=Strict` cookie scoped to `/api/v1/auth` — it is not present in the JSON body. The old refresh token is now permanently invalid.
 
     ```json
     {
       "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-      "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
       "refresh_expiry": "2026-04-04T19:15:35Z",
       "expires_in": 900
     }

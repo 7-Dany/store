@@ -24,6 +24,7 @@ const (
 	LayerKVStore Layer = "kvstore" // platform/kvstore — Redis ops
 	LayerRBAC    Layer = "rbac"    // platform/rbac — DB permission checks
 	LayerWorker  Layer = "worker"  // jobqueue dispatcher infrastructure errors
+	LayerZMQ     Layer = "zmq"     // platform/bitcoin/zmq — ZMQ subscriber ops
 	LayerPanic   Layer = "panic"   // recovered HTTP handler panic
 	LayerUnknown Layer = "unknown" // no *Fault in chain — unmigrated path
 )
@@ -117,6 +118,12 @@ func RBAC(op string, err error) error { return wrap(LayerRBAC, op, err) }
 // Worker wraps err with [LayerWorker] and the given operation label.
 // Returns nil when err is nil.
 func Worker(op string, err error) error { return wrap(LayerWorker, op, err) }
+
+// ZMQ wraps err with [LayerZMQ] and the given operation label.
+// Returns nil when err is nil.
+//
+// Op naming convention: "TypeName.step" e.g. "New.validate", "processMessage.validate".
+func ZMQ(op string, err error) error { return wrap(LayerZMQ, op, err) }
 
 // LayerOf returns the Layer of the outermost *Fault in the error chain.
 // "Outermost" means closest to the call site:

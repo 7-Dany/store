@@ -170,6 +170,58 @@
   }
 }
 
+/* ── Scrollbars ────────────────────────────────────────────────────────────────
+   Uses semantic CSS tokens so both light and dark mode are covered automatically.
+   Three parts:
+     track  — the groove the thumb slides in  → --background (invisible, blends in)
+     thumb  — the draggable handle            → --border at rest, --muted-foreground on hover
+     corner — where vertical + horizontal meet → --background
+
+   Firefox uses the two-value shorthand: scrollbar-color: <thumb> <track>
+   Chrome / Safari / Edge use the ::-webkit-scrollbar-* pseudo-elements.
+   Both are set so every major browser gets a consistent look.
+──────────────────────────────────────────────────────────────────────────── */
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+/* Chromium + Safari */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 999px;
+  /* Transparent border creates a small inset gap on the sides —
+     makes the thumb look narrower and more refined without reducing
+     the actual hit-target size. */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted-foreground);
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--primary);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* ── Sonner host — strip conflicting visual styles, keep layout ─────────── */
 [data-sonner-toaster] [data-sonner-toast] {
   background: transparent !important;

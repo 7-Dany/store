@@ -33,7 +33,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-
 import { Skeleton } from "@/components/ui/skeleton";
 
 import {
@@ -53,11 +52,11 @@ import {
   IconLoader2,
   IconCheck,
   IconPalette,
+  IconShieldCheck,
 } from "@tabler/icons-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-/** Slim subset of UserProfile — only what the sidebar actually renders. */
 export interface NavUser {
   display_name: string;
   username: string | null;
@@ -68,12 +67,16 @@ export interface NavUser {
 // ─── Nav items ────────────────────────────────────────────────────────────────
 
 const NAV_ITEMS = [
-  { href: "/dashboard", icon: IconLayoutDashboard, label: "Overview" },
-  { href: "/dashboard/orders", icon: IconShoppingCart, label: "Orders" },
-  { href: "/dashboard/products", icon: IconPackage, label: "Products" },
-  { href: "/dashboard/customers", icon: IconUsers, label: "Customers" },
-  { href: "/dashboard/analytics", icon: IconChartBar, label: "Analytics" },
-  { href: "/dashboard/settings", icon: IconSettings, label: "Settings" },
+  { href: "/dashboard",          icon: IconLayoutDashboard, label: "Overview" },
+  { href: "/dashboard/orders",   icon: IconShoppingCart,    label: "Orders" },
+  { href: "/dashboard/products", icon: IconPackage,         label: "Products" },
+  { href: "/dashboard/customers",icon: IconUsers,           label: "Customers" },
+  { href: "/dashboard/analytics",icon: IconChartBar,        label: "Analytics" },
+  { href: "/dashboard/settings", icon: IconSettings,        label: "Settings" },
+];
+
+const NAV_SYSTEM = [
+  { href: "/dashboard/security", icon: IconShieldCheck, label: "System Health" },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -87,9 +90,8 @@ function getInitials(displayName: string): string {
     .toUpperCase();
 }
 
-// ─── NavUser skeleton ───────────────────────────────────────────────────────
+// ─── NavUser skeleton ─────────────────────────────────────────────────────────
 
-/** Shown in the sidebar footer while the dynamic chunk / user data loads. */
 export function NavUserSkeleton() {
   return (
     <SidebarMenu>
@@ -119,8 +121,8 @@ function NavUserMenu({ user }: { user: NavUser | null }) {
 
   const themeOptions = [
     { key: "light", label: "Light", Icon: IconSun },
-    { key: "dark", label: "Dark", Icon: IconMoon },
-    { key: "system", label: "System", Icon: IconDeviceDesktop },
+    { key: "dark",  label: "Dark",  Icon: IconMoon },
+    { key: "system",label: "System",Icon: IconDeviceDesktop },
   ] as const;
 
   async function handleLogout() {
@@ -174,10 +176,7 @@ function NavUserMenu({ user }: { user: NavUser | null }) {
               <div className="flex items-center gap-2 px-1 py-1.5">
                 <Avatar className="size-8 rounded-lg">
                   {user?.avatar_url && (
-                    <AvatarImage
-                      src={user.avatar_url}
-                      alt={user.display_name}
-                    />
+                    <AvatarImage src={user.avatar_url} alt={user.display_name} />
                   )}
                   <AvatarFallback className="rounded-lg text-xs font-semibold">
                     {initials}
@@ -197,15 +196,11 @@ function NavUserMenu({ user }: { user: NavUser | null }) {
             <DropdownMenuSeparator />
 
             <DropdownMenuGroup>
-              <DropdownMenuItem
-                onClick={() => router.push("/dashboard/profile")}
-              >
+              <DropdownMenuItem onClick={() => router.push("/dashboard/profile")}>
                 <IconUser />
                 Profile
               </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => router.push("/dashboard/settings")}
-              >
+              <DropdownMenuItem onClick={() => router.push("/dashboard/settings")}>
                 <IconSettings />
                 Settings
               </DropdownMenuItem>
@@ -223,7 +218,6 @@ function NavUserMenu({ user }: { user: NavUser | null }) {
                   <DropdownMenuItem key={key} onClick={() => setTheme(key)}>
                     <Icon />
                     {label}
-                    {/* suppressHydrationWarning — theme is client-only */}
                     <span suppressHydrationWarning>
                       {theme === key && (
                         <IconCheck className="ml-auto size-3.5 text-primary" />
@@ -280,9 +274,7 @@ export function AppSidebar({ user }: { user: NavUser | null }) {
               </div>
               <div className="grid flex-1 text-left text-sm leading-tight">
                 <span className="truncate font-semibold">Store</span>
-                <span className="truncate text-xs text-muted-foreground">
-                  Admin
-                </span>
+                <span className="truncate text-xs text-muted-foreground">Admin</span>
               </div>
             </SidebarMenuButton>
           </SidebarMenuItem>
@@ -290,10 +282,30 @@ export function AppSidebar({ user }: { user: NavUser | null }) {
       </SidebarHeader>
 
       <SidebarContent>
+        {/* Platform nav */}
         <SidebarGroup>
           <SidebarGroupLabel>Platform</SidebarGroupLabel>
           <SidebarMenu>
             {NAV_ITEMS.map(({ href, icon: Icon, label }) => (
+              <SidebarMenuItem key={href}>
+                <SidebarMenuButton
+                  isActive={isActive(href)}
+                  tooltip={label}
+                  render={<Link href={href} />}
+                >
+                  <Icon />
+                  <span>{label}</span>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            ))}
+          </SidebarMenu>
+        </SidebarGroup>
+
+        {/* System nav */}
+        <SidebarGroup>
+          <SidebarGroupLabel>System</SidebarGroupLabel>
+          <SidebarMenu>
+            {NAV_SYSTEM.map(({ href, icon: Icon, label }) => (
               <SidebarMenuItem key={href}>
                 <SidebarMenuButton
                   isActive={isActive(href)}

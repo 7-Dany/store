@@ -18,7 +18,9 @@ export interface LoginPayload {
 
 export interface LoginResponse {
   access_token: string;
-  refresh_token: string;
+  // refresh_token is no longer in the JSON body (F-02 fix).
+  // It is delivered exclusively via Set-Cookie from the Go backend.
+  // The Next.js login route extracts it from the Set-Cookie response header.
   refresh_expiry: string;
   expires_in: number;
   /** Present only when the account has a pending deletion scheduled. */
@@ -76,7 +78,9 @@ export interface ConfirmUnlockPayload {
 
 export interface RefreshResponse {
   access_token: string;
-  refresh_token: string;
+  // refresh_token is no longer in the JSON body (F-02 fix).
+  // It is delivered exclusively via Set-Cookie from the Go backend.
+  // The Next.js refresh route extracts it from the Set-Cookie response header.
   refresh_expiry: string;
   expires_in: number;
 }

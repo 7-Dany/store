@@ -17,15 +17,9 @@ export default async function DashboardLayout({
   const profile = await fetchProfile(token);
 
   if (!profile) {
-    // Session cookie is missing or expired. If a refresh_token cookie is still
-    // present, attempt a silent rotation before giving up — this is the common
-    // case when the user returns after the 15-minute access token TTL.
-    // The GET handler sets fresh cookies and redirects back here; on failure it
-    // redirects to /login and clears the stale cookies.
     if (cookieStore.get("refresh_token")?.value) {
       redirect("/api/auth/refresh?from=/dashboard");
     }
-    // No refresh token either — clean logout.
     redirect("/api/auth/logout");
   }
 
@@ -39,15 +33,22 @@ export default async function DashboardLayout({
   };
 
   return (
+    // h-svh + overflow-hidden on the root: locks the viewport so the sidebar
+    // never causes the *page* to scroll — only the content area scrolls.
     <SidebarProvider defaultOpen={sidebarOpen} className="h-svh overflow-hidden">
       <TokenRefresher />
       <AppSidebarClient user={navUser} />
-      <SidebarInset className="overflow-hidden">
+      {/* SidebarInset fills the remaining width and clips its own overflow so
+          the sticky header stays pinned while the content area scrolls below. */}
+      <SidebarInset className="flex flex-col overflow-hidden">
         <DashboardHeader />
         {profile?.scheduled_deletion_at && (
           <PendingDeletionBanner scheduledAt={profile.scheduled_deletion_at} />
         )}
-        <div className="flex flex-1 flex-col overflow-hidden">
+        {/* This div is the single scroll container for all page content.
+            overflow-y-auto lets pages taller than the viewport scroll normally.
+            flex-1 ensures it fills all remaining vertical space inside SidebarInset. */}
+        <div className="flex flex-1 flex-col overflow-y-auto">
           {children}
         </div>
       </SidebarInset>

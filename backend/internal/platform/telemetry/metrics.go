@@ -80,7 +80,7 @@ type Registry struct {
 	schedulesFired *prometheus.CounterVec
 	jobsRequeued   prometheus.Counter
 
-	// ── Family 7 — Platform ────────────────────────────────────────────────────────────────
+	// ── Family 7 — Platform ───────────────────────────────────────────────
 	platformConnCounterReleaseFailures *prometheus.CounterVec
 	platformConnCounterHeartbeatMisses *prometheus.CounterVec
 
@@ -106,6 +106,25 @@ type Registry struct {
 	bitcoinInvoiceDetection     prometheus.Histogram
 	bitcoinRateFeedStaleness    prometheus.Gauge
 	bitcoinReconciliationLag    prometheus.Gauge
+
+	// ── Bitcoin RPC ───────────────────────────────────────────────────────
+	// bitcoinRPCCallsTotal counts every RPC call by method and status.
+	// method label: bounded set of known RPC method names (≤15 values).
+	// status label: "success" | "error" (2 values). Cardinality: ≤30.
+	bitcoinRPCCallsTotal *prometheus.CounterVec
+
+	// bitcoinRPCDuration measures per-call latency by method.
+	// Cardinality: ≤15 series. Buckets tuned to loopback RPC timing.
+	bitcoinRPCDuration *prometheus.HistogramVec
+
+	// bitcoinRPCErrorsTotal classifies RPC failures by method and error_type.
+	// error_type label: not_found | pruned | rpc_error | network | timeout | canceled | unknown.
+	// Cardinality: ≤105 series (15 methods × 7 error types).
+	bitcoinRPCErrorsTotal *prometheus.CounterVec
+
+	// bitcoinKeypoolSize tracks the current pre-generated address pool depth.
+	// Alert at <100 (WARNING) and <10 (CRITICAL) — see invoice-technical.md §7.
+	bitcoinKeypoolSize prometheus.Gauge
 }
 
 // NewRegistry constructs a Registry, registers all metric descriptors on a
@@ -122,6 +141,11 @@ func NewRegistry() *Registry {
 
 	// Job queue duration buckets: 1s … 600s (6 buckets)
 	jobBuckets := []float64{1, 5, 30, 60, 300, 600}
+
+	// RPC call duration buckets: 50ms … 30s (8 buckets).
+	// Bitcoin Core responds in <100ms on loopback; 5s is a warning signal;
+	// 30s matches BTC_BLOCK_RPC_TIMEOUT_SECONDS hard ceiling.
+	rpcBuckets := []float64{0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 30}
 
 	// ── Family 1 — HTTP ───────────────────────────────────────────────────
 	r.httpRequestsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -451,7 +475,31 @@ func NewRegistry() *Registry {
 		Help: "Number of blocks the reconciliation job is behind the chain tip.",
 	})
 
-	// Family 7 — Platform
+	// ── Bitcoin RPC ───────────────────────────────────────────────────────
+	r.bitcoinRPCCallsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "bitcoin_rpc_calls_total",
+		Help: "Total Bitcoin Core RPC calls by method and status (success|error).",
+	}, []string{"method", "status"})
+
+	r.bitcoinRPCDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "bitcoin_rpc_duration_seconds",
+		Help:    "Bitcoin Core RPC call latency by method. Sustained p99 >1s indicates node overload.",
+		Buckets: rpcBuckets,
+	}, []string{"method"})
+
+	r.bitcoinRPCErrorsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "bitcoin_rpc_errors_total",
+		Help: "Total Bitcoin Core RPC errors by method and error_type " +
+			"(not_found|pruned|rpc_error|network|timeout|canceled|unknown).",
+	}, []string{"method", "error_type"})
+
+	r.bitcoinKeypoolSize = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "bitcoin_keypool_size",
+		Help: "Current keypool size (pre-generated invoice addresses). " +
+			"WARNING below 100; CRITICAL below 10.",
+	})
+
+	// ── Family 7 — Platform ───────────────────────────────────────────────
 	r.platformConnCounterReleaseFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "platform_connection_counter_release_failures_total",
 		Help: "Number of times ConnectionCounter.Release() failed to decrement. " +
@@ -523,7 +571,7 @@ func NewRegistry() *Registry {
 		r.jobDuration,
 		r.schedulesFired,
 		r.jobsRequeued,
-		// Family 6
+		// Family 6 — Bitcoin
 		r.bitcoinZMQConnected,
 		r.bitcoinRPCConnected,
 		r.bitcoinZMQLastMessageAge,
@@ -545,7 +593,12 @@ func NewRegistry() *Registry {
 		r.bitcoinInvoiceDetection,
 		r.bitcoinRateFeedStaleness,
 		r.bitcoinReconciliationLag,
-		// Family 7
+		// Bitcoin RPC
+		r.bitcoinRPCCallsTotal,
+		r.bitcoinRPCDuration,
+		r.bitcoinRPCErrorsTotal,
+		r.bitcoinKeypoolSize,
+		// Family 7 — Platform
 		r.platformConnCounterReleaseFailures,
 		r.platformConnCounterHeartbeatMisses,
 	)

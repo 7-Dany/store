@@ -12,7 +12,6 @@ import (
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/domain"
 	"github.com/7-Dany/store/backend/internal/platform/ratelimit"
-	"github.com/7-Dany/store/backend/internal/platform/respond"
 	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
@@ -44,8 +43,6 @@ func newRouter(ctx context.Context, deps *app.Deps, registry *telemetry.Registry
 		chimiddleware.Logger,
 		telemetry.RequestMiddleware(registry),
 		telemetry.PanicRecoveryMiddleware,
-		// NOTE: chimiddleware.Recoverer removed — PanicRecoveryMiddleware is its
-		// full replacement and additionally records metrics.
 	)
 
 	// Security: defence-in-depth response headers applied unconditionally.
@@ -101,18 +98,22 @@ func newRouter(ctx context.Context, deps *app.Deps, registry *telemetry.Registry
 	r.Handle("/metrics", registry.Handler())
 
 	// ── Health ────────────────────────────────────────────────────────────
-	// Rate limit: 3 req / min per IP, burst=3.
-	// Protects the health endpoint from being used as a free amplifier or
-	// enumeration vector while remaining invisible to legitimate monitoring
-	// tools that poll at most once every few seconds.
-	healthLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "health:ip:", 3.0/60, 3, 5*time.Minute)
+	// Rate limit: 30 req / min per IP, burst=10.
+	// Allows legitimate monitoring tools (Prometheus, Next.js health-ping,
+	// load-balancer probes) to poll comfortably at 15–30 s intervals, even
+	// with multiple server replicas, while still blocking abusive scrapers.
+	healthLimiter := ratelimit.NewIPRateLimiter(deps.KVStore, "health:ip:", 30.0/60, 10, 5*time.Minute)
 	go healthLimiter.StartCleanup(ctx)
 
 	// ── API v1 ────────────────────────────────────────────────────────────
 	r.Route("/api/v1", func(r chi.Router) {
-		r.With(healthLimiter.Limit).Get("/health", func(w http.ResponseWriter, r *http.Request) {
-			respond.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
-		})
+		// GET /api/v1/health
+		//   no params  → {"status":"ok"}                  — load-balancer fast path
+		//   ?ping=true → {"pong":true, services:[...]}    — full service health check
+		// The full check runs DB, Redis, ZMQ, and RPC probes in parallel (2 s
+		// deadline) and returns 200 when all services are up, 503 when any is down.
+		// See server/health.go for probe implementations.
+		r.With(healthLimiter.Limit).Get("/health", handleHealth(deps))
 
 		domain.Mount(ctx, r, deps)
 	})

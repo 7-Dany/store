@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/7-Dany/store/backend/internal/platform/bitcoin/rpc"
 	"github.com/7-Dany/store/backend/internal/platform/bitcoin/zmq"
 	"github.com/7-Dany/store/backend/internal/platform/crypto"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
@@ -56,6 +57,7 @@ type Deps struct {
 	// kvstore.TokenBlocklist (Redis does; the in-memory fallback does not).
 	// Routes that revoke tokens check for nil before use.
 	Blocklist kvstore.TokenBlocklist
+
 	// ── Mail ──────────────────────────────────────────────────────────────────
 	// Mailer sends transactional email synchronously.
 	// Prefer MailQueue for async delivery from request handlers.
@@ -94,8 +96,6 @@ type Deps struct {
 	// HTTPSEnabled controls HSTS header injection. When true, every response
 	// carries Strict-Transport-Security.
 	HTTPSEnabled bool
-	// DocsEnabled controls whether the /docs routes are registered.
-	DocsEnabled bool
 
 	// ── OTP ───────────────────────────────────────────────────────────────────
 	// OTPTokenTTL is the lifetime of every OTP token (email_verification,
@@ -133,9 +133,10 @@ type Deps struct {
 	// ── Telemetry ─────────────────────────────────────────────────────────────
 	// Metrics is the shared Prometheus registry. It satisfies these interfaces
 	// structurally — no factory methods needed, pass it directly:
-	//   - authshared.AuthRecorder      (domain/auth/shared/recorder.go)
-	//   - bitcoinshared.BitcoinRecorder (domain/bitcoin/shared/recorder.go)
-	//   - jobqueue.MetricsRecorder     (internal/platform/jobqueue/metrics.go)
+	//   - authshared.AuthRecorder       (domain/auth/shared/recorder.go)
+	//   - bitcoinshared.BitcoinRecorder  (domain/bitcoin/shared/recorder.go)
+	//   - rpc.RPCRecorder               (platform/bitcoin/rpc/recorder.go)
+	//   - jobqueue.MetricsRecorder      (internal/platform/jobqueue/metrics.go)
 	//
 	// Domain sub-packages declare a narrow local interface covering only the
 	// methods they actually call, and deps.Metrics satisfies each one
@@ -149,16 +150,23 @@ type Deps struct {
 	// BitcoinEnabled mirrors config.Config.BitcoinEnabled. When false, all
 	// bitcoin fields below are nil/empty and no bitcoin routes are wired.
 	BitcoinEnabled bool
+
 	// BitcoinZMQ is the ZMQ subscriber for hashblock and hashtx events.
 	// Nil when BitcoinEnabled is false. Constructed in server.New from
 	// cfg.BitcoinZMQBlock, cfg.BitcoinZMQTx, and the idle timeout derived
 	// from cfg.BitcoinZMQIdleTimeout and cfg.BitcoinNetwork.
 	BitcoinZMQ zmq.Subscriber
+
 	// BitcoinRPC is the Bitcoin Core JSON-RPC client.
-	// Nil when BitcoinEnabled is false.
-	// Type is interface{} until the rpc package is implemented; server.New
-	// will assign a *rpc.Client once it exists.
-	BitcoinRPC interface{}
+	// Nil when BitcoinEnabled is false. Constructed in server.New after the
+	// ZMQ subscriber, then verified against the node at startup via
+	// GetBlockchainInfo (chain match + connectivity probe).
+	//
+	// Typed as rpc.Client (interface) so domain packages are decoupled from
+	// the concrete implementation and can be unit-tested with a mock without
+	// requiring a live Bitcoin Core node.
+	BitcoinRPC rpc.Client
+
 	// BitcoinNetwork is the active Bitcoin network ("testnet4" or "mainnet").
 	// Empty string when BitcoinEnabled is false.
 	BitcoinNetwork string

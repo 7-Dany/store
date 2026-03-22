@@ -8,8 +8,6 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
-	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -18,6 +16,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/config"
 	"github.com/7-Dany/store/backend/internal/db"
+	"github.com/7-Dany/store/backend/internal/platform/bitcoin/rpc"
 	"github.com/7-Dany/store/backend/internal/platform/bitcoin/zmq"
 	"github.com/7-Dany/store/backend/internal/platform/crypto"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
@@ -27,6 +26,9 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/7-Dany/store/backend/internal/platform/token"
 )
+
+// log is the package-level structured logger. All records carry component="server".
+var log = telemetry.New("server")
 
 // New constructs the shared infrastructure, wires every domain router, and
 // returns a ready-to-serve *http.Server together with a cleanup function.
@@ -48,14 +50,16 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 	// ── Database pool ─────────────────────────────────────────────────────
 	pool, err := newPool(ctx, cfg)
 	if err != nil {
-		return nil, nil, fmt.Errorf("server: database pool: %w", err)
+		log.Error(ctx, "database pool init failed", "error", err)
+		return nil, nil, err
 	}
 
 	// ── KV store (rate-limiters + JTI blocklist) ──────────────────────────
 	kvStore, err := newKVStore(ctx, cfg)
 	if err != nil {
 		pool.Close()
-		return nil, nil, fmt.Errorf("server: kv store: %w", err)
+		log.Error(ctx, "kv store init failed", "error", err)
+		return nil, nil, err
 	}
 	// StartCleanup blocks until ctx is cancelled; run it in the background.
 	go kvStore.StartCleanup(ctx)
@@ -95,7 +99,8 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 	if err != nil {
 		pool.Close()
 		kvStore.Close() //nolint:errcheck
-		return nil, nil, fmt.Errorf("server: mailer: %w", err)
+		log.Error(ctx, "mailer init failed", "error", err)
+		return nil, nil, err
 	}
 
 	// ── Mail queue ────────────────────────────────────────────────────────
@@ -103,7 +108,8 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 	if err := q.Start(cfg.MailWorkers); err != nil {
 		pool.Close()
 		kvStore.Close() //nolint:errcheck
-		return nil, nil, fmt.Errorf("server: mail queue: %w", err)
+		log.Error(ctx, "mail queue start failed", "error", err)
+		return nil, nil, err
 	}
 
 	// ── Trusted proxy CIDRs ──────────────────────────────────────────────
@@ -112,7 +118,8 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		q.Shutdown()
 		pool.Close()
 		kvStore.Close() //nolint:errcheck
-		return nil, nil, fmt.Errorf("server: trusted proxies: %w", err)
+		log.Error(ctx, "trusted proxies parse failed", "error", err)
+		return nil, nil, err
 	}
 
 	// ── Token encryptor ───────────────────────────────────────────────────
@@ -121,14 +128,16 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		q.Shutdown()
 		pool.Close()
 		kvStore.Close() //nolint:errcheck
-		return nil, nil, fmt.Errorf("server: decode token encryption key: %w", err)
+		log.Error(ctx, "token encryption key decode failed", "error", err)
+		return nil, nil, err
 	}
 	encryptor, err := crypto.New(keyBytes)
 	if err != nil {
 		q.Shutdown()
 		pool.Close()
 		kvStore.Close() //nolint:errcheck
-		return nil, nil, fmt.Errorf("server: crypto encryptor: %w", err)
+		log.Error(ctx, "crypto encryptor init failed", "error", err)
+		return nil, nil, err
 	}
 
 	// ── JWT ───────────────────────────────────────────────────────────────
@@ -145,36 +154,52 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		q.Shutdown()
 		pool.Close()
 		kvStore.Close() //nolint:errcheck
-		return nil, nil, fmt.Errorf("server: jwt config: %w", err)
+		log.Error(ctx, "JWT config validation failed", "error", err)
+		return nil, nil, err
 	}
 
 	// ── RBAC checker ─────────────────────────────────────────────────────
 	rbacChecker := rbac.NewChecker(db.New(pool))
 
-	// ── Bitcoin ZMQ subscriber ────────────────────────────────────────────
-	// Constructed only when BTC_ENABLED=true. Run() is launched here so the
-	// subscriber is live before the HTTP server accepts traffic — domain
-	// routes register handlers during wiring and events are delivered as soon
-	// as Bitcoin Core connects. btcSub is nil when bitcoin is disabled, and
-	// all bitcoin dep fields in app.Deps are guarded by BitcoinEnabled.
+	// ── Bitcoin infrastructure ────────────────────────────────────────────
+	// Both the ZMQ subscriber and the RPC client are constructed only when
+	// BTC_ENABLED=true. They are nil in app.Deps when bitcoin is disabled and
+	// all bitcoin domain code guards on BitcoinEnabled before use.
 	var btcSub zmq.Subscriber
+	var btcRPC rpc.Client // interface — nil zero value is safe when !BitcoinEnabled
+
 	if cfg.BitcoinEnabled {
+		// 1. ZMQ subscriber — must be live before HTTP server accepts traffic
+		//    so domain handlers can register event handlers during wiring.
 		var zmqErr error
 		btcSub, zmqErr = newBitcoinZMQ(cfg, registry)
 		if zmqErr != nil {
 			q.Shutdown()
 			pool.Close()
 			kvStore.Close() //nolint:errcheck
-			return nil, nil, fmt.Errorf("server: bitcoin zmq: %w", zmqErr)
+			log.Error(ctx, "bitcoin ZMQ subscriber init failed", "error", zmqErr)
+			return nil, nil, zmqErr
 		}
 		// Run blocks until ctx is cancelled. Launch in a background goroutine
 		// and log abnormal exits — do NOT call os.Exit or log.Fatal here;
 		// the cleanup func must still run to drain the queue and close the pool.
 		go func() {
 			if err := btcSub.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				slog.Error("server: ZMQ subscriber abnormal exit", "error", err)
+				log.Error(ctx, "ZMQ subscriber abnormal exit", "error", err)
 			}
 		}()
+
+		// 2. RPC client — constructed and probed before the server accepts traffic.
+		var rpcErr error
+		btcRPC, rpcErr = newBitcoinRPC(ctx, cfg, registry)
+		if rpcErr != nil {
+			btcSub.Shutdown()
+			q.Shutdown()
+			pool.Close()
+			kvStore.Close() //nolint:errcheck
+			log.Error(ctx, "bitcoin RPC client init failed", "error", rpcErr)
+			return nil, nil, rpcErr
+		}
 	}
 
 	// ── Shared deps ───────────────────────────────────────────────────────
@@ -207,6 +232,7 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		},
 		BitcoinEnabled: cfg.BitcoinEnabled,
 		BitcoinZMQ:     btcSub,
+		BitcoinRPC:     btcRPC,
 		BitcoinNetwork: cfg.BitcoinNetwork,
 	}
 
@@ -223,9 +249,10 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 	//   1. btcSub.Shutdown() — drain ZMQ handler goroutines (30 s ceiling).
 	//      In-flight handlers may hold pool and KV store references; draining
 	//      first prevents use-after-close panics in those handlers.
-	//   2. q.Shutdown() — drain the mail queue. In-flight mailer goroutines
+	//   2. btcRPC.Close() — drain the RPC keep-alive connection pool.
+	//   3. q.Shutdown() — drain the mail queue. In-flight mailer goroutines
 	//      may call DB-backed audit writes, so the pool must still be open.
-	//   3. pool.Close() — safe only after the queue is drained.
+	//   4. pool.Close() — safe only after the queue is drained.
 	//
 	// kvStore.Close() is driven by the ctx.Done() goroutine above and may fire
 	// concurrently with cleanup(); that is intentional because KV store ops
@@ -236,6 +263,9 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 	cleanup := func() {
 		if btcSub != nil {
 			btcSub.Shutdown()
+		}
+		if btcRPC != nil {
+			btcRPC.Close()
 		}
 		q.Shutdown()
 		pool.Close()
@@ -249,7 +279,8 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse database URL: %w", err)
+		log.Error(ctx, "parse database URL failed", "error", err)
+		return nil, err
 	}
 	poolCfg.MaxConns = cfg.DBMaxConns
 	poolCfg.MinConns = cfg.DBMinConns
@@ -259,11 +290,13 @@ func newPool(ctx context.Context, cfg *config.Config) (*pgxpool.Pool, error) {
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
+		log.Error(ctx, "database connect failed", "error", err)
+		return nil, err
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("ping: %w", err)
+		log.Error(ctx, "database ping failed", "error", err)
+		return nil, err
 	}
 	return pool, nil
 }
@@ -276,7 +309,7 @@ func newKVStore(ctx context.Context, cfg *config.Config) (kvstore.Store, error) 
 		}
 		// SetDefault has already been called, so slog.Default() IS the
 		// TelemetryHandler — this warning gets request_id enrichment automatically.
-		slog.WarnContext(ctx, "server: Redis unavailable, falling back to in-memory KV store", "error", err)
+		log.Warn(ctx, "Redis unavailable, falling back to in-memory KV store", "error", err)
 	}
 	return kvstore.NewInMemoryStore(5 * time.Minute), nil
 }
@@ -301,4 +334,120 @@ func newBitcoinZMQ(cfg *config.Config, recorder zmq.ZMQRecorder) (zmq.Subscriber
 		}
 	}
 	return zmq.New(cfg.BitcoinZMQBlock, cfg.BitcoinZMQTx, idleTimeout, recorder)
+}
+
+// newBitcoinRPC constructs the RPC client and runs best-effort startup probes.
+//
+// The server ALWAYS starts even when Bitcoin Core is unreachable — the RPC
+// client reconnects on every call and the domain layer handles transient
+// errors. Only one case is fatal: a chain mismatch (BTC_NETWORK configured
+// for testnet4 but node reports "main" or vice versa). That is a hard
+// misconfiguration — allowing it would silently operate on the wrong network.
+//
+// Startup probe sequence (all non-fatal except chain mismatch):
+//  1. GetBlockchainInfo — verifies connectivity and chain. Node unreachable →
+//     WARN + return client. Chain mismatch → ERROR + return error (only fatal).
+//  2. Pruned detection — INFO only.
+//  3. GetWalletInfo — drives keypool gauge. Failure → WARN, server continues.
+func newBitcoinRPC(ctx context.Context, cfg *config.Config, registry *telemetry.Registry) (rpc.Client, error) {
+	client, err := rpc.New(
+		cfg.BitcoinRPCHost,
+		cfg.BitcoinRPCPort,
+		cfg.BitcoinRPCUser,
+		cfg.BitcoinRPCPass,
+		registry, // *telemetry.Registry satisfies rpc.RPCRecorder structurally
+	)
+	if err != nil {
+		// Construction only fails for invalid port — a config error, not a
+		// connectivity error. config.validate() should have caught this first.
+		log.Error(ctx, "bitcoin RPC client construction failed", "error", err)
+		return nil, err
+	}
+
+	// Probe timeout: use configured value or fall back to 10 s.
+	probeTimeout := time.Duration(cfg.BitcoinBlockRPCTimeoutSeconds) * time.Second
+	if probeTimeout == 0 {
+		probeTimeout = 10 * time.Second
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+
+	// ── 1. Connectivity + chain match ─────────────────────────────────────
+	// GetBlockchainInfo also drives the bitcoin_rpc_connected gauge via
+	// SetRPCConnected inside the client — no separate call needed.
+	info, err := client.GetBlockchainInfo(probeCtx)
+	if err != nil {
+		// Node is down or unreachable — not fatal. The client will retry on
+		// every subsequent call. Domain code handles ErrNodeUnreachable paths.
+		log.Warn(ctx, "bitcoin node unreachable at startup — will retry on demand",
+			"host", cfg.BitcoinRPCHost,
+			"port", cfg.BitcoinRPCPort,
+			"error", err,
+		)
+		return client, nil
+	}
+
+	// Chain mismatch is the only fatal probe failure — it is a hard
+	// misconfiguration, not a transient error. Operating on the wrong network
+	// would silently corrupt every address lookup and block scan.
+	// Bitcoin Core reports chain names as:
+	//   mainnet  → "main"
+	//   testnet4 → "testnet4"  (NOT "test4" — verified against Bitcoin Core v27+)
+	wantChain := map[string]string{
+		"mainnet":  "main",
+		"testnet4": "testnet4",
+	}[cfg.BitcoinNetwork]
+	if info.Chain != wantChain {
+		log.Error(ctx, "bitcoin node chain mismatch — wrong node or wrong network config",
+			"node_chain", info.Chain,
+			"btc_network", cfg.BitcoinNetwork,
+			"expected_chain", wantChain,
+		)
+		// Release the HTTP transport before returning. cleanup() is never called
+		// when startup fails, so this is the only opportunity to drain connections.
+		client.Close()
+		return nil, errors.New("bitcoin: node chain does not match BTC_NETWORK")
+	}
+
+	// ── 2. Pruned node detection ──────────────────────────────────────────
+	if info.Pruned {
+		log.Info(ctx, "running on pruned node — wallet RPC path active; txindex not required",
+			"prune_height", info.PruneHeight,
+			"chain", info.Chain,
+		)
+	}
+
+	// ── 3. Keypool size check ─────────────────────────────────────────────
+	walletInfo, err := client.GetWalletInfo(probeCtx)
+	if err != nil {
+		if rpc.IsNoWalletError(err) {
+			// Sentinel — wallet not loaded yet. -1 distinguishes "no wallet" from
+			// "wallet exists but pool exhausted" (0) and "bitcoin disabled" (null).
+			registry.SetKeypoolSize(-1)
+			log.Warn(ctx, "no Bitcoin wallet loaded — create one with: bitcoin-cli createwallet \"store\"")
+		} else {
+			log.Warn(ctx, "GetWalletInfo failed at startup — keypool size unknown", "error", err)
+		}
+	} else {
+		registry.SetKeypoolSize(walletInfo.KeypoolSize)
+		switch {
+		case walletInfo.KeypoolSize < 10:
+			log.Error(ctx, "keypool critically low — invoice creation will fail soon",
+				"keypool_size", walletInfo.KeypoolSize,
+			)
+		case walletInfo.KeypoolSize < 100:
+			log.Warn(ctx, "keypool below warning threshold — run keypoolrefill",
+				"keypool_size", walletInfo.KeypoolSize,
+			)
+		default:
+			log.Info(ctx, "RPC client ready",
+				"chain", info.Chain,
+				"blocks", info.Blocks,
+				"pruned", info.Pruned,
+				"keypool_size", walletInfo.KeypoolSize,
+			)
+		}
+	}
+
+	return client, nil
 }

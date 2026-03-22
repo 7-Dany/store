@@ -203,3 +203,51 @@ func (r *Registry) SetUTXOCount(count float64) {
 	}
 	r.bitcoinUTXOCount.Set(count)
 }
+
+// ── Bitcoin RPC ───────────────────────────────────────────────────────────────
+
+// OnRPCCall records the completion of a single Bitcoin Core RPC call.
+//
+// method must be one of the bounded set of known RPC method names
+// (e.g. "gettransaction", "getblockchaininfo"). It is used as a Prometheus
+// label — never pass user input or dynamic strings.
+// status must be "success" or "error".
+// durationSeconds is the wall-clock time the call took including HTTP round-trip.
+func (r *Registry) OnRPCCall(method, status string, durationSeconds float64) {
+	if r == nil {
+		return
+	}
+	if r.bitcoinRPCCallsTotal != nil {
+		r.bitcoinRPCCallsTotal.WithLabelValues(method, status).Inc()
+	}
+	if r.bitcoinRPCDuration != nil {
+		r.bitcoinRPCDuration.WithLabelValues(method).Observe(durationSeconds)
+	}
+}
+
+// OnRPCError records a classified RPC error for the given method.
+//
+// errorType must be one of the bounded set of error classifications:
+//   - "not_found"  — Bitcoin Core returned code -5 (no such wallet tx / not in mempool)
+//   - "pruned"     — requested block data has been pruned from the node
+//   - "rpc_error"  — Bitcoin Core returned a non-(-5) RPC error code
+//   - "network"    — HTTP transport failure (connection refused, reset, etc.)
+//   - "timeout"    — context deadline exceeded before the call completed
+//   - "canceled"   — context was cancelled (e.g. graceful shutdown); call() still records
+//     the error metric so Prometheus captures the cancellation rate
+//   - "unknown"    — none of the above (marshal/unmarshal failure, etc.)
+func (r *Registry) OnRPCError(method, errorType string) {
+	if r == nil || r.bitcoinRPCErrorsTotal == nil {
+		return
+	}
+	r.bitcoinRPCErrorsTotal.WithLabelValues(method, errorType).Inc()
+}
+
+// SetKeypoolSize records the current keypool depth reported by getwalletinfo.
+// The keypool monitoring job calls this after every GetWalletInfo call.
+func (r *Registry) SetKeypoolSize(size int) {
+	if r == nil || r.bitcoinKeypoolSize == nil {
+		return
+	}
+	r.bitcoinKeypoolSize.Set(float64(size))
+}

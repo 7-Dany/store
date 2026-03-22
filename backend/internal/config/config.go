@@ -574,14 +574,23 @@ func (c *Config) validateBitcoin() error {
 	if len(c.BitcoinSessionSecret) < 32 {
 		return fmt.Errorf("config: BTC_SESSION_SECRET must be at least 32 bytes")
 	}
+	if isLowEntropySecret(c.BitcoinSessionSecret) {
+		return fmt.Errorf("config: BTC_SESSION_SECRET has dangerously low entropy; generate with: openssl rand -hex 32")
+	}
 	if len(c.BitcoinSSESigningSecret) < 32 {
 		return fmt.Errorf("config: BTC_SSE_SIGNING_SECRET must be at least 32 bytes")
+	}
+	if isLowEntropySecret(c.BitcoinSSESigningSecret) {
+		return fmt.Errorf("config: BTC_SSE_SIGNING_SECRET has dangerously low entropy; generate with: openssl rand -hex 32")
 	}
 	if c.BitcoinSessionSecret == c.BitcoinSSESigningSecret {
 		return fmt.Errorf("config: BTC_SESSION_SECRET and BTC_SSE_SIGNING_SECRET must be distinct")
 	}
 	if len(c.BitcoinAuditHMACKey) < 32 {
 		return fmt.Errorf("config: BTC_AUDIT_HMAC_KEY must be at least 32 bytes")
+	}
+	if isLowEntropySecret(c.BitcoinAuditHMACKey) {
+		return fmt.Errorf("config: BTC_AUDIT_HMAC_KEY has dangerously low entropy; generate with: openssl rand -hex 32")
 	}
 	if c.BitcoinAuditHMACKey == c.BitcoinSessionSecret {
 		return fmt.Errorf("config: BTC_AUDIT_HMAC_KEY must differ from BTC_SESSION_SECRET")

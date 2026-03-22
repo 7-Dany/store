@@ -2,6 +2,8 @@
 
 Last updated: 2026-03-16. Update this file when new packages, errors, or SQL queries are added.
 
+**Related:** [glossary.md](./glossary.md) — definitions for BTC payment system terms (invoice, settlement, sweep, reconciliation, RBF, etc.)
+
 ---
 
 ## 1. Domain → Package → Files

@@ -5,6 +5,8 @@
 > for this package.
 >
 > **Read first:** `rate-feature.md` — behavioral contract and edge cases.
+> **Schema:** `sql/schema/009_btc.sql` (`btc_exchange_rate_log` table).
+> **Queries:** `sql/queries/btc.sql` (`InsertExchangeRate`, `GetLatestExchangeRate`).
 
 ---
 
@@ -45,15 +47,28 @@ This path is only reached when both sources are reachable. The suspended path
 
 ---
 
-## §3 — Cache Refresh and Suspension Logic
+## §3 — Cache Refresh, DB Logging, and Suspension Logic
+
+Every successful rate fetch (from either source) writes a row to `btc_exchange_rate_log`
+via `InsertExchangeRate`. This provides a complete time-series audit trail enabling
+questions like "what was the BTC/USD rate at 14:23 on March 5?" and "which invoices
+were created during the anomaly window?"
+
+Anomaly detection: if the fetched rate deviates from the rolling 1-hour average by
+more than `BTC_RATE_MAX_DEVIATION_PCT`, `anomaly_flag = TRUE` and `anomaly_reason`
+are set on the inserted row. This also fires a WARNING alert.
+
+Invoice creation uses `GetLatestExchangeRate` to read the most recent rate for the
+`(network, fiat_currency)` pair. Index: `idx_ber_network_currency_time` covering
+`(network, fiat_currency, fetched_at DESC)` — index-only for LIMIT 1.
 
 ```
 Every BTC_RATE_REFRESH_INTERVAL_SECONDS (default: 60):
   1. Attempt primary source fetch (timeout: BTC_RATE_SOURCE_TIMEOUT_MS).
-     - Success: update cache. Done.
+     - Success: update cache; INSERT row to btc_exchange_rate_log. Done.
      - Failure: mark primary unavailable. Attempt fallback.
   2. Attempt fallback source fetch (timeout: BTC_RATE_SOURCE_TIMEOUT_MS).
-     - Success: update cache. Done.
+     - Success: update cache; INSERT row to btc_exchange_rate_log. Done.
      - Failure: mark both unavailable.
 
 If both unavailable for > 5 minutes:

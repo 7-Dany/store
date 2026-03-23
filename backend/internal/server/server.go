@@ -230,10 +230,12 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 			ErrorURL:           cfg.OAuthErrorURL,
 			TelegramBotToken:   cfg.TelegramBotToken,
 		},
-		BitcoinEnabled: cfg.BitcoinEnabled,
-		BitcoinZMQ:     btcSub,
-		BitcoinRPC:     btcRPC,
-		BitcoinNetwork: cfg.BitcoinNetwork,
+		BitcoinEnabled:         cfg.BitcoinEnabled,
+		BitcoinZMQ:             btcSub,
+		BitcoinRPC:             btcRPC,
+		BitcoinNetwork:         cfg.BitcoinNetwork,
+		BitcoinMaxWatchPerUser: cfg.BitcoinMaxWatchPerUser,
+		BitcoinAuditHMACKey:    cfg.BitcoinAuditHMACKey,
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────

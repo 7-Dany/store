@@ -7,7 +7,6 @@
 >
 > **Companion:** `events-technical.md` — guard sequences, mempool tracker internals,
 > SSE broker, token auth implementation, test inventory.
-> **Source of truth for HTTP contract:** `../1-zmq-system.md §2`.
 
 ---
 
@@ -70,11 +69,42 @@ claim.
 
 ---
 
+## Token issuance DB record (GDPR)
+
+Every token issuance is recorded in the `sse_token_issuances` table with:
+- `jti_hash = HMAC-SHA256(jti, server_secret)` — non-reversible without the secret
+- `source_ip_hash = SHA256(ip || daily_rotation_key)` — non-reversible after the
+  key rotates (rotates every 24 hours; old key is deleted)
+
+**Why this table and not `financial_audit_events`:**
+`financial_audit_events` is immutable — DELETE and UPDATE are blocked by DB triggers.
+IP addresses are PII subject to GDPR Article 17 erasure requests. Storing raw IPs
+in an immutable table would make GDPR compliance structurally impossible.
+`sse_token_issuances` supports erasure: on a GDPR request, `source_ip_hash` is
+nullified and `erased = TRUE` is set. The pseudonymised `jti_hash` remains (it is
+non-identifying without the server secret) to preserve the audit trail.
+
+The daily rotation key means the IP hash becomes non-reversible within 24 hours
+regardless of any erasure action, satisfying GDPR pseudonymisation requirements.
+
+**What remains after erasure:** the `jti_hash`, `vendor_id`, `network`, `issued_at`,
+and `expires_at` columns are retained. These are not personal data.
+
+---
+
 ## SSE stream — what it is and what it guarantees
 
 The SSE stream is explicitly **display-only and best-effort**. It exists to give
 the frontend real-time visibility into Bitcoin transactions involving watched
 addresses. It must never be used as a source of truth for payment settlement.
+
+**Important distinction from settlement:** The SSE stream watches a Redis-backed
+user address set that vendors register via `POST /watch`. This is entirely separate
+from the DB-backed `invoice_address_monitoring` table that the settlement engine
+uses to track invoice payment addresses. The two watch systems share no state —
+a payment detected by the settlement engine via `invoice_address_monitoring` may
+or may not appear on the SSE stream, depending on whether the vendor has separately
+registered that address via `POST /watch`.
 
 Guarantees the stream makes:
 - Events are delivered in order within a single connection.
@@ -305,3 +335,7 @@ Reports per-instance health, not cluster-wide health:
 - The stream provides no guarantee that `confirmed_tx` will be emitted for every
   transaction that was observed in the mempool. Clients must poll txstatus for
   financial reconciliation.
+- The SSE watch list (`POST /watch`) is completely separate from invoice address
+  monitoring (`invoice_address_monitoring` table). A vendor seeing payment events on
+  their SSE stream does not mean those events have been processed by the settlement
+  engine, and vice versa.

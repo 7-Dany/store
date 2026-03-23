@@ -1,0 +1,1129 @@
+{
+  "info": {
+    "_postman_id": "bitcoin-watch-e2e",
+    "name": "Bitcoin \u2013 Watch (POST /api/v1/bitcoin/watch)",
+    "description": "E2E tests for POST /api/v1/bitcoin/watch.\n\nFolder execution order:\n  1. setup          \u2014 register a fresh user, fetch OTP from Gmail, verify email, login\n  2. unauthenticated \u2014 request without JWT \u2192 401\n  3. validation     \u2014 input-error cases (malformed JSON, network mismatch, address guards)\n  4. happy-path     \u2014 200 with single address, multiple addresses, re-registration (idempotent)\n  5. rate-limiting  \u2014 IP limiter exhaustion: 10 warmup \u2192 ok, 11th \u2192 429\n\nPre-requisites:\n  - BTC_NETWORK=testnet4 in .env (collection variable btc_network must match).\n  - Run `make _e2e-kv-clean` before each run to reset Redis watch state so the\n    per-user count cap and 7-day window are fresh.\n  - Run `make _e2e-db-clean` to remove the setup user between runs.\n\nNotes on what is NOT covered here (already covered by internal tests):\n  - HMAC of invalid address in audit metadata         \u2014 handler_test.go\n  - Redis unavailable \u2192 503 + Retry-After: 5          \u2014 handler_test.go (requires Redis down)\n  - watch_limit_exceeded reason=count_cap             \u2014 requires seeding user near limit in Redis;\n                                                        add a Makefile seed target to cover this.\n  - watch_limit_exceeded reason=registration_window_expired \u2014 requires seeding expired regAt key;\n                                                        add a Makefile seed target to cover this.\n  - addedCount==0 skips side-effects (no audit write) \u2014 service_test.go\n  - reconciliation goroutine correctness              \u2014 service_test.go\n  - All audit event writes                            \u2014 store_test.go\n\nAddresses used in happy-path are testnet4 standard test vectors:\n  - tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx  (P2WPKH, BIP173 test vector)\n  - mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn           (P2PKH legacy testnet)\nIf running against mainnet, replace collection variable btc_network and swap\nthese addresses for mainnet equivalents.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Increment the request sequence counter and derive a unique X-Forwarded-For IP",
+          "// for every request so non-RL folders never exhaust any rate-limit bucket.",
+          "// The rate-limiting folder overrides _xff to 127.0.0.2 via its own prerequest.",
+          "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.' + ((n>>16)&0xff) + '.' + ((n>>8)&0xff) + '.' + (n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Registers the gmail_test_email user, fetches the OTP from Gmail, verifies the email, then logs in to obtain watch_access_token. The validation and happy-path folders depend on watch_access_token being set here.",
+      "item": [
+        {
+          "name": "POST /register \u2192 201 (setup user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) {",
+                  "    console.error('[ERROR] gmail_test_email not set in environment \u2014 add it to environment.json.');",
+                  "}",
+                  "pm.collectionVariables.set('watch_happy_email', email);",
+                  "pm.collectionVariables.set('watch_happy_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set \u2014 skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "console.log('[INFO] Done waiting. Querying Gmail API (async)...');",
+                  "",
+                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email found in Gmail.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode email body.'); return; }",
+                  "        const match = body.match(/(?<!#)\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in email body.'); return; }",
+                  "        pm.collectionVariables.set('watch_code', match[1]);",
+                  "        console.log('[INFO] OTP stored in watch_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"WatchHappy\", \"email\": \"{{watch_happy_email}}\", \"password\": \"{{watch_happy_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verification \u2192 200 (consume OTP)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('watch_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] watch_code is empty \u2014 Gmail fetch did not complete.');",
+                  "    console.error('        Check: gmail_access_token is set and not expired, --delay-request >= 8000.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{watch_happy_email}}\", \"code\": \"{{watch_code}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verification",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verification"]
+            }
+          }
+        },
+        {
+          "name": "POST /login \u2192 200 (obtain watch_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present and non-empty', () => {",
+                  "    pm.expect(body).to.have.property('access_token');",
+                  "    pm.expect(body.access_token).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('watch_access_token', body.access_token);",
+                  "console.log('[INFO] watch_access_token stored.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{watch_happy_email}}\", \"password\": \"{{watch_happy_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "unauthenticated",
+      "description": "Verifies that requests missing a JWT are rejected before reaching handler validation. The rate-limit middleware runs first (unique XFF from collection prerequest prevents bucket exhaustion), then deps.JWTAuth rejects with 401.",
+      "item": [
+        {
+          "name": "POST /watch no Authorization header \u2192 401 unauthorized",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "pm.test('code is unauthorized', () => pm.expect(pm.response.json().code).to.eql('missing_token'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "validation",
+      "description": "Input-validation failures. All requests are authenticated (watch_access_token from setup). Unique XFF IPs from the collection prerequest prevent rate-limit interference.",
+      "item": [
+        {
+          "name": "malformed JSON \u2192 400 bad_request",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is bad_request', () => pm.expect(pm.response.json().code).to.eql('bad_request'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{bad json",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "body > 1 MiB \u2192 413",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const pad = 'x'.repeat(1024 * 1024 + 1);",
+                  "pm.request.body.update({ mode: 'raw', raw: JSON.stringify({ network: pm.collectionVariables.get('btc_network'), addresses: [], _pad: pad }) });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 413', () => pm.response.to.have.status(413));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "wrong network \u2192 400 network_mismatch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is network_mismatch', () => pm.expect(pm.response.json().code).to.eql('network_mismatch'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"mainnet\", \"addresses\": [\"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "empty addresses array \u2192 400 too_few_addresses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is too_few_addresses', () => pm.expect(pm.response.json().code).to.eql('too_few_addresses'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": []}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "21 addresses \u2192 400 too_many_addresses",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Build an array of 21 valid-format addresses (duplicates are fine for this guard).",
+                  "const addrs = [];",
+                  "for (let i = 0; i < 21; i++) {",
+                  "    addrs.push('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx');",
+                  "}",
+                  "pm.collectionVariables.set('_too_many_addrs', JSON.stringify(addrs));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is too_many_addresses', () => pm.expect(pm.response.json().code).to.eql('too_many_addresses'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": {{_too_many_addrs}}}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "invalid address format \u2192 400 invalid_address",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is invalid_address', () => pm.expect(pm.response.json().code).to.eql('invalid_address'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"notavalidbitcoinaddress\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "mainnet address submitted to testnet server \u2192 400 invalid_address",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Network field matches server network (testnet4) but the address itself is a",
+                  "// mainnet bech32 address \u2014 ValidateAndNormalise rejects the HRP mismatch.",
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is invalid_address', () => pm.expect(pm.response.json().code).to.eql('invalid_address'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "happy-path",
+      "description": "Successful watch registration cases. Uses watch_access_token from setup.\nEnsure Redis is clean (`make _e2e-kv-clean`) before running so the per-user\ncount cap and 7-day window start fresh.",
+      "item": [
+        {
+          "name": "single valid address (P2WPKH bech32) \u2192 200 watching echoes address",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('watching array is present', () => pm.expect(body).to.have.property('watching').that.is.an('array'));",
+                  "pm.test('watching contains exactly 1 address', () => pm.expect(body.watching).to.have.lengthOf(1));",
+                  "// bech32 addresses are lowercased by ValidateAndNormalise.",
+                  "pm.test('watching[0] matches submitted address (lowercased)', () => {",
+                  "    pm.expect(body.watching[0]).to.eql('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "two valid addresses (P2WPKH + P2PKH legacy) \u2192 200 watching echoes both",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('watching array is present', () => pm.expect(body).to.have.property('watching').that.is.an('array'));",
+                  "pm.test('watching contains exactly 2 addresses', () => pm.expect(body.watching).to.have.lengthOf(2));",
+                  "// bech32 is lowercased; base58check keeps original casing.",
+                  "pm.test('watching includes the bech32 address (lowercased)', () => {",
+                  "    pm.expect(body.watching).to.include('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx');",
+                  "});",
+                  "pm.test('watching includes the P2PKH address', () => {",
+                  "    pm.expect(body.watching).to.include('mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\", \"mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "re-submit already-registered address \u2192 200 idempotent (no error, watching echoed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Re-registration: the address was added by the single-address happy-path test.",
+                  "// addedCount == 0 (SADD is a no-op); service still returns success.",
+                  "// No audit event is written, no side-effects fire — verified by service_test.go.",
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('watching array is present', () => pm.expect(body).to.have.property('watching').that.is.an('array'));",
+                  "pm.test('watching contains the re-submitted address', () => {",
+                  "    pm.expect(body.watching).to.include('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "maximum allowed addresses (20) \u2192 200",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Build an array of 20 distinct-looking addresses using the bech32 test vector.",
+                  "// The handler allows exactly 20; 21 was rejected in the validation folder.",
+                  "// NOTE: These are all the same address; SADD treats them as 1 unique member.",
+                  "// The guard check (len > 20) happens before uniqueness is considered, so 20",
+                  "// identical entries still passes the length guard and is a valid e2e signal.",
+                  "const addrs = [];",
+                  "for (let i = 0; i < 20; i++) {",
+                  "    addrs.push('tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx');",
+                  "}",
+                  "pm.collectionVariables.set('_max_addrs', JSON.stringify(addrs));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('watching array is present', () => pm.expect(body).to.have.property('watching').that.is.an('array'));",
+                  "pm.test('watching has 20 entries (the submitted count)', () => pm.expect(body.watching).to.have.lengthOf(20));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{watch_access_token}}"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": {{_max_addrs}}}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "rate-limiting",
+      "description": "Verifies the btc:watch:ip: IP rate limiter (burst=10, rate=10/60s \u2248 0.167 tokens/sec).\nExpected Retry-After: ceil(1 / (10/60)) = ceil(6) = 6 seconds.\n\nAll requests in this folder use a fixed XFF (127.0.0.2) to target a single bucket.\nNo JWT is required \u2014 the rate-limit middleware runs before deps.JWTAuth, so warmup\nrequests will reach 401 (no token) but consume IP tokens. The 11th request is\nblocked before JWT validation and returns 429.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Pin all rate-limit folder requests to a single IP bucket.",
+              "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+              "pm.collectionVariables.set('_xff', '127.0.0.2');"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "warmup 1/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "warmup 2/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "warmup 3/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "warmup 4/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "warmup 5/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "warmup 6/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "warmup 7/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "warmup 8/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "warmup 9/10",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "warmup 10/10 \u2014 last allowed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('not rate-limited yet (slot 10 \u2014 last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        },
+        {
+          "name": "11th request \u2192 429 (btc:watch:ip: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is rate_limit_exceeded', () => pm.expect(pm.response.json().code).to.eql('rate_limit_exceeded'));",
+                  "// Retry-After = ceil(1 / (10/60)) = ceil(6) = 6 seconds.",
+                  "pm.test('Retry-After header is 6', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('6');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"network\": \"{{btc_network}}\", \"addresses\": [\"tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx\"]}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/watch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "watch"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter for unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current X-Forwarded-For value. Set by collection prerequest; overridden to 127.0.0.2 in rate-limiting folder."
+    },
+    {
+      "key": "btc_network",
+      "value": "testnet4",
+      "description": "Must match BTC_NETWORK in .env. Switch to 'mainnet' (and update test addresses) for mainnet runs."
+    },
+    {
+      "key": "watch_happy_email",
+      "value": "",
+      "description": "Set by setup folder from gmail_test_email."
+    },
+    {
+      "key": "watch_happy_password",
+      "value": "",
+      "description": "Set by setup folder."
+    },
+    {
+      "key": "watch_code",
+      "value": "",
+      "description": "OTP fetched from Gmail by setup/register test script."
+    },
+    {
+      "key": "watch_access_token",
+      "value": "",
+      "description": "JWT access_token from a successful login; used by validation and happy-path folders."
+    },
+    {
+      "key": "_too_many_addrs",
+      "value": "",
+      "description": "JSON array of 21 addresses; populated by prerequest of too_many_addresses test."
+    },
+    {
+      "key": "_max_addrs",
+      "value": "",
+      "description": "JSON array of 20 addresses; populated by prerequest of maximum-allowed test."
+    }
+  ]
+}

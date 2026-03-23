@@ -49,8 +49,27 @@
                   if err := redis.Set("btc:token:sid:"+jti, sessionID, tokenTTL); err != nil {
                       return 503
                   }
-5. Audit          EventBitcoinSSETokenIssued{userID, sha256(jti), exp, sourceIP}
-6. Response       Set-Cookie: btc_sse_jti=<signedJWT>; HttpOnly; Secure; SameSite=Strict;
+5. DB record      InsertSSETokenIssuance({
+                      vendor_id:       userID,
+                      network:         cfg.BitcoinNetwork,
+                      jti_hash:        HMAC-SHA256(jti, BTC_SERVER_SECRET),
+                      source_ip_hash:  SHA256(clientIP + "|" + dailyRotationKey),
+                                       // NULL if IP unavailable
+                      expires_at:      now + BTC_SSE_TOKEN_TTL,
+                  })
+                  // On DB error: log warning but do NOT fail the request.
+                  // The DB record is for GDPR auditability; Redis is the
+                  // authoritative replay gate. A missing DB row does not
+                  // compromise security — only GDPR IP-erasure coverage.
+                  // source_ip_hash uses SHA256(ip || daily_rotation_key).
+                  // The daily rotation key is deleted after rotation, making
+                  // the hash non-reversible within 24 hours regardless of
+                  // any GDPR erasure action.
+6. Audit          EventBitcoinSSETokenIssued{userID, sha256(jti), exp, sourceIP}
+                  // Note: sourceIP is NOT written to financial_audit_events.
+                  // Use sse_token_issuances.source_ip_hash for IP audit trail.
+                  // financial_audit_events is immutable — PII cannot be erased.
+7. Response       Set-Cookie: btc_sse_jti=<signedJWT>; HttpOnly; Secure; SameSite=Strict;
                              Path=/api/v1/bitcoin/events; MaxAge=BTC_SSE_TOKEN_TTL
                   respond.NoContent(w)  // 204
 ```
@@ -445,6 +464,35 @@ go func() {
 | `btc:token:ip:{ip}` | String | 1 min | Token endpoint IP rate limiter bucket |
 | `btc:events:ip:{ip}` | String | 1 min | Events endpoint IP rate limiter bucket |
 | `btc:status:ip:{ip}` | String | 1 min | Status endpoint IP rate limiter bucket |
+
+---
+
+## §11a — DB Table Reference (SSE tokens)
+
+SSE token issuances are also recorded in the `sse_token_issuances` PostgreSQL table
+(schema: `010_btc_payouts.sql`, query: `InsertSSETokenIssuance`). This is the
+GDPR-erasable IP audit trail.
+
+| Column | Value | Notes |
+|---|---|---|
+| `jti_hash` | `HMAC-SHA256(jti, BTC_SERVER_SECRET)` | Non-reversible; UNIQUE index |
+| `source_ip_hash` | `SHA256(ip \|\| daily_rotation_key)` | NULL after GDPR erasure |
+| `expires_at` | `now + BTC_SSE_TOKEN_TTL` | Used by cleanup job |
+| `erased` | `FALSE` initially | Set TRUE + source_ip_hash = NULL on GDPR erasure |
+
+**Why two records (Redis + DB)?**
+Redis is the authoritative security gate (replay prevention, session binding).
+The DB table is solely for GDPR compliance — it provides an erasable IP audit trail
+that Redis cannot provide (Redis has no per-key erasure). A Redis outage does not
+affect DB writes and vice versa.
+
+**On DB write error:** log a warning, do NOT fail the request. A missing DB row
+only affects GDPR IP-erasure coverage, not security.
+
+**GDPR erasure:** `EraseSSETokenIssuances(vendor_id)` sets
+`erased = TRUE, source_ip_hash = NULL` for all non-erased rows.
+`jti_hash`, `vendor_id`, `network`, `issued_at`, `expires_at` are retained permanently
+— they are not personal data.
 
 ---
 

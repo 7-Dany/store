@@ -251,3 +251,26 @@ func (r *Registry) SetKeypoolSize(size int) {
 	}
 	r.bitcoinKeypoolSize.Set(float64(size))
 }
+
+// ── Watch ─────────────────────────────────────────────────────────────────────
+
+// OnWatchRejected increments bitcoin_watch_rejected_total{reason}.
+// reason is one of: "rate_limit", "invalid_address", "limit_exceeded",
+// "registration_window_expired". These are bounded constants — never pass
+// dynamic or user-controlled values.
+func (r *Registry) OnWatchRejected(reason string) {
+	if r == nil || r.bitcoinWatchRejected == nil {
+		return
+	}
+	r.bitcoinWatchRejected.WithLabelValues(reason).Inc()
+}
+
+// SetGlobalWatchCountEstimate sets bitcoin_global_watch_count_estimate{network}
+// to the reconciled total from the 15-minute SCAN goroutine.
+// network is "testnet4" or "mainnet".
+func (r *Registry) SetGlobalWatchCountEstimate(network string, count float64) {
+	if r == nil || r.bitcoinGlobalWatchCountEstimate == nil {
+		return
+	}
+	r.bitcoinGlobalWatchCountEstimate.WithLabelValues(network).Set(count)
+}

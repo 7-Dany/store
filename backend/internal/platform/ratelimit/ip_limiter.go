@@ -219,6 +219,10 @@ func NewIPRateLimiter(s kvstore.Store, keyPrefix string, rate, burst float64, id
 //	go limiter.StartCleanup(ctx)
 func (l *IPRateLimiter) StartCleanup(ctx context.Context) { l.startCleanup(ctx) }
 
+// RetryAfter returns the Retry-After header value computed at construction:
+// ceil(1/rate) seconds — the minimum time until one new token is available.
+func (l *IPRateLimiter) RetryAfter() string { return l.retryAfterSecs }
+
 // Allow returns true if the given IP address has a token available.
 func (l *IPRateLimiter) Allow(ctx context.Context, ip string) bool {
 	return l.allow(ctx, l.keyPrefix+ip)

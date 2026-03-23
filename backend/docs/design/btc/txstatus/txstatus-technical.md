@@ -5,7 +5,6 @@
 > validation, and the complete test inventory for this feature.
 >
 > **Read first:** `txstatus-feature.md` — behavioral contract and edge cases.
-> **Shared platform details:** `../btc-shared.md` — RPC client, app.Deps wiring.
 
 ---
 
@@ -62,41 +61,47 @@
 
 ## §3 — RPC Resolution Logic
 
+Both endpoints use `rpc.Client.GetTransaction` (Bitcoin Core's `gettransaction` RPC).
+This is a **wallet-native method** — no `txindex=1` required. It covers any transaction
+the platform wallet has ever sent or received, which is the complete set of
+transactions that could ever be associated with an invoice payment address.
+
 ### Single txid
 
 ```go
 func (s *Service) GetTxStatus(ctx context.Context, txid string) (TxStatusResult, error) {
-    raw, err := s.rpc.GetRawTransaction(ctx, txid, true)
+    tx, err := s.rpc.GetTransaction(ctx, txid, false)
     if err != nil {
-        // Bitcoin Core returns -5 "No such mempool or blockchain transaction"
-        // for unknown txids. Map to not_found.
-        if isNotFoundError(err) {
+        // rpc.IsNotFoundError: Bitcoin Core code -5
+        // "No such wallet transaction" — normal absent response.
+        if rpc.IsNotFoundError(err) {
             return TxStatusResult{Status: "not_found"}, nil
         }
+        // All other errors: node connectivity problem.
         return TxStatusResult{}, ErrRPCUnavailable
     }
 
-    var result struct {
-        InActiveChain *bool `json:"in_active_chain"`
-        Confirmations int   `json:"confirmations"`
-        BlockHeight   int   `json:"blockheight"`
-    }
-    if err := json.Unmarshal(raw, &result); err != nil {
-        return TxStatusResult{}, fmt.Errorf("GetTxStatus: unmarshal: %w", err)
+    // rpc.IsConflicting: Confirmations < 0 means the transaction is in a block
+    // that is no longer on the active chain (displaced by a reorg).
+    // This is distinct from not_found — the tx is known to the wallet but
+    // is no longer valid on the current chain.
+    if rpc.IsConflicting(tx) {
+        return TxStatusResult{Status: "conflicting"}, nil
     }
 
     switch {
-    case result.InActiveChain != nil && *result.InActiveChain:
+    case tx.Confirmations > 0:
         return TxStatusResult{
             Status:        "confirmed",
-            Confirmations: result.Confirmations,
-            BlockHeight:   result.BlockHeight,
+            Confirmations: tx.Confirmations,
+            BlockHeight:   tx.BlockHeight,
         }, nil
-    case result.InActiveChain == nil:
-        // InActiveChain is absent for mempool transactions (not yet in a block).
+    case tx.Confirmations == 0:
+        // Zero confirmations: transaction is in the mempool.
         return TxStatusResult{Status: "mempool"}, nil
     default:
-        // InActiveChain present but false: tx in a block that is not on the active chain.
+        // Should be unreachable after the IsConflicting check above,
+        // but handle defensively.
         return TxStatusResult{Status: "not_found"}, nil
     }
 }
@@ -104,20 +109,13 @@ func (s *Service) GetTxStatus(ctx context.Context, txid string) (TxStatusResult,
 
 ### Batch txid
 
-The batch service call resolves all txids in a single `getblock` RPC pass rather than
-calling `GetRawTransaction` once per txid. This makes the batch dramatically more
-efficient at scale.
-
 ```go
 func (s *Service) GetTxStatusBatch(ctx context.Context, txids []string) (map[string]TxStatusResult, error) {
     results := make(map[string]TxStatusResult, len(txids))
     for _, txid := range txids {
-        // GetRawTransaction with verbose=true is still the most portable approach.
-        // A future optimization could use GetBlock at verbosity=2 to batch multiple
-        // lookups in a single call if txids share the same block, but the simple
-        // approach is correct and sufficient for the current batch size limit of 20.
         res, err := s.GetTxStatus(ctx, txid)
         if err != nil {
+            // ErrRPCUnavailable — abort the entire batch.
             return nil, err
         }
         results[txid] = res
@@ -126,14 +124,11 @@ func (s *Service) GetTxStatusBatch(ctx context.Context, txids []string) (map[str
 }
 ```
 
-> **Note on "single getblock RPC pass":** The original design note in `1-zmq-system.md`
-> describes resolving all txids via a single `getblock` call. This is an optimization
-> applicable when all txids in a batch happen to be in the same block. In practice,
-> pending-reconciliation txids may span multiple blocks or include mempool transactions,
-> making a true single-pass impossible in the general case. The implementation above
-> uses individual `GetRawTransaction` calls per txid. If profiling reveals this is a
-> bottleneck, consider grouping by block_height (from a first-pass metadata fetch) and
-> then fetching each unique block once.
+**Note on batching efficiency:** Each txid makes one `GetTransaction` RPC call.
+Because `GetTransaction` is wallet-native (no global index scan), each call is
+fast. A future optimization could detect txids sharing the same `BlockHash` from
+a first-pass metadata fetch and retrieve each block once at verbosity=1, but
+the simple per-txid approach is correct and sufficient for the 20-txid limit.
 
 ---
 
@@ -165,6 +160,14 @@ func (s *Service) GetTxStatusBatch(ctx context.Context, txids []string) (map[str
 }
 ```
 
+### Single txid — conflicting (reorged)
+
+```json
+{
+  "status": "conflicting"
+}
+```
+
 ### Batch (200 — always includes all requested txids)
 
 ```json
@@ -172,7 +175,8 @@ func (s *Service) GetTxStatusBatch(ctx context.Context, txids []string) (map[str
   "statuses": {
     "abc123...": {"status": "confirmed", "confirmations": 3, "block_height": 126378},
     "def456...": {"status": "mempool"},
-    "ghi789...": {"status": "not_found"}
+    "ghi789...": {"status": "not_found"},
+    "jkl012...": {"status": "conflicting"}
   }
 }
 ```
@@ -188,7 +192,7 @@ func (s *Service) GetTxStatusBatch(ctx context.Context, txids []string) (map[str
 | 400 | `missing_ids` | `ids` query parameter is absent or empty |
 | 401 | `unauthorized` | Missing or invalid JWT |
 | 429 | `rate_limit_exceeded` | IP rate limit hit |
-| 503 | `service_unavailable` | RPC node unavailable |
+| 503 | `service_unavailable` | RPC node unavailable (non-404 error from GetTransaction) |
 
 ---
 
@@ -212,7 +216,7 @@ Only the rate limiter bucket keys are Redis-backed for this feature.
 |---|---|---|---|
 | `btc:txstatus:ip:{ip}` | String | 1 min | Txstatus endpoint IP rate limiter bucket |
 
-No other Redis state is used. All data comes directly from RPC calls to Bitcoin Core.
+No other Redis state is used. All data comes directly from `GetTransaction` RPC calls.
 
 ---
 
@@ -222,34 +226,36 @@ No other Redis state is used. All data comes directly from RPC calls to Bitcoin 
 
 | ID | Test | Notes |
 |---|---|---|
-| T-168 | `TestConfig_RPCPort_Numeric_ValidatedAtConfigTime` | BTC_RPC_PORT="not-a-port" → config.validate() returns error before any wiring |
+| T-168 | `TestConfig_RPCPort_Numeric_ValidatedAtConfigTime` | BTC_RPC_PORT="not-a-port" → config.validate() returns error |
 
-### Integration tests (require RPC / mock RPC)
+### Integration tests (require mock RPC)
 
 | ID | Test | Notes |
 |---|---|---|
-| T-169 | `TestWatch_BatchTxStatus_ValidIds_Returns200` | GET /tx/status?ids=txid1,txid2 → 200 with status map |
-| T-170 | `TestWatch_BatchTxStatus_TooManyIds_Returns400` | 21 txids → 400 too_many_ids |
-| T-171 | `TestWatch_BatchTxStatus_InvalidHex_Returns400` | one non-hex id in batch → 400 invalid_txid |
+| T-169 | `TestBatchTxStatus_ValidIds_Returns200` | GET /tx/status?ids=txid1,txid2 → 200 with status map |
+| T-170 | `TestBatchTxStatus_TooManyIds_Returns400` | 21 txids → 400 too_many_ids |
+| T-171 | `TestBatchTxStatus_InvalidHex_Returns400` | one non-hex id in batch → 400 invalid_txid |
 
-### Additional tests (to be added)
-
-The following test cases are implied by the feature contract but not yet in the
-original test inventory. Recommended additions:
+### Additional tests
 
 | Test | Notes |
 |---|---|
-| `TestSingleTxStatus_ValidTxid_Confirmed_Returns200` | Mock RPC returns confirmed |
-| `TestSingleTxStatus_ValidTxid_Mempool_Returns200` | Mock RPC returns mempool |
-| `TestSingleTxStatus_ValidTxid_NotFound_Returns200` | RPC returns -5 error → not_found |
+| `TestSingleTxStatus_Confirmed_Returns200` | Mock GetTransaction returns Confirmations=3 |
+| `TestSingleTxStatus_Mempool_Returns200` | Mock returns Confirmations=0, BlockHash="" |
+| `TestSingleTxStatus_NotFound_Returns200` | Mock returns IsNotFoundError (code -5) → status=not_found |
+| `TestSingleTxStatus_Conflicting_Returns200` | Mock returns Confirmations=-1 → status=conflicting |
 | `TestSingleTxStatus_InvalidHex_Returns400` | Non-hex txid |
 | `TestSingleTxStatus_TooShort_Returns400` | 63-char hex |
 | `TestSingleTxStatus_TooLong_Returns400` | 65-char hex |
-| `TestSingleTxStatus_RPCDown_Returns503` | RPC unavailable |
+| `TestSingleTxStatus_RPCDown_Returns503` | Non-404 RPC error → 503 |
 | `TestSingleTxStatus_MissingAuth_Returns401` | No JWT |
 | `TestBatchTxStatus_MissingIdsParam_Returns400` | ?ids omitted |
 | `TestBatchTxStatus_EmptyIdsParam_Returns400` | ?ids= (empty value) |
 | `TestBatchTxStatus_AllNotFound_Returns200` | All txids unknown → all not_found |
-| `TestBatchTxStatus_RPCDown_Returns503` | |
-| `TestBatchTxStatus_SameTxidTwice_BothResolved` | Duplicate in batch |
+| `TestBatchTxStatus_MixedStatuses_Returns200` | confirmed + mempool + not_found + conflicting |
+| `TestBatchTxStatus_RPCDown_Returns503` | First GetTransaction fails → abort entire batch |
+| `TestBatchTxStatus_SameTxidTwice_BothResolved` | Duplicate in batch — each resolved independently |
 | `TestBatchTxStatus_RateLimit_Returns429` | |
+| `TestGetTxStatus_IsConflicting_NegativeConfirmations` | Confirmations=-2 → conflicting, not not_found |
+| `TestGetTxStatus_IsNotFoundError_CodeMinus5` | RPCError{Code:-5} → not_found, not 503 |
+| `TestGetTxStatus_OtherRPCError_Returns503` | RPCError{Code:-8} → ErrRPCUnavailable |

@@ -286,3 +286,17 @@ SET expires_at = created_at + INTERVAL '1 millisecond'
 WHERE email      = $1
   AND token_type = 'password_reset'
   AND used_at    IS NULL;
+
+
+-- name: GetLatestAuditEvent :one
+-- Returns the most recent auth_audit_log row for the given event_type.
+-- Used by bitcoin watch store tests (T-41, T-42) to assert that WriteAuditLog
+-- persists the correct user_id (NULL for anonymous pre-auth events) and
+-- ip_address (NULL when the source IP string cannot be parsed).
+-- Ordered by the UUID v7 primary key which embeds a timestamp, so the most
+-- recently inserted row is always last.
+SELECT user_id, event_type, ip_address, metadata
+FROM auth_audit_log
+WHERE event_type = @event_type
+ORDER BY id DESC
+LIMIT 1;

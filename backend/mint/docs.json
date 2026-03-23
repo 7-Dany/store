@@ -255,6 +255,18 @@
             ]
           },
           {
+            "group": "Bitcoin",
+            "icon": "currency-bitcoin",
+            "pages": [
+              {
+                "group": "Watch",
+                "icon": "eye",
+                "expanded": false,
+                "pages": ["api-reference/bitcoin/watch/watch"]
+              }
+            ]
+          },
+          {
             "group": "Profile",
             "icon": "user-circle",
             "pages": [

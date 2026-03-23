@@ -200,7 +200,7 @@ func AllAuthProviderValues() []AuthProvider {
 	}
 }
 
-// Invoice lifecycle states. Add values with ALTER TYPE … ADD VALUE; never remove a value that may exist in live rows. Permitted transitions are enforced at the application layer — see settlement-technical.md §3.
+// Invoice lifecycle: 16 states, 38 permitted transitions (settlement-technical.md §3). Never remove a value — live rows would fail to decode. Add new states with ALTER TYPE … ADD VALUE.
 type BtcInvoiceStatus string
 
 const (
@@ -301,7 +301,7 @@ func AllBtcInvoiceStatusValues() []BtcInvoiceStatus {
 	}
 }
 
-// KYC/AML placeholder. Default not_required. Future implementation sets non-NULL tier thresholds and drives the btc_kyc_status state machine without schema changes.
+// KYC/AML verification state. Backed by kyc_submissions (010_btc_payouts.sql). Logic is gated behind non-NULL tier thresholds — currently a placeholder.
 type BtcKycStatus string
 
 const (
@@ -366,7 +366,7 @@ func AllBtcKycStatusValues() []BtcKycStatus {
 	}
 }
 
-// ZMQ watch state for invoice_address_monitoring. Retired records are kept permanently for audit; the partial index WHERE status = 'active' keeps all hot-path queries fast regardless of retired row count.
+// ZMQ watch state. Retired rows are kept permanently. The partial index WHERE status = 'active' keeps hot-path queries fast.
 type BtcMonitoringStatus string
 
 const (
@@ -425,7 +425,7 @@ func AllBtcMonitoringStatusValues() []BtcMonitoringStatus {
 	}
 }
 
-// Payout record lifecycle. 'constructing' is a transient claim; stale records (>10 min) are returned to 'queued' by the stuck-sweep watchdog. See settlement-technical.md §4 for the full permitted-transitions table.
+// Payout lifecycle. constructing is transient: stale records (> 10 min) are reclaimed to queued by the stuck-sweep watchdog. Terminal states: confirmed, refunded, manual_payout. fn_pr_status_guard trigger enforces the transition matrix at the DB level.
 type BtcPayoutStatus string
 
 const (
@@ -502,7 +502,128 @@ func AllBtcPayoutStatusValues() []BtcPayoutStatus {
 	}
 }
 
-// Frequency at which settled invoices are swept to vendor addresses. Free=weekly, Growth/Pro=daily (or realtime), Enterprise=realtime.
+// Outcome of a reconciliation run. ENUM replaces TEXT+CHECK to eliminate silent-NULL risk.
+type BtcReconciliationResult string
+
+const (
+	BtcReconciliationResultOk          BtcReconciliationResult = "ok"
+	BtcReconciliationResultDiscrepancy BtcReconciliationResult = "discrepancy"
+	BtcReconciliationResultError       BtcReconciliationResult = "error"
+)
+
+func (e *BtcReconciliationResult) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = BtcReconciliationResult(s)
+	case string:
+		*e = BtcReconciliationResult(s)
+	default:
+		return fmt.Errorf("unsupported scan type for BtcReconciliationResult: %T", src)
+	}
+	return nil
+}
+
+type NullBtcReconciliationResult struct {
+	BtcReconciliationResult BtcReconciliationResult `json:"btc_reconciliation_result"`
+	Valid                   bool                    `json:"valid"` // Valid is true if BtcReconciliationResult is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullBtcReconciliationResult) Scan(value interface{}) error {
+	if value == nil {
+		ns.BtcReconciliationResult, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.BtcReconciliationResult.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullBtcReconciliationResult) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.BtcReconciliationResult), nil
+}
+
+func (e BtcReconciliationResult) Valid() bool {
+	switch e {
+	case BtcReconciliationResultOk,
+		BtcReconciliationResultDiscrepancy,
+		BtcReconciliationResultError:
+		return true
+	}
+	return false
+}
+
+func AllBtcReconciliationResultValues() []BtcReconciliationResult {
+	return []BtcReconciliationResult{
+		BtcReconciliationResultOk,
+		BtcReconciliationResultDiscrepancy,
+		BtcReconciliationResultError,
+	}
+}
+
+// Predecessor status for a settling invoice. Preserved in settlement_failed so admin retry takes the correct settlement path. ENUM prevents CHECK drift.
+type BtcSettlingSource string
+
+const (
+	BtcSettlingSourceConfirming BtcSettlingSource = "confirming"
+	BtcSettlingSourceUnderpaid  BtcSettlingSource = "underpaid"
+)
+
+func (e *BtcSettlingSource) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = BtcSettlingSource(s)
+	case string:
+		*e = BtcSettlingSource(s)
+	default:
+		return fmt.Errorf("unsupported scan type for BtcSettlingSource: %T", src)
+	}
+	return nil
+}
+
+type NullBtcSettlingSource struct {
+	BtcSettlingSource BtcSettlingSource `json:"btc_settling_source"`
+	Valid             bool              `json:"valid"` // Valid is true if BtcSettlingSource is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullBtcSettlingSource) Scan(value interface{}) error {
+	if value == nil {
+		ns.BtcSettlingSource, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.BtcSettlingSource.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullBtcSettlingSource) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.BtcSettlingSource), nil
+}
+
+func (e BtcSettlingSource) Valid() bool {
+	switch e {
+	case BtcSettlingSourceConfirming,
+		BtcSettlingSourceUnderpaid:
+		return true
+	}
+	return false
+}
+
+func AllBtcSettlingSourceValues() []BtcSettlingSource {
+	return []BtcSettlingSource{
+		BtcSettlingSourceConfirming,
+		BtcSettlingSourceUnderpaid,
+	}
+}
+
+// Frequency at which queued payout records are swept to vendor addresses. Snapshotted onto invoices at creation.
 type BtcSweepSchedule string
 
 const (
@@ -564,7 +685,69 @@ func AllBtcSweepScheduleValues() []BtcSweepSchedule {
 	}
 }
 
-// How a vendor receives BTC earnings after invoice settlement. Snapshotted on every invoice at creation time; the governing mode for a settlement is always from the invoice snapshot.
+// Tier lifecycle. active=new invoices allowed. deactivating=pre-sweep running, no new invoices. inactive=fully wound down. ENUM replaces TEXT+CHECK to eliminate silent-NULL risk.
+type BtcTierStatus string
+
+const (
+	BtcTierStatusActive       BtcTierStatus = "active"
+	BtcTierStatusDeactivating BtcTierStatus = "deactivating"
+	BtcTierStatusInactive     BtcTierStatus = "inactive"
+)
+
+func (e *BtcTierStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = BtcTierStatus(s)
+	case string:
+		*e = BtcTierStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for BtcTierStatus: %T", src)
+	}
+	return nil
+}
+
+type NullBtcTierStatus struct {
+	BtcTierStatus BtcTierStatus `json:"btc_tier_status"`
+	Valid         bool          `json:"valid"` // Valid is true if BtcTierStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullBtcTierStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.BtcTierStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.BtcTierStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullBtcTierStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.BtcTierStatus), nil
+}
+
+func (e BtcTierStatus) Valid() bool {
+	switch e {
+	case BtcTierStatusActive,
+		BtcTierStatusDeactivating,
+		BtcTierStatusInactive:
+		return true
+	}
+	return false
+}
+
+func AllBtcTierStatusValues() []BtcTierStatus {
+	return []BtcTierStatus{
+		BtcTierStatusActive,
+		BtcTierStatusDeactivating,
+		BtcTierStatusInactive,
+	}
+}
+
+// How a vendor receives BTC earnings after invoice settlement. Snapshotted immutably onto invoices at creation; live config changes do not affect in-flight invoices.
 type BtcWalletMode string
 
 const (
@@ -1348,40 +1531,55 @@ type AuthAuditLog struct {
 	CreatedAt time.Time        `db:"created_at" json:"created_at"`
 }
 
-// Processed-block log per network. Pruned blocks get placeholder rows so the HandleRecovery cursor can advance past them. pruned = TRUE implies block_hash = NULL (enforced by CHECK).
+// Processed-block log. One row per (height, network). Pruned blocks get placeholder rows (block_hash=NULL, pruned=TRUE) so HandleRecovery cursor can advance past the pruned range. Duplicate processing attempts are caught by the composite PK.
 type BitcoinBlockHistory struct {
-	Height      int64              `db:"height" json:"height"`
-	Network     string             `db:"network" json:"network"`
-	BlockHash   pgtype.Text        `db:"block_hash" json:"block_hash"`
+	Height    int64       `db:"height" json:"height"`
+	Network   string      `db:"network" json:"network"`
+	BlockHash pgtype.Text `db:"block_hash" json:"block_hash"`
+	// TRUE when Bitcoin Core pruned this block before processing. block_hash must be NULL when pruned=TRUE (chk_bbh_pruned_coherent).
 	Pruned      bool               `db:"pruned" json:"pruned"`
 	ProcessedAt pgtype.Timestamptz `db:"processed_at" json:"processed_at"`
 }
 
-// Block-height cursor per network. Used by HandleRecovery to backfill missed blocks after a node reconnect. -1 = never processed. Updated inside each reconcileSegment transaction (per BTC_RECONCILIATION_CHECKPOINT_INTERVAL blocks) for crash safety.
+// Block-height cursor per network. -1 = never processed (fresh deployment sentinel). Used by HandleRecovery to resume backfill after reconnect. Updated per checkpoint interval inside reconcileSegment for crash safety.
 type BitcoinSyncState struct {
 	Network string `db:"network" json:"network"`
-	// -1 = sentinel for fresh deployment. Set to reconciliation_start_height on first run. If last_processed_height > getblockcount (chain reset / node reindex), the app resets this to reconciliation_start_height and fires a CRITICAL alert.
+	// -1 = fresh deployment. Initialised to reconciliation_start_height on first run. If this exceeds getblockcount() (chain reset / reindex), app resets and fires CRITICAL alert.
 	LastProcessedHeight int64     `db:"last_processed_height" json:"last_processed_height"`
 	UpdatedAt           time.Time `db:"updated_at" json:"updated_at"`
 }
 
-// Node outage periods for expiry-timer compensation. INSERT on disconnect; UPDATE ended_at on reconnect; close stale records on startup. Advisory lock (hashtext('btc_outage_log:' || network)) prevents duplicate open records across horizontal instances. Stale records (> 48 hours) closed by a 6h maintenance job.
+// Time-series BTC/fiat rate feed. Written on every rate fetch from the provider. Enables audit of: "what was the rate at time T?" and "which invoices used an anomalous rate?" invoices.btc_rate_at_creation is authoritative per invoice; this table provides the context.
+type BtcExchangeRateLog struct {
+	ID           uuid.UUID          `db:"id" json:"id"`
+	Network      string             `db:"network" json:"network"`
+	FiatCurrency string             `db:"fiat_currency" json:"fiat_currency"`
+	Rate         pgtype.Numeric     `db:"rate" json:"rate"`
+	Source       string             `db:"source" json:"source"`
+	FetchedAt    pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
+	// TRUE when rate deviates from rolling average beyond configured threshold. Triggers WARNING alert. anomaly_reason required when TRUE (chk_ber_anomaly_coherent).
+	AnomalyFlag   bool        `db:"anomaly_flag" json:"anomaly_flag"`
+	AnomalyReason pgtype.Text `db:"anomaly_reason" json:"anomaly_reason"`
+}
+
+// Node outage periods for invoice expiry-timer compensation. INSERT on disconnect; UPDATE ended_at on reconnect; close stale records on startup. Advisory lock (hashtext('btc_outage_log:' || network)) prevents concurrent duplicate INSERTs. uq_outage_one_open_per_network is both the uniqueness guard AND the hot-path lookup index. 6-hour maintenance job closes records older than 48 hours.
 type BtcOutageLog struct {
 	ID        uuid.UUID          `db:"id" json:"id"`
 	Network   string             `db:"network" json:"network"`
 	StartedAt pgtype.Timestamptz `db:"started_at" json:"started_at"`
-	// NULL = outage is ongoing. Application startup must close any open record left by a crashed previous process before accepting connections.
+	// NULL = outage ongoing. Application startup MUST close any open record left by a crashed process before accepting new connections.
 	EndedAt pgtype.Timestamptz `db:"ended_at" json:"ended_at"`
 }
 
-// Owner-managed tier presets. All financial rules, fee caps, and sweep schedules are defined here and snapshotted immutably onto every invoice at creation time. Tiers are soft-deactivated (status=inactive), never hard-deleted. role_id links the tier to an RBAC role; assigning a vendor to this tier also grants that role.
+// Owner-managed tier presets. All financial rules are defined here and snapshotted immutably onto every invoice at creation (after COALESCE with vendor_tier_overrides). Soft-deactivated (status=inactive), never hard-deleted — invoices hold a RESTRICT FK. role_id bridges tiers to RBAC: fn_sync_vendor_tier_role (011) keeps user_roles in sync. Changes are captured in btc_tier_config_history (010) by fn_tier_config_history (011).
 type BtcTierConfig struct {
-	ID          uuid.UUID `db:"id" json:"id"`
-	Name        string    `db:"name" json:"name"`
-	DisplayName string    `db:"display_name" json:"display_name"`
-	// Optional RBAC role assigned to vendors when they are placed on this tier. SET NULL if the role is deleted. Application layer handles the role-assignment side-effect.
+	ID uuid.UUID `db:"id" json:"id"`
+	// Stable machine slug (e.g. 'free', 'growth', 'pro'). Treat as immutable once invoices reference this tier.
+	Name        string `db:"name" json:"name"`
+	DisplayName string `db:"display_name" json:"display_name"`
+	// RBAC role granted to vendors on this tier. SET NULL on role deletion. fn_sync_vendor_tier_role (011) propagates tier changes to user_roles automatically.
 	RoleID pgtype.UUID `db:"role_id" json:"role_id"`
-	// Platform fee as a percentage [0,50]. Calculated on received satoshi amount at settlement.
+	// Platform fee as a percentage [0, 50] applied to received_sat at settlement.
 	ProcessingFeeRate               pgtype.Numeric   `db:"processing_fee_rate" json:"processing_fee_rate"`
 	ConfirmationDepth               int32            `db:"confirmation_depth" json:"confirmation_depth"`
 	MinerFeeCapSatVbyte             int32            `db:"miner_fee_cap_sat_vbyte" json:"miner_fee_cap_sat_vbyte"`
@@ -1392,79 +1590,148 @@ type BtcTierConfig struct {
 	MinimumInvoiceSat               int64            `db:"minimum_invoice_sat" json:"minimum_invoice_sat"`
 	OverpaymentRelativeThresholdPct pgtype.Numeric   `db:"overpayment_relative_threshold_pct" json:"overpayment_relative_threshold_pct"`
 	OverpaymentAbsoluteThresholdSat int64            `db:"overpayment_absolute_threshold_sat" json:"overpayment_absolute_threshold_sat"`
-	// Used in the batch-amortized fee floor formula: floor = (fee_estimate × 1.1 × vbytes) / expected_batch_size. Default 50 for Free, 20 for Growth/Pro.
+	// Batch-amortised fee floor: floor = (fee_estimate × 1.1 × vbytes) / expected_batch_size. Default 50 for Free, 20 for Growth/Pro.
 	ExpectedBatchSize         int32 `db:"expected_batch_size" json:"expected_batch_size"`
 	PlatformWalletModeAllowed bool  `db:"platform_wallet_mode_allowed" json:"platform_wallet_mode_allowed"`
-	// active | deactivating | inactive. Deactivating triggers a pre-sweep of queued payouts before full wind-down. New invoices are blocked during deactivating and inactive states.
-	Status    string    `db:"status" json:"status"`
-	CreatedAt time.Time `db:"created_at" json:"created_at"`
-	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+	// btc_tier_status ENUM. active → deactivating (pre-sweep) → inactive. New invoice creation blocked in deactivating and inactive states.
+	Status    BtcTierStatus `db:"status" json:"status"`
+	CreatedAt time.Time     `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time     `db:"updated_at" json:"updated_at"`
 }
 
-// Immutable append-only financial audit trail. Retained indefinitely. Immutability enforced at two layers: (1) application DB user has INSERT+SELECT only; (2) fn_btc_audit_immutable trigger rejects UPDATE/DELETE from any DB user. Admin resolutions are new rows via references_event_id — the original row is never modified. Fixed financial columns for queryability; JSONB metadata for event-specific structured data.
-type FinancialAuditEvent struct {
+// Immutable history of btc_tier_config changes. Populated by fn_tier_config_history AFTER UPDATE trigger (011). Required for SOC 2 audit: "what were the fee rates for tier X during period Y?"
+type BtcTierConfigHistory struct {
+	ID        uuid.UUID          `db:"id" json:"id"`
+	TierID    pgtype.UUID        `db:"tier_id" json:"tier_id"`
+	ChangedAt pgtype.Timestamptz `db:"changed_at" json:"changed_at"`
+	ChangedBy pgtype.UUID        `db:"changed_by" json:"changed_by"`
+	// Stable identity snapshot from app.current_actor_label session variable. Preserved after changed_by goes NULL on user deletion.
+	ChangedByLabel string `db:"changed_by_label" json:"changed_by_label"`
+	OldValues      []byte `db:"old_values" json:"old_values"`
+	NewValues      []byte `db:"new_values" json:"new_values"`
+}
+
+// ZMQ events that could not be matched to an active monitoring record. Captures: late payments, double-spend attempts, retired addresses, unknown txids. Periodic review of resolved=FALSE rows detects missed payments and anomalies. Not all dead letters are errors — late payments on expired invoices are expected.
+type BtcZmqDeadLetter struct {
 	ID             uuid.UUID          `db:"id" json:"id"`
+	Network        string             `db:"network" json:"network"`
 	EventType      string             `db:"event_type" json:"event_type"`
-	Timestamp      pgtype.Timestamptz `db:"timestamp" json:"timestamp"`
-	Network        pgtype.Text        `db:"network" json:"network"`
-	ActorType      string             `db:"actor_type" json:"actor_type"`
-	ActorID        pgtype.UUID        `db:"actor_id" json:"actor_id"`
-	ActorLabel     string             `db:"actor_label" json:"actor_label"`
+	RawPayload     string             `db:"raw_payload" json:"raw_payload"`
+	Reason         string             `db:"reason" json:"reason"`
+	ReceivedAt     pgtype.Timestamptz `db:"received_at" json:"received_at"`
+	Resolved       bool               `db:"resolved" json:"resolved"`
+	ResolvedAt     pgtype.Timestamptz `db:"resolved_at" json:"resolved_at"`
+	ResolutionNote pgtype.Text        `db:"resolution_note" json:"resolution_note"`
+}
+
+// Buyer/vendor payment disputes. At least one of invoice_id or payout_record_id must be set (chk_dr_has_subject). Lifecycle: open → investigating → resolved or rejected.
+type DisputeRecord struct {
+	ID             uuid.UUID          `db:"id" json:"id"`
 	InvoiceID      pgtype.UUID        `db:"invoice_id" json:"invoice_id"`
 	PayoutRecordID pgtype.UUID        `db:"payout_record_id" json:"payout_record_id"`
-	// For admin override events: FK to the original event being resolved. The original row is NEVER modified; resolution = new row.
+	RaisedBy       pgtype.UUID        `db:"raised_by" json:"raised_by"`
+	DisputeType    string             `db:"dispute_type" json:"dispute_type"`
+	Description    string             `db:"description" json:"description"`
+	Status         string             `db:"status" json:"status"`
+	ResolvedBy     pgtype.UUID        `db:"resolved_by" json:"resolved_by"`
+	ResolutionNote pgtype.Text        `db:"resolution_note" json:"resolution_note"`
+	CreatedAt      time.Time          `db:"created_at" json:"created_at"`
+	ResolvedAt     pgtype.Timestamptz `db:"resolved_at" json:"resolved_at"`
+}
+
+// FATF Travel Rule compliance records for payouts above the threshold. Must be created BEFORE the constructing → broadcast transition. compliance_status tracks transmission to the receiving VASP. beneficiary_address must match payout_records.destination_address (application-enforced and DB trigger-enforced by fn_fatf_address_consistency in 011).
+type FatfTravelRuleRecord struct {
+	ID             uuid.UUID   `db:"id" json:"id"`
+	PayoutRecordID pgtype.UUID `db:"payout_record_id" json:"payout_record_id"`
+	// The threshold that was exceeded at record creation time, in satoshis. Thresholds: USA $1000, EU €1000. Recorded for self-contained audit.
+	ThresholdSat       int64       `db:"threshold_sat" json:"threshold_sat"`
+	OriginatorName     string      `db:"originator_name" json:"originator_name"`
+	OriginatorVasp     pgtype.Text `db:"originator_vasp" json:"originator_vasp"`
+	BeneficiaryName    string      `db:"beneficiary_name" json:"beneficiary_name"`
+	BeneficiaryVasp    pgtype.Text `db:"beneficiary_vasp" json:"beneficiary_vasp"`
+	BeneficiaryAddress string      `db:"beneficiary_address" json:"beneficiary_address"`
+	// pending=not yet transmitted. sent=initiated. acknowledged=VASP confirmed. failed=transmission failed, requires manual follow-up.
+	ComplianceStatus string             `db:"compliance_status" json:"compliance_status"`
+	SubmittedAt      pgtype.Timestamptz `db:"submitted_at" json:"submitted_at"`
+	CreatedAt        time.Time          `db:"created_at" json:"created_at"`
+}
+
+// Immutable append-only financial audit trail. Retained indefinitely. Immutability layer 1: btc_app_role has INSERT+SELECT only. Immutability layer 2: fn_btc_audit_immutable + fn_btc_audit_no_truncate (011) block all mutations. Admin corrections: new rows with references_event_id — original rows never modified. GDPR: do NOT store source_ip here — use sse_token_issuances table. Reconciliation: balance_before/after columns enable full balance history reconstruction.
+type FinancialAuditEvent struct {
+	ID        uuid.UUID          `db:"id" json:"id"`
+	EventType string             `db:"event_type" json:"event_type"`
+	Timestamp pgtype.Timestamptz `db:"timestamp" json:"timestamp"`
+	// NULL for system events not network-specific. When set, must be mainnet or testnet4 (chk_fae_network).
+	Network   pgtype.Text `db:"network" json:"network"`
+	ActorType string      `db:"actor_type" json:"actor_type"`
+	ActorID   pgtype.UUID `db:"actor_id" json:"actor_id"`
+	// Identity snapshot at INSERT time. fn_fae_validate_actor_label (011) verifies this matches users.email or username for actor_id. Preserved permanently after user deletion (actor_id becomes NULL). GDPR: consider HMAC-SHA256(email, server_secret) instead of raw email. See COMP-02 in todo.md.
+	ActorLabel        string      `db:"actor_label" json:"actor_label"`
+	InvoiceID         pgtype.UUID `db:"invoice_id" json:"invoice_id"`
+	PayoutRecordID    pgtype.UUID `db:"payout_record_id" json:"payout_record_id"`
 	ReferencesEventID pgtype.Int8 `db:"references_event_id" json:"references_event_id"`
 	AmountSat         pgtype.Int8 `db:"amount_sat" json:"amount_sat"`
 	BalanceBeforeSat  pgtype.Int8 `db:"balance_before_sat" json:"balance_before_sat"`
 	BalanceAfterSat   pgtype.Int8 `db:"balance_after_sat" json:"balance_after_sat"`
 	FiatEquivalent    pgtype.Int8 `db:"fiat_equivalent" json:"fiat_equivalent"`
 	FiatCurrencyCode  pgtype.Text `db:"fiat_currency_code" json:"fiat_currency_code"`
-	// TRUE when a subscription debit uses a stale exchange rate. Triggers WARNING alert; rate diagnostics in metadata.
+	// TRUE when a subscription debit uses a stale exchange rate. Triggers WARNING alert. Rate diagnostics in metadata.
 	RateStale bool `db:"rate_stale" json:"rate_stale"`
-	// JSONB object for event-type-specific data. Always a valid JSON object (CHECK). Examples: step_up_authenticated_at for admin overrides, records_promoted for hybrid auto-sweep events.
+	// Event-type-specific JSONB. Always a JSON object (chk_fae_metadata_is_object). IMPORTANT: do NOT store source_ip — use sse_token_issuances (SEC-07 decision).
 	Metadata []byte `db:"metadata" json:"metadata"`
 }
 
-// Core invoice state machine. 16 statuses; 38 permitted transitions enforced at application layer. The snapshot columns (wallet_mode, bridge_destination_address, processing_fee_rate, …) are written once at creation and never updated — they govern settlement regardless of subsequent tier or vendor config changes. Every status UPDATE must assert RowsAffected() == 1; 0 rows = concurrent status change.
+// GDPR Article 17 erasure request tracking. tables_processed enables crash recovery without re-processing completed tables. NOTE: financial_audit_events.actor_label cannot be erased (immutable table). Mitigation: store HMAC hash at write time. See COMP-02 in todo.md.
+type GdprErasureRequest struct {
+	ID          uuid.UUID          `db:"id" json:"id"`
+	UserID      pgtype.UUID        `db:"user_id" json:"user_id"`
+	RequestedAt pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
+	CompletedAt pgtype.Timestamptz `db:"completed_at" json:"completed_at"`
+	// Tables where erasure steps have been applied. Updated incrementally for crash recovery. The erasure worker checks this before processing each table to avoid duplicate work.
+	TablesProcessed []string    `db:"tables_processed" json:"tables_processed"`
+	Status          string      `db:"status" json:"status"`
+	RejectionReason pgtype.Text `db:"rejection_reason" json:"rejection_reason"`
+}
+
+// Core 16-state invoice state machine. SNAPSHOT INVARIANT: all financial columns are snapshotted once at creation and never updated. COALESCE(vendor_tier_overrides.field, btc_tier_config.field) is the resolution rule. CONCURRENCY INVARIANT: every status UPDATE must assert RowsAffected() == 1. 0 rows = concurrent worker changed status first → ErrStatusPreconditionFailed + rollback.
 type Invoice struct {
-	ID                uuid.UUID        `db:"id" json:"id"`
-	VendorID          pgtype.UUID      `db:"vendor_id" json:"vendor_id"`
-	BuyerID           pgtype.UUID      `db:"buyer_id" json:"buyer_id"`
-	TierID            pgtype.UUID      `db:"tier_id" json:"tier_id"`
-	Network           string           `db:"network" json:"network"`
-	Status            BtcInvoiceStatus `db:"status" json:"status"`
-	AmountSat         int64            `db:"amount_sat" json:"amount_sat"`
-	FiatAmount        int64            `db:"fiat_amount" json:"fiat_amount"`
-	FiatCurrencyCode  string           `db:"fiat_currency_code" json:"fiat_currency_code"`
-	BtcRateAtCreation pgtype.Numeric   `db:"btc_rate_at_creation" json:"btc_rate_at_creation"`
-	WalletMode        BtcWalletMode    `db:"wallet_mode" json:"wallet_mode"`
-	// Snapshotted from vendor_wallet_config at creation. Governs sweep destination — vendor address changes after creation do not affect this invoice.
-	BridgeDestinationAddress        pgtype.Text        `db:"bridge_destination_address" json:"bridge_destination_address"`
-	AutoSweepThresholdSat           pgtype.Int8        `db:"auto_sweep_threshold_sat" json:"auto_sweep_threshold_sat"`
-	ProcessingFeeRate               pgtype.Numeric     `db:"processing_fee_rate" json:"processing_fee_rate"`
-	ConfirmationDepth               int32              `db:"confirmation_depth" json:"confirmation_depth"`
-	MinerFeeCapSatVbyte             int32              `db:"miner_fee_cap_sat_vbyte" json:"miner_fee_cap_sat_vbyte"`
-	PaymentTolerancePct             pgtype.Numeric     `db:"payment_tolerance_pct" json:"payment_tolerance_pct"`
-	MinimumInvoiceSat               int64              `db:"minimum_invoice_sat" json:"minimum_invoice_sat"`
-	OverpaymentRelativeThresholdPct pgtype.Numeric     `db:"overpayment_relative_threshold_pct" json:"overpayment_relative_threshold_pct"`
-	OverpaymentAbsoluteThresholdSat int64              `db:"overpayment_absolute_threshold_sat" json:"overpayment_absolute_threshold_sat"`
-	ExpectedBatchSize               int32              `db:"expected_batch_size" json:"expected_batch_size"`
-	InvoiceExpiryMinutes            int32              `db:"invoice_expiry_minutes" json:"invoice_expiry_minutes"`
-	ExpiresAt                       pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
-	DetectedTxid                    pgtype.Text        `db:"detected_txid" json:"detected_txid"`
-	DetectedAt                      pgtype.Timestamptz `db:"detected_at" json:"detected_at"`
-	FiatEquivAtDetection            pgtype.Int8        `db:"fiat_equiv_at_detection" json:"fiat_equiv_at_detection"`
-	MempoolAbsentSince              pgtype.Timestamptz `db:"mempool_absent_since" json:"mempool_absent_since"`
-	// Set atomically with the detected → confirming status transition. Used by rollbackSettlementFromHeight to find all invoices affected by a reorg.
+	ID                              uuid.UUID        `db:"id" json:"id"`
+	VendorID                        pgtype.UUID      `db:"vendor_id" json:"vendor_id"`
+	BuyerID                         pgtype.UUID      `db:"buyer_id" json:"buyer_id"`
+	TierID                          pgtype.UUID      `db:"tier_id" json:"tier_id"`
+	Network                         string           `db:"network" json:"network"`
+	Status                          BtcInvoiceStatus `db:"status" json:"status"`
+	AmountSat                       int64            `db:"amount_sat" json:"amount_sat"`
+	FiatAmount                      int64            `db:"fiat_amount" json:"fiat_amount"`
+	FiatCurrencyCode                string           `db:"fiat_currency_code" json:"fiat_currency_code"`
+	BtcRateAtCreation               pgtype.Numeric   `db:"btc_rate_at_creation" json:"btc_rate_at_creation"`
+	WalletMode                      BtcWalletMode    `db:"wallet_mode" json:"wallet_mode"`
+	BridgeDestinationAddress        pgtype.Text      `db:"bridge_destination_address" json:"bridge_destination_address"`
+	AutoSweepThresholdSat           pgtype.Int8      `db:"auto_sweep_threshold_sat" json:"auto_sweep_threshold_sat"`
+	ProcessingFeeRate               pgtype.Numeric   `db:"processing_fee_rate" json:"processing_fee_rate"`
+	ConfirmationDepth               int32            `db:"confirmation_depth" json:"confirmation_depth"`
+	MinerFeeCapSatVbyte             int32            `db:"miner_fee_cap_sat_vbyte" json:"miner_fee_cap_sat_vbyte"`
+	PaymentTolerancePct             pgtype.Numeric   `db:"payment_tolerance_pct" json:"payment_tolerance_pct"`
+	MinimumInvoiceSat               int64            `db:"minimum_invoice_sat" json:"minimum_invoice_sat"`
+	OverpaymentRelativeThresholdPct pgtype.Numeric   `db:"overpayment_relative_threshold_pct" json:"overpayment_relative_threshold_pct"`
+	OverpaymentAbsoluteThresholdSat int64            `db:"overpayment_absolute_threshold_sat" json:"overpayment_absolute_threshold_sat"`
+	ExpectedBatchSize               int32            `db:"expected_batch_size" json:"expected_batch_size"`
+	InvoiceExpiryMinutes            int32            `db:"invoice_expiry_minutes" json:"invoice_expiry_minutes"`
+	// Unadjusted expiry deadline. The expiry cleanup job adds outage overlap from btc_outage_log before marking expired. Never update this column after creation.
+	ExpiresAt            pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	DetectedTxid         pgtype.Text        `db:"detected_txid" json:"detected_txid"`
+	DetectedAt           pgtype.Timestamptz `db:"detected_at" json:"detected_at"`
+	FiatEquivAtDetection pgtype.Int8        `db:"fiat_equiv_at_detection" json:"fiat_equiv_at_detection"`
+	MempoolAbsentSince   pgtype.Timestamptz `db:"mempool_absent_since" json:"mempool_absent_since"`
+	// Set atomically with detected → confirming. Required for reorg rollback query. NULL for statuses that have not yet received a block confirmation.
 	FirstConfirmedBlockHeight pgtype.Int8 `db:"first_confirmed_block_height" json:"first_confirmed_block_height"`
-	// Preserved in settlement_failed status so admin retry knows the original predecessor. NULL for all statuses except settling and settlement_failed.
-	SettlingSource pgtype.Text `db:"settling_source" json:"settling_source"`
-	// Set TRUE atomically with constructing → broadcast on the payout record. Pivot for reorg rollback: TRUE → reorg_admin_required; FALSE → roll back to detected.
-	SweepCompleted bool  `db:"sweep_completed" json:"sweep_completed"`
-	RetryCount     int32 `db:"retry_count" json:"retry_count"`
-	// Fiat value of received payment at settlement time, in minor currency units. Authoritative value for tax and accounting purposes.
+	// btc_settling_source ENUM: confirming | underpaid. Preserved through settlement_failed so admin retry uses the correct code path. NULL for all statuses except settling and settlement_failed.
+	SettlingSource NullBtcSettlingSource `db:"settling_source" json:"settling_source"`
+	// TRUE = payout record reached broadcast before any reorg. Pivot for reorg rollback: TRUE → reorg_admin_required, FALSE → roll back to detected.
+	SweepCompleted        bool        `db:"sweep_completed" json:"sweep_completed"`
+	RetryCount            int32       `db:"retry_count" json:"retry_count"`
 	FiatEquivAtSettlement pgtype.Int8 `db:"fiat_equiv_at_settlement" json:"fiat_equiv_at_settlement"`
-	// Optional buyer-provided address for refunds. Validated via RPC ismine check before storage. PII — subject to platform data retention policy.
+	// PII — subject to data retention policy. Nullified after retention window by purge job.
 	BuyerRefundAddress pgtype.Text        `db:"buyer_refund_address" json:"buyer_refund_address"`
 	ExpiredAt          pgtype.Timestamptz `db:"expired_at" json:"expired_at"`
 	CancelledAt        pgtype.Timestamptz `db:"cancelled_at" json:"cancelled_at"`
@@ -1475,42 +1742,44 @@ type Invoice struct {
 	UpdatedAt          time.Time          `db:"updated_at" json:"updated_at"`
 }
 
-// One P2WPKH bech32 address per invoice derived from Bitcoin Core HD keypool. UNIQUE (address, network): duplicate address is KeypoolOrRPCError CRITICAL — do NOT retry. label MUST always be 'invoice' (CHECK constraint): critical for Scenario D recovery via listlabeladdresses(\"invoice\"). hd_derivation_index is required for Scenario B keypool cursor advance and Scenario C import range.
+// One P2WPKH bech32 address per invoice, derived from Bitcoin Core HD keypool. UNIQUE (address, network): duplicate = KeypoolOrRPCError CRITICAL — do NOT retry. label = 'invoice' enforced by CHECK — critical for Scenario D recovery. hd_derivation_index required for Scenario B/C wallet recovery.
 type InvoiceAddress struct {
 	ID        uuid.UUID   `db:"id" json:"id"`
 	InvoiceID pgtype.UUID `db:"invoice_id" json:"invoice_id"`
 	Address   string      `db:"address" json:"address"`
 	Network   string      `db:"network" json:"network"`
-	// Leaf index from hdkeypath returned by getaddressinfo (e.g. m/84'/0'/0'/0/5200 → 5200). Used in Scenario B/C recovery: MAX(hd_derivation_index) × 1.2 = import range for rescan.
+	// Leaf index from hdkeypath (e.g. m/84'/0'/0'/0/5200 → 5200). BIGINT to avoid overflow at 2^31-1. Scenario B: MAX(index) × 1.2 = keypool cursor advance. Scenario C: import range.
 	HdDerivationIndex int64 `db:"hd_derivation_index" json:"hd_derivation_index"`
-	// Always 'invoice'. Protected by CHECK constraint. getnewaddress MUST be called as getnewaddress "invoice" "bech32" — using any other label silently breaks Scenario D recovery (listlabeladdresses(\"invoice\")).
+	// Always 'invoice' — enforced by CHECK. getnewaddress MUST use "invoice" label. Any other label breaks Scenario D recovery.
 	Label     string    `db:"label" json:"label"`
 	CreatedAt time.Time `db:"created_at" json:"created_at"`
 }
 
-// Authoritative ZMQ watch list. Survives restarts; consistent across horizontal replicas. New addresses are registered immediately via RegisterImmediate() AFTER DB write (not before). The 5-minute reload is a safety net only. Retired rows are never deleted — the partial index WHERE status = 'active' keeps queries fast.
+// Authoritative ZMQ watch list. Survives restarts; consistent across horizontal replicas. fn_iam_address_consistency (011) verifies address matches invoice_addresses at INSERT. Registration order: INSERT invoice_addresses → INSERT monitoring → RegisterImmediate(). Retired rows never deleted — partial index WHERE status=active keeps hot path fast.
 type InvoiceAddressMonitoring struct {
 	ID        uuid.UUID   `db:"id" json:"id"`
 	InvoiceID pgtype.UUID `db:"invoice_id" json:"invoice_id"`
 	Address   string      `db:"address" json:"address"`
 	Network   string      `db:"network" json:"network"`
-	// NULL = active monitoring (non-terminal status or reorg_admin_required). Set in the same TX as terminal transition: terminal_at + 30 days for most statuses. reorg_admin_required keeps monitor_until = NULL until the invoice leaves that status.
+	// NULL = active monitoring (non-terminal or reorg_admin_required). Set in same TX as terminal transition: terminal_at + 30 days. Required before retirement (chk_iam_retired_has_monitor_until).
 	MonitorUntil pgtype.Timestamptz  `db:"monitor_until" json:"monitor_until"`
 	Status       BtcMonitoringStatus `db:"status" json:"status"`
 	CreatedAt    time.Time           `db:"created_at" json:"created_at"`
 	UpdatedAt    time.Time           `db:"updated_at" json:"updated_at"`
 }
 
-// Append-only on-chain payment records. One row per (txid, vout_index). Always INSERT with ON CONFLICT (txid, vout_index) DO NOTHING for idempotency. Multi-output TXs generate one row per vout — settlement Phase 1 SUMs all rows for the invoice. double_payment and post_settlement flag anomalous payments that require admin review.
+// Append-only on-chain payment records. One row per (txid, vout_index). Always INSERT with ON CONFLICT (txid, vout_index) DO NOTHING for idempotency. Multi-output TXs generate one row per vout — settlement Phase 1 SUMs all rows for invoice. idx_ip_invoice_id uses INCLUDE for index-only Phase 1 SUM scan.
 type InvoicePayment struct {
-	ID             uuid.UUID          `db:"id" json:"id"`
-	InvoiceID      pgtype.UUID        `db:"invoice_id" json:"invoice_id"`
-	Txid           string             `db:"txid" json:"txid"`
-	VoutIndex      int32              `db:"vout_index" json:"vout_index"`
-	ValueSat       int64              `db:"value_sat" json:"value_sat"`
-	DetectedAt     pgtype.Timestamptz `db:"detected_at" json:"detected_at"`
-	DoublePayment  bool               `db:"double_payment" json:"double_payment"`
-	PostSettlement bool               `db:"post_settlement" json:"post_settlement"`
+	ID         uuid.UUID          `db:"id" json:"id"`
+	InvoiceID  pgtype.UUID        `db:"invoice_id" json:"invoice_id"`
+	Txid       string             `db:"txid" json:"txid"`
+	VoutIndex  int32              `db:"vout_index" json:"vout_index"`
+	ValueSat   int64              `db:"value_sat" json:"value_sat"`
+	DetectedAt pgtype.Timestamptz `db:"detected_at" json:"detected_at"`
+	// TRUE = different txid arrived while original still in mempool — possible double-spend. Does not block settlement. Triggers admin review.
+	DoublePayment bool `db:"double_payment" json:"double_payment"`
+	// TRUE = payment arrived after invoice was already settled. Funds received but settlement is complete. Triggers admin review.
+	PostSettlement bool `db:"post_settlement" json:"post_settlement"`
 }
 
 // Persistent job queue. Workers claim rows using SELECT FOR UPDATE SKIP LOCKED.
@@ -1594,6 +1863,22 @@ type JobSchedule struct {
 	UpdatedAt         time.Time   `db:"updated_at" json:"updated_at"`
 }
 
+// KYC/AML submission lifecycle records. Minimum viable schema (COMP-01). Vendor effective KYC status = status of latest submission row for that vendor. UNIQUE (provider, provider_ref_id) prevents duplicate webhook replays. Document storage refs and provider webhooks are in future kyc_documents / kyc_provider_webhooks tables.
+type KycSubmission struct {
+	ID       uuid.UUID   `db:"id" json:"id"`
+	VendorID pgtype.UUID `db:"vendor_id" json:"vendor_id"`
+	Provider string      `db:"provider" json:"provider"`
+	// Provider's own reference ID. UNIQUE per (provider, ref_id) to prevent duplicate submissions.
+	ProviderRefID   string             `db:"provider_ref_id" json:"provider_ref_id"`
+	Status          BtcKycStatus       `db:"status" json:"status"`
+	SubmittedAt     pgtype.Timestamptz `db:"submitted_at" json:"submitted_at"`
+	ReviewedAt      pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
+	ReviewerID      pgtype.UUID        `db:"reviewer_id" json:"reviewer_id"`
+	RejectionReason pgtype.Text        `db:"rejection_reason" json:"rejection_reason"`
+	// When this KYC approval expires. NULL = no expiry. Application should alert vendors approaching expiry (typically 2 years from approval).
+	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+}
+
 // Single-table token store for email_verification, password_reset, magic_link, account_unlock, email_change_verify, and email_change_confirm flows.
 type OneTimeToken struct {
 	ID        uuid.UUID        `db:"id" json:"id"`
@@ -1617,7 +1902,23 @@ type OneTimeToken struct {
 	UpdatedAt     time.Time          `db:"updated_at" json:"updated_at"`
 }
 
-// Vendor payout lifecycle per settled invoice. BEFORE INSERT trigger (fn_btc_payout_guard) rejects inserts when parent invoice.status != 'settled'. Broadcast ordering invariant: constructing→broadcast UPDATE must commit BEFORE sendrawtransaction. RowsAffected on the constructing→broadcast UPDATE must be > 0; 0 rows = watchdog reclaimed, abort broadcast.
+// Non-financial admin operation audit trail. Covers: tier fee changes, vendor suspensions, sweep_hold_mode toggles, legal flag changes, tier-role syncs. Complements financial_audit_events (which covers financial flows only). Rows CAN be deleted after the compliance retention window (unlike financial_audit_events). Populated by triggers in 011_btc_functions.sql.
+type OpsAuditLog struct {
+	ID         uuid.UUID          `db:"id" json:"id"`
+	Timestamp  pgtype.Timestamptz `db:"timestamp" json:"timestamp"`
+	ActorID    pgtype.UUID        `db:"actor_id" json:"actor_id"`
+	ActorLabel string             `db:"actor_label" json:"actor_label"`
+	Operation  string             `db:"operation" json:"operation"`
+	TableName  string             `db:"table_name" json:"table_name"`
+	RecordID   string             `db:"record_id" json:"record_id"`
+	OldValues  []byte             `db:"old_values" json:"old_values"`
+	NewValues  []byte             `db:"new_values" json:"new_values"`
+	Reason     pgtype.Text        `db:"reason" json:"reason"`
+	// Non-NULL for privileged operations requiring step-up re-authentication. Mandatory for: sweep_hold clear, legal flag toggle. Enforced at application layer.
+	StepUpAuthenticatedAt pgtype.Timestamptz `db:"step_up_authenticated_at" json:"step_up_authenticated_at"`
+}
+
+// Vendor payout lifecycle per settled invoice. Trigger guards (011): fn_btc_payout_guard, fn_pr_vendor_consistency, fn_pr_destination_consistency, fn_pr_status_guard. DOUBLE-PAYOUT GUARD: UNIQUE (invoice_id) is the race-safe backstop. BROADCAST ORDERING: constructing→broadcast UPDATE MUST commit BEFORE sendrawtransaction.
 type PayoutRecord struct {
 	ID                  uuid.UUID       `db:"id" json:"id"`
 	InvoiceID           pgtype.UUID     `db:"invoice_id" json:"invoice_id"`
@@ -1627,15 +1928,18 @@ type PayoutRecord struct {
 	NetSatoshis         int64           `db:"net_satoshis" json:"net_satoshis"`
 	PlatformFeeSatoshis int64           `db:"platform_fee_satoshis" json:"platform_fee_satoshis"`
 	WalletMode          BtcWalletMode   `db:"wallet_mode" json:"wallet_mode"`
-	DestinationAddress  pgtype.Text     `db:"destination_address" json:"destination_address"`
-	BatchID             pgtype.UUID     `db:"batch_id" json:"batch_id"`
-	// Set atomically with the constructing → broadcast transition. CRITICAL: this DB commit must precede sendrawtransaction. If sendrawtransaction subsequently fails, the stuck-sweep watchdog detects the broadcast record with no network confirmation and triggers RBF or escalation.
+	// Copied from invoice.bridge_destination_address at creation. fn_pr_destination_consistency (011) verifies this matches the invoice snapshot. NULL for platform wallet mode.
+	DestinationAddress pgtype.Text `db:"destination_address" json:"destination_address"`
+	BatchID            pgtype.UUID `db:"batch_id" json:"batch_id"`
+	// Set atomically with constructing → broadcast. MUST be committed BEFORE sendrawtransaction. If sendrawtransaction fails after DB commit, the watchdog detects the stuck record and triggers RBF or escalation.
 	BatchTxid        pgtype.Text    `db:"batch_txid" json:"batch_txid"`
 	VoutIndexInBatch pgtype.Int4    `db:"vout_index_in_batch" json:"vout_index_in_batch"`
 	FeeRateSatVbyte  pgtype.Numeric `db:"fee_rate_sat_vbyte" json:"fee_rate_sat_vbyte"`
 	MinerFeeSatoshis pgtype.Int8    `db:"miner_fee_satoshis" json:"miner_fee_satoshis"`
-	// Populated when RBF is triggered. Both this and batch_txid are preserved so the audit trail shows the full replacement history.
-	OriginalTxid      pgtype.Text        `db:"original_txid" json:"original_txid"`
+	// Populated when RBF is applied. Both original_txid and batch_txid are preserved so the audit trail shows the full TX replacement history.
+	OriginalTxid pgtype.Text `db:"original_txid" json:"original_txid"`
+	// Exact fee computation record. Keys: received_sat, tolerance_adj_sat, processing_fee_sat, miner_fee_sat, net_sat, fee_rate_pct, batch_size_used, fee_estimate_source.
+	FeeBreakdown      []byte             `db:"fee_breakdown" json:"fee_breakdown"`
 	KycStatus         BtcKycStatus       `db:"kyc_status" json:"kyc_status"`
 	ResolutionReason  pgtype.Text        `db:"resolution_reason" json:"resolution_reason"`
 	ResolutionAdminID pgtype.UUID        `db:"resolution_admin_id" json:"resolution_admin_id"`
@@ -1730,28 +2034,52 @@ type PermissionRequestApproversAudit struct {
 	ChangeReason          pgtype.Text         `db:"change_reason" json:"change_reason"`
 }
 
-// Per-network operational singletons. One row per network, inserted at deployment. treasury_reserve_satoshis is required by the reconciliation formula — keep it accurate. sweep_hold_mode blocks all sweeps; only admin can clear it.
+// Per-network operational singletons. One row per network inserted at deployment. treasury_reserve_satoshis is a required reconciliation term — keep it accurate. sweep_hold_mode is the emergency brake; only admin can clear it. All UPDATEs are captured in ops_audit_log by fn_ops_audit_platform_config (011).
 type PlatformConfig struct {
 	Network string `db:"network" json:"network"`
-	// Accumulated miner fees from confirmed sweep TXs. Increment in the same DB TX as payout_records transitions to confirmed (gross payout - SUM(vendor net payouts)). Decrement on treasury withdrawal or UTXO consolidation. Without this term the reconciliation formula under-counts after sweeps have occurred.
-	TreasuryReserveSatoshis int64              `db:"treasury_reserve_satoshis" json:"treasury_reserve_satoshis"`
-	SweepHoldMode           bool               `db:"sweep_hold_mode" json:"sweep_hold_mode"`
-	SweepHoldReason         pgtype.Text        `db:"sweep_hold_reason" json:"sweep_hold_reason"`
-	SweepHoldActivatedAt    pgtype.Timestamptz `db:"sweep_hold_activated_at" json:"sweep_hold_activated_at"`
-	// Must be TRUE before any tier may enable platform_wallet_mode_allowed. Set via ops action with written legal approval record, never via admin UI.
-	PlatformWalletModeLegalApproved bool      `db:"platform_wallet_mode_legal_approved" json:"platform_wallet_mode_legal_approved"`
-	ReconciliationStartHeight       int64     `db:"reconciliation_start_height" json:"reconciliation_start_height"`
-	UpdatedAt                       time.Time `db:"updated_at" json:"updated_at"`
+	// Accumulated platform miner fees. Must be incremented in the same TX as payout_records → confirmed. Required for the reconciliation formula to balance.
+	TreasuryReserveSatoshis int64 `db:"treasury_reserve_satoshis" json:"treasury_reserve_satoshis"`
+	// TRUE = all sweeps blocked. Set by reconciliation job on discrepancy; cleared by admin after investigation. Requires reason + timestamp (chk_pconfig_hold_coherent).
+	SweepHoldMode        bool               `db:"sweep_hold_mode" json:"sweep_hold_mode"`
+	SweepHoldReason      pgtype.Text        `db:"sweep_hold_reason" json:"sweep_hold_reason"`
+	SweepHoldActivatedAt pgtype.Timestamptz `db:"sweep_hold_activated_at" json:"sweep_hold_activated_at"`
+	// Must be TRUE before any tier can enable platform_wallet_mode_allowed. Set via ops action with written legal approval — never via admin UI.
+	PlatformWalletModeLegalApproved bool  `db:"platform_wallet_mode_legal_approved" json:"platform_wallet_mode_legal_approved"`
+	ReconciliationStartHeight       int64 `db:"reconciliation_start_height" json:"reconciliation_start_height"`
+	// Owner kill-switch for the KYC payout gate. FALSE = KYC logic fully bypassed regardless of tier thresholds. Toggle via feature_flags:write permission.
+	KycEnabled bool `db:"kyc_enabled" json:"kyc_enabled"`
+	// Owner kill-switch for FATF Travel Rule enforcement. FALSE = no FATF records required before sweep broadcast. Requires VASP registration before enabling.
+	FatfEnabled bool `db:"fatf_enabled" json:"fatf_enabled"`
+	// Owner kill-switch for vendor webhook notifications. FALSE = no webhook_deliveries rows written. Delivery worker is idle. Safe to flip TRUE at any time.
+	WebhooksEnabled bool `db:"webhooks_enabled" json:"webhooks_enabled"`
+	// Owner kill-switch for the dispute system. FALSE = dispute creation endpoint returns 503. No payout freezing, no SLA timers. Requires admin playbook before enabling.
+	DisputesEnabled bool `db:"disputes_enabled" json:"disputes_enabled"`
+	// Owner kill-switch for the GDPR erasure background job. FALSE = requests are accepted and recorded but PII is not yet erased. Enable after job validation.
+	GdprErasureJobEnabled bool      `db:"gdpr_erasure_job_enabled" json:"gdpr_erasure_job_enabled"`
+	UpdatedAt             time.Time `db:"updated_at" json:"updated_at"`
 }
 
-// Reconciliation job health per network. last_successful_run_at is the basis for the "Reconciliation job missed" CRITICAL alert (fires if > 8 hours stale). Written only on successful completion; a failing run does not update this timestamp.
+// Latest reconciliation run result per network. last_successful_run_at drives the "Reconciliation job missed" CRITICAL alert (> 8h stale). Only updated on result = ok. Failing runs update last_run_at but not last_successful_run_at. Full run history is in reconciliation_run_history (010_btc_payouts.sql).
 type ReconciliationJobState struct {
-	Network             string             `db:"network" json:"network"`
-	LastSuccessfulRunAt pgtype.Timestamptz `db:"last_successful_run_at" json:"last_successful_run_at"`
-	LastRunAt           pgtype.Timestamptz `db:"last_run_at" json:"last_run_at"`
-	LastRunResult       pgtype.Text        `db:"last_run_result" json:"last_run_result"`
-	LastDiscrepancySat  pgtype.Int8        `db:"last_discrepancy_sat" json:"last_discrepancy_sat"`
-	UpdatedAt           time.Time          `db:"updated_at" json:"updated_at"`
+	Network string `db:"network" json:"network"`
+	// Health monitor basis. NULL = never run successfully. CRITICAL alert fires when this timestamp is > 8 hours stale.
+	LastSuccessfulRunAt pgtype.Timestamptz          `db:"last_successful_run_at" json:"last_successful_run_at"`
+	LastRunAt           pgtype.Timestamptz          `db:"last_run_at" json:"last_run_at"`
+	LastRunResult       NullBtcReconciliationResult `db:"last_run_result" json:"last_run_result"`
+	// Positive = unexpected on-chain funds. Negative = missing funds (critical). Required when last_run_result = 'discrepancy' (chk_rjstate_discrepancy_coherent).
+	LastDiscrepancySat pgtype.Int8 `db:"last_discrepancy_sat" json:"last_discrepancy_sat"`
+	UpdatedAt          time.Time   `db:"updated_at" json:"updated_at"`
+}
+
+// Full history of reconciliation runs. reconciliation_job_state holds only the latest per network; this table enables trend analysis: "discrepancy in last 30 days?", "average run time?", etc.
+type ReconciliationRunHistory struct {
+	ID             uuid.UUID                   `db:"id" json:"id"`
+	Network        string                      `db:"network" json:"network"`
+	StartedAt      pgtype.Timestamptz          `db:"started_at" json:"started_at"`
+	FinishedAt     pgtype.Timestamptz          `db:"finished_at" json:"finished_at"`
+	Result         NullBtcReconciliationResult `db:"result" json:"result"`
+	DiscrepancySat pgtype.Int8                 `db:"discrepancy_sat" json:"discrepancy_sat"`
+	Note           pgtype.Text                 `db:"note" json:"note"`
 }
 
 // Server-side refresh token ledger with individual revocation and family-based reuse detection (RFC 6819 §5.2.2.3).
@@ -1949,6 +2277,18 @@ type RolePermissionsAudit struct {
 	ChangeReason  pgtype.Text         `db:"change_reason" json:"change_reason"`
 }
 
+// SSE token issuance records with pseudonymised IP hash. Replaces source_ip in financial_audit_events.metadata (SEC-07 decision). jti_hash = HMAC-SHA256(jti, server_secret) — non-reversible. source_ip_hash = SHA256(ip || daily_rotation_key) — non-reversible after key rotation. GDPR erasure: SET erased=TRUE, source_ip_hash=NULL.
+type SseTokenIssuance struct {
+	ID           uuid.UUID          `db:"id" json:"id"`
+	VendorID     pgtype.UUID        `db:"vendor_id" json:"vendor_id"`
+	Network      string             `db:"network" json:"network"`
+	JtiHash      string             `db:"jti_hash" json:"jti_hash"`
+	SourceIpHash pgtype.Text        `db:"source_ip_hash" json:"source_ip_hash"`
+	ExpiresAt    pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	IssuedAt     pgtype.Timestamptz `db:"issued_at" json:"issued_at"`
+	Erased       bool               `db:"erased" json:"erased"`
+}
+
 // Core identity record. Sensitive security fields (password_hash, lock state, attempt counters)
 //
 //	are split into user_secrets so SELECT * on users never returns ciphertext or
@@ -2132,45 +2472,99 @@ type UserSession struct {
 	UpdatedAt    time.Time          `db:"updated_at" json:"updated_at"`
 }
 
-// Internal BTC balance per vendor per network. ALWAYS use SELECT FOR UPDATE before any read-modify-write (settlement, debit, promotion). balance_satoshis >= 0 is enforced by DB CHECK; any violation is ErrInsufficientBalance (SQLSTATE 23514). For hybrid vendors this is a threshold accumulator — see the reconciliation note in the DDL comment.
+// Internal BTC balance per vendor per network. CRITICAL: all mutations via btc_credit_balance / btc_debit_balance (011) only. Direct UPDATE is revoked from btc_app_role to enforce the stored procedure path. platform mode: value-bearing, included in reconciliation. hybrid mode: threshold accumulator only, excluded from reconciliation (value is in payout_records). CHECK (>= 0) = ErrInsufficientBalance (SQLSTATE 23514). Never retry on this error.
 type VendorBalance struct {
 	VendorID pgtype.UUID `db:"vendor_id" json:"vendor_id"`
 	Network  string      `db:"network" json:"network"`
-	// Platform wallet mode: value-bearing balance included in reconciliation. Hybrid mode: threshold accumulator only — excluded from reconciliation (value is in payout_records). CHECK (>= 0) — violation = ErrInsufficientBalance; never retry on this error.
+	// Platform mode: value-bearing balance. Hybrid mode: accumulator — NOT in reconciliation formula. Mutate only via btc_credit_balance / btc_debit_balance stored procedures (011).
 	BalanceSatoshis int64     `db:"balance_satoshis" json:"balance_satoshis"`
 	UpdatedAt       time.Time `db:"updated_at" json:"updated_at"`
 }
 
-// Per-vendor wallet configuration per network. One row per (vendor_id, network). wallet_mode and bridge_destination_address are snapshotted onto every invoice — changes here apply only to future invoices. Deletion blocked (RESTRICT) while any outstanding financial obligations exist.
+// Per-vendor financial rule overrides. NULL column = use tier default. Resolved at invoice creation as COALESCE(override.field, tier.field). Resolved values are snapshotted onto the invoice — later changes have no effect. expires_at IS NULL = permanent. Expired rows ignored at invoice creation. IMPORTANT: never use NOW() in a partial index predicate — use plain index + query filter.
+type VendorTierOverride struct {
+	VendorID                       pgtype.UUID          `db:"vendor_id" json:"vendor_id"`
+	Network                        string               `db:"network" json:"network"`
+	ProcessingFeeRate              pgtype.Numeric       `db:"processing_fee_rate" json:"processing_fee_rate"`
+	SweepSchedule                  NullBtcSweepSchedule `db:"sweep_schedule" json:"sweep_schedule"`
+	ConfirmationDepth              pgtype.Int4          `db:"confirmation_depth" json:"confirmation_depth"`
+	InvoiceExpiryMinutes           pgtype.Int4          `db:"invoice_expiry_minutes" json:"invoice_expiry_minutes"`
+	PaymentTolerancePct            pgtype.Numeric       `db:"payment_tolerance_pct" json:"payment_tolerance_pct"`
+	WithdrawalApprovalThresholdSat pgtype.Int8          `db:"withdrawal_approval_threshold_sat" json:"withdrawal_approval_threshold_sat"`
+	MinimumInvoiceSat              pgtype.Int8          `db:"minimum_invoice_sat" json:"minimum_invoice_sat"`
+	MinerFeeCapSatVbyte            pgtype.Int4          `db:"miner_fee_cap_sat_vbyte" json:"miner_fee_cap_sat_vbyte"`
+	// Required accountability. RESTRICT prevents this admin from being deleted while the override exists.
+	GrantedBy     pgtype.UUID `db:"granted_by" json:"granted_by"`
+	GrantedReason string      `db:"granted_reason" json:"granted_reason"`
+	// NULL = permanent override. When non-NULL, application filters: AND (expires_at IS NULL OR expires_at > NOW()). Correctness does not depend on cleanup job removing expired rows.
+	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
+	CreatedAt time.Time          `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time          `db:"updated_at" json:"updated_at"`
+}
+
+// Per-vendor wallet configuration per network. One row per (vendor_id, network). wallet_mode and bridge_destination_address are snapshotted onto every invoice at creation. fn_btc_wallet_mode_guard (011) blocks mode changes while balance > 0. fn_vwc_history (011) captures key field changes in vendor_wallet_config_history (010). fn_sync_vendor_tier_role (011) syncs user_roles on tier_id change. Deletion blocked (RESTRICT) while any outstanding financial obligations exist.
 type VendorWalletConfig struct {
 	VendorID   pgtype.UUID   `db:"vendor_id" json:"vendor_id"`
 	Network    string        `db:"network" json:"network"`
 	TierID     pgtype.UUID   `db:"tier_id" json:"tier_id"`
 	WalletMode BtcWalletMode `db:"wallet_mode" json:"wallet_mode"`
-	// External address for bridge/hybrid payouts. Validated via two-step ismine check (DB lookup + RPC getaddressinfo) before storage. Snapshotted on invoices at creation.
-	BridgeDestinationAddress pgtype.Text        `db:"bridge_destination_address" json:"bridge_destination_address"`
-	AutoSweepThresholdSat    pgtype.Int8        `db:"auto_sweep_threshold_sat" json:"auto_sweep_threshold_sat"`
-	KycStatus                BtcKycStatus       `db:"kyc_status" json:"kyc_status"`
-	Suspended                bool               `db:"suspended" json:"suspended"`
-	SuspendedAt              pgtype.Timestamptz `db:"suspended_at" json:"suspended_at"`
-	SuspensionReason         pgtype.Text        `db:"suspension_reason" json:"suspension_reason"`
-	// TRUE when tier downgrade removes permission for the active wallet_mode. Clears only on explicit vendor reconfiguration to a permitted mode; never auto-clears.
+	// External sweep destination. Validated via two-step ismine check before storage. Snapshotted onto invoices — changes do not affect in-flight settlements. Changes captured in vendor_wallet_config_history (010).
+	BridgeDestinationAddress pgtype.Text `db:"bridge_destination_address" json:"bridge_destination_address"`
+	// Hybrid-only auto-sweep trigger. Must be >= 10 000 sat. Snapshotted onto invoices. NULL for bridge and platform modes (enforced by constraints).
+	AutoSweepThresholdSat pgtype.Int8        `db:"auto_sweep_threshold_sat" json:"auto_sweep_threshold_sat"`
+	KycStatus             BtcKycStatus       `db:"kyc_status" json:"kyc_status"`
+	Suspended             bool               `db:"suspended" json:"suspended"`
+	SuspendedAt           pgtype.Timestamptz `db:"suspended_at" json:"suspended_at"`
+	SuspensionReason      pgtype.Text        `db:"suspension_reason" json:"suspension_reason"`
+	// TRUE when tier downgrade removed permission for the current wallet_mode. New invoice creation is blocked. Clears only on explicit vendor reconfiguration — never auto-clears.
 	ModeFrozen       bool        `db:"mode_frozen" json:"mode_frozen"`
 	ModeFrozenReason pgtype.Text `db:"mode_frozen_reason" json:"mode_frozen_reason"`
 	CreatedAt        time.Time   `db:"created_at" json:"created_at"`
 	UpdatedAt        time.Time   `db:"updated_at" json:"updated_at"`
 }
 
-// Wallet backup health tracking. Written only after copy-to-storage completes and is verified. "Wallet backup overdue" CRITICAL alert fires when latest record timestamp is stale (> 4h on mainnet, > 24h on testnet4). A job that runs but fails the copy step does NOT write here, ensuring the alert fires.
+// Field-level history of vendor wallet config changes. One row per changed field per UPDATE. Populated by fn_vwc_history AFTER UPDATE trigger (011). Required for compliance: "what address/mode/tier did vendor X have during period Y?"
+type VendorWalletConfigHistory struct {
+	ID        uuid.UUID          `db:"id" json:"id"`
+	VendorID  pgtype.UUID        `db:"vendor_id" json:"vendor_id"`
+	Network   string             `db:"network" json:"network"`
+	ChangedAt pgtype.Timestamptz `db:"changed_at" json:"changed_at"`
+	ChangedBy pgtype.UUID        `db:"changed_by" json:"changed_by"`
+	// Which field changed. Tracked fields: bridge_destination_address, wallet_mode, tier_id, suspended, kyc_status.
+	FieldName string      `db:"field_name" json:"field_name"`
+	OldValue  pgtype.Text `db:"old_value" json:"old_value"`
+	NewValue  pgtype.Text `db:"new_value" json:"new_value"`
+}
+
+// Wallet backup completion records. Written only after RPC + copy + verify all succeed. "Wallet backup overdue" CRITICAL alert fires when latest timestamp is stale (> 4h mainnet, > 24h testnet4). A failed copy step means no row is written here.
 type WalletBackupSuccess struct {
 	ID      uuid.UUID `db:"id" json:"id"`
 	Network string    `db:"network" json:"network"`
-	// Timestamp of the COMPLETED backup (both backupwallet RPC + copy verified). This is the basis for the overdue alert — not the job run timestamp.
+	// Time the completed backup (all three steps). This is the alert basis — NOT job start time. A job that runs but fails copy/verify does not write here, ensuring the alert fires.
 	Timestamp       pgtype.Timestamptz `db:"timestamp" json:"timestamp"`
 	Filename        string             `db:"filename" json:"filename"`
 	Sha256Checksum  string             `db:"sha256_checksum" json:"sha256_checksum"`
 	StorageLocation string             `db:"storage_location" json:"storage_location"`
 	CreatedAt       time.Time          `db:"created_at" json:"created_at"`
+}
+
+// Transactional outbox for vendor state-change notifications. Written in the same TX as the triggering state change. At-least-once delivery with exponential backoff retry up to max_attempts. dead_lettered rows require manual review. Delivery worker polls: WHERE status='pending' AND (next_retry_at IS NULL OR next_retry_at <= NOW()).
+type WebhookDelivery struct {
+	ID             uuid.UUID   `db:"id" json:"id"`
+	VendorID       pgtype.UUID `db:"vendor_id" json:"vendor_id"`
+	EventType      string      `db:"event_type" json:"event_type"`
+	Payload        []byte      `db:"payload" json:"payload"`
+	InvoiceID      pgtype.UUID `db:"invoice_id" json:"invoice_id"`
+	PayoutRecordID pgtype.UUID `db:"payout_record_id" json:"payout_record_id"`
+	Status         string      `db:"status" json:"status"`
+	AttemptCount   int32       `db:"attempt_count" json:"attempt_count"`
+	// Maximum delivery attempts before status → dead_lettered. Default 5.
+	MaxAttempts int32 `db:"max_attempts" json:"max_attempts"`
+	// NULL = deliver immediately. Set with exponential backoff after each failed attempt.
+	NextRetryAt pgtype.Timestamptz `db:"next_retry_at" json:"next_retry_at"`
+	LastError   pgtype.Text        `db:"last_error" json:"last_error"`
+	DeliveredAt pgtype.Timestamptz `db:"delivered_at" json:"delivered_at"`
+	CreatedAt   time.Time          `db:"created_at" json:"created_at"`
 }
 
 // One row per running Dispatcher instance. Updated every heartbeat_ttl_seconds/2.

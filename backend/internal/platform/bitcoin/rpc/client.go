@@ -124,6 +124,7 @@ const (
 	rpcMethodWalletProcessPSBT      = "walletprocesspsbt"
 	rpcMethodFinalizePSBT           = "finalizepsbt"
 	rpcMethodSendRawTransaction     = "sendrawtransaction"
+	rpcMethodGetRawTransaction      = "getrawtransaction"
 )
 
 // ── Invoice address constants ─────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/domain/admin"
 	"github.com/7-Dany/store/backend/internal/domain/auth"
+	"github.com/7-Dany/store/backend/internal/domain/bitcoin"
 	"github.com/7-Dany/store/backend/internal/domain/oauth"
 	"github.com/7-Dany/store/backend/internal/domain/profile"
 	"github.com/7-Dany/store/backend/internal/domain/rbac"
@@ -27,4 +28,5 @@ func Mount(ctx context.Context, r chi.Router, deps *app.Deps) {
 	profile.Mount(ctx, r, deps)
 	rbac.Mount(ctx, r, deps)
 	admin.Mount(ctx, r, deps)
+	bitcoin.Mount(ctx, r, deps)
 }

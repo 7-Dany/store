@@ -1,4 +1,38 @@
+# Schema Audit — Decisions & Deferred TODOs
+
 # RBAC Docs — Deferred TODOs
+
+---
+
+## TODO-C · PostgreSQL DB-level role grants (SEC-01)
+
+**Blocked on:** currently single-user dev environment; no named DB roles exist yet.
+
+**Context:**
+All BTC schema tables (`009_btc.sql`) and all other schema tables have no explicit
+`REVOKE FROM PUBLIC`, meaning any authenticated DB connection can SELECT from
+`invoices`, `vendor_balances`, `payout_records`, `vendor_wallet_config`, etc.
+This is separate from the app-layer ABAC system — DB roles protect against anything
+that bypasses the app entirely (direct DB client access, compromised connection
+string, reporting tools, rogue scripts).
+
+**What needs to happen before this is implemented:**
+- Decide on three DB role names: `app_role`, `readonly_role`, `audit_role`
+- Create the roles in the DB (ops runbook step)
+- Write a new migration (e.g. `011_grants.sql`) that:
+  - `REVOKE ALL` on all BTC + core tables `FROM PUBLIC`
+  - `GRANT SELECT, INSERT, UPDATE` on operational tables to `app_role`
+  - `GRANT INSERT, SELECT` on `financial_audit_events` to `app_role` only
+  - `GRANT SELECT` on non-sensitive tables to `readonly_role`
+  - `GRANT SELECT` on `financial_audit_events` to `audit_role` only
+- Update `010_btc_functions.sql` grants block: replace the conditional WARNING
+  with a hard failure if `btc_app_role` does not exist
+- Share all schema files (001–008) so the grants migration covers every table
+
+**Docs to update when implemented:**
+1. **`docs/security/db-access-control.md`** (new file) — document the three roles,
+   what each can access, and how to provision them for a new environment.
+2. **Ops runbook** — add DB role creation as a required pre-deployment step.
 
 These items are intentionally left out of current docs because the underlying
 features are not yet implemented. When each feature ships, update the docs as

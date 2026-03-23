@@ -6,6 +6,9 @@
 >
 > **Read first:** `audit-feature.md` — behavioral contract and monitoring event
 > inventory.
+> **Schema:** `sql/schema/010_btc_payouts.sql` (`financial_audit_events`),
+> `sql/schema/011_btc_functions.sql` (immutability triggers + actor label validation).
+> **Queries:** `sql/queries/btc.sql` (`InsertFinancialAuditEvent`, `GetAuditEventsForInvoice`, `GetAuditEventsForPayout`).
 
 ---
 
@@ -22,32 +25,27 @@
 ## §1 — Financial Audit Trail DB Enforcement
 
 ### Database permission layer
-The application DB user has `INSERT` and `SELECT` on the audit table. `UPDATE` and
-`DELETE` are not granted.
+`btc_app_role` has `INSERT` and `SELECT` only on `financial_audit_events`.
+`UPDATE` and `DELETE` are not granted (see grants section of `011_btc_functions.sql`).
 
 ### Database trigger layer
-An additional trigger rejects any `UPDATE` or `DELETE` on the audit table regardless
-of which DB user initiates it (including privileged migration users):
+Two row-level triggers and one statement-level trigger defined in
+`sql/schema/011_btc_functions.sql`:
 
-```sql
-CREATE OR REPLACE FUNCTION audit_immutability_guard()
-RETURNS TRIGGER LANGUAGE plpgsql AS $$
-BEGIN
-    RAISE EXCEPTION 'financial_audit_events is immutable: % not permitted', TG_OP;
-END;
-$$;
+| Trigger | Function | Fires on |
+|---------|----------|----------|
+| `trg_fae_no_update` | `fn_btc_audit_immutable` | BEFORE UPDATE — rejects unconditionally |
+| `trg_fae_no_delete` | `fn_btc_audit_immutable` | BEFORE DELETE — rejects unconditionally |
+| `trg_fae_no_truncate` | `fn_btc_audit_no_truncate` | BEFORE TRUNCATE — closes the gap left by row-level triggers |
+| `trg_fae_validate_actor` | `fn_fae_validate_actor_label` | BEFORE INSERT — verifies `actor_label == COALESCE(email, username)` for the given `actor_id`; skips for `actor_type = 'system'` |
 
-CREATE TRIGGER trg_audit_no_update
-    BEFORE UPDATE ON financial_audit_events
-    FOR EACH ROW EXECUTE FUNCTION audit_immutability_guard();
+The permission layer prevents accidental application updates. The trigger layer
+prevents any DB-level override including from privileged migration users.
 
-CREATE TRIGGER trg_audit_no_delete
-    BEFORE DELETE ON financial_audit_events
-    FOR EACH ROW EXECUTE FUNCTION audit_immutability_guard();
-```
-
-Both layers together ensure immutability: the permission layer prevents accidental
-application code updates, and the trigger layer prevents any DB-level override.
+**GDPR note on `actor_label`:** store `HMAC-SHA256(email, server_secret)` rather
+than raw email. `financial_audit_events` is immutable — raw PII cannot be erased for
+GDPR Article 17 requests. The `fn_fae_validate_actor_label` trigger checks
+`COALESCE(email, username)` to support OAuth-only accounts with no email.
 
 ---
 
@@ -70,37 +68,36 @@ Required fields on every admin override audit event:
 
 ## §3 — Reconciliation Formula and Treasury Reserve
 
-```sql
--- The reconciliation invariant:
-SELECT
-  (SELECT COALESCE(SUM(balance_satoshis), 0) FROM vendor_balances) +
-  (SELECT COALESCE(SUM(net_satoshis), 0) FROM payout_records
-   WHERE status IN ('held','queued','constructing','broadcast')) +
-  (SELECT COALESCE(SUM(ip.value_sat), 0)
-   FROM invoice_payments ip
-   JOIN invoices i ON ip.invoice_id = i.id
-   WHERE i.status IN (
-     'confirming', 'settling', 'settlement_failed',
-     'underpaid', 'overpaid', 'reorg_admin_required',
-     'expired_with_payment', 'cancelled_with_payment'
-   )) +
-  (SELECT treasury_reserve_satoshis FROM platform_config)
-AS expected_on_chain_satoshis
+The three formula terms each have a dedicated query in `sql/queries/btc.sql`:
+
+| Term | Query | Notes |
+|------|-------|-------|
+| In-flight invoice satoshis | `SumInflightInvoiceAmounts` | statuses: pending, detected, confirming, settling, underpaid, mempool_dropped |
+| Pre-confirmation payout obligations | `SumInflightPayoutRecords` | statuses: held, queued, constructing, broadcast |
+| Platform-mode vendor balances | `SumPlatformVendorBalances` | JOIN to vendor_wallet_config; **hybrid-mode balances excluded** (they are threshold accumulators, not value-bearing) |
+| Treasury reserve | `GetPlatformConfig` → `treasury_reserve_satoshis` | |
+
+The formula:
+```
+on_chain_UTXO_value
+  = SumInflightInvoiceAmounts(network)
+  + SumInflightPayoutRecords(network)
+  + SumPlatformVendorBalances(network)
+  + treasury_reserve_satoshis
 ```
 
+**Important:** `SumPlatformVendorBalances` intentionally excludes hybrid-mode balances.
+Hybrid balances are threshold accumulators — their value is fully represented in
+`held`/`queued` payout records. Including both would double-count hybrid funds.
+See `vendor_balances` table comment in `009_btc.sql`.
+
 ### treasury_reserve_satoshis
-The `treasury_reserve_satoshis` column on `platform_config` tracks accumulated miner
-fee earnings retained by the platform from completed sweeps.
+Tracks accumulated miner fee earnings from completed sweeps.
 
-**Incremented:** when a sweep transaction confirms at 3-block depth. The increment
-equals `(gross_payout_satoshis - SUM(vendor_net_satoshis))` — the difference is the
-miner fee that was deducted from the on-chain UTXOs.
+**Incremented:** via `IncrementTreasuryReserve` query, **in the same transaction as
+`SetPayoutConfirmed`**. Omitting this causes a permanent negative discrepancy.
 
-**Decremented:** when treasury funds are withdrawn or used for UTXO consolidation.
-
-**Why it's needed:** without this term, the formula would not balance after sweeps
-have occurred — the on-chain UTXO value would be lower than the sum of vendor
-balances and payout records because miner fees have already been spent.
+**Decremented:** on treasury withdrawal or UTXO consolidation (admin operation).
 
 ---
 

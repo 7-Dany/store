@@ -9,6 +9,7 @@ package db
 
 import (
 	"context"
+	"net/netip"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -290,6 +291,39 @@ func (q *Queries) GetAuditEventsByUser(ctx context.Context, userID pgtype.UUID) 
 		return nil, err
 	}
 	return items, nil
+}
+
+const GetLatestAuditEvent = `-- name: GetLatestAuditEvent :one
+SELECT user_id, event_type, ip_address, metadata
+FROM auth_audit_log
+WHERE event_type = $1
+ORDER BY id DESC
+LIMIT 1
+`
+
+type GetLatestAuditEventRow struct {
+	UserID    pgtype.UUID `db:"user_id" json:"user_id"`
+	EventType string      `db:"event_type" json:"event_type"`
+	IpAddress *netip.Addr `db:"ip_address" json:"ip_address"`
+	Metadata  []byte      `db:"metadata" json:"metadata"`
+}
+
+// Returns the most recent auth_audit_log row for the given event_type.
+// Used by bitcoin watch store tests (T-41, T-42) to assert that WriteAuditLog
+// persists the correct user_id (NULL for anonymous pre-auth events) and
+// ip_address (NULL when the source IP string cannot be parsed).
+// Ordered by the UUID v7 primary key which embeds a timestamp, so the most
+// recently inserted row is always last.
+func (q *Queries) GetLatestAuditEvent(ctx context.Context, eventType string) (GetLatestAuditEventRow, error) {
+	row := q.db.QueryRow(ctx, GetLatestAuditEvent, eventType)
+	var i GetLatestAuditEventRow
+	err := row.Scan(
+		&i.UserID,
+		&i.EventType,
+		&i.IpAddress,
+		&i.Metadata,
+	)
+	return i, err
 }
 
 const GetLatestRefreshTokenByUser = `-- name: GetLatestRefreshTokenByUser :one

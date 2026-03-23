@@ -4,8 +4,8 @@
 > watchdog, confirmation trigger design, and the complete test inventory for this package.
 >
 > **Read first:** `payment-feature.md` — behavioral contract and edge cases.
-> **Depends on:** `../invoice/invoice-technical.md` (invoice_payments schema, monitoring table),
-> `../settlement/settlement-technical.md` (settlement engine entry point).
+> **Depends on:** `../invoice/invoice-technical.md` (monitoring table, invoice_payments),
+> `sql/queries/btc.sql` (all DB queries), `../settlement/settlement-technical.md` (settlement engine entry point).
 
 ---
 
@@ -141,35 +141,24 @@ the `detected → confirming` status transition** — never deferred. See
 
 ---
 
-## §4 — btc_outage_log Schema
+## §4 — btc_outage_log
 
-The outage log tracks periods when the Bitcoin Core node was unreachable. It is used
-by the expiry cleanup job to compute effective expiry times (see
-`../invoice/invoice-feature.md §5 Expiry Rules`). The reconnect event that closes an
-outage log entry is also the event that triggers `HandleRecovery` in the resilience
-package.
+**Schema:** defined in `sql/schema/009_btc.sql` (`btc_outage_log` table,
+`uq_outage_one_open_per_network` unique partial index `WHERE ended_at IS NULL`,
+`idx_outage_range` for expiry formula range join).
 
-```sql
-CREATE TABLE btc_outage_log (
-    id         BIGSERIAL PRIMARY KEY,
-    network    TEXT        NOT NULL,
-    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    ended_at   TIMESTAMPTZ,
-    CONSTRAINT chk_outage_times CHECK (ended_at IS NULL OR ended_at > started_at)
-);
-CREATE INDEX idx_btc_outage_open ON btc_outage_log (network)
-    WHERE ended_at IS NULL;
-CREATE INDEX idx_btc_outage_range ON btc_outage_log (network, started_at, ended_at);
-```
+**Queries** (`sql/queries/btc.sql`):
+- `InsertOutageRecord` — ON CONFLICT DO NOTHING (advisory lock is primary guard)
+- `CloseOutageRecord` — `SET ended_at = NOW() WHERE id = $id AND ended_at IS NULL`
+- `GetOpenOutage` — hot-path check; also used on startup to close crashed process records
+- `CloseStaleOutages` — maintenance job: closes records older than 48 hours
+- `GetOutageOverlapForInvoice` — expiry compensation formula (returns INTERVAL)
 
 ### Write protocol
-- **On node disconnect:** INSERT a new row with `ended_at = NULL`. Use a PostgreSQL
-  advisory lock to prevent multiple application instances from inserting duplicate
-  open outage records simultaneously.
-- **On node reconnect:** `UPDATE btc_outage_log SET ended_at = NOW() WHERE id = $id
-  AND ended_at IS NULL`. The `AND ended_at IS NULL` clause makes this idempotent.
-- **On application startup:** if an open outage record exists from a previous process,
-  close it with `ended_at = NOW()`.
+- **On node disconnect:** `InsertOutageRecord` with ON CONFLICT DO NOTHING; use
+  `pg_try_advisory_lock(hashtext('btc_outage_log:' || network))` as primary duplicate guard.
+- **On node reconnect:** `CloseOutageRecord`; then fire `RecoveryEvent` / `HandleRecovery`.
+- **On startup:** `GetOpenOutage` — if found, close it before accepting connections.
 
 ### Advisory lock for duplicate INSERT prevention (G-M1 resolved)
 The advisory lock that prevents duplicate open outage records uses:

@@ -60,8 +60,9 @@ checkAddressOwnership(address) → ismine bool | rpc_error
 > **No `txindex` required.** The production node uses `prune=10000`. `txindex` is
 > incompatible with pruning. All settlement-path transaction verification uses
 > `getblock` at the known `first_confirmed_block_height`. The display-only
-> `GET /bitcoin/tx/{txid}/status` endpoint returns `{"status":"pruned"}` for
-> transactions outside the prune window — an accepted limitation.
+> `GET /bitcoin/tx/{txid}/status` endpoint uses `rpc.Client.GetTransaction`
+> (wallet-native) which only covers transactions the wallet has seen — this is the
+> correct scope. There is no `pruned` status; unknown transactions return `not_found`.
 
 > **Signed PSBTs are sensitive.** A fully signed PSBT is a broadcastable Bitcoin
 > transaction. It must never be written to any log at any level. Pass it directly

@@ -1,8 +1,3 @@
-// Package app defines the shared runtime dependencies that are built once at
-// startup and passed to every domain router.
-//
-// Keeping Deps in its own leaf package breaks the import cycle that would arise
-// if domain packages imported internal/server (which imports them).
 package app
 
 import (
@@ -21,6 +16,12 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 	"github.com/7-Dany/store/backend/internal/platform/token"
 )
+
+// Package app defines the shared runtime dependencies that are built once at
+// startup and passed to every domain router.
+//
+// Keeping Deps in its own leaf package breaks the import cycle that would arise
+// if domain packages imported internal/server (which imports them).
 
 // Deps holds every shared service that domain routes may need.
 // It is constructed once in server.New, with all services already started and
@@ -45,6 +46,7 @@ type Deps struct {
 	//   kvstore.OnceStore           — bitcoin SSE JTI one-time consumption
 	//   kvstore.ListStore           — bitcoin settlement overflow queue
 	//   kvstore.PubSubStore         — bitcoin cache invalidation
+	//   kvstore.WatchCapStore       — bitcoin watch address cap (Lua script)
 	//
 	// Closed by server.New via a context-cancellation goroutine — domain code
 	// must not call Close() directly.
@@ -170,6 +172,14 @@ type Deps struct {
 	// BitcoinNetwork is the active Bitcoin network ("testnet4" or "mainnet").
 	// Empty string when BitcoinEnabled is false.
 	BitcoinNetwork string
+
+	// BitcoinMaxWatchPerUser is the per-user watch address cap
+	// (BTC_MAX_WATCH_PER_USER). 0 when BitcoinEnabled is false.
+	BitcoinMaxWatchPerUser int
+
+	// BitcoinAuditHMACKey is the HMAC key for audit PII pseudonymisation
+	// (BTC_AUDIT_HMAC_KEY). Empty string when BitcoinEnabled is false.
+	BitcoinAuditHMACKey string
 }
 
 // OAuthConfig holds the Google OAuth 2.0 configuration values.

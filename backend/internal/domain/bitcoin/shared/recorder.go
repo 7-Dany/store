@@ -69,6 +69,16 @@ type BitcoinRecorder interface {
 	SetWalletBackupAge(seconds float64)
 	// SetUTXOCount records the current number of UTXOs in the wallet.
 	SetUTXOCount(count float64)
+
+	// ── Watch ─────────────────────────────────────────────────────────────
+
+	// OnWatchRejected increments bitcoin_watch_rejected_total{reason}.
+	// reason is one of: "rate_limit", "invalid_address", "limit_exceeded",
+	// "registration_window_expired".
+	OnWatchRejected(reason string)
+	// SetGlobalWatchCountEstimate sets bitcoin_global_watch_count_estimate{network}
+	// to the total address count derived from the reconciliation SCAN.
+	SetGlobalWatchCountEstimate(network string, count float64)
 }
 
 // ── NoopBitcoinRecorder ───────────────────────────────────────────────────────
@@ -98,7 +108,9 @@ func (NoopBitcoinRecorder) SetFeeEstimate(int, float64)     {}
 func (NoopBitcoinRecorder) OnSweepStuck()                   {}
 func (NoopBitcoinRecorder) SetWalletBackupAge(float64)      {}
 func (NoopBitcoinRecorder) SetUTXOCount(float64)            {}
+func (NoopBitcoinRecorder) OnWatchRejected(string)               {}
+func (NoopBitcoinRecorder) SetGlobalWatchCountEstimate(string, float64) {}
 
-// Compile-time assertion: NoopBitcoinRecorder must satisfy BitcoinRecorder.
+// compile-time assertion: NoopBitcoinRecorder must satisfy BitcoinRecorder.
 // NoopBitcoinRecorder is a struct, not a pointer, so use a zero value — not nil.
 var _ BitcoinRecorder = NoopBitcoinRecorder{}

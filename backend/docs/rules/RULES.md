@@ -54,6 +54,7 @@ decision that future contributors will find surprising.
    - 3.13 [Sub-Package Split Checklist](#313-sub-package-split-checklist)
    - 3.14 [Mandatory Three-File Sync Rules](#314-mandatory-three-file-sync-rules)
    - 3.15 [Mailer Template Convention](#315-mailer-template-convention)
+   - 3.16 [Extending kvstore](#316-extending-kvstore)
 
 4. [Go Comment Conventions](#4-go-comment-conventions)
    - 4.1 [The Core Principle](#41-the-core-principle)
@@ -1565,6 +1566,97 @@ behaviour is documented on the `{Name}Key` constant.
 string) error`. Adding per-type methods (`SendEmailChangeOTP`, etc.) is a
 convention violation regardless of how convenient it looks at the call site.
 The registry pattern is the extension point — use it.
+
+---
+
+### 3.16 Extending kvstore
+
+`internal/platform/kvstore` is split across two tightly coupled files:
+
+| File | What lives there |
+|---|---|
+| `scripts.go` | All Lua script `const` blocks, grouped by interface, in load-sequence order. Nothing else. |
+| `redis.go` | `RedisStore` struct, `NewRedisStore`, all interface method implementations, compile-time checks. |
+
+**Every change to kvstore must keep both files in sync.** The load sequence
+(scripts.go constant order = SHA field order = ScriptLoad call order) is fixed
+by integration tests that assert on telemetry labels. A violation causes an
+immediate build or test failure.
+
+#### The four locations and their fixed order
+
+The order within each location is: **Lua-script load sequence first, then
+interface declaration order from `store.go`**.
+
+| File | Location | What lives there | Order rule |
+|---|---|---|---|
+| `scripts.go` | Lua script `const` blocks | One constant per Lua-backed operation | Load sequence (1 → N); append new scripts at the end |
+| `redis.go` | `RedisStore` SHA struct fields | One `string` field per Lua script SHA | Same as `scripts.go` const order; grouped by interface |
+| `redis.go` | `NewRedisStore` `ScriptLoad` calls | One call per Lua script | Same as SHA field order; `// Load order N:` comments |
+| `redis.go` | Method sections | All methods implementing an interface | Interface declaration order in `store.go`; one `// ── InterfaceName ──` section each |
+| `redis.go` | Compile-time checks | `var _ I = (*RedisStore)(nil)` | Same as method section order |
+
+The **load sequence** is fixed by integration tests that assert the telemetry
+label of each `ScriptLoad` failure (e.g. `"load_increment_script"` for load
+order 1). **Never reorder existing script loads** — doing so breaks those
+tests without any compile error.
+
+#### Current load sequence
+
+| Load order | SHA field | Script constant | Interface |
+|---|---|---|---|
+| 1 | `incrSHA` | `atomicBackoffIncrementScript` | `AtomicBackoffStore` |
+| 2 | `allowSHA` | `atomicBackoffAllowScript` | `AtomicBackoffStore` |
+| 3 | `counterIncrSHA` | `atomicCounterIncrementScript` | `AtomicCounterStore` |
+| 4 | `counterDecrSHA` | `atomicCounterDecrementScript` | `AtomicCounterStore` |
+| 5 | `counterAcqSHA` | `atomicCounterAcquireScript` | `AtomicCounterStore` |
+| 6 | `watchCapSHA` | `watchCapLuaScript` | `WatchCapStore` |
+
+#### Step-by-step: adding a new Lua-backed interface
+
+1. **`store.go`** — declare the new interface at the end of the file, after
+   `WatchCapStore`. Document cluster-safety requirements if it uses Redis hash tags.
+2. **`scripts.go`** — append a new `// ── NewInterface scripts (load order N) ──`
+   section at the end of the file. Add the script constant(s) there. Each
+   constant's comment header must state KEYS/ARGV contract, Redis version
+   requirement, and return shape.
+3. **`redis.go` struct** — add a `{name}SHA string // SHA of {scriptConst}`
+   field at the end of the SHA field group, with a section comment naming the
+   interface.
+4. **`redis.go` `NewRedisStore`** — add a `ScriptLoad` call with the label
+   `// Load order N:` at the end of the load block. Copy the error-handling
+   pattern exactly: `if err != nil { _ = client.Close(); return nil, ... }`.
+   Use a telemetry label `"NewRedisStore.load_{name}_script"`.
+5. **`redis.go` method section** — add a new `// ── NewInterface ──────` section
+   after the last existing interface section (before `// ── Telemetry ──`).
+   Implement all methods there.
+6. **`redis.go` compile-time check** — append `var _ NewInterface = (*RedisStore)(nil)`
+   to the check block.
+7. **`memory.go`** — if `InMemoryStore` should implement the new interface, add
+   a corresponding section in the same interface order and add the compile-time
+   check at the bottom of `memory.go`.
+8. **`redis_test.go`** — add integration tests for the `ScriptLoad` failure path
+   (using `fakeFlakyRedisAddr` or equivalent) and the bad-result-format defensive
+   branches.
+
+#### Step-by-step: adding a new method to an existing interface
+
+1. **`store.go`** — add the method to the interface with a full doc comment.
+2. **`redis.go`** — add the implementation inside the existing interface section.
+   Do not move it outside the section.
+3. **`memory.go`** — add the implementation in the equivalent section.
+4. Run `go build ./internal/platform/kvstore/...` and
+   `go vet ./internal/platform/kvstore/...` before pushing.
+
+#### What NOT to do
+
+- Do not create additional files like `redis_{feature}.go`. All RedisStore
+  implementation lives in `redis.go`; all Lua scripts live in `scripts.go`.
+- Do not put any Go code (imports, types, functions) in `scripts.go`. It holds
+  only `package kvstore` and `const` blocks — nothing else.
+- Do not reorder existing entries in `scripts.go`, SHA struct fields, or
+  `ScriptLoad` calls. The load-sequence order is observable through integration
+  test labels and must not change without updating those tests.
 
 ---
 

@@ -6,7 +6,7 @@
 > any implementation detail.
 >
 > **Companion:** `invoice-technical.md` — RPC sequences, schema, test inventory.
-> **Depends on:** `../zmq/zmq-feature.md` (address watch registration),
+> **Depends on:** `internal/platform/bitcoin/zmq/subscriber.go` (ZMQ watch registration),
 > `../vendor/vendor-feature.md` (tier config, wallet mode permissions).
 
 ---
@@ -128,9 +128,9 @@ When a buyer selects Bitcoin at checkout:
    - Step 4a: `getnewaddress "invoice" "bech32"` → returns the address string
    - Step 4b: `getaddressinfo(address)` → reads the `hdkeypath` field to extract
      the HD derivation index (e.g., the leaf index from `m/84'/0'/0'/0/5200`)
-   Both calls must succeed. If either fails, the invoice is not created, the buyer
-   receives a 503 "Bitcoin payments temporarily unavailable," and a
-   `KeypoolOrRPCError` critical alert fires.
+   Both calls must succeed (`rpc.Client.GetNewAddress` then `rpc.Client.GetAddressInfo`).
+   If either fails, the invoice is not created, the buyer receives a 503
+   "Bitcoin payments temporarily unavailable," and a `KeypoolOrRPCError` critical alert fires.
    The address string and HD derivation index are both stored on the invoice address
    record. Bitcoin Core tracks the address internally.
 5. The new address is registered with the ZMQ subscriber's active watch set **after**

@@ -22,22 +22,20 @@
 
 ---
 
-## §1 — bitcoin_sync_state Schema
+## §1 — bitcoin_sync_state
 
-```sql
-CREATE TABLE bitcoin_sync_state (
-    network               TEXT PRIMARY KEY,
-    last_processed_height INTEGER NOT NULL DEFAULT -1,
-    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
--- Sentinel -1 = never processed; initialize to BTC_RECONCILIATION_START_HEIGHT on first run
-```
+**Schema:** defined in `sql/schema/009_btc.sql`. `-1` is the sentinel for
+fresh deployment (never processed any block).
+
+**Queries** (`sql/queries/btc.sql`):
+- `GetBitcoinSyncState` — read current cursor
+- `UpdateBitcoinSyncState` — advance cursor per checkpoint
 
 ### Initialization
-On a fresh deployment, `last_processed_height` is initialized to
-`BTC_RECONCILIATION_START_HEIGHT`. **This value must be configured before the first
-mainnet deployment.** A startup check rejects `BTC_RECONCILIATION_START_HEIGHT = 0`
-on mainnet unless `BTC_RECONCILIATION_ALLOW_GENESIS_SCAN=true`.
+`last_processed_height` initializes to `BTC_RECONCILIATION_START_HEIGHT` on first run.
+**This value must be configured before the first mainnet deployment.** A startup check
+rejects `BTC_RECONCILIATION_START_HEIGHT = 0` on mainnet unless
+`BTC_RECONCILIATION_ALLOW_GENESIS_SCAN=true`.
 
 ---
 

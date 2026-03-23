@@ -26,6 +26,7 @@
 #   e2e/admin/userroles.json            → GET/PUT/DELETE /admin/rbac/users/{user_id}/role (requires rbac:read + rbac:manage)
 #   e2e/admin/userpermissions.json      → GET/POST/DELETE /admin/rbac/users/{user_id}/permissions (requires rbac:read + rbac:grant_user_perm)
 #   e2e/admin/userlock.json             → POST/DELETE /admin/users/{user_id}/lock (requires rbac:manage)
+#   e2e/bitcoin/watch.json              → POST /api/v1/bitcoin/watch (requires JWT)
 #
 # Individual targets   — run a single collection:
 #   e2e-health, e2e-register, e2e-verify-email, e2e-login, e2e-session,
@@ -33,7 +34,8 @@
 #   e2e-revoke-session, e2e-update-profile, e2e-username, e2e-email,
 #   e2e-delete-account, e2e-identities, e2e-oauth-google, e2e-oauth-telegram,
 #   e2e-rbac-owner, e2e-rbac-permissions, e2e-rbac-roles,
-#   e2e-admin-userroles, e2e-admin-userpermissions, e2e-admin-userlock
+#   e2e-admin-userroles, e2e-admin-userpermissions, e2e-admin-userlock,
+#   e2e-btc
 #
 # Group targets        — run a folder of collections in order:
 #   e2e-auth           — register + verify-email + login + session + unlock + password
@@ -44,7 +46,7 @@
 #   e2e-admin          — admin-userroles + admin-userpermissions + admin-userlock
 #
 # Suite target         — run everything at once:
-#   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile + e2e-rbac + e2e-admin
+#   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile + e2e-rbac + e2e-admin + e2e-btc
 #
 # Rate-limiting notes:
 #   Collections whose rate-limiters sit INSIDE the JWTAuth middleware group
@@ -74,6 +76,7 @@ E2E_PROFILE  := $(E2E_DIR)/profile
 E2E_OAUTH    := $(E2E_DIR)/oauth
 E2E_RBAC     := $(E2E_DIR)/rbac
 E2E_ADMIN    := $(E2E_DIR)/admin
+E2E_BTC      := $(E2E_DIR)/bitcoin
 E2E_DELAY    ?= 150
 
 # ── OS-aware printing ─────────────────────────────────────────────────────────
@@ -203,6 +206,13 @@ _F_USERPERMS_MAIN  := --folder "setup" --folder "auth-guard" --folder "rbac-guar
 # No Redis flush needed.
 _F_USERLOCK_MAIN   := --folder "setup" --folder "auth-guard" --folder "rbac-guard" --folder "owner-bootstrap" --folder "happy-path" --folder "conflict-guard" --folder "not-found" --folder "validation"
 
+# bitcoin/watch (IP rate-limiter runs before JWTAuth — unauthenticated bucket)
+# Main folders run first (unique XFF from collection prerequest prevents bucket
+# exhaustion), then Redis is flushed and the rate-limiting folder runs in a
+# separate invocation with delay=1 to exhaust the burst quickly.
+_F_BTC_WATCH_MAIN  := --folder "setup" --folder "unauthenticated" --folder "validation" --folder "happy-path"
+_F_BTC_WATCH_RL    := --folder "rate-limiting"
+
 # ── PHONY ─────────────────────────────────────────────────────────────────────
 .PHONY: e2e-install \
         e2e e2e-health \
@@ -215,6 +225,7 @@ _F_USERLOCK_MAIN   := --folder "setup" --folder "auth-guard" --folder "rbac-guar
         e2e-profile e2e-auth e2e-oauth \
         e2e-rbac e2e-rbac-owner e2e-rbac-permissions e2e-rbac-roles \
         e2e-admin e2e-admin-userroles e2e-admin-userpermissions e2e-admin-userlock \
+        e2e-btc \
         _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
 
 # ── Tooling ───────────────────────────────────────────────────────────────────
@@ -279,7 +290,7 @@ endif
 
 # ── Suite targets ─────────────────────────────────────────────────────────────
 
-e2e: e2e-health e2e-auth e2e-oauth e2e-profile e2e-rbac e2e-admin ## Run ALL e2e suites (health + auth + oauth + profile + rbac + admin)
+e2e: e2e-health e2e-auth e2e-oauth e2e-profile e2e-rbac e2e-admin e2e-btc ## Run ALL e2e suites (health + auth + oauth + profile + rbac + admin + btc)
 
 e2e-auth: _e2e-check-env ## Run all auth E2E collections in order (register → verify-email → login → session → unlock → password)
 	@$(MAKE) e2e-register
@@ -622,3 +633,20 @@ e2e-admin-userlock: _e2e-check-env ## Run POST/DELETE /admin/users/{user_id}/loc
 	@$(call _e2e_gray,[e2e] Running: setup + auth-guard + rbac-guard + owner-bootstrap + happy-path + conflict-guard + not-found + validation (single invocation))
 	$(call newman-run,$(E2E_ADMIN)/userlock.json,$(_F_USERLOCK_MAIN),$(E2E_DELAY))
 	@$(call _e2e_ok,[e2e] admin-userlock suite passed)
+
+# ── bitcoin/watch ─────────────────────────────────────────────────────────────
+
+# NOTE: btc:watch:ip: rate-limiter is unauthenticated (runs before JWTAuth).
+#       Main folders run first (unique XFF via collection prerequest counter),
+#       then Redis is flushed and the rate-limiting folder runs in a separate
+#       invocation so the IP bucket starts empty.
+e2e-btc: _e2e-check-env ## Run POST /api/v1/bitcoin/watch E2E (all folders)
+	@$(call _e2e_info,[e2e] --- POST /api/v1/bitcoin/watch ---)
+	@$(MAKE) _e2e-clean
+	@$(call _e2e_gray,[e2e] Running: setup + unauthenticated + validation + happy-path)
+	$(call newman-run,$(E2E_BTC)/watch.json,$(_F_BTC_WATCH_MAIN),$(E2E_DELAY))
+	@$(call _e2e_gray,[e2e] Flushing Redis before rate-limiting...)
+	@$(MAKE) _e2e-kv-clean
+	@$(call _e2e_gray,[e2e] Running: rate-limiting)
+	$(call newman-run,$(E2E_BTC)/watch.json,$(_F_BTC_WATCH_RL),1)
+	@$(call _e2e_ok,[e2e] btc-watch suite passed)

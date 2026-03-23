@@ -125,6 +125,17 @@ type Registry struct {
 	// bitcoinKeypoolSize tracks the current pre-generated address pool depth.
 	// Alert at <100 (WARNING) and <10 (CRITICAL) — see invoice-technical.md §7.
 	bitcoinKeypoolSize prometheus.Gauge
+
+	// ── Bitcoin Watch ─────────────────────────────────────────────────────
+	// bitcoinWatchRejected counts POST /bitcoin/watch rejections by reason.
+	// reason label: "rate_limit" | "invalid_address" | "limit_exceeded" |
+	// "registration_window_expired". Cardinality: 4.
+	bitcoinWatchRejected *prometheus.CounterVec
+
+	// bitcoinGlobalWatchCountEstimate is the cross-instance advisory counter
+	// for total watched addresses, recomputed every 15 min from a Redis SCAN.
+	// network label: "testnet4" | "mainnet". Cardinality: 2.
+	bitcoinGlobalWatchCountEstimate *prometheus.GaugeVec
 }
 
 // NewRegistry constructs a Registry, registers all metric descriptors on a
@@ -499,6 +510,19 @@ func NewRegistry() *Registry {
 			"WARNING below 100; CRITICAL below 10.",
 	})
 
+	// ── Bitcoin Watch ─────────────────────────────────────────────────────
+	r.bitcoinWatchRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "bitcoin_watch_rejected_total",
+		Help: "Total POST /bitcoin/watch requests rejected by reason. " +
+			"reason: rate_limit | invalid_address | limit_exceeded | registration_window_expired.",
+	}, []string{"reason"})
+
+	r.bitcoinGlobalWatchCountEstimate = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "bitcoin_global_watch_count_estimate",
+		Help: "Estimated total watched addresses across all users from the " +
+			"15-minute reconciliation SCAN. May lag up to 15 minutes.",
+	}, []string{"network"})
+
 	// ── Family 7 — Platform ───────────────────────────────────────────────
 	r.platformConnCounterReleaseFailures = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "platform_connection_counter_release_failures_total",
@@ -598,6 +622,9 @@ func NewRegistry() *Registry {
 		r.bitcoinRPCDuration,
 		r.bitcoinRPCErrorsTotal,
 		r.bitcoinKeypoolSize,
+		// Bitcoin Watch
+		r.bitcoinWatchRejected,
+		r.bitcoinGlobalWatchCountEstimate,
 		// Family 7 — Platform
 		r.platformConnCounterReleaseFailures,
 		r.platformConnCounterHeartbeatMisses,

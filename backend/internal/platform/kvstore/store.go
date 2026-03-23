@@ -267,3 +267,46 @@ type AtomicBackoffStore interface {
 	// Returns (false, 0, err) on a transient store error.
 	AtomicBackoffAllow(ctx context.Context, key string) (allowed bool, remaining time.Duration, err error)
 }
+
+// WatchCapStore executes atomic watch-address cap operations for the bitcoin
+// display-watch system. Only RedisStore implements this interface; it is not
+// implemented by InMemoryStore because the bitcoin watch feature requires Redis
+// for cross-instance coordination and TTL semantics.
+//
+// Use deps.KVStore.(watch.KVClient) in bitcoin/watch/routes.go.
+// The type assertion panics at startup when Bitcoin is enabled without Redis.
+type WatchCapStore interface {
+	Store
+
+	// RunWatchCapScript atomically enforces the per-user address cap and
+	// 7-day registration window using a single server-side Lua round-trip.
+	//
+	// All three key arguments must share the same Redis Cluster hash tag
+	// (e.g. {btc:user:{userID}}) so they land on the same cluster slot.
+	//
+	// addresses must already be normalised (trimmed + lowercased) by the
+	// caller before this method is invoked.
+	//
+	// Returns (success, newCount, addedCount):
+	//   success == 1:  completed; addedCount may be 0 (all addresses pre-existing)
+	//   success == 0:  per-user count cap exceeded; watch set is unchanged
+	//   success == -1: 7-day absolute registration window has expired
+	RunWatchCapScript(
+		ctx context.Context,
+		setKey, regAtKey, lastActiveKey string,
+		limit int,
+		watchTTL, lastActiveTTL time.Duration,
+		addresses []string,
+	) (success, newCount, addedCount int64, err error)
+
+	// ScanWatchAddressKeys iterates over all watch-address SET keys in the
+	// keyspace matching the pattern "*:addresses" of type "set". Used by the
+	// reconciliation goroutine to recompute the global watch count from ground truth.
+	//
+	// Pass cursor=0 to start; iteration is complete when nextCursor returns 0.
+	// count is a hint for the number of keys per page (not a guarantee).
+	//
+	// Warning: in a Redis Cluster deployment SCAN operates on a single shard.
+	// The returned total will undercount unless a ClusterScan approach is used.
+	ScanWatchAddressKeys(ctx context.Context, cursor uint64, count int64) (keys []string, nextCursor uint64, err error)
+}

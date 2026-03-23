@@ -490,18 +490,34 @@ func (s *InMemoryStore) Publish(_ context.Context, channel, payload string) (int
 	}
 	var count int64
 	for _, ch := range chans {
-		select {
-		case ch <- PubSubMessage{Channel: channel, Payload: payload}:
+		if trySend(ch, PubSubMessage{Channel: channel, Payload: payload}) {
 			count++
-		default:
-			// Subscriber channel full — message dropped (no buffering guarantee).
 		}
 	}
 	return count, nil
 }
 
+// trySend attempts a non-blocking send to ch.
+// Returns false if the channel is full or closed. The recover call handles
+// the closed-channel case: cancel() may close ch between Publish reading the
+// subscriber list and the actual send, so a plain select would panic.
+func trySend(ch chan PubSubMessage, msg PubSubMessage) (sent bool) {
+	defer func() {
+		if recover() != nil {
+			sent = false
+		}
+	}()
+	select {
+	case ch <- msg:
+		return true
+	default:
+		return false
+	}
+}
+
 // Subscribe returns a buffered channel of PubSubMessages and a cancel func.
 // The channel is closed when cancel() is called or ctx is cancelled.
+// Callers MUST always call the returned cancel func.
 func (s *InMemoryStore) Subscribe(ctx context.Context, channels ...string) (<-chan PubSubMessage, func()) {
 	ch := make(chan PubSubMessage, 64)
 	pubsubMu.Lock()
@@ -512,6 +528,11 @@ func (s *InMemoryStore) Subscribe(ctx context.Context, channels ...string) (<-ch
 		pubsubSubs[s][c] = append(pubsubSubs[s][c], ch)
 	}
 	pubsubMu.Unlock()
+
+	// once guards close(ch) so that calling cancel() while the ctx-watcher
+	// goroutine also fires cancel() cannot produce a double-close panic.
+	var once sync.Once
+	closeCh := func() { once.Do(func() { close(ch) }) }
 
 	cancel := func() {
 		pubsubMu.Lock()
@@ -530,7 +551,7 @@ func (s *InMemoryStore) Subscribe(ctx context.Context, channels ...string) (<-ch
 			}
 		}
 		pubsubMu.Unlock()
-		close(ch)
+		closeCh()
 	}
 
 	go func() {

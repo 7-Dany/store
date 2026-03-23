@@ -4,8 +4,8 @@
 > allocation, monitoring table schema, and the complete test inventory for this package.
 >
 > **Read first:** `invoice-feature.md` — behavioral contract and edge cases.
-> **Depends on:** `../zmq/zmq-technical.md` (watch registration channel),
-> `../vendor/vendor-technical.md` (tier config, ismine validation).
+> **Depends on:** `internal/platform/bitcoin/zmq/subscriber.go` (`RegisterImmediate` / `RecoveryEvent`),
+> `sql/queries/btc.sql` (all DB queries), `../vendor/vendor-technical.md` (tier config, ismine validation).
 
 ---
 
@@ -90,113 +90,76 @@ most a 5-minute window where ZMQ events are not matched.
 
 ---
 
-## §3 — Invoice Address Monitoring Schema
+## §3 — Invoice Address Monitoring
 
-```sql
-CREATE TABLE invoice_address_monitoring (
-    id              BIGSERIAL PRIMARY KEY,
-    invoice_id      TEXT NOT NULL REFERENCES invoices(id),
-    address         TEXT NOT NULL,
-    network         TEXT NOT NULL,
-    monitor_until   TIMESTAMPTZ,  -- NULL = actively monitored (not yet terminal)
-    status          TEXT NOT NULL DEFAULT 'active'  -- 'active' | 'retired'
-);
-CREATE INDEX idx_iam_active ON invoice_address_monitoring (address, network)
-    WHERE status = 'active';
-```
+**Schema:** defined in `sql/schema/009_btc.sql` (`invoice_address_monitoring` table,
+`uq_iam_one_active_per_invoice`, `uq_iam_active_address_network` unique partial indexes,
+`fn_iam_address_consistency` trigger in `011_btc_functions.sql`).
+
+**Queries** (`sql/queries/btc.sql`):
+
+| Query | When called |
+|-------|-------------|
+| `CreateInvoiceAddressMonitoring` | After `CreateInvoiceAddress` commits; before `RegisterImmediate()` |
+| `LoadActiveMonitoringByNetwork` | Startup + every `RecoveryEvent` |
+| `GetActiveMonitoringByAddress` | Per-hashtx DB fallback (hot path is in-memory) |
+| `SetMonitoringWindow` | Same TX as terminal invoice status transition |
+| `RetireExpiredMonitoringRecords` | Expiry cleanup job |
 
 ### Monitoring window update rules
-When an invoice transitions to a terminal status, `monitor_until` is set in the same
-DB transaction as the status update:
+When an invoice transitions to a terminal status, `SetMonitoringWindow` is called in the
+same DB transaction as the status update:
 
 | Terminal status | monitor_until |
 |-----------------|---------------|
-| `expired` | `expired_at + INTERVAL '30 days'` |
-| `cancelled` | `cancelled_at + INTERVAL '30 days'` |
-| `settled` | `settled_at + INTERVAL '30 days'` |
-| `refunded` | `refunded_at + INTERVAL '30 days'` |
-| `manually_closed` | `closed_at + INTERVAL '30 days'` |
-| `reorg_admin_required` | **NULL** — remains `active` with `monitor_until = NULL`. `monitor_until` is set only when the invoice transitions out of `reorg_admin_required`. |
-
-Non-terminal statuses retain `monitor_until = NULL`. The expiry cleanup job condition
-`monitor_until < NOW()` evaluates to false for NULL, so these records are never
-incorrectly retired.
-
-### Expiry cleanup job
-Runs on a schedule:
-
-```sql
-UPDATE invoice_address_monitoring
-SET status = 'retired'
-WHERE monitor_until < NOW()
-  AND status = 'active';
-```
-
-Does not detect payments — only retires elapsed monitoring windows.
+| `expired` | `expired_at + 30 days` |
+| `cancelled` | `cancelled_at + 30 days` |
+| `settled` | `settled_at + 30 days` |
+| `refunded` | `refunded_at + 30 days` |
+| `manually_closed` | `closed_at + 30 days` |
+| `reorg_admin_required` | **NULL** — remains `active`. Set only when transitioning out. |
 
 ### ZMQ reload
-The ZMQ subscriber reloads the active set every 5 minutes (safety net; new addresses
-are registered immediately on creation via §2):
+The recovery handler (registered via `sub.RegisterRecoveryHandler`) calls
+`LoadActiveMonitoringByNetwork` to rebuild the in-memory watch set:
+- On startup (before `sub.Run()`)
+- On every `RecoveryEvent` (reconnect or sequence gap)
+- On the 5-minute safety net timer
 
-```sql
-SELECT address, network, invoice_id
-FROM invoice_address_monitoring
-WHERE status = 'active';
-```
-
-This query runs at startup, on every reconnection, and on the 5-minute safety net
-timer.
+New addresses are registered immediately via `RegisterImmediate()` after
+`CreateInvoiceAddressMonitoring` commits — the 5-minute reload is a safety net only.
 
 ### Archival note (G-N4)
-Retired records are never deleted from this table. The partial index
-`WHERE status = 'active'` keeps active-path queries fast regardless of retired row
-count. However, the full table grows unboundedly over time. For a high-volume
-production system, implement time-based partitioning (e.g., by `created_at` year)
-or a periodic archival job that moves `status = 'retired' AND monitor_until < NOW() - INTERVAL '1 year'`
-rows to cold storage. This is a V1 operational concern, not a correctness issue.
+Retired records are never deleted. The partial index `WHERE status = 'active'` keeps
+active-path queries fast. For high-volume production, implement time-based partitioning
+or a periodic archival job.
 
 ---
 
-## §4 — invoice_payments Schema
+## §4 — invoice_payments
 
-```sql
-CREATE TABLE invoice_payments (
-    id              BIGSERIAL PRIMARY KEY,
-    invoice_id      TEXT        NOT NULL REFERENCES invoices(id),
-    txid            TEXT        NOT NULL,
-    vout_index      INTEGER     NOT NULL,
-    value_sat       BIGINT      NOT NULL,
-    detected_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    double_payment  BOOLEAN     NOT NULL DEFAULT false,
-    post_settlement BOOLEAN     NOT NULL DEFAULT false,
-    CONSTRAINT uq_invoice_payments_txid_vout UNIQUE (txid, vout_index)
-);
-CREATE INDEX idx_ip_invoice_id ON invoice_payments (invoice_id);
-```
+**Schema:** defined in `sql/schema/009_btc.sql` (`invoice_payments` table,
+`uq_inv_payment_txid_vout` unique constraint, `idx_ip_invoice_id` covering index
+with `INCLUDE (value_sat, txid, vout_index, detected_at)` for index-only Phase 1 SUM).
 
-> **Gap G-C1 (resolved):** The `invoice_id` column is required by every query that
-> joins to invoices, by the reconciliation formula, and by the settlement Phase 1
-> sum. Previous schema specs omitted it. It is now explicitly included here as a
-> `NOT NULL` FK column.
+**Queries** (`sql/queries/btc.sql`):
+- `UpsertInvoicePayment` — always `ON CONFLICT (txid, vout_index) DO NOTHING`; idempotent
+- `SumInvoicePayments` — Phase 1 sum: `SUM(value_sat) WHERE invoice_id = $id AND txid = $txid`
 
-**Column notes:**
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `invoice_id` | `TEXT NOT NULL REFERENCES invoices(id)` | FK to the invoice this payment was received for. **Required** — all settlement and reconciliation queries join on this. |
-| `txid` | `TEXT NOT NULL` | Bitcoin transaction ID (64 hex chars, lowercase) |
-| `vout_index` | `INTEGER NOT NULL` | Output index within the transaction |
-| `value_sat` | `BIGINT NOT NULL` | Satoshi value of this output |
-| `detected_at` | `TIMESTAMPTZ NOT NULL` | When this payment was first observed (mempool or block) |
-| `double_payment` | `BOOLEAN NOT NULL DEFAULT false` | `true` when this row represents a second distinct txid to the same address while the invoice was active |
-| `post_settlement` | `BOOLEAN NOT NULL DEFAULT false` | `true` when payment arrived after invoice was in `settled` status |
-| `UNIQUE (txid, vout_index)` | | Idempotency constraint — all inserts use `ON CONFLICT (txid, vout_index) DO NOTHING` |
-
-**Index:** A covering index on `invoice_id` is required for the Phase 1 SUM query performance.
+**Key column notes:**
+- `invoice_id`: FK to invoices; required by all settlement and reconciliation queries
+- `double_payment`: true when a second distinct txid pays the same address while active
+- `post_settlement`: true when payment arrived after invoice was already settled
+- All inserts use `ON CONFLICT (txid, vout_index) DO NOTHING` for idempotency
 
 ---
 
-## §5 — invoices Table — Required Columns
+## §5 — invoices Table — Key Columns
+
+**Schema:** defined in `sql/schema/009_btc.sql`. **Queries:** `sql/queries/btc.sql`
+(`CreateInvoice`, `GetInvoice`, `GetInvoiceWithLock`, all `TransitionInvoice*` queries).
+
+The full column list is in the schema file. Key columns with implementation notes:
 
 Additional columns required beyond the obvious fields:
 

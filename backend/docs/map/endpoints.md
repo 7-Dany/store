@@ -122,6 +122,14 @@ All routes are prefixed with `/api/v1`. JWT = `Authorization: Bearer <token>` re
 
 ---
 
+## Bitcoin — Watch *(JWT)*
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/bitcoin/watch` | Register 1–20 Bitcoin addresses for transaction monitoring. Idempotent — re-submitting an existing address is a no-op. Returns `watching` array of normalised addresses from the current request (not the full watch list). |
+
+---
+
 ## OAuth — Google
 
 | Method | Path | Description |

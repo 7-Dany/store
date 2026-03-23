@@ -109,18 +109,25 @@ Every step-up authentication event in the financial audit trail must include:
 
 ## §4 — Config Validation Rules
 
-All validations run in `config.validate()` at startup. The application refuses to
-start if any required config is absent or invalid.
+All validations run in `config.validate()` at startup (`internal/config/config.go`).
+The application refuses to start if any required config is absent or invalid.
 
 | Rule | Condition | Error |
 |------|-----------|-------|
 | `BTC_FIAT_CURRENCY` required | Absent | Startup failure |
 | `BTC_RECONCILIATION_START_HEIGHT` | = 0 on mainnet without genesis flag | Startup failure |
-| `BTC_RPC_PORT` | Non-numeric value | Startup failure |
+| `BTC_RPC_HOST` | Not a loopback address | Panic at `rpc.New()` |
+| `BTC_RPC_PORT` | Non-numeric or out of range | `rpc.New()` returns error |
+| `BTC_ZMQ_BLOCK` / `BTC_ZMQ_TX` | Not a loopback TCP address | Panic at `zmq.New()` |
+| `BTC_ZMQ_IDLE_TIMEOUT` | Outside [30s, 3600s] | `zmq.New()` returns error |
 | Handler timeout cross-field | `handler_timeout_ms ≤ 2 × rpc_timeout_ms × 1000 + 2000` | Startup failure |
 | Secrets distinct | `SESSION_SECRET == SSE_SIGNING_SECRET OR SESSION_SECRET == AUDIT_HMAC_SECRET` | Startup failure |
 | CORS origins | Trailing slash or wildcard `*` | Startup failure |
 | Overpayment thresholds | Outside valid ranges | Startup failure |
+
+See `internal/platform/bitcoin/rpc/client.go` (`requireLoopbackHost`) and
+`internal/platform/bitcoin/zmq/subscriber.go` (`requireLoopbackTCP`) for the
+address validation panic paths.
 
 ---
 

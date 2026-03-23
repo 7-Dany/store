@@ -37,6 +37,15 @@ Last updated: 2026-03-16. Update this file when new packages, errors, or SQL que
 
 ---
 
+### `internal/domain/bitcoin/`  (package `bitcoin`)
+
+| Package | Endpoint(s) | Key files |
+|---|---|---|
+| `bitcoin/watch` | POST /bitcoin/watch | handler, service, store, models, requests, routes, export_test |
+| `bitcoin/shared` | — shared primitives | errors (`ErrRedisUnavailable`, `ErrWatchLimitExceeded`, `ErrWatchRegistrationExpired`), `ValidateAndNormalise`, `HmacInvalidAddress`, `BitcoinRecorder` interface |
+
+---
+
 ### `internal/domain/oauth/`  (package `oauth`)
 
 | Package | Endpoint(s) | Key files |
@@ -311,6 +320,7 @@ Collision check: new prefixes must not appear in this table.
 | `xfra:ip:` | PUT /rbac/owner/transfer | IP | 10 / 1 hr |
 | `xfrc:usr:` | DELETE /rbac/owner/transfer | User | 10 / 1 hr |
 | `health:ip:` | GET /health | IP | 3 / 1 min |
+| `btc:watch:ip:` | POST /bitcoin/watch | IP | 10 / 1 min |
 | `blocklist:jti:` | token blocklist (all domains) | KV direct | — |
 
 ---

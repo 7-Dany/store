@@ -95,6 +95,51 @@ func (r *Registry) OnTokenConsumeFailed(reason string) {
 	r.bitcoinTokenConsumeFailures.WithLabelValues(reason).Inc()
 }
 
+// OnTokenIssuanceDBMiss increments bitcoin_token_issuance_db_miss_total.
+// Called when RecordTokenIssuance fails to write the sse_token_issuances row,
+// indicating a GDPR IP-audit gap for this token issuance.
+func (r *Registry) OnTokenIssuanceDBMiss() {
+	if r == nil {
+		return
+	}
+	r.bitcoinTokenIssuanceDBMiss.Inc()
+}
+
+// SetPendingMempoolSize records the current size of the in-process pending mempool map.
+func (r *Registry) SetPendingMempoolSize(n int) {
+	if r == nil {
+		return
+	}
+	r.bitcoinPendingMempoolSize.Set(float64(n))
+}
+
+// OnMempoolEntryDropped increments bitcoin_mempool_entry_dropped_total for the given reason.
+// Called when a pendingMempool insert is skipped because the cap has been reached.
+func (r *Registry) OnMempoolEntryDropped(reason string) {
+	if r == nil {
+		return
+	}
+	r.bitcoinMempoolEntryDropped.WithLabelValues(reason).Inc()
+}
+
+// OnRBFDetected increments bitcoin_rbf_detected_total.
+// Called when a Replace-By-Fee replacement is detected in the mempool tracker.
+func (r *Registry) OnRBFDetected() {
+	if r == nil {
+		return
+	}
+	r.bitcoinRBFDetected.Inc()
+}
+
+// OnMempoolPruned adds count to bitcoin_mempool_pruned_total.
+// Called after pruneOldEntries removes stale entries from the pending mempool map.
+func (r *Registry) OnMempoolPruned(count int) {
+	if r == nil {
+		return
+	}
+	r.bitcoinMempoolPruned.Add(float64(count))
+}
+
 // ── Stage 2a — Invoice ────────────────────────────────────────────────────────
 
 // OnInvoiceDetected records the detection latency in the invoice detection histogram.

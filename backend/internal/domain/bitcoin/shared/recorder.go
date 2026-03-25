@@ -36,6 +36,19 @@ type BitcoinRecorder interface {
 	SetSSEConnections(count int)
 	// OnTokenConsumeFailed increments the SSE token consume failure counter.
 	OnTokenConsumeFailed(reason string)
+	// OnTokenIssuanceDBMiss is called when RecordTokenIssuance fails to write
+	// the sse_token_issuances row. Indicates a GDPR audit gap.
+	OnTokenIssuanceDBMiss()
+
+	// SetPendingMempoolSize records the current size of the in-process pendingMempool map.
+	SetPendingMempoolSize(n int)
+	// OnMempoolEntryDropped is called when a pendingMempool insert is skipped because
+	// the cap (BTC_PENDING_MEMPOOL_MAX_SIZE) has been reached.
+	OnMempoolEntryDropped(reason string)
+	// OnRBFDetected is called when a Replace-By-Fee replacement is detected.
+	OnRBFDetected()
+	// OnMempoolPruned is called after pruneOldEntries removes stale entries.
+	OnMempoolPruned(count int)
 
 	// ── Stage 2a — Invoice ────────────────────────────────────────────────
 
@@ -87,28 +100,33 @@ type BitcoinRecorder interface {
 // Use in Bitcoin domain unit tests that do not need metric assertions.
 type NoopBitcoinRecorder struct{}
 
-func (NoopBitcoinRecorder) SetZMQConnected(bool)            {}
-func (NoopBitcoinRecorder) SetRPCConnected(bool)            {}
-func (NoopBitcoinRecorder) SetZMQLastMessageAge(float64)    {}
-func (NoopBitcoinRecorder) OnHandlerPanic(string)           {}
-func (NoopBitcoinRecorder) OnHandlerTimeout(string)         {}
-func (NoopBitcoinRecorder) SetHandlerGoroutines(int)        {}
-func (NoopBitcoinRecorder) OnMessageDropped(string)         {}
-func (NoopBitcoinRecorder) SetSSEConnections(int)           {}
-func (NoopBitcoinRecorder) OnTokenConsumeFailed(string)     {}
-func (NoopBitcoinRecorder) OnInvoiceDetected(float64)       {}
-func (NoopBitcoinRecorder) SetInvoiceCount(string, float64) {}
-func (NoopBitcoinRecorder) SetRateFeedStaleness(float64)    {}
-func (NoopBitcoinRecorder) SetReconciliationLag(float64)    {}
-func (NoopBitcoinRecorder) SetBalanceDrift(int64)           {}
-func (NoopBitcoinRecorder) SetReconciliationHold(bool)      {}
-func (NoopBitcoinRecorder) OnReorgDetected()                {}
-func (NoopBitcoinRecorder) OnPayoutFailed()                 {}
-func (NoopBitcoinRecorder) SetFeeEstimate(int, float64)     {}
-func (NoopBitcoinRecorder) OnSweepStuck()                   {}
-func (NoopBitcoinRecorder) SetWalletBackupAge(float64)      {}
-func (NoopBitcoinRecorder) SetUTXOCount(float64)            {}
-func (NoopBitcoinRecorder) OnWatchRejected(string)               {}
+func (NoopBitcoinRecorder) SetZMQConnected(bool)                        {}
+func (NoopBitcoinRecorder) SetRPCConnected(bool)                        {}
+func (NoopBitcoinRecorder) SetZMQLastMessageAge(float64)                {}
+func (NoopBitcoinRecorder) OnHandlerPanic(string)                       {}
+func (NoopBitcoinRecorder) OnHandlerTimeout(string)                     {}
+func (NoopBitcoinRecorder) SetHandlerGoroutines(int)                    {}
+func (NoopBitcoinRecorder) OnMessageDropped(string)                     {}
+func (NoopBitcoinRecorder) SetSSEConnections(int)                       {}
+func (NoopBitcoinRecorder) OnTokenConsumeFailed(string)                 {}
+func (NoopBitcoinRecorder) OnTokenIssuanceDBMiss()                      {}
+func (NoopBitcoinRecorder) SetPendingMempoolSize(int)                   {}
+func (NoopBitcoinRecorder) OnMempoolEntryDropped(string)                {}
+func (NoopBitcoinRecorder) OnRBFDetected()                              {}
+func (NoopBitcoinRecorder) OnMempoolPruned(int)                         {}
+func (NoopBitcoinRecorder) OnInvoiceDetected(float64)                   {}
+func (NoopBitcoinRecorder) SetInvoiceCount(string, float64)             {}
+func (NoopBitcoinRecorder) SetRateFeedStaleness(float64)                {}
+func (NoopBitcoinRecorder) SetReconciliationLag(float64)                {}
+func (NoopBitcoinRecorder) SetBalanceDrift(int64)                       {}
+func (NoopBitcoinRecorder) SetReconciliationHold(bool)                  {}
+func (NoopBitcoinRecorder) OnReorgDetected()                            {}
+func (NoopBitcoinRecorder) OnPayoutFailed()                             {}
+func (NoopBitcoinRecorder) SetFeeEstimate(int, float64)                 {}
+func (NoopBitcoinRecorder) OnSweepStuck()                               {}
+func (NoopBitcoinRecorder) SetWalletBackupAge(float64)                  {}
+func (NoopBitcoinRecorder) SetUTXOCount(float64)                        {}
+func (NoopBitcoinRecorder) OnWatchRejected(string)                      {}
 func (NoopBitcoinRecorder) SetGlobalWatchCountEstimate(string, float64) {}
 
 // compile-time assertion: NoopBitcoinRecorder must satisfy BitcoinRecorder.

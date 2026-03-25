@@ -206,6 +206,11 @@ type Client interface {
 	FinalizePSBT(ctx context.Context, psbt string) (FinalizedPSBT, error)
 	SendRawTransaction(ctx context.Context, hexTx string, maxFeeRate float64) (string, error)
 
+	// GetRawTransaction fetches a raw transaction by txid.
+	// verbosity=1 returns a decoded RawTx object (required for mempool address matching).
+	// Works on MEMPOOL transactions without txindex; confirmed transactions require txindex.
+	GetRawTransaction(ctx context.Context, txid string, verbosity int) (RawTx, error)
+
 	// Close releases idle keep-alive connections back to the OS.
 	// Call during graceful shutdown after all in-flight requests have completed.
 	Close()
@@ -405,6 +410,18 @@ func (c *client) call(ctx context.Context, method string, params []any, out any)
 				"method", method, "error_type", errType, "error", err)
 		case RPCErrCanceled:
 			// Application or caller shutdown — not a failure worth logging.
+		case RPCErrUnknown:
+			if method == rpcMethodGetRawTransaction {
+				// On a pruned node without txindex, Bitcoin Core returns HTTP 500 when
+				// a transaction left the mempool between the ZMQ hashtx event and this
+				// call. This is an expected race condition, not a node failure.
+				logger.Debug(ctx, "rpc: expected race (tx left mempool before call)",
+					"method", method, "error_type", errType, "error", err)
+			} else {
+				logger.Warn(ctx, "rpc: call failed",
+					"method", method, "error_type", errType,
+					"elapsed_s", elapsed, "error", err)
+			}
 		default:
 			logger.Warn(ctx, "rpc: call failed",
 				"method", method, "error_type", errType,
@@ -717,6 +734,22 @@ func (c *client) WalletProcessPSBT(ctx context.Context, psbt string) (ProcessedP
 func (c *client) FinalizePSBT(ctx context.Context, psbt string) (FinalizedPSBT, error) {
 	var result FinalizedPSBT
 	err := c.call(ctx, rpcMethodFinalizePSBT, []any{psbt}, &result)
+	return result, err
+}
+
+// GetRawTransaction fetches a raw decoded transaction from the mempool or (with txindex) chain.
+// verbosity=1 returns the decoded JSON object as a RawTx; verbosity=0 returns the hex string
+// (not supported by this method — call GetBlock for that use case).
+//
+// Key property: works on ANY mempool transaction without txindex — unlike GetTransaction
+// (wallet-only). Use this on the SSE display path to match arbitrary watched addresses.
+//
+// Not retried: on a pruned node without txindex, an HTTP 500 means the transaction left
+// the mempool between the ZMQ hashtx event and this RPC call (a normal race condition).
+// Retrying cannot recover from this — the tx is confirmed and unreachable without txindex.
+func (c *client) GetRawTransaction(ctx context.Context, txid string, verbosity int) (RawTx, error) {
+	var result RawTx
+	err := c.call(ctx, rpcMethodGetRawTransaction, []any{txid, verbosity}, &result)
 	return result, err
 }
 

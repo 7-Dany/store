@@ -2,6 +2,7 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -153,20 +154,23 @@ func (c *ConnectionCounter) Heartbeat(ctx context.Context, identifier string) {
 }
 
 // Count returns the current connection count for identifier.
-// Returns 0 on error or missing key. Non-authoritative; for pre-check monitoring only.
-// Uses strict integer parsing — corrupted values log a WARNING and return 0.
-func (c *ConnectionCounter) Count(ctx context.Context, identifier string) int64 {
+// Returns (0, nil) when the key is absent (count is genuinely zero).
+// Returns (0, err) on a Redis error — callers should fail closed.
+// Uses strict integer parsing — corrupted values log a WARNING and return (0, nil).
+func (c *ConnectionCounter) Count(ctx context.Context, identifier string) (int64, error) {
 	key := c.keyPrefix + identifier
 	val, err := c.store.Get(ctx, key)
 	if err != nil {
-		// ErrNotFound is expected when count is 0; swallow silently.
-		return 0
+		if errors.Is(err, kvstore.ErrNotFound) {
+			return 0, nil // legitimately zero — key never written or counter at 0
+		}
+		return 0, err // propagate genuine Redis failure to caller
 	}
-	n, err := strconv.ParseInt(val, 10, 64)
-	if err != nil || n < 0 {
+	n, parseErr := strconv.ParseInt(val, 10, 64)
+	if parseErr != nil || n < 0 {
 		slog.WarnContext(ctx, "ratelimit: connection counter corrupted value",
 			"key_prefix", c.keyPrefix, "identifier", identifier, "value", val)
-		return 0
+		return 0, nil
 	}
-	return n
+	return n, nil
 }

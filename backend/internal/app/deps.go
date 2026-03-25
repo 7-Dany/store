@@ -180,6 +180,61 @@ type Deps struct {
 	// BitcoinAuditHMACKey is the HMAC key for audit PII pseudonymisation
 	// (BTC_AUDIT_HMAC_KEY). Empty string when BitcoinEnabled is false.
 	BitcoinAuditHMACKey string
+
+	// ── Bitcoin SSE / events ──────────────────────────────────────────────
+
+	// BitcoinSSESigningSecret is the HS256 key for signing SSE JWT tokens
+	// (BTC_SSE_SIGNING_SECRET). Must be ≥32 bytes and differ from BitcoinSessionSecret.
+	BitcoinSSESigningSecret string
+
+	// BitcoinSessionSecret is the HMAC key for computing the SID claim
+	// in SSE tokens (BTC_SESSION_SECRET). Must be ≥32 bytes.
+	BitcoinSessionSecret string
+
+	// BitcoinServerSecret is the HMAC key used to pseudonymise the JTI
+	// stored in sse_token_issuances (BTC_SERVER_SECRET). Must be ≥32 bytes.
+	BitcoinServerSecret string
+
+	// BitcoinDailyRotationKey is the daily-rotating key used to compute
+	// source_ip_hash in sse_token_issuances (BTC_DAILY_ROTATION_KEY).
+	// Rotated daily; the previous key is discarded, making stored hashes
+	// non-reversible beyond 24 hours regardless of any GDPR erasure action.
+	BitcoinDailyRotationKey string
+
+	// BitcoinSSETokenTTL is the lifetime of SSE one-time tokens (BTC_SSE_TOKEN_TTL).
+	// Default 60 s. Governs both the JWT exp and the Redis key TTL.
+	BitcoinSSETokenTTL time.Duration
+
+	// BitcoinMaxSSEPerUser is the max concurrent SSE connections per user
+	// (BTC_MAX_SSE_PER_USER). Enforced via Redis atomic counter.
+	BitcoinMaxSSEPerUser int
+
+	// BitcoinMaxSSEProcess is the max total SSE connections this process
+	// accepts (BTC_MAX_SSE_PROCESS). Enforced in-process via broker.
+	BitcoinMaxSSEProcess int
+
+	// BitcoinSSETokenBindIP controls whether SSE tokens bind to /24 subnet
+	// for IPv4 clients (BTC_SSE_TOKEN_BIND_IP). Default true.
+	BitcoinSSETokenBindIP bool
+
+	// BitcoinPendingMempoolMaxSize caps the in-memory pendingMempool map
+	// (BTC_PENDING_MEMPOOL_MAX_SIZE). Default 10 000.
+	BitcoinPendingMempoolMaxSize int
+
+	// BitcoinMempoolPendingMaxAgeDays is max age (days) of pendingMempool entries
+	// before they are age-pruned (BTC_MEMPOOL_PENDING_MAX_AGE_DAYS). Default 1.
+	BitcoinMempoolPendingMaxAgeDays int
+
+	// BitcoinBlockRPCTimeoutSeconds is the per-call timeout in seconds for
+	// GetBlockHeader and GetBlock in the block handler (BTC_BLOCK_RPC_TIMEOUT_SECONDS).
+	BitcoinBlockRPCTimeoutSeconds int
+
+	// BitcoinEventsShutdown drains the events service's background goroutines
+	// (liveness probe + heartbeat) during graceful shutdown.
+	// Set by events.Routes; nil when BitcoinEnabled is false or events.Routes
+	// has not been called. server.go calls this AFTER btcSub.Shutdown() so
+	// in-flight ZMQ handler goroutines are fully drained before the service exits.
+	BitcoinEventsShutdown func()
 }
 
 // OAuthConfig holds the Google OAuth 2.0 configuration values.

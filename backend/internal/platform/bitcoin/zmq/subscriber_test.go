@@ -341,10 +341,10 @@ func TestRegister_NilHandler_PanicsAtRegistration(t *testing.T) {
 		sub := newTestSubscriber(t)
 		require.Panics(t, func() { sub.RegisterBlockHandler(nil) })
 	})
-	t.Run("RegisterDisplayTxHandler", func(t *testing.T) {
+	t.Run("RegisterRawTxHandler", func(t *testing.T) {
 		t.Parallel()
 		sub := newTestSubscriber(t)
-		require.Panics(t, func() { sub.RegisterDisplayTxHandler(nil) })
+		require.Panics(t, func() { sub.RegisterRawTxHandler(nil) })
 	})
 	t.Run("RegisterSettlementTxHandler", func(t *testing.T) {
 		t.Parallel()
@@ -369,7 +369,7 @@ func TestRegister_AfterRun_Panics(t *testing.T) {
 		sub.RegisterBlockHandler(func(context.Context, BlockEvent) {})
 	})
 	require.Panics(t, func() {
-		sub.RegisterDisplayTxHandler(func(context.Context, TxEvent) {})
+		sub.RegisterRawTxHandler(func(context.Context, RawTxEvent) {})
 	})
 	require.Panics(t, func() {
 		sub.RegisterSettlementTxHandler(func(context.Context, TxEvent) {})
@@ -736,6 +736,162 @@ func TestLiveness_AtomicConsistency(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 // IsConnected / LastSeenHash
 // ═════════════════════════════════════════════════════════════════════════════
+
+// ═════════════════════════════════════════════════════════════════════════════
+// LastHashTime
+// ═════════════════════════════════════════════════════════════════════════════
+
+// TestLastHashTime_BeforeFirstBlock_ReturnsZero verifies that LastHashTime()
+// returns 0 before any block is received, consistent with the H-04 invariant
+// that prevents spurious liveness gauge flips on fresh startup.
+func TestLastHashTime_BeforeFirstBlock_ReturnsZero(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+	require.Equal(t, int64(0), sub.LastHashTime(),
+		"LastHashTime() must return 0 before the first block is received")
+}
+
+// TestLastHashTime_AfterBlock_ReturnsTimestampWithinCallBounds verifies that
+// LastHashTime() returns a positive UnixNano value bracketed between the
+// before/after timestamps of the processBlockFrame call.
+func TestLastHashTime_AfterBlock_ReturnsTimestampWithinCallBounds(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+
+	const rpcHex = "000000000000000000024bfa6c7805419a31fde7da3cf6517d8bc71b36eb8a5f"
+	before := time.Now().UnixNano()
+
+	msg := buildZMQMsg("hashblock", rpcHex, 1)
+	state := readerState{}
+	require.NoError(t, processBlockFrame(sub, context.Background(), msg, &state))
+
+	after := time.Now().UnixNano()
+
+	got := sub.LastHashTime()
+	require.Greater(t, got, int64(0),
+		"LastHashTime() must be positive after a block is received")
+	require.GreaterOrEqual(t, got, before,
+		"LastHashTime() must not predate the processBlockFrame call")
+	require.LessOrEqual(t, got, after,
+		"LastHashTime() must not postdate the processBlockFrame call")
+}
+
+// TestLastHashTime_UpdatesWithEachBlock verifies that LastHashTime() reflects
+// the most recently received block, not the first one. Each new block must
+// advance the timestamp.
+func TestLastHashTime_UpdatesWithEachBlock(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+	ctx := context.Background()
+
+	msg1 := buildZMQMsg("hashblock", "000000000000000000024bfa6c7805419a31fde7da3cf6517d8bc71b36eb8a5f", 1)
+	state := readerState{}
+	require.NoError(t, processBlockFrame(sub, ctx, msg1, &state))
+	t1 := sub.LastHashTime()
+	require.Greater(t, t1, int64(0))
+
+	// Sleep briefly to guarantee a distinct wall-clock timestamp.
+	time.Sleep(2 * time.Millisecond)
+
+	msg2 := buildZMQMsg("hashblock", "00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054", 2)
+	require.NoError(t, processBlockFrame(sub, ctx, msg2, &state))
+	t2 := sub.LastHashTime()
+
+	require.Greater(t, t2, t1,
+		"LastHashTime() must advance monotonically with each new block")
+}
+
+// TestLastHashTime_TxEventDoesNotUpdateLiveness verifies that a tx event (hashtx)
+// does NOT update LastHashTime() — only hashblock events update liveness.
+// This matches the blockReaderConfig design: the tx reader never writes to
+// s.live.
+func TestLastHashTime_TxEventDoesNotUpdateLiveness(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+	ctx := context.Background()
+
+	// Seed with a block.
+	msg := buildZMQMsg("hashblock", "000000000000000000024bfa6c7805419a31fde7da3cf6517d8bc71b36eb8a5f", 1)
+	state := readerState{}
+	require.NoError(t, processBlockFrame(sub, ctx, msg, &state))
+	blockTime := sub.LastHashTime()
+
+	time.Sleep(2 * time.Millisecond)
+
+	// Process a tx — must not change LastHashTime().
+	txMsg := buildZMQMsg("hashtx", "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d", 1)
+	txState := readerState{}
+	require.NoError(t, processTxFrame(sub, ctx, txMsg, &txState))
+
+	require.Equal(t, blockTime, sub.LastHashTime(),
+		"LastHashTime() must not change when a tx event is processed")
+}
+
+// TestLastHashTime_AtomicConsistency verifies that concurrent reads of
+// LastHashTime() always return either 0 or a realistic positive timestamp,
+// never a torn or nonsensical intermediate value. This validates that the
+// atomic.Pointer[liveness] store/load pattern prevents data races.
+func TestLastHashTime_AtomicConsistency(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+	sub.blockDialOK.Store(true)
+	sub.txDialOK.Store(true)
+
+	// Any non-zero timestamp must be at least 1s before the test starts
+	// to be considered realistic (guards against clock weirdness).
+	floor := time.Now().Add(-time.Second).UnixNano()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel()
+
+	// Writer: continuously update liveness via processBlockFrame.
+	go func() {
+		seq := uint32(0)
+		for ctx.Err() == nil {
+			msg := buildZMQMsg("hashblock", "000000000000000000024bfa6c7805419a31fde7da3cf6517d8bc71b36eb8a5f", seq)
+			state := readerState{lastSeq: seq - 1, lastSeqSeen: seq > 0}
+			_ = processBlockFrame(sub, ctx, msg, &state)
+			seq++
+		}
+	}()
+
+	// Reader: every non-zero value must be a plausible real timestamp.
+	for ctx.Err() == nil {
+		ts := sub.LastHashTime()
+		if ts != 0 {
+			require.Greater(t, ts, floor,
+				"LastHashTime() must be 0 or a realistic timestamp; got %d", ts)
+		}
+	}
+}
+
+// TestLastHashTime_MatchesLivenessPointer verifies that LastHashTime() and
+// LastSeenHash() always read the same atomic.Pointer[liveness] snapshot:
+// when live is nil both return zero-values; when live is set both return
+// non-zero values. This is a structural invariant test.
+func TestLastHashTime_MatchesLivenessPointer(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+
+	// Before any block: both return zero-values.
+	require.Equal(t, int64(0), sub.LastHashTime())
+	require.Empty(t, sub.LastSeenHash())
+
+	// After a block: both return non-zero values that came from the same store.
+	const rpcHex = "000000000000000000024bfa6c7805419a31fde7da3cf6517d8bc71b36eb8a5f"
+	msg := buildZMQMsg("hashblock", rpcHex, 1)
+	state := readerState{}
+	require.NoError(t, processBlockFrame(sub, context.Background(), msg, &state))
+
+	require.NotEqual(t, int64(0), sub.LastHashTime())
+	require.Equal(t, rpcHex, sub.LastSeenHash())
+
+	// Direct pointer read confirms both accessors read the same snapshot.
+	p := sub.live.Load()
+	require.NotNil(t, p)
+	require.Equal(t, p.at.UnixNano(), sub.LastHashTime())
+	require.Equal(t, p.hash, sub.LastSeenHash())
+}
 
 func TestLastSeenHash_FreshStartup_Empty(t *testing.T) {
 	t.Parallel()
@@ -1131,42 +1287,41 @@ func TestBlockHandler_ReceivesCorrectEvent(t *testing.T) {
 	require.Equal(t, rpcHex, got.HashHex())
 }
 
-// TestSettlementAndDisplayHandlers_BothCalled verifies that both display and
-// settlement handlers are called for each TxEvent, and that they receive the
-// correct event.
-func TestSettlementAndDisplayHandlers_BothCalled(t *testing.T) {
-	t.Parallel()
+// TestRawTxHandlers_Called verifies that rawtx handlers are called for each RawTxEvent,
+// and that they receive the correct event.
+func TestRawTxHandlers_Called(t *testing.T) {
 	sub := newTestSubscriber(t)
 	sub.handlerTimeout = 500 * time.Millisecond
 
 	ctx := t.Context()
 
-	const rpcHex = "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d"
-	var displayCalled, settleCalled atomic.Bool
+	called := make(chan bool, 1)
 
-	sub.RegisterDisplayTxHandler(func(_ context.Context, e TxEvent) {
-		require.Equal(t, rpcHex, e.HashHex())
-		displayCalled.Store(true)
-	})
-	sub.RegisterSettlementTxHandler(func(_ context.Context, e TxEvent) {
-		require.Equal(t, rpcHex, e.HashHex())
-		settleCalled.Store(true)
+	sub.RegisterRawTxHandler(func(_ context.Context, e RawTxEvent) {
+		called <- true
 	})
 
-	msg := buildZMQMsg("hashtx", rpcHex, 1)
+	// Build a rawtx ZMQ message with genesis coinbase raw tx bytes.
+	rawTxHex := "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
+	rawTxBytes, _ := hex.DecodeString(rawTxHex)
+	msg := [][]byte{[]byte("rawtx"), rawTxBytes, {1, 0, 0, 0}} // seq 1
 	state := readerState{}
-	require.NoError(t, processTxFrame(sub, ctx, msg, &state))
+	require.NoError(t, sub.processRawTxFrame(ctx, msg, &state))
 
-	e := <-sub.txCh
-	for _, h := range sub.displayTxHandlers {
-		invokeHandler(sub, ctx, h, e, "display_tx")
-	}
-	for _, h := range sub.settleTxHandlers {
-		invokeHandler(sub, ctx, h, e, "settlement_tx")
+	// processRawTxFrame writes to rawTxCh; in unit tests we manually dispatch
+	// to registered handlers the same way worker pool would.
+	require.Equal(t, 1, len(sub.rawTxCh), "rawTxEvent must be queued for dispatch")
+	e := <-sub.rawTxCh
+	for _, h := range sub.rawTxHandlers {
+		invokeHandler(sub, ctx, h, e, "display_rawtx")
 	}
 
-	require.True(t, displayCalled.Load(), "display handler must be called")
-	require.True(t, settleCalled.Load(), "settlement handler must be called")
+	select {
+	case <-called:
+		// Handler was called
+	case <-time.After(1 * time.Second):
+		t.Fatal("raw tx handler was not called")
+	}
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1406,7 +1561,7 @@ func TestRegister_MultipleHandlers_AllAppended(t *testing.T) {
 		sub.RegisterBlockHandler(func(context.Context, BlockEvent) {})
 	}
 	for range 2 {
-		sub.RegisterDisplayTxHandler(func(context.Context, TxEvent) {})
+		sub.RegisterRawTxHandler(func(context.Context, RawTxEvent) {})
 	}
 	for range 4 {
 		sub.RegisterSettlementTxHandler(func(context.Context, TxEvent) {})
@@ -1416,7 +1571,7 @@ func TestRegister_MultipleHandlers_AllAppended(t *testing.T) {
 	}
 
 	require.Len(t, sub.blockHandlers, 3, "3 block handlers must be registered")
-	require.Len(t, sub.displayTxHandlers, 2, "2 display tx handlers must be registered")
+	require.Len(t, sub.rawTxHandlers, 2, "2 raw tx handlers must be registered")
 	require.Len(t, sub.settleTxHandlers, 4, "4 settlement tx handlers must be registered")
 	require.Len(t, sub.recoveryHandlers, 2, "2 recovery handlers must be registered")
 }
@@ -1497,4 +1652,38 @@ func FuzzProcessFrame(f *testing.F) {
 		_ = sub.processFrame(context.Background(), msg, []byte("hashblock"), &state,
 			func([32]byte, uint32) {})
 	})
+}
+
+func TestProcessRawTxFrame_WrongFrameCount_ReturnsError(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+
+	for _, frames := range [][][]byte{
+		{},
+		{[]byte("rawtx")},
+		{[]byte("rawtx"), make([]byte, 32)},
+		{[]byte("rawtx"), make([]byte, 32), make([]byte, 4), []byte("extra")},
+	} {
+		state := readerState{}
+		err := sub.processRawTxFrame(context.Background(), frames, &state)
+		require.Error(t, err, "frame count %d should return error", len(frames))
+	}
+}
+
+func TestProcessRawTxFrame_WrongSequenceLength_ReturnsError(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+
+	for _, seq := range [][]byte{
+		{},
+		{1},
+		{1, 2},
+		{1, 2, 3},
+		{1, 2, 3, 4, 5},
+	} {
+		frames := [][]byte{[]byte("rawtx"), make([]byte, 32), seq}
+		state := readerState{}
+		err := sub.processRawTxFrame(context.Background(), frames, &state)
+		require.Error(t, err, "sequence length %d should return error", len(seq))
+	}
 }

@@ -4,8 +4,10 @@ package bitcoinsharedtest
 
 import (
 	"context"
+	"time"
 
 	"github.com/7-Dany/store/backend/internal/audit"
+	"github.com/7-Dany/store/backend/internal/domain/bitcoin/events"
 	"github.com/7-Dany/store/backend/internal/domain/bitcoin/watch"
 )
 
@@ -72,4 +74,64 @@ func (f *WatchFakeStorer) WriteAuditLog(ctx context.Context, event audit.EventTy
 		return f.WriteAuditLogFn(ctx, event, userID, sourceIP, metadata)
 	}
 	return nil
+}
+
+// ── EventsFakeStorer ──────────────────────────────────────────────────────────
+
+// EventsFakeStorer is a hand-written implementation of events.Storer for service
+// unit tests. Each method delegates to its Fn field if non-nil; otherwise it
+// returns a safe zero value and nil error.
+type EventsFakeStorer struct {
+	StoreSessionSIDFn       func(ctx context.Context, jti, sessionID string, ttl time.Duration) error
+	GetDelSessionSIDFn      func(ctx context.Context, jti string) (string, error)
+	ConsumeJTIFn            func(ctx context.Context, jti string, ttl time.Duration) (bool, error)
+	RecordTokenIssuanceFn   func(ctx context.Context, vendorID [16]byte, network, jtiHash string, sourceIPHash *string, expiresAt time.Time) error
+	WriteAuditLogFn         func(ctx context.Context, event audit.EventType, userID string, metadata map[string]any) error
+	GetUserWatchAddressesFn func(ctx context.Context, userID string) ([]string, error)
+}
+
+// compile-time check that *EventsFakeStorer satisfies events.Storer.
+var _ events.Storer = (*EventsFakeStorer)(nil)
+
+func (f *EventsFakeStorer) StoreSessionSID(ctx context.Context, jti, sessionID string, ttl time.Duration) error {
+	if f.StoreSessionSIDFn != nil {
+		return f.StoreSessionSIDFn(ctx, jti, sessionID, ttl)
+	}
+	return nil
+}
+
+func (f *EventsFakeStorer) GetDelSessionSID(ctx context.Context, jti string) (string, error) {
+	if f.GetDelSessionSIDFn != nil {
+		return f.GetDelSessionSIDFn(ctx, jti)
+	}
+	return "fake-session-id", nil
+}
+
+func (f *EventsFakeStorer) ConsumeJTI(ctx context.Context, jti string, ttl time.Duration) (bool, error) {
+	if f.ConsumeJTIFn != nil {
+		return f.ConsumeJTIFn(ctx, jti, ttl)
+	}
+	return true, nil // default: token not yet consumed
+}
+
+func (f *EventsFakeStorer) RecordTokenIssuance(ctx context.Context, vendorID [16]byte, network, jtiHash string, sourceIPHash *string, expiresAt time.Time) error {
+	if f.RecordTokenIssuanceFn != nil {
+		return f.RecordTokenIssuanceFn(ctx, vendorID, network, jtiHash, sourceIPHash, expiresAt)
+	}
+	return nil
+}
+
+// WriteAuditLog delegates to WriteAuditLogFn if set.
+func (f *EventsFakeStorer) WriteAuditLog(ctx context.Context, event audit.EventType, userID string, metadata map[string]any) error {
+	if f.WriteAuditLogFn != nil {
+		return f.WriteAuditLogFn(ctx, event, userID, metadata)
+	}
+	return nil
+}
+
+func (f *EventsFakeStorer) GetUserWatchAddresses(ctx context.Context, userID string) ([]string, error) {
+	if f.GetUserWatchAddressesFn != nil {
+		return f.GetUserWatchAddresses(ctx, userID)
+	}
+	return []string{}, nil
 }

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/ratelimit"
+	"github.com/stretchr/testify/require"
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -62,7 +62,9 @@ func TestConnectionCounter_ReleaseBelowZero_FloorsAtZero(t *testing.T) {
 	require.NoError(t, c.Acquire(ctx, "u"))
 	c.Release("u")
 	c.Release("u") // extra release — should not go negative
-	require.Equal(t, int64(0), c.Count(ctx, "u"))
+	n, err := c.Count(ctx, "u")
+	require.NoError(t, err)
+	require.Equal(t, int64(0), n)
 }
 
 func TestConnectionCounter_ReleaseUsesBackgroundContext(t *testing.T) {
@@ -81,7 +83,9 @@ func TestConnectionCounter_ReleaseUsesBackgroundContext(t *testing.T) {
 	// We validate by checking the count went to 0 even though ctx was cancelled.
 	_ = cancelledCtx
 	c.Release("u")
-	require.Equal(t, int64(0), c.Count(context.Background(), "u"))
+	n, err := c.Count(context.Background(), "u")
+	require.NoError(t, err)
+	require.Equal(t, int64(0), n)
 }
 
 func TestConnectionCounter_Concurrent_NeverExceedsCap(t *testing.T) {
@@ -102,7 +106,7 @@ func TestConnectionCounter_Concurrent_NeverExceedsCap(t *testing.T) {
 			if err != nil {
 				return // at cap — acceptable
 			}
-			cur := c.Count(ctx, "shared")
+			cur, _ := c.Count(ctx, "shared")
 			mu.Lock()
 			if cur > peak {
 				peak = cur
@@ -123,11 +127,17 @@ func TestConnectionCounter_Count_ReturnsCurrentValue(t *testing.T) {
 	t.Parallel()
 	c := newCounter(newTestStore(), 5, 2*time.Hour)
 	ctx := context.Background()
-	require.Equal(t, int64(0), c.Count(ctx, "u"))
+	n, err := c.Count(ctx, "u")
+	require.NoError(t, err)
+	require.Equal(t, int64(0), n)
 	require.NoError(t, c.Acquire(ctx, "u"))
-	require.Equal(t, int64(1), c.Count(ctx, "u"))
+	n, err = c.Count(ctx, "u")
+	require.NoError(t, err)
+	require.Equal(t, int64(1), n)
 	require.NoError(t, c.Acquire(ctx, "u"))
-	require.Equal(t, int64(2), c.Count(ctx, "u"))
+	n, err = c.Count(ctx, "u")
+	require.NoError(t, err)
+	require.Equal(t, int64(2), n)
 }
 
 func TestConnectionCounter_Count_InvalidValue_LogsWarning(t *testing.T) {
@@ -138,7 +148,9 @@ func TestConnectionCounter_Count_InvalidValue_LogsWarning(t *testing.T) {
 	require.NoError(t, store.Set(ctx, ratelimit.DefaultBTCSSEConnKeyPrefix+"u", "not-a-number", time.Hour))
 	c := newCounter(store, 5, 2*time.Hour)
 	// Should return 0, not panic or return an error.
-	require.Equal(t, int64(0), c.Count(ctx, "u"))
+	n, err := c.Count(ctx, "u")
+	require.NoError(t, err)
+	require.Equal(t, int64(0), n)
 }
 
 func TestConnectionCounter_Count_NegativeValue_TreatedAsZero(t *testing.T) {
@@ -148,7 +160,9 @@ func TestConnectionCounter_Count_NegativeValue_TreatedAsZero(t *testing.T) {
 	// Inject a negative value.
 	require.NoError(t, store.Set(ctx, ratelimit.DefaultBTCSSEConnKeyPrefix+"u", "-3", time.Hour))
 	c := newCounter(store, 5, 2*time.Hour)
-	require.Equal(t, int64(0), c.Count(ctx, "u"))
+	n, err := c.Count(ctx, "u")
+	require.NoError(t, err)
+	require.Equal(t, int64(0), n)
 }
 
 // ── AtomicDecrement negative counter repair ──────────────────────────────────

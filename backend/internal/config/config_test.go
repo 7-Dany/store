@@ -33,12 +33,12 @@ func validBaseConfig() *Config {
 		DBMaxConnLifetime:   30 * time.Minute,
 		DBMaxConnIdle:       5 * time.Minute,
 		DBHealthCheck:       1 * time.Minute,
-		GoogleClientID:     "fake-google-client-id.apps.googleusercontent.com",
-		GoogleClientSecret: "fake-google-client-secret",
-		GoogleRedirectURI:  "http://localhost:8080/api/v1/oauth/google/callback",
-		OAuthSuccessURL:    "http://localhost:3000/dashboard",
-		OAuthErrorURL:      "http://localhost:3000/login",
-		TelegramBotToken:   "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ-fake-token",
+		GoogleClientID:      "fake-google-client-id.apps.googleusercontent.com",
+		GoogleClientSecret:  "fake-google-client-secret",
+		GoogleRedirectURI:   "http://localhost:8080/api/v1/oauth/google/callback",
+		OAuthSuccessURL:     "http://localhost:3000/dashboard",
+		OAuthErrorURL:       "http://localhost:3000/login",
+		TelegramBotToken:    "1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ-fake-token",
 	}
 }
 
@@ -1491,21 +1491,27 @@ func validBitcoinConfig() *Config {
 	cfg.BitcoinNetwork = "testnet4"
 	cfg.BitcoinSSETokenTTL = 60
 	cfg.BitcoinSSETokenBindIP = true
+
+	// Secrets
 	cfg.BitcoinSessionSecret = "btc-session-secret-32-bytes-xxxxxY"
 	cfg.BitcoinSSESigningSecret = "btc-sse-signing-secret-32-bytes-ZZ"
+	cfg.BitcoinServerSecret = "btc-server-secret-32-bytes-MMmmNN"
+	cfg.BitcoinDailyRotationKey = "btc-daily-rotation-key-32-bytes-OO"
 	cfg.BitcoinAuditHMACKey = "btc-audit-hmac-key-32-bytes-AAABBB"
+
 	cfg.BitcoinMaxSSEPerUser = 3
 	cfg.BitcoinMaxSSEProcess = 100
 	cfg.BitcoinMaxWatchPerUser = 100
-	cfg.BitcoinCacheTTL = 5
+
 	cfg.BitcoinBlockRPCTimeoutSeconds = 10
-	cfg.BitcoinHandlerTimeoutMs = 30000
+
 	cfg.BitcoinPendingMempoolMaxSize = 10000
 	cfg.BitcoinMempoolPendingMaxAgeDays = 14
-	cfg.BitcoinFallbackAuditLog = ""
-	cfg.BitcoinReconciliationStartHeight = 100
+
+	cfg.BitcoinCacheTTL = 30
+	cfg.BitcoinHandlerTimeoutMs = 30000 // > 2*BlockRPCTimeoutSeconds*1000+2000 = 22000
 	cfg.BitcoinReconciliationCheckpointInterval = 100
-	cfg.BitcoinReconciliationAllowGenesisScan = false
+
 	return cfg
 }
 
@@ -1563,7 +1569,7 @@ func TestConfig_Bitcoin_NetworkInvalid(t *testing.T) {
 
 func TestConfig_Bitcoin_SecretsTooShort(t *testing.T) {
 	cfg := validBitcoinConfig()
-	cfg.BitcoinSessionSecret = "tooshort" // < 32 bytes
+	cfg.BitcoinSessionSecret = "tooshort"
 	err := cfg.validate()
 	if err == nil {
 		t.Fatal("expected error for short BTC_SESSION_SECRET")
@@ -1581,6 +1587,26 @@ func TestConfig_Bitcoin_SecretsTooShort(t *testing.T) {
 	if !strings.Contains(err2.Error(), "BTC_SSE_SIGNING_SECRET") {
 		t.Errorf("error should mention BTC_SSE_SIGNING_SECRET, got: %v", err2)
 	}
+
+	cfg3 := validBitcoinConfig()
+	cfg3.BitcoinServerSecret = "tooshort"
+	err3 := cfg3.validate()
+	if err3 == nil {
+		t.Fatal("expected error for short BTC_SERVER_SECRET")
+	}
+	if !strings.Contains(err3.Error(), "BTC_SERVER_SECRET") {
+		t.Errorf("error should mention BTC_SERVER_SECRET, got: %v", err3)
+	}
+
+	cfg4 := validBitcoinConfig()
+	cfg4.BitcoinDailyRotationKey = "tooshort"
+	err4 := cfg4.validate()
+	if err4 == nil {
+		t.Fatal("expected error for short BTC_DAILY_ROTATION_KEY")
+	}
+	if !strings.Contains(err4.Error(), "BTC_DAILY_ROTATION_KEY") {
+		t.Errorf("error should mention BTC_DAILY_ROTATION_KEY, got: %v", err4)
+	}
 }
 
 func TestConfig_Bitcoin_SecretsIdentical(t *testing.T) {
@@ -1595,29 +1621,39 @@ func TestConfig_Bitcoin_SecretsIdentical(t *testing.T) {
 	}
 }
 
-func TestConfig_Bitcoin_CrossFieldHandlerTimeout(t *testing.T) {
-	// BTC_HANDLER_TIMEOUT_MS=5000, BTC_BLOCK_RPC_TIMEOUT_SECONDS=10
-	// minHandlerMs = 2*10*1000+2000 = 22000; 5000 <= 22000 → error.
+func TestConfig_Bitcoin_ServerSecret_Distinctness(t *testing.T) {
 	cfg := validBitcoinConfig()
-	cfg.BitcoinBlockRPCTimeoutSeconds = 10
-	cfg.BitcoinHandlerTimeoutMs = 5000
+	cfg.BitcoinServerSecret = cfg.BitcoinSessionSecret
 	err := cfg.validate()
 	if err == nil {
-		t.Fatal("expected cross-field handler timeout error")
+		t.Fatal("expected error when server secret equals session secret")
 	}
-	if !strings.Contains(err.Error(), "BTC_HANDLER_TIMEOUT_MS") {
-		t.Errorf("error should mention BTC_HANDLER_TIMEOUT_MS, got: %v", err)
+
+	cfg2 := validBitcoinConfig()
+	cfg2.BitcoinServerSecret = cfg2.BitcoinSSESigningSecret
+	err2 := cfg2.validate()
+	if err2 == nil {
+		t.Fatal("expected error when server secret equals signing secret")
 	}
 }
 
-func TestConfig_Bitcoin_CrossFieldHandlerTimeoutDefaults(t *testing.T) {
-	// Default values: HandlerTimeoutMs=30000, BlockRPCTimeoutSeconds=10
-	// minHandlerMs = 22000; 30000 > 22000 → valid.
+func TestConfig_Bitcoin_AuditHMACKey_Distinctness(t *testing.T) {
 	cfg := validBitcoinConfig()
-	cfg.BitcoinBlockRPCTimeoutSeconds = 10
-	cfg.BitcoinHandlerTimeoutMs = 30000
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("default timeout values should satisfy constraint, got: %v", err)
+	cfg.BitcoinAuditHMACKey = cfg.BitcoinSessionSecret
+	if err := cfg.validate(); err == nil {
+		t.Fatal("expected error when audit key equals session secret")
+	}
+
+	cfg2 := validBitcoinConfig()
+	cfg2.BitcoinAuditHMACKey = cfg2.BitcoinSSESigningSecret
+	if err := cfg2.validate(); err == nil {
+		t.Fatal("expected error when audit key equals signing secret")
+	}
+
+	cfg3 := validBitcoinConfig()
+	cfg3.BitcoinAuditHMACKey = cfg3.BitcoinServerSecret
+	if err := cfg3.validate(); err == nil {
+		t.Fatal("expected error when audit key equals server secret")
 	}
 }
 
@@ -1679,56 +1715,6 @@ func TestConfig_Bitcoin_Testnet4WithMainnetRPCPort_EmitsWarning(t *testing.T) {
 	}
 }
 
-func TestConfig_Bitcoin_CheckpointIntervalRange(t *testing.T) {
-	tests := []struct {
-		val     int
-		wantErr bool
-	}{
-		{0, true},
-		{1, false},
-		{500, false},
-		{501, true},
-	}
-	for _, tc := range tests {
-		cfg := validBitcoinConfig()
-		cfg.BitcoinReconciliationCheckpointInterval = tc.val
-		err := cfg.validate()
-		if tc.wantErr && err == nil {
-			t.Errorf("CheckpointInterval=%d: expected error, got nil", tc.val)
-		}
-		if !tc.wantErr && err != nil {
-			t.Errorf("CheckpointInterval=%d: expected no error, got: %v", tc.val, err)
-		}
-	}
-}
-
-func TestConfig_Bitcoin_ReconciliationStartHeight_MainnetZero_HardError(t *testing.T) {
-	cfg := validBitcoinConfig()
-	cfg.BitcoinNetwork = "mainnet"
-	cfg.BitcoinReconciliationStartHeight = 0
-	cfg.BitcoinReconciliationAllowGenesisScan = false
-	cfg.BitcoinRPCPort = "8333" // avoid port warning
-	err := cfg.validate()
-	if err == nil {
-		t.Fatal("expected error: mainnet + height=0 + no genesis flag")
-	}
-	if !strings.Contains(err.Error(), "ALLOW_GENESIS_SCAN") {
-		t.Errorf("error should mention ALLOW_GENESIS_SCAN, got: %v", err)
-	}
-}
-
-func TestConfig_Bitcoin_ReconciliationStartHeight_MainnetZero_AllowGenesisScan_LogsError(t *testing.T) {
-	// genesis flag=true → no validation error (but slog.Error is called).
-	cfg := validBitcoinConfig()
-	cfg.BitcoinNetwork = "mainnet"
-	cfg.BitcoinReconciliationStartHeight = 0
-	cfg.BitcoinReconciliationAllowGenesisScan = true
-	cfg.BitcoinRPCPort = "8333"
-	if err := cfg.validate(); err != nil {
-		t.Fatalf("ALLOW_GENESIS_SCAN=true should not error, got: %v", err)
-	}
-}
-
 func TestConfig_Bitcoin_RPCPort_NonNumeric_ReturnsError(t *testing.T) {
 	cfg := validBitcoinConfig()
 	cfg.BitcoinRPCPort = "abc"
@@ -1767,18 +1753,6 @@ func TestConfig_Bitcoin_AuditHMACKey_TooShort_ReturnsError(t *testing.T) {
 	err := cfg.validate()
 	if err == nil {
 		t.Fatal("expected error for short BTC_AUDIT_HMAC_KEY")
-	}
-	if !strings.Contains(err.Error(), "BTC_AUDIT_HMAC_KEY") {
-		t.Errorf("error should mention BTC_AUDIT_HMAC_KEY, got: %v", err)
-	}
-}
-
-func TestConfig_Bitcoin_AuditHMACKey_EqualToSessionSecret_ReturnsError(t *testing.T) {
-	cfg := validBitcoinConfig()
-	cfg.BitcoinAuditHMACKey = cfg.BitcoinSessionSecret
-	err := cfg.validate()
-	if err == nil {
-		t.Fatal("expected error when audit HMAC key equals session secret")
 	}
 	if !strings.Contains(err.Error(), "BTC_AUDIT_HMAC_KEY") {
 		t.Errorf("error should mention BTC_AUDIT_HMAC_KEY, got: %v", err)

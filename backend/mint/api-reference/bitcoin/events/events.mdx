@@ -1,0 +1,259 @@
+---
+title: "Bitcoin Event Stream"
+description: "Open a persistent Server-Sent Events stream that delivers real-time Bitcoin mempool and block events for the user's registered watch addresses."
+api: "GET /bitcoin/events"
+---
+
+<Warning>
+  The Mintlify playground **cannot** open SSE streams. Use `EventSource` in a
+  browser or `curl --no-buffer` from a terminal after obtaining the `btc_sse_jti`
+  cookie via [`POST /bitcoin/events/token`](/api-reference/bitcoin/events/issue-token).
+</Warning>
+
+## Behaviour
+
+**Two-step connection flow** — Before opening this stream, the client must:
+
+1. Call [`POST /bitcoin/events/token`](/api-reference/bitcoin/events/issue-token)
+   to obtain the `btc_sse_jti` HttpOnly cookie.
+2. Call [`POST /bitcoin/watch`](/api-reference/bitcoin/watch/watch) to register
+   the Bitcoin addresses to monitor.
+
+**Origin enforcement** — The request `Origin` header must match a server-configured
+allowlist. Requests with a missing or unlisted `Origin` are rejected with `403`
+before any token validation occurs.
+
+**One-time token** — The `btc_sse_jti` cookie is consumed on connection. Each
+reconnect requires a fresh token from `POST /bitcoin/events/token`.
+
+**Per-user connection limit** — A single user may hold at most
+`3` concurrent connections. Attempting to open
+a connection beyond this limit returns `429 user_connection_limit`.
+
+**Keep-alive pings** — The server sends a `ping` event every 30 seconds to
+prevent proxies from closing idle connections.
+
+**Watch-address expiry** — Registered addresses expire after 30 minutes of
+inactivity. When this happens while the stream is open, the server emits a
+`stream_requires_reregistration` event. The client should call
+`POST /bitcoin/watch` again without closing the connection.
+
+### Event types
+
+All events follow the SSE wire format: `event: <type>\ndata: <JSON>\n\n`.
+
+| Event type | Trigger |
+|---|---|
+| `ping` | Periodic keep-alive every 30 seconds |
+| `new_block` | A new block was mined |
+| `pending_mempool` | A watched address received an unconfirmed transaction |
+| `confirmed_tx` | A previously pending transaction was confirmed in a block |
+| `mempool_replaced` | A pending transaction was replaced (RBF) |
+| `stream_requires_reregistration` | The user's watch-address set expired |
+
+### Event payloads
+
+**`ping`**
+```json
+{ "event": "ping", "network": "testnet4" }
+```
+
+**`new_block`**
+```json
+{
+  "hash":   "000000000000000...",
+  "height": 3521042,
+  "time":   1700000000
+}
+```
+
+**`pending_mempool`**
+```json
+{
+  "txid":      "a1b2c3d4...",
+  "addresses": ["tb1qaddr1..."],
+  "fee_rate":  12.5
+}
+```
+`fee_rate` is in sat/vByte. It is `0` when fee information is unavailable.
+
+**`confirmed_tx`**
+```json
+{
+  "txid":      "a1b2c3d4...",
+  "block":     "000000000000000...",
+  "height":    3521042,
+  "addresses": ["tb1qaddr1..."]
+}
+```
+`addresses` contains only the subset of the transaction's outputs that overlap
+the user's registered watch set.
+
+**`mempool_replaced`**
+```json
+{ "replaced_txid": "a1b2c3d4..." }
+```
+
+## Rate Limiting
+
+**5 requests per 1 minute per IP address**.
+
+The rate limiter applies to the connection attempt itself. Once the stream is
+open it is not subject to rate limiting.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response
+with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```bash Example
+curl -N \
+  --cookie "btc_sse_jti=<token>" \
+  -H "Origin: https://app.example.com" \
+  https://api.example.com/api/v1/bitcoin/events
+```
+</RequestExample>
+
+<ResponseExample>
+```text 200
+event: ping
+data: {"event":"ping","network":"testnet4"}
+
+event: new_block
+data: {"hash":"000000000000000abc...","height":3521042,"time":1700000000}
+
+event: pending_mempool
+data: {"txid":"a1b2c3d4...","addresses":["tb1qaddr1..."],"fee_rate":12.5}
+
+event: confirmed_tx
+data: {"txid":"a1b2c3d4...","block":"000000000000000abc...","height":3521042,"addresses":["tb1qaddr1..."]}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "token invalid or expired"
+}
+```
+
+```json 403
+{
+  "code": "forbidden",
+  "message": "origin not permitted"
+}
+```
+
+```json 429
+{
+  "code": "user_connection_limit",
+  "message": "per-user connection limit reached"
+}
+```
+
+```json 503
+{
+  "code": "service_unavailable",
+  "message": "service temporarily unavailable"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The connection was accepted. The response body is a continuous SSE stream
+    (`Content-Type: text/event-stream`). The connection remains open until the
+    client disconnects, the server shuts down, or a write error is detected.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The `btc_sse_jti` cookie is missing, malformed, expired, or has already been
+    consumed by a previous connection. Call
+    [`POST /bitcoin/events/token`](/api-reference/bitcoin/events/issue-token) to
+    obtain a new token.
+
+    **`unauthorized`** — Cookie is missing.
+    ```json
+    { "code": "unauthorized", "message": "SSE token cookie missing" }
+    ```
+
+    **`unauthorized`** — Token is invalid, expired, or already used.
+    ```json
+    { "code": "unauthorized", "message": "token invalid or expired" }
+    ```
+
+    **`unauthorized`** — Token's server-side session binding has expired (session
+    was rotated or revoked after the token was issued). Request a new token.
+    ```json
+    { "code": "unauthorized", "message": "token session binding expired — request a new token" }
+    ```
+
+    **`sid_mismatch`** — Session binding HMAC mismatch. This indicates a tampered
+    or stolen token.
+    ```json
+    { "code": "sid_mismatch", "message": "session binding mismatch" }
+    ```
+
+    **`ip_mismatch`** — The client's IP address is outside the subnet embedded in
+    the token (only enforced when `BTC_SSE_TOKEN_BIND_IP=true`).
+    ```json
+    { "code": "ip_mismatch", "message": "IP binding mismatch" }
+    ```
+  </Accordion>
+
+  <Accordion title="403 — Forbidden">
+    The `Origin` header is missing or does not match the server's allowed-origins
+    list.
+
+    ```json
+    { "code": "forbidden", "message": "origin not permitted" }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited / Too Many Connections">
+    Two distinct limits can produce a `429`:
+
+    **IP rate limit** — The IP address has exceeded 5 connection attempts per
+    1 minute. Check `Retry-After`.
+    ```json
+    { "code": "too_many_requests", "message": "too many requests — please slow down" }
+    ```
+
+    **Per-user connection cap** — The user already has the maximum number of
+    concurrent SSE connections open.
+    ```json
+    { "code": "user_connection_limit", "message": "per-user connection limit reached" }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    The Bitcoin ZMQ subscriber is not running, or an unexpected server error
+    occurred.
+
+    **`zmq_unhealthy`** — The server's Bitcoin node connection is broken.
+    ```json
+    { "code": "zmq_unhealthy", "message": "Bitcoin ZMQ subscriber not running" }
+    ```
+
+    **`internal_error`** — An unexpected error occurred.
+    ```json
+    { "code": "internal_error", "message": "internal server error" }
+    ```
+  </Accordion>
+
+  <Accordion title="503 — Service Unavailable">
+    The Redis back-end is temporarily unavailable, or the server has reached its
+    process-wide SSE connection ceiling.
+
+    **`service_unavailable`** — Redis unavailable.
+    ```json
+    { "code": "service_unavailable", "message": "service temporarily unavailable" }
+    ```
+
+    **`sse_cap_reached`** — The server's total SSE connection limit is reached.
+    Retry on another instance or wait for connections to drain.
+    ```json
+    { "code": "sse_cap_reached", "message": "server SSE capacity reached" }
+    ```
+  </Accordion>
+</AccordionGroup>

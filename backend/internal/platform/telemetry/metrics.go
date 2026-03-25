@@ -94,6 +94,11 @@ type Registry struct {
 	bitcoinDroppedMessages      *prometheus.CounterVec
 	bitcoinSSEConnections       prometheus.Gauge
 	bitcoinTokenConsumeFailures *prometheus.CounterVec
+	bitcoinTokenIssuanceDBMiss  prometheus.Counter
+	bitcoinPendingMempoolSize   prometheus.Gauge
+	bitcoinMempoolEntryDropped  *prometheus.CounterVec
+	bitcoinRBFDetected          prometheus.Counter
+	bitcoinMempoolPruned        prometheus.Counter
 	bitcoinBalanceDrift         prometheus.Gauge
 	bitcoinReconciliationHold   prometheus.Gauge
 	bitcoinReorgDetected        prometheus.Counter
@@ -436,6 +441,26 @@ func NewRegistry() *Registry {
 		Name: "bitcoin_token_consume_failures_total",
 		Help: "Total Bitcoin SSE token consume failures by reason.",
 	}, []string{"reason"})
+	r.bitcoinTokenIssuanceDBMiss = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "bitcoin_token_issuance_db_miss_total",
+		Help: "Total SSE token issuances where the sse_token_issuances DB row could not be written (GDPR audit gap).",
+	})
+	r.bitcoinPendingMempoolSize = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "bitcoin_pending_mempool_size",
+		Help: "Current number of tracked transactions in the in-process pending mempool map.",
+	})
+	r.bitcoinMempoolEntryDropped = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "bitcoin_mempool_entry_dropped_total",
+		Help: "Total pendingMempool insert attempts dropped by reason.",
+	}, []string{"reason"})
+	r.bitcoinRBFDetected = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "bitcoin_rbf_detected_total",
+		Help: "Total Replace-By-Fee (RBF) replacements detected in the mempool tracker.",
+	})
+	r.bitcoinMempoolPruned = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "bitcoin_mempool_pruned_total",
+		Help: "Total pendingMempool entries removed by the hourly age-pruning goroutine.",
+	})
 	r.bitcoinBalanceDrift = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "bitcoin_balance_drift_satoshis",
 		Help: "Accounting drift in satoshis. Must be zero at all times — any nonzero value is CRITICAL.",
@@ -605,6 +630,11 @@ func NewRegistry() *Registry {
 		r.bitcoinDroppedMessages,
 		r.bitcoinSSEConnections,
 		r.bitcoinTokenConsumeFailures,
+		r.bitcoinTokenIssuanceDBMiss,
+		r.bitcoinPendingMempoolSize,
+		r.bitcoinMempoolEntryDropped,
+		r.bitcoinRBFDetected,
+		r.bitcoinMempoolPruned,
 		r.bitcoinBalanceDrift,
 		r.bitcoinReconciliationHold,
 		r.bitcoinReorgDetected,

@@ -243,6 +243,10 @@ sid = hmac.SHA256(cfg.BitcoinSessionSecret,
 
 ## §5 — Mempool Tracker Internals
 
+The mempool tracker receives `RawTxEvent` from ZMQ `rawtx` topic, which includes
+parsed transaction inputs and outputs. No `GetRawTransaction` RPC call is made;
+all address extraction and value parsing happens in-process from the raw bytes.
+
 ```go
 // pendingMempool maps txid → all watched outputs in that transaction.
 pendingMempool map[string]pendingEntry
@@ -526,9 +530,11 @@ All use `ratelimit.TrustedProxyRealIP` via upstream middleware (mounted in `rout
 | T-103 | `TestSpentOutpoints_CapEnforced` | cap at MAX_SIZE × 20 |
 | T-105 | `TestConfirmedTx_CrossFieldTimeout_DefaultsWork` | handler_ms > 2×rpc_timeout×1000+2000 |
 | T-121 | `TestBlockEvent_HashHex_IsReversed` | ZMQ bytes → HashHex() == known RPC hex |
-| T-122 | `TestTxEvent_HashHex_IsReversed` | |
+| T-122 | `TestRawTxEvent_TxIDHex_IsReversed` | ZMQ bytes → TxIDHex() == known RPC hex |
 | T-123 | `TestConfirmedTx_EntryEvictedByRBF_BetweenReadAndWriteLock_NoEmission` | `-race` flag |
 | T-124 | `TestConfirmedTx_EntryEvictedByAgePruning_BetweenReadAndWriteLock_NoEmission` | `-race` flag |
+| T-162 | `TestParseRawTx_*` | ParseRawTx, extractAddress, bech32/bech32m/base58 |
+| T-163 | `TestProcessRawTxFrame_*` | processRawTxFrame validation and handler invocation |
 
 ### Unit tests — SSE token
 

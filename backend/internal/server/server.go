@@ -180,14 +180,6 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 			log.Error(ctx, "bitcoin ZMQ subscriber init failed", "error", zmqErr)
 			return nil, nil, zmqErr
 		}
-		// Run blocks until ctx is cancelled. Launch in a background goroutine
-		// and log abnormal exits — do NOT call os.Exit or log.Fatal here;
-		// the cleanup func must still run to drain the queue and close the pool.
-		go func() {
-			if err := btcSub.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				log.Error(ctx, "ZMQ subscriber abnormal exit", "error", err)
-			}
-		}()
 
 		// 2. RPC client — constructed and probed before the server accepts traffic.
 		var rpcErr error
@@ -230,21 +222,44 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 			ErrorURL:           cfg.OAuthErrorURL,
 			TelegramBotToken:   cfg.TelegramBotToken,
 		},
-		BitcoinEnabled:         cfg.BitcoinEnabled,
-		BitcoinZMQ:             btcSub,
-		BitcoinRPC:             btcRPC,
-		BitcoinNetwork:         cfg.BitcoinNetwork,
-		BitcoinMaxWatchPerUser: cfg.BitcoinMaxWatchPerUser,
-		BitcoinAuditHMACKey:    cfg.BitcoinAuditHMACKey,
+		BitcoinEnabled:                  cfg.BitcoinEnabled,
+		BitcoinZMQ:                      btcSub,
+		BitcoinRPC:                      btcRPC,
+		BitcoinNetwork:                  cfg.BitcoinNetwork,
+		BitcoinMaxWatchPerUser:          cfg.BitcoinMaxWatchPerUser,
+		BitcoinAuditHMACKey:             cfg.BitcoinAuditHMACKey,
+		BitcoinSSESigningSecret:         cfg.BitcoinSSESigningSecret,
+		BitcoinSessionSecret:            cfg.BitcoinSessionSecret,
+		BitcoinServerSecret:             cfg.BitcoinServerSecret,
+		BitcoinDailyRotationKey:         cfg.BitcoinDailyRotationKey,
+		BitcoinSSETokenTTL:              time.Duration(cfg.BitcoinSSETokenTTL) * time.Second,
+		BitcoinMaxSSEPerUser:            cfg.BitcoinMaxSSEPerUser,
+		BitcoinMaxSSEProcess:            cfg.BitcoinMaxSSEProcess,
+		BitcoinSSETokenBindIP:           cfg.BitcoinSSETokenBindIP,
+		BitcoinPendingMempoolMaxSize:    cfg.BitcoinPendingMempoolMaxSize,
+		BitcoinMempoolPendingMaxAgeDays: cfg.BitcoinMempoolPendingMaxAgeDays,
+		BitcoinBlockRPCTimeoutSeconds:   cfg.BitcoinBlockRPCTimeoutSeconds,
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────
+	// newRouter calls events.Routes(), which calls RegisterDisplayTxHandler and
+	// RegisterBlockHandler. btcSub.Run(ctx) must start AFTER this so all handlers
+	// are registered before the subscriber begins delivering events (race fix).
 	srv := &http.Server{
 		Addr:         cfg.Addr,
 		Handler:      newRouter(ctx, deps, registry),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
+	}
+
+	// Launch ZMQ subscriber AFTER newRouter() so all ZMQ handlers are registered.
+	if btcSub != nil {
+		go func() {
+			if err := btcSub.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error(ctx, "ZMQ subscriber abnormal exit", "error", err)
+			}
+		}()
 	}
 
 	// Shutdown order must not be changed — see zmq-technical.md §9:
@@ -263,13 +278,24 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 	// This func is called by main.go AFTER srv.Shutdown() returns, so all
 	// HTTP handler contexts are already cancelled before it executes.
 	cleanup := func() {
+		// Shutdown order (zmq-technical.md §9 + events domain):
+		//   1. btcSub.Shutdown() — drain ZMQ handler goroutines first;
+		//      in-flight handlers hold pool/KV references.
 		if btcSub != nil {
 			btcSub.Shutdown()
 		}
+		//   2. BitcoinEventsShutdown — drain service goroutines (liveness + heartbeat);
+		//      safe now because ZMQ handlers (which call service methods) are drained.
+		if deps.BitcoinEventsShutdown != nil {
+			deps.BitcoinEventsShutdown()
+		}
+		//   3. btcRPC.Close() — drain the RPC keep-alive connection pool.
 		if btcRPC != nil {
 			btcRPC.Close()
 		}
+		//   4. q.Shutdown() — drain mail queue (may do DB-backed audit writes).
 		q.Shutdown()
+		//   5. pool.Close() — safe only after the queue is drained.
 		pool.Close()
 	}
 

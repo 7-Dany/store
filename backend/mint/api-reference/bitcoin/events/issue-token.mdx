@@ -1,0 +1,129 @@
+---
+title: "Issue SSE Token"
+description: "Exchange a valid session JWT for a one-time SSE cookie token that authorises a single connection to the Bitcoin event stream."
+api: "POST /bitcoin/events/token"
+---
+
+<Warning>
+  The Mintlify playground cannot exercise this endpoint end-to-end because the
+  token it issues is written as an **HttpOnly cookie** (`btc_sse_jti`), which
+  JavaScript — and the playground — cannot read. Call this endpoint from your
+  own HTTP client, then open `GET /bitcoin/events` in the same session so the
+  browser automatically attaches the cookie.
+</Warning>
+
+## Behaviour
+
+**Purpose** — This endpoint is step 1 of the two-step SSE connection flow. It
+authenticates the caller using their standard Bearer JWT, generates a short-lived
+one-time token, and writes it as an `HttpOnly` cookie. The cookie is then picked
+up automatically by the browser when `GET /bitcoin/events` is opened.
+
+**One-time use** — The cookie token is consumed the moment the SSE connection is
+established. Each new SSE connection requires a fresh call to this endpoint. A
+token that has already been used returns `401` on the events endpoint.
+
+**Cookie details** — The cookie is named `btc_sse_jti`, is scoped to the path
+`/api/v1/bitcoin/events`, is `HttpOnly`, and carries `SameSite=Strict`. On
+mainnet the `Secure` flag is set; on testnet4 it may be omitted.
+
+**Session binding** — The token is cryptographically bound to the authenticated
+session that issued it. If the session is rotated or invalidated before the token
+is consumed, the events endpoint rejects the cookie with `401 unauthorized`.
+
+**TTL** — Tokens expire after a server-configured interval (typically 2 minutes).
+If the client does not open the SSE connection before the token expires, it must
+call this endpoint again.
+
+## Rate Limiting
+
+**5 requests per 1 minute per IP address**.
+
+The rate limiter runs **before** JWT authentication. Requests that exceed the
+limit are rejected with `429` before token validation occurs.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response
+with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+// No request body — authentication is via Bearer token in the Authorization header.
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+// 204 No Content — empty body
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "authentication required"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+
+```json 503
+{
+  "code": "service_unavailable",
+  "message": "service temporarily unavailable"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The one-time SSE token was issued and written as an `HttpOnly` cookie named
+    `btc_sse_jti`. No response body is returned. Open
+    [`GET /bitcoin/events`](/api-reference/bitcoin/events/events) immediately to
+    consume the token before it expires.
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The Bearer token is missing, expired, or invalid; or the user ID could not
+    be extracted from the token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 5 requests per 1 minute. Check the `Retry-After`
+    response header for the number of seconds to wait before retrying.
+
+    Note: this limit is enforced **before** JWT authentication — the request
+    never reaches token validation when the IP bucket is exhausted.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="503 — Service Unavailable">
+    The Redis back-end is temporarily unavailable and the token could not be
+    stored. Retry after a short delay.
+
+    ```json
+    {
+      "code": "service_unavailable",
+      "message": "service temporarily unavailable"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

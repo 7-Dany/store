@@ -1,0 +1,109 @@
+---
+title: "Events Status"
+description: "Return a health snapshot of the Bitcoin event stream for this server instance, including ZMQ and RPC node connectivity and the number of active SSE connections."
+api: "GET /bitcoin/events/status"
+---
+
+## Behaviour
+
+**Per-instance** — The snapshot reflects the state of the single server instance
+handling the request. In a multi-instance deployment, different instances may
+report different connection counts or connectivity states.
+
+**ZMQ age** — `last_block_hash_age` is the number of seconds since the last
+`hashblock` ZMQ message was received. Before the first block is seen after
+startup, this field reports the number of seconds since the server started, so
+dashboards always have an increasing value to alert on. On mainnet, alert when
+this value exceeds 1 200 seconds (20 minutes).
+
+**RPC health** — `rpc_connected` reflects a short `GetBlockchainInfo` probe made
+at request time (with a 2-second timeout). Frequent polling of this endpoint will
+issue one RPC call per request; consider caching on the client side.
+
+## Rate Limiting
+
+**20 requests per 1 minute per IP address**.
+
+The rate limiter runs **before** JWT authentication. Requests that exceed the
+limit are rejected with `429` before token validation occurs.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response
+with a `Retry-After` header indicating when they may retry.
+
+<RequestExample>
+```json Example
+// No request body — authentication is via Bearer token in the Authorization header.
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "zmq_connected": true,
+  "rpc_connected": true,
+  "active_connections": 14,
+  "last_block_hash_age": 47.3
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "authentication required"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    A health snapshot for this server instance.
+
+    ```json
+    {
+      "zmq_connected": true,
+      "rpc_connected": true,
+      "active_connections": 14,
+      "last_block_hash_age": 47.3
+    }
+    ```
+
+    | Field | Type | Notes |
+    |---|---|---|
+    | `zmq_connected` | boolean | `true` when the ZMQ subscriber is connected and healthy |
+    | `rpc_connected` | boolean | `true` when `GetBlockchainInfo` succeeded within the 2-second probe timeout |
+    | `active_connections` | integer | Number of SSE connections currently open on this instance |
+    | `last_block_hash_age` | float | Seconds since the last `hashblock` ZMQ message; seconds since startup if no block has been seen yet |
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    The Bearer token is missing, expired, or invalid.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 20 requests per 1 minute. Check the `Retry-After`
+    response header for the number of seconds to wait before retrying.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

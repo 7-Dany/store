@@ -97,9 +97,12 @@ type Subscriber interface {
 	// Must be called before Run(). Panics if h is nil or if Run() has already started.
 	RegisterBlockHandler(func(context.Context, BlockEvent))
 
-	// RegisterDisplayTxHandler registers h for mempool transactions on the SSE
-	// display path. Must be called before Run(). Panics if h is nil or if Run() has already started.
-	RegisterDisplayTxHandler(func(context.Context, TxEvent))
+	// RegisterRawTxHandler registers h for mempool transactions on the SSE
+	// display path. The handler receives a fully decoded RawTxEvent with inputs
+	// and outputs already parsed from the rawtx wire bytes — no GetRawTransaction
+	// RPC call is needed. Must be called before Run(). Panics if h is nil or if
+	// Run() has already started.
+	RegisterRawTxHandler(func(context.Context, RawTxEvent))
 
 	// RegisterSettlementTxHandler registers h for mempool transactions on the
 	// settlement path. Must be called before Run(). Panics if h is nil or if Run() has already started.
@@ -137,12 +140,28 @@ type Subscriber interface {
 	// LastSeenHash returns the most recently received block hash in RPC-compatible
 	// big-endian hex encoding. Returns "" before the first block is received.
 	LastSeenHash() string
+
+	// LastHashTime returns the Unix nanosecond timestamp of the most recently
+	// received block. Returns 0 before the first block is received, consistent
+	// with the H-04 invariant (prevents spurious liveness gauge flips on
+	// fresh startup before Bitcoin Core delivers its first block).
+	//
+	// The value is derived from the same atomic.Pointer[liveness] as
+	// LastSeenHash() — both methods always read a consistent snapshot.
+	LastHashTime() int64
 }
 
 // subscriber is the concrete ZMTP implementation of the Subscriber interface.
 // It manages two ZMTP 3.1 SUB connections — one for hashblock events, one for
-// hashtx events — decodes raw frames into typed Go events, and fans them out to
+// rawtx events — decodes raw frames into typed Go events, and fans them out to
 // registered handlers via a fixed worker pool.
+//
+// ZMQ topics used:
+//   - hashblock: delivers the 32-byte block hash when a new block is mined.
+//   - rawtx:     delivers the full serialized transaction bytes when a new
+//                transaction enters the mempool. Used instead of hashtx to
+//                eliminate the GetRawTransaction RPC call and the race condition
+//                it creates on pruned nodes without txindex=1.
 //
 // Zero external dependencies: this package owns its own ZMTP implementation
 // in conn.go. No third-party ZMQ library is required.
@@ -155,7 +174,7 @@ type Subscriber interface {
 //	sub, err := zmq.New(blockEndpoint, txEndpoint, idleTimeout, deps.Metrics)
 //	sub.RegisterBlockHandler(myBlockHandler)
 //	sub.RegisterSettlementTxHandler(mySettlementHandler)
-//	sub.RegisterDisplayTxHandler(myDisplayHandler)
+//	sub.RegisterRawTxHandler(myDisplayHandler)
 //
 //	go func() {
 //	    if err := sub.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -172,14 +191,20 @@ type subscriber struct {
 	// Handler slices — registered before Run(), read-only after.
 	// Data race protection: started.CompareAndSwap enforces the "before Run"
 	// invariant in all Register* methods.
-	blockHandlers     []func(context.Context, BlockEvent)
-	displayTxHandlers []func(context.Context, TxEvent)
-	settleTxHandlers  []func(context.Context, TxEvent)
-	recoveryHandlers  []func(context.Context, RecoveryEvent)
+	blockHandlers    []func(context.Context, BlockEvent)
+	rawTxHandlers    []func(context.Context, RawTxEvent)
+	settleTxHandlers []func(context.Context, TxEvent)
+	recoveryHandlers []func(context.Context, RecoveryEvent)
 
 	// Internal delivery channels between reader goroutines and the worker pool.
 	blockCh chan BlockEvent
-	txCh    chan TxEvent
+	// rawTxCh carries decoded RawTxEvent values from the rawtx reader to display
+	// handler workers. Buffered at the same depth as blockCh/txCh.
+	rawTxCh chan RawTxEvent
+	// txCh carries TxEvent values for the settlement path (hashtx topic).
+	// The settlement handler still uses hashtx + GetTransaction (wallet RPC)
+	// which works on pruned nodes via the wallet index.
+	txCh chan TxEvent
 
 	// live is an atomically-updated liveness snapshot set on every BlockEvent.
 	// nil until the first block is received, which prevents spurious
@@ -266,6 +291,7 @@ func New(blockEndpoint, txEndpoint string, idleTimeout time.Duration, recorder Z
 		blockEndpoint:        blockEndpoint,
 		txEndpoint:           txEndpoint,
 		blockCh:              make(chan BlockEvent, defaultChannelDepth),
+		rawTxCh:              make(chan RawTxEvent, defaultChannelDepth),
 		txCh:                 make(chan TxEvent, defaultChannelDepth),
 		idleTimeout:          idleTimeout,
 		handlerTimeout:       defaultHandlerTimeout,
@@ -284,14 +310,18 @@ func (s *subscriber) RegisterBlockHandler(h func(context.Context, BlockEvent)) {
 	s.blockHandlers = append(s.blockHandlers, h)
 }
 
-// RegisterDisplayTxHandler registers h for mempool transactions on the SSE
-// display path. Always use this for SSE handlers — never RegisterSettlementTxHandler.
-// Display and settlement handlers run in separate fan-out loops (ADR-BTC-01)
-// so a slow or panicking settlement handler cannot stall SSE delivery.
+// RegisterRawTxHandler registers h for mempool transactions on the SSE display
+// path. The handler receives a RawTxEvent with inputs and outputs already decoded
+// from the rawtx wire bytes — no GetRawTransaction RPC call required.
+//
+// Always use this for SSE display handlers — never RegisterSettlementTxHandler.
+// RawTx and settlement handlers run in separate fan-out loops (ADR-BTC-01) so a
+// slow or panicking settlement handler cannot stall SSE delivery.
+//
 // Must be called before Run(). Panics if h is nil or if Run() has already started.
-func (s *subscriber) RegisterDisplayTxHandler(h func(context.Context, TxEvent)) {
-	s.mustRegister("RegisterDisplayTxHandler", h != nil)
-	s.displayTxHandlers = append(s.displayTxHandlers, h)
+func (s *subscriber) RegisterRawTxHandler(h func(context.Context, RawTxEvent)) {
+	s.mustRegister("RegisterRawTxHandler", h != nil)
+	s.rawTxHandlers = append(s.rawTxHandlers, h)
 }
 
 // RegisterSettlementTxHandler registers h for mempool transactions on the
@@ -357,9 +387,14 @@ func (s *subscriber) Run(ctx context.Context) error {
 		var state readerState
 		s.runReader(ctx, s.blockReaderConfig(), &state)
 	})
+	// Settlement path: hashtx → TxEvent → txCh
 	readersWg.Go(func() {
 		var state readerState
 		s.runReader(ctx, s.txReaderConfig(), &state)
+	})
+	// SSE display path: rawtx → RawTxEvent → rawTxCh
+	readersWg.Go(func() {
+		s.runRawTxReader(ctx)
 	})
 	readersWg.Wait()
 	return ctx.Err()
@@ -432,6 +467,23 @@ func (s *subscriber) LastSeenHash() string {
 	return p.hash
 }
 
+// LastHashTime returns the Unix nanosecond timestamp of the most recently
+// received block. Returns 0 before the first block is received, consistent
+// with the H-04 invariant.
+//
+// Thread-safe: reads the same atomic.Pointer[liveness] as LastSeenHash().
+// Both methods always observe a consistent snapshot — hash and timestamp are
+// stored together in a single atomic Store in blockReaderConfig.onEvent,
+// so the value returned here is always the timestamp for the hash returned
+// by LastSeenHash() at the moment of the same atomic load.
+func (s *subscriber) LastHashTime() int64 {
+	p := s.live.Load()
+	if p == nil {
+		return 0
+	}
+	return p.at.UnixNano()
+}
+
 // ── Worker pool ───────────────────────────────────────────────────────────────
 
 // startWorkers launches defaultWorkerCount block workers and defaultWorkerCount
@@ -454,18 +506,32 @@ func (s *subscriber) startWorkers(ctx context.Context) {
 		})
 	}
 
-	// Tx workers: display and settlement handlers share a single goroutine per
-	// worker slot (ADR-BTC-01). A stall or panic in a settlement handler cannot
-	// affect SSE display delivery, and vice versa, because each type is
-	// invoked separately via invokeHandler's per-call goroutine.
+	// RawTx workers: dispatch decoded RawTxEvent to SSE display handlers.
+	// These run independently of settlement workers (ADR-BTC-01) — a slow or
+	// panicking settlement handler cannot stall SSE display delivery.
+	for range defaultWorkerCount {
+		s.wg.Go(func() {
+			for {
+				select {
+				case e := <-s.rawTxCh:
+					for _, h := range s.rawTxHandlers {
+						invokeHandler(s, ctx, h, e, "display_rawtx")
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		})
+	}
+
+	// Settlement Tx workers: dispatch TxEvent (hashtx topic) to settlement handlers.
+	// The settlement path uses hashtx + GetTransaction (wallet RPC) which works
+	// on pruned nodes via the wallet index — no txindex required.
 	for range defaultWorkerCount {
 		s.wg.Go(func() {
 			for {
 				select {
 				case e := <-s.txCh:
-					for _, h := range s.displayTxHandlers {
-						invokeHandler(s, ctx, h, e, "display_tx")
-					}
 					for _, h := range s.settleTxHandlers {
 						invokeHandler(s, ctx, h, e, "settlement_tx")
 					}
@@ -514,9 +580,25 @@ func (s *subscriber) blockReaderConfig() readerConfig {
 	}
 }
 
-// txReaderConfig returns the readerConfig for the hashtx endpoint.
+// txReaderConfig returns the readerConfig for the tx endpoint.
+//
+// Two separate topics are subscribed on the same socket endpoint:
+//
+//   - rawtx:  full serialized transaction bytes → decoded into RawTxEvent →
+//             delivered to rawTxCh for SSE display handlers.
+//             No GetRawTransaction RPC call needed; eliminates the pruned-node
+//             race condition.
+//
+//   - hashtx: 32-byte txid hash → TxEvent → delivered to txCh for settlement
+//             handlers. The settlement path uses gettransaction (wallet RPC)
+//             which works on pruned nodes via the internal wallet index.
+//
 // The tx reader does not drive the SetZMQConnected gauge — the block stream
 // is the authoritative liveness signal.
+//
+// NOTE: The readerConfig.onEvent callback is used for the settlement hashtx path
+// only. The rawtx path uses a separate onRawEvent callback injected via a
+// parallel reader loop started in Run().
 func (s *subscriber) txReaderConfig() readerConfig {
 	return readerConfig{
 		endpoint:   s.txEndpoint,
@@ -532,6 +614,25 @@ func (s *subscriber) txReaderConfig() readerConfig {
 				s.recorder.OnMessageDropped("hwm")
 			}
 		},
+	}
+}
+
+// rawTxReaderConfig returns the readerConfig for the rawtx topic on the tx endpoint.
+// This reader shares the same TCP endpoint as the hashtx reader but subscribes
+// to the "rawtx" topic, which delivers full serialized transaction bytes.
+//
+// The onEvent callback is not used for rawtx (the hash-only signature doesn't
+// carry the raw bytes), so this config uses a custom processRawTxFrame path
+// invoked from the rawTxReader loop in Run().
+func (s *subscriber) rawTxReaderConfig() readerConfig {
+	return readerConfig{
+		endpoint:   s.txEndpoint,
+		topic:      []byte("rawtx"),
+		onDialOK:   func() { s.txDialOK.Store(true) },
+		onDialFail: func() { s.txDialOK.Store(false) },
+		onRecvErr:  func() { s.txDialOK.Store(false) },
+		// onEvent is not used — rawTxReader calls processRawTxFrame directly.
+		onEvent: func(_ [32]byte, _ uint32) {},
 	}
 }
 
@@ -621,6 +722,123 @@ func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *r
 				"topic", string(cfg.topic), "error", err)
 		}
 	}
+}
+
+// ── RawTx reader ────────────────────────────────────────────────────────────
+
+// runRawTxReader connects to the rawtx topic with exponential backoff and reads
+// until ctx is cancelled. Unlike runReader (which handles 32-byte hash frames),
+// rawtx frame[1] is the full serialized transaction, so it is parsed directly
+// with ParseRawTx rather than passing through the hash-based readerConfig.onEvent.
+func (s *subscriber) runRawTxReader(ctx context.Context) {
+	cfg := s.rawTxReaderConfig()
+	backoff := reconnectBase
+	everConnected := false
+	var state readerState
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		conn, err := dialZMTP(ctx, cfg.endpoint, cfg.topic)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			cfg.onDialFail()
+			logger.Warn(ctx, "zmq: rawtx connection failed — retrying",
+				"endpoint", cfg.endpoint, "backoff", backoff, "error", err)
+			if !sleepCtx(ctx, backoff) {
+				return
+			}
+			backoff = nextBackoff(backoff)
+			continue
+		}
+		cfg.onDialOK()
+		if everConnected {
+			s.fireRecovery(ctx, state.lastSeq)
+		}
+		everConnected = true
+		backoff = reconnectBase
+		s.rawTxReceiveLoop(ctx, cfg, &state, conn)
+		if ctx.Err() != nil {
+			return
+		}
+		if !sleepCtx(ctx, backoff) {
+			return
+		}
+		backoff = nextBackoff(backoff)
+	}
+}
+
+// rawTxReceiveLoop runs the receive loop for one established rawtx connection,
+// closing conn on return regardless of exit reason.
+func (s *subscriber) rawTxReceiveLoop(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn) {
+	defer conn.Close()
+	for {
+		frames, err := conn.RecvMessage(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			cfg.onRecvErr()
+			logger.Warn(ctx, "zmq: rawtx receive error — reconnecting",
+				"endpoint", cfg.endpoint, "error", err)
+			return
+		}
+		if err := s.processRawTxFrame(ctx, frames, state); err != nil {
+			logger.Warn(ctx, "zmq: rawtx frame rejected", "error", err)
+		}
+	}
+}
+
+// processRawTxFrame decodes one rawtx multipart ZMQ message.
+//
+// Frame layout: [topic="rawtx"][raw_tx_bytes][4-byte_sequence_LE]
+//
+// The sequence number drives gap detection (identical logic to processFrame).
+// ParseRawTx decodes the raw bytes into a RawTxEvent. A parse failure is logged
+// and metered but never propagates — a single malformed frame must not stall
+// the SSE display path.
+func (s *subscriber) processRawTxFrame(ctx context.Context, msg [][]byte, state *readerState) error {
+	if len(msg) != 3 {
+		return fmt.Errorf("zmq.processRawTxFrame: expected 3 frames, got %d", len(msg))
+	}
+	if !bytes.Equal(msg[0], []byte("rawtx")) {
+		return nil // wrong topic — ignore silently
+	}
+	if len(msg[2]) != 4 {
+		return fmt.Errorf("zmq.processRawTxFrame: expected 4-byte sequence frame, got %d bytes", len(msg[2]))
+	}
+
+	seq := binary.LittleEndian.Uint32(msg[2])
+
+	// Sequence gap detection — same logic as processFrame.
+	if state.lastSeqSeen && seq != state.lastSeq+1 {
+		logger.Warn(ctx, "zmq: rawtx sequence gap — frames were dropped at the ZMQ layer",
+			"expected", state.lastSeq+1, "got", seq)
+		s.recorder.OnMessageDropped("sequence_gap")
+		s.fireRecovery(ctx, state.lastSeq)
+	}
+	state.lastSeq = seq
+	state.lastSeqSeen = true
+
+	event, err := ParseRawTx(msg[1])
+	if err != nil {
+		// A malformed tx must not stall the reader — log, meter, continue.
+		logger.Warn(ctx, "zmq: rawtx parse failed — dropping frame",
+			"seq", seq, "raw_len", len(msg[1]), "error", err)
+		s.recorder.OnMessageDropped("parse_error")
+		return nil
+	}
+	event.Sequence = seq
+
+	select {
+	case s.rawTxCh <- event:
+	default:
+		s.recorder.OnMessageDropped("hwm")
+	}
+	return nil
 }
 
 // ── Frame processing ──────────────────────────────────────────────────────────

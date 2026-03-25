@@ -263,6 +263,16 @@
                 "icon": "eye",
                 "expanded": false,
                 "pages": ["api-reference/bitcoin/watch/watch"]
+              },
+              {
+                "group": "Events",
+                "icon": "broadcast",
+                "expanded": false,
+                "pages": [
+                  "api-reference/bitcoin/events/issue-token",
+                  "api-reference/bitcoin/events/events",
+                  "api-reference/bitcoin/events/status"
+                ]
               }
             ]
           },

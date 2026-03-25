@@ -188,6 +188,13 @@ type Config struct {
 	BitcoinSessionSecret string // BTC_SESSION_SECRET
 	// BitcoinSSESigningSecret is the HMAC key for SSE tokens. ≥32 bytes; must differ from session secret.
 	BitcoinSSESigningSecret string // BTC_SSE_SIGNING_SECRET
+	// BitcoinServerSecret is the HMAC key for pseudonymising jti in sse_token_issuances.
+	// ≥32 bytes; must differ from BitcoinSSESigningSecret and BitcoinSessionSecret.
+	BitcoinServerSecret string // BTC_SERVER_SECRET
+	// BitcoinDailyRotationKey is the daily-rotating HMAC key for source_ip_hash in sse_token_issuances.
+	// Rotated daily; the previous key is discarded, making stored hashes non-reversible
+	// beyond 24 hours regardless of any GDPR erasure action.
+	BitcoinDailyRotationKey string // BTC_DAILY_ROTATION_KEY
 	// BitcoinMaxSSEPerUser is the per-user SSE connection cap. Range 1–10; default 3.
 	BitcoinMaxSSEPerUser int // BTC_MAX_SSE_PER_USER
 	// BitcoinMaxSSEProcess is the process-wide SSE connection cap. Range 10–10000; default 100.
@@ -271,35 +278,37 @@ func Load() (*Config, error) {
 		OAuthSuccessURL:    os.Getenv("OAUTH_SUCCESS_URL"),
 		OAuthErrorURL:      os.Getenv("OAUTH_ERROR_URL"),
 		TelegramBotToken:   os.Getenv("TELEGRAM_BOT_TOKEN"),
-	}
 
-	// Bitcoin
-	cfg.BitcoinEnabled = parseBoolEnv("BTC_ENABLED")
-	cfg.BitcoinRPCHost = getEnv("BTC_RPC_HOST", "127.0.0.1")
-	cfg.BitcoinRPCPort = getEnv("BTC_RPC_PORT", "8332")
-	cfg.BitcoinRPCUser = os.Getenv("BTC_RPC_USER")
-	cfg.BitcoinRPCPass = os.Getenv("BTC_RPC_PASS")
-	cfg.BitcoinZMQBlock = getEnv("BTC_ZMQ_BLOCK", "tcp://127.0.0.1:28332")
-	cfg.BitcoinZMQTx = getEnv("BTC_ZMQ_TX", "tcp://127.0.0.1:28333")
-	cfg.BitcoinZMQIdleTimeout = getEnvInt("BTC_ZMQ_IDLE_TIMEOUT", 0)
-	cfg.BitcoinNetwork = os.Getenv("BTC_NETWORK")
-	cfg.BitcoinSSETokenTTL = getEnvInt("BTC_SSE_TOKEN_TTL", 60)
-	cfg.BitcoinSSETokenBindIP = parseBoolEnvDefault("BTC_SSE_TOKEN_BIND_IP", true)
-	cfg.BitcoinSessionSecret = os.Getenv("BTC_SESSION_SECRET")
-	cfg.BitcoinSSESigningSecret = os.Getenv("BTC_SSE_SIGNING_SECRET")
-	cfg.BitcoinMaxSSEPerUser = getEnvInt("BTC_MAX_SSE_PER_USER", 3)
-	cfg.BitcoinMaxSSEProcess = getEnvInt("BTC_MAX_SSE_PROCESS", 100)
-	cfg.BitcoinMaxWatchPerUser = getEnvInt("BTC_MAX_WATCH_PER_USER", 100)
-	cfg.BitcoinCacheTTL = getEnvInt("BTC_CACHE_TTL", 5)
-	cfg.BitcoinBlockRPCTimeoutSeconds = getEnvInt("BTC_BLOCK_RPC_TIMEOUT_SECONDS", 10)
-	cfg.BitcoinHandlerTimeoutMs = getEnvInt("BTC_HANDLER_TIMEOUT_MS", 30000)
-	cfg.BitcoinPendingMempoolMaxSize = getEnvInt("BTC_PENDING_MEMPOOL_MAX_SIZE", 10000)
-	cfg.BitcoinMempoolPendingMaxAgeDays = getEnvInt("BTC_MEMPOOL_PENDING_MAX_AGE_DAYS", 14)
-	cfg.BitcoinFallbackAuditLog = getEnv("BTC_FALLBACK_AUDIT_LOG", "")
-	cfg.BitcoinReconciliationStartHeight = getEnvInt("BTC_RECONCILIATION_START_HEIGHT", 0)
-	cfg.BitcoinReconciliationCheckpointInterval = getEnvInt("BTC_RECONCILIATION_CHECKPOINT_INTERVAL", 100)
-	cfg.BitcoinReconciliationAllowGenesisScan = parseBoolEnv("BTC_RECONCILIATION_ALLOW_GENESIS_SCAN")
-	cfg.BitcoinAuditHMACKey = os.Getenv("BTC_AUDIT_HMAC_KEY")
+		// Bitcoin
+		BitcoinEnabled:                          parseBoolEnv("BTC_ENABLED"),
+		BitcoinRPCHost:                          getEnv("BTC_RPC_HOST", "127.0.0.1"),
+		BitcoinRPCPort:                          getEnv("BTC_RPC_PORT", "8332"),
+		BitcoinRPCUser:                          os.Getenv("BTC_RPC_USER"),
+		BitcoinRPCPass:                          os.Getenv("BTC_RPC_PASS"),
+		BitcoinZMQBlock:                         getEnv("BTC_ZMQ_BLOCK", "tcp://127.0.0.1:28332"),
+		BitcoinZMQTx:                            getEnv("BTC_ZMQ_TX", "tcp://127.0.0.1:28333"),
+		BitcoinZMQIdleTimeout:                   getEnvInt("BTC_ZMQ_IDLE_TIMEOUT", 0),
+		BitcoinNetwork:                          os.Getenv("BTC_NETWORK"),
+		BitcoinSSETokenTTL:                      getEnvInt("BTC_SSE_TOKEN_TTL", 60),
+		BitcoinSSETokenBindIP:                   parseBoolEnvDefault("BTC_SSE_TOKEN_BIND_IP", true),
+		BitcoinSessionSecret:                    os.Getenv("BTC_SESSION_SECRET"),
+		BitcoinSSESigningSecret:                 os.Getenv("BTC_SSE_SIGNING_SECRET"),
+		BitcoinServerSecret:                     os.Getenv("BTC_SERVER_SECRET"),
+		BitcoinDailyRotationKey:                 os.Getenv("BTC_DAILY_ROTATION_KEY"),
+		BitcoinMaxSSEPerUser:                    getEnvInt("BTC_MAX_SSE_PER_USER", 3),
+		BitcoinMaxSSEProcess:                    getEnvInt("BTC_MAX_SSE_PROCESS", 100),
+		BitcoinMaxWatchPerUser:                  getEnvInt("BTC_MAX_WATCH_PER_USER", 100),
+		BitcoinCacheTTL:                         getEnvInt("BTC_CACHE_TTL", 5),
+		BitcoinBlockRPCTimeoutSeconds:           getEnvInt("BTC_BLOCK_RPC_TIMEOUT_SECONDS", 10),
+		BitcoinHandlerTimeoutMs:                 getEnvInt("BTC_HANDLER_TIMEOUT_MS", 30000),
+		BitcoinPendingMempoolMaxSize:            getEnvInt("BTC_PENDING_MEMPOOL_MAX_SIZE", 10000),
+		BitcoinMempoolPendingMaxAgeDays:         getEnvInt("BTC_MEMPOOL_PENDING_MAX_AGE_DAYS", 14),
+		BitcoinFallbackAuditLog:                 getEnv("BTC_FALLBACK_AUDIT_LOG", ""),
+		BitcoinReconciliationStartHeight:        getEnvInt("BTC_RECONCILIATION_START_HEIGHT", 0),
+		BitcoinReconciliationCheckpointInterval: getEnvInt("BTC_RECONCILIATION_CHECKPOINT_INTERVAL", 100),
+		BitcoinReconciliationAllowGenesisScan:   parseBoolEnv("BTC_RECONCILIATION_ALLOW_GENESIS_SCAN"),
+		BitcoinAuditHMACKey:                     os.Getenv("BTC_AUDIT_HMAC_KEY"),
+	}
 
 	// Parse ALLOWED_ORIGINS before validation so the required-field check
 	// can include it.
@@ -546,13 +555,11 @@ func (c *Config) validate() error {
 		}
 	}
 
-	if c.BitcoinEnabled {
-		if err := c.validateBitcoin(); err != nil {
-			return err
-		}
+	if !c.BitcoinEnabled {
+		return nil
 	}
 
-	return nil
+	return c.validateBitcoin()
 }
 
 // validateBitcoin checks all bitcoin-specific configuration.
@@ -586,6 +593,24 @@ func (c *Config) validateBitcoin() error {
 	if c.BitcoinSessionSecret == c.BitcoinSSESigningSecret {
 		return fmt.Errorf("config: BTC_SESSION_SECRET and BTC_SSE_SIGNING_SECRET must be distinct")
 	}
+	if len(c.BitcoinServerSecret) < 32 {
+		return fmt.Errorf("config: BTC_SERVER_SECRET must be at least 32 bytes")
+	}
+	if isLowEntropySecret(c.BitcoinServerSecret) {
+		return fmt.Errorf("config: BTC_SERVER_SECRET has dangerously low entropy; generate with: openssl rand -hex 32")
+	}
+	if c.BitcoinServerSecret == c.BitcoinSessionSecret {
+		return fmt.Errorf("config: BTC_SERVER_SECRET must differ from BTC_SESSION_SECRET")
+	}
+	if c.BitcoinServerSecret == c.BitcoinSSESigningSecret {
+		return fmt.Errorf("config: BTC_SERVER_SECRET must differ from BTC_SSE_SIGNING_SECRET")
+	}
+	if len(c.BitcoinDailyRotationKey) < 32 {
+		return fmt.Errorf("config: BTC_DAILY_ROTATION_KEY must be at least 32 bytes")
+	}
+	if isLowEntropySecret(c.BitcoinDailyRotationKey) {
+		return fmt.Errorf("config: BTC_DAILY_ROTATION_KEY has dangerously low entropy; generate with: openssl rand -hex 32")
+	}
 	if len(c.BitcoinAuditHMACKey) < 32 {
 		return fmt.Errorf("config: BTC_AUDIT_HMAC_KEY must be at least 32 bytes")
 	}
@@ -598,7 +623,13 @@ func (c *Config) validateBitcoin() error {
 	if c.BitcoinAuditHMACKey == c.BitcoinSSESigningSecret {
 		return fmt.Errorf("config: BTC_AUDIT_HMAC_KEY must differ from BTC_SSE_SIGNING_SECRET")
 	}
-	type rc struct{ name string; val, lo, hi int }
+	if c.BitcoinAuditHMACKey == c.BitcoinServerSecret {
+		return fmt.Errorf("config: BTC_AUDIT_HMAC_KEY must differ from BTC_SERVER_SECRET")
+	}
+	type rc struct {
+		name        string
+		val, lo, hi int
+	}
 	for _, r := range []rc{
 		{"BTC_SSE_TOKEN_TTL", c.BitcoinSSETokenTTL, 1, 300},
 		{"BTC_MAX_WATCH_PER_USER", c.BitcoinMaxWatchPerUser, 1, 1000},
@@ -655,28 +686,34 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-func getEnvInt(key string, fallback int) int {
+func getEnvInt(key string, def int) int {
 	v := os.Getenv(key)
 	if v == "" {
-		return fallback
+		return def
 	}
-	n, err := strconv.Atoi(v)
+
+	i, err := strconv.Atoi(v)
 	if err != nil {
 		slog.Warn("config: malformed integer env var; using default",
-			"key", key, "value", v, "default", fallback)
-		return fallback
+			"key", key, "value", v, "default", def)
+		return def
 	}
-	return n
+	return i
 }
 
-func getEnvInt32(key string, fallback int32) int32 {
-	v := getEnvInt(key, int(fallback))
-	if v > math.MaxInt32 || v < math.MinInt32 {
-		slog.Warn("config: int32 overflow for env var; using default",
-			"key", key, "value", v, "default", fallback)
-		return fallback
+func getEnvInt32(key string, def int32) int32 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
 	}
-	return int32(v)
+
+	i, err := strconv.ParseInt(v, 10, 32)
+	if err != nil {
+		slog.Warn("config: malformed integer env var; using default",
+			"key", key, "value", v, "default", def)
+		return def
+	}
+	return int32(i)
 }
 
 func getEnvDuration(key string, fallback time.Duration) time.Duration {

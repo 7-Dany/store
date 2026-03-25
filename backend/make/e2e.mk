@@ -27,6 +27,7 @@
 #   e2e/admin/userpermissions.json      → GET/POST/DELETE /admin/rbac/users/{user_id}/permissions (requires rbac:read + rbac:grant_user_perm)
 #   e2e/admin/userlock.json             → POST/DELETE /admin/users/{user_id}/lock (requires rbac:manage)
 #   e2e/bitcoin/watch.json              → POST /api/v1/bitcoin/watch (requires JWT)
+#   e2e/bitcoin/events.json             → POST /api/v1/bitcoin/events/token · GET /api/v1/bitcoin/events · GET /api/v1/bitcoin/events/status
 #
 # Individual targets   — run a single collection:
 #   e2e-health, e2e-register, e2e-verify-email, e2e-login, e2e-session,
@@ -35,7 +36,7 @@
 #   e2e-delete-account, e2e-identities, e2e-oauth-google, e2e-oauth-telegram,
 #   e2e-rbac-owner, e2e-rbac-permissions, e2e-rbac-roles,
 #   e2e-admin-userroles, e2e-admin-userpermissions, e2e-admin-userlock,
-#   e2e-btc
+#   e2e-btc, e2e-btc-events
 #
 # Group targets        — run a folder of collections in order:
 #   e2e-auth           — register + verify-email + login + session + unlock + password
@@ -44,6 +45,7 @@
 #                        set-password + username + email + delete-account + identities
 #   e2e-rbac           — rbac-owner + rbac-permissions + rbac-roles
 #   e2e-admin          — admin-userroles + admin-userpermissions + admin-userlock
+#   e2e-btc            — watch + events
 #
 # Suite target         — run everything at once:
 #   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile + e2e-rbac + e2e-admin + e2e-btc
@@ -213,6 +215,17 @@ _F_USERLOCK_MAIN   := --folder "setup" --folder "auth-guard" --folder "rbac-guar
 _F_BTC_WATCH_MAIN  := --folder "setup" --folder "unauthenticated" --folder "validation" --folder "happy-path"
 _F_BTC_WATCH_RL    := --folder "rate-limiting"
 
+# bitcoin/events (SSE token + stream + status)
+# token-rate-limiting (btc:token:ip:, burst=5) and events-rate-limiting
+# (btc:events:ip:, burst=5) both use fixed XFF IPs inside their folder
+# prerequest scripts (127.0.0.3 and 127.0.0.4 respectively).
+# status-rate-limiting (btc:status:ip:, burst=20) uses 127.0.0.5.
+# All three limiters run before JWTAuth on their respective routes, so
+# the main + RL folders can run in ONE invocation — the fixed XFF values
+# isolate each bucket from the unique-IP counter used by non-RL folders.
+# Redis is flushed once before the run to guarantee clean buckets.
+_F_BTC_EVENTS_MAIN := --folder "setup" --folder "token-unauthenticated" --folder "token-happy-path" --folder "token-rate-limiting" --folder "events-unauthenticated" --folder "events-origin-checks" --folder "events-happy-path" --folder "events-rate-limiting" --folder "status-unauthenticated" --folder "status-happy-path" --folder "status-rate-limiting"
+
 # ── PHONY ─────────────────────────────────────────────────────────────────────
 .PHONY: e2e-install \
         e2e e2e-health \
@@ -225,7 +238,7 @@ _F_BTC_WATCH_RL    := --folder "rate-limiting"
         e2e-profile e2e-auth e2e-oauth \
         e2e-rbac e2e-rbac-owner e2e-rbac-permissions e2e-rbac-roles \
         e2e-admin e2e-admin-userroles e2e-admin-userpermissions e2e-admin-userlock \
-        e2e-btc \
+        e2e-btc e2e-btc-watch e2e-btc-events \
         _e2e-db-clean _e2e-kv-clean _e2e-clean _e2e-check-env
 
 # ── Tooling ───────────────────────────────────────────────────────────────────
@@ -290,7 +303,7 @@ endif
 
 # ── Suite targets ─────────────────────────────────────────────────────────────
 
-e2e: e2e-health e2e-auth e2e-oauth e2e-profile e2e-rbac e2e-admin e2e-btc ## Run ALL e2e suites (health + auth + oauth + profile + rbac + admin + btc)
+e2e: e2e-health e2e-auth e2e-oauth e2e-profile e2e-rbac e2e-admin e2e-btc e2e-btc-events ## Run ALL e2e suites (health + auth + oauth + profile + rbac + admin + btc + btc-events)
 
 e2e-auth: _e2e-check-env ## Run all auth E2E collections in order (register → verify-email → login → session → unlock → password)
 	@$(MAKE) e2e-register
@@ -333,6 +346,11 @@ e2e-admin: _e2e-check-env ## Run all admin E2E collections in order (userroles +
 	@$(MAKE) e2e-admin-userpermissions
 	@$(MAKE) e2e-admin-userlock
 	@$(call _e2e_ok,[e2e] admin suite passed)
+
+e2e-btc: _e2e-check-env ## Run all btc E2E collections in order (watch + events)
+	@$(MAKE) e2e-btc-watch
+	@$(MAKE) e2e-btc-events
+	@$(call _e2e_ok,[e2e] btc suite passed)
 
 # ── health ────────────────────────────────────────────────────────────────────
 
@@ -640,7 +658,7 @@ e2e-admin-userlock: _e2e-check-env ## Run POST/DELETE /admin/users/{user_id}/loc
 #       Main folders run first (unique XFF via collection prerequest counter),
 #       then Redis is flushed and the rate-limiting folder runs in a separate
 #       invocation so the IP bucket starts empty.
-e2e-btc: _e2e-check-env ## Run POST /api/v1/bitcoin/watch E2E (all folders)
+e2e-btc-watch: _e2e-check-env ## Run POST /api/v1/bitcoin/watch E2E (all folders)
 	@$(call _e2e_info,[e2e] --- POST /api/v1/bitcoin/watch ---)
 	@$(MAKE) _e2e-clean
 	@$(call _e2e_gray,[e2e] Running: setup + unauthenticated + validation + happy-path)
@@ -650,3 +668,20 @@ e2e-btc: _e2e-check-env ## Run POST /api/v1/bitcoin/watch E2E (all folders)
 	@$(call _e2e_gray,[e2e] Running: rate-limiting)
 	$(call newman-run,$(E2E_BTC)/watch.json,$(_F_BTC_WATCH_RL),1)
 	@$(call _e2e_ok,[e2e] btc-watch suite passed)
+
+# ── bitcoin/events ────────────────────────────────────────────────────────────
+
+# NOTE: All three IP rate-limiters (token: 127.0.0.3, events: 127.0.0.4,
+#       status: 127.0.0.5) use hardcoded XFF values set inside their respective
+#       folder prerequest scripts, isolating each bucket from the unique-IP
+#       counter used by all non-RL folders. This means all 11 folders can run
+#       in ONE newman invocation without cross-contaminating buckets.
+#       Redis is flushed once before the run; no mid-run flush is needed.
+#       The setup folder registers via gmail_test_email (Gmail OTP fetch) —
+#       ensure gmail_access_token is set and valid in environment.json.
+e2e-btc-events: _e2e-check-env ## Run POST /bitcoin/events/token + GET /bitcoin/events + GET /bitcoin/events/status E2E (all folders)
+	@$(call _e2e_info,[e2e] --- POST /api/v1/bitcoin/events/token · GET /api/v1/bitcoin/events · GET /api/v1/bitcoin/events/status ---)
+	@$(MAKE) _e2e-clean
+	@$(call _e2e_gray,[e2e] Running: all 11 folders in single invocation (Redis pre-flushed))
+	$(call newman-run,$(E2E_BTC)/events.json,$(_F_BTC_EVENTS_MAIN),$(E2E_DELAY))
+	@$(call _e2e_ok,[e2e] btc-events suite passed)

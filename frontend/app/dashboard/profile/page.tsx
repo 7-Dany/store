@@ -1,14 +1,21 @@
 import { cookies } from "next/headers";
 import Link from "next/link";
 import { fetchProfile } from "@/lib/api/profile";
-import { ProfileHero } from "@/features/dashboard/components/profile/profile-hero";
-import { AccountMetaCard } from "@/features/dashboard/components/profile/account-meta-card";
-import { LinkedNotice } from "@/features/dashboard/components/profile/linked-notice";
+import { ProfileHero } from "@/features/profile/components/profile-hero";
+import { AccountMetaCard } from "@/features/profile/components/account-meta-card";
+import { LinkedNotice } from "@/features/profile/components/linked-notice";
 import { IconSettings } from "@tabler/icons-react";
-import { Card, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import {
+  Card,
+  CardTitle,
+  CardDescription,
+  CardContent,
+} from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 
-export const metadata = { title: "Profile — Store" };
+import type { Metadata } from "next";
+
+export const metadata: Metadata = { title: "Profile — Store" };
 
 export default async function ProfilePage({
   searchParams,

@@ -56,9 +56,10 @@ export function MetricAreaChart({
   // When all values are 0 (or no data), yDomain=[0,"auto"] collapses to [0,0]
   // and the chart area becomes invisible. Ensure the y-axis always has a
   // visible range by using at least 1 as the upper bound.
-  const maxValue = chartData.length > 0
-    ? Math.max(...chartData.map((d) => d[colorKey] as number))
-    : 0;
+  const maxValue =
+    chartData.length > 0
+      ? Math.max(...chartData.map((d) => d[colorKey] as number))
+      : 0;
   const effectiveDomain: [number | string, number | string] =
     yDomain[0] === 0 || yDomain[0] === "auto"
       ? [yDomain[0], maxValue > 0 ? yDomain[1] : 1]
@@ -78,19 +79,37 @@ export function MetricAreaChart({
         <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent>
-        <ChartContainer config={chartConfig} className="h-[160px] w-full">
+        <ChartContainer config={chartConfig} className="h-40 w-full">
           <AreaChart
             accessibilityLayer
             data={chartData}
             margin={{ top: 4, right: 4, left: 4, bottom: 0 }}
           >
             <defs>
-              <linearGradient id={`grad-${colorKey}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor={`var(--color-${colorKey})`} stopOpacity={0.3} />
-                <stop offset="95%" stopColor={`var(--color-${colorKey})`} stopOpacity={0.02} />
+              <linearGradient
+                id={`grad-${colorKey}`}
+                x1="0"
+                y1="0"
+                x2="0"
+                y2="1"
+              >
+                <stop
+                  offset="5%"
+                  stopColor={`var(--color-${colorKey})`}
+                  stopOpacity={0.3}
+                />
+                <stop
+                  offset="95%"
+                  stopColor={`var(--color-${colorKey})`}
+                  stopOpacity={0.02}
+                />
               </linearGradient>
             </defs>
-            <CartesianGrid vertical={false} strokeDasharray="3 3" className="stroke-border" />
+            <CartesianGrid
+              vertical={false}
+              strokeDasharray="3 3"
+              className="stroke-border"
+            />
             <XAxis
               dataKey="time"
               tickLine={false}

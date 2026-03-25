@@ -4,13 +4,13 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { IconLoader2, IconCircleCheck } from "@tabler/icons-react";
-import { useChangePassword } from "@/features/dashboard/hooks/use-change-password";
-import { useSetPassword } from "@/features/dashboard/hooks/use-set-password";
+import { useChangePassword } from "@/features/settings/hooks/use-change-password";
+import { useSetPassword } from "@/features/settings/hooks/use-set-password";
 import { validatePassword } from "@/lib/auth/password";
 import {
   PasswordInput,
   LabeledField,
-} from "@/features/dashboard/components/shared/form-components";
+} from "@/features/shared/components/form-components";
 
 export function ChangePasswordCard() {
   const [current, setCurrent] = useState("");
@@ -36,14 +36,14 @@ export function ChangePasswordCard() {
   return (
     <div className="flex flex-col gap-4">
       <LabeledField id="current-pw" label="Current password" error={errors.current}>
-        <PasswordInput id="current-pw" value={current} onChange={setCurrent} placeholder="Enter current password" aria-invalid={!!errors.current} autoComplete="current-password" />
+        <PasswordInput id="current-pw" value={current} onChangeAction={setCurrent} placeholder="Enter current password" aria-invalid={!!errors.current} autoComplete="current-password" />
       </LabeledField>
       <Separator />
       <LabeledField id="new-pw" label="New password" error={errors.next}>
-        <PasswordInput id="new-pw" value={next} onChange={setNext} placeholder="Min. 8 characters" aria-invalid={!!errors.next} />
+        <PasswordInput id="new-pw" value={next} onChangeAction={setNext} placeholder="Min. 8 characters" aria-invalid={!!errors.next} />
       </LabeledField>
       <LabeledField id="confirm-pw" label="Confirm new password" error={errors.confirm}>
-        <PasswordInput id="confirm-pw" value={confirm} onChange={setConfirm} placeholder="Repeat new password" aria-invalid={!!errors.confirm} />
+        <PasswordInput id="confirm-pw" value={confirm} onChangeAction={setConfirm} placeholder="Repeat new password" aria-invalid={!!errors.confirm} />
       </LabeledField>
       <div className="pt-1">
         <Button size="sm" onClick={handleSubmit} disabled={isPending || !current || !next || !confirm}>
@@ -89,10 +89,10 @@ export function SetPasswordCard() {
   return (
     <div className="flex flex-col gap-4">
       <LabeledField id="set-pw" label="New password" error={errors.next}>
-        <PasswordInput id="set-pw" value={next} onChange={setNext} placeholder="Min. 8 characters" aria-invalid={!!errors.next} />
+        <PasswordInput id="set-pw" value={next} onChangeAction={setNext} placeholder="Min. 8 characters" aria-invalid={!!errors.next} />
       </LabeledField>
       <LabeledField id="set-pw-confirm" label="Confirm password" error={errors.confirm}>
-        <PasswordInput id="set-pw-confirm" value={confirm} onChange={setConfirm} placeholder="Repeat password" aria-invalid={!!errors.confirm} />
+        <PasswordInput id="set-pw-confirm" value={confirm} onChangeAction={setConfirm} placeholder="Repeat password" aria-invalid={!!errors.confirm} />
       </LabeledField>
       <div className="pt-1">
         <Button size="sm" onClick={handleSubmit} disabled={isPending || !next || !confirm}>

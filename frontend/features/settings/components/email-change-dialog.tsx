@@ -20,7 +20,7 @@ import {
   IconCircleCheck,
   IconArrowRight,
 } from "@tabler/icons-react";
-import { useChangeEmail } from "@/features/dashboard/hooks/use-change-email";
+import { useChangeEmail } from "@/features/settings/hooks/use-change-email";
 
 interface EmailChangeDialogProps {
   open: boolean;

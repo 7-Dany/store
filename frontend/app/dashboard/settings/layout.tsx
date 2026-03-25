@@ -1,5 +1,5 @@
-import { SettingsNav } from "@/features/dashboard/components/settings/settings-nav";
-import { SettingsMobileNav } from "@/features/dashboard/components/settings/settings-mobile-nav";
+import { SettingsNav } from "@/features/settings/components/settings-nav";
+import { SettingsMobileNav } from "@/features/settings/components/settings-mobile-nav";
 
 export default async function SettingsLayout({
   children,

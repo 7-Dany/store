@@ -18,7 +18,8 @@ export function ProfilePageSkeleton() {
         </div>
         <div className="px-6 pb-5">
           <div className="-mt-11 mb-4 flex items-end justify-between">
-            <Skeleton className="size-[88px] rounded-full" />
+            <Skeleton className="size-22 rounded-full" />
+
             <div className="flex gap-2 pb-1">
               <Skeleton className="h-6 w-20" />
             </div>

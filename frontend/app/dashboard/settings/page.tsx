@@ -5,15 +5,15 @@ import {
   fetchSessions,
   fetchDeletionMethod,
 } from "@/lib/api/profile";
-import { EditInfoCard } from "@/features/dashboard/components/profile/edit-info-card";
-import { LinkedAccounts } from "@/features/dashboard/components/profile/linked-accounts";
-import { LinkedNotice } from "@/features/dashboard/components/profile/linked-notice";
-import { DangerZone } from "@/features/dashboard/components/profile/danger-zone";
+import { EditInfoCard } from "@/features/profile/components/edit-info-card";
+import { LinkedAccounts } from "@/features/profile/components/linked-accounts";
+import { LinkedNotice } from "@/features/profile/components/linked-notice";
+import { DangerZone } from "@/features/profile/components/danger-zone";
 import {
   ChangePasswordCard,
   SetPasswordCard,
-} from "@/features/dashboard/components/settings/password-card";
-import { SessionsList } from "@/features/dashboard/components/settings/sessions-list";
+} from "@/features/settings/components/password-card";
+import { SessionsList } from "@/features/settings/components/sessions-list";
 import { Metadata } from "next";
 
 export const metadata: Metadata = { title: "Settings — Store" };
@@ -32,8 +32,8 @@ function Section({
   destructive?: boolean;
 }) {
   return (
-    <section id={id} className="scroll-mt-4 flex flex-col gap-4">
-      <div className="flex flex-col gap-0.5">
+    <section id={id} className="scroll-mt-4 flex flex-col">
+      <div className="flex flex-col gap-0.5 mb-1">
         <h2
           className={`text-sm font-semibold ${
             destructive ? "text-destructive" : "text-foreground"
@@ -76,7 +76,7 @@ export default async function SettingsPage({
     <div className="flex flex-col divide-y divide-border">
       {linked && <LinkedNotice provider={linked} />}
 
-      <div className="py-8 first:pt-0">
+      <div>
         <Section
           id="profile"
           title="Profile"

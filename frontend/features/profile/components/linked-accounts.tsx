@@ -12,8 +12,8 @@ import {
   IconLink,
 } from "@tabler/icons-react";
 import { cn } from "@/lib/utils";
-import { useUnlinkProvider } from "@/features/dashboard/hooks/use-unlink-provider";
-import { useLinkTelegram } from "@/features/dashboard/hooks/use-link-telegram";
+import { useUnlinkProvider } from "@/features/profile/hooks/use-unlink-provider";
+import { useLinkTelegram } from "@/features/profile/hooks/use-link-telegram";
 import type { OAuthIdentity, TelegramAuthPayload } from "@/lib/api/types";
 
 interface Props {

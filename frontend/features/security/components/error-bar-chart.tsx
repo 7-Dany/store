@@ -48,7 +48,9 @@ export function ErrorBarChart({ data }: ErrorBarChartProps) {
     <Card>
       <CardHeader>
         <CardTitle>Errors by component</CardTitle>
-        <CardDescription>app_errors_total — last hour, top 8 components</CardDescription>
+        <CardDescription>
+          app_errors_total — last hour, top 8 components
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {data.length === 0 ? (
@@ -57,18 +59,24 @@ export function ErrorBarChart({ data }: ErrorBarChartProps) {
               <EmptyMedia variant="icon">
                 <IconChartBar />
               </EmptyMedia>
-              <EmptyTitle className="text-base">No errors in the last hour</EmptyTitle>
+              <EmptyTitle className="text-base">
+                No errors in the last hour
+              </EmptyTitle>
             </EmptyHeader>
           </Empty>
         ) : (
-          <ChartContainer config={chartConfig} className="h-[200px] w-full">
+          <ChartContainer config={chartConfig} className="h-50 w-full">
             <BarChart
               accessibilityLayer
               data={data}
               layout="vertical"
               margin={{ top: 0, right: 8, left: 0, bottom: 0 }}
             >
-              <CartesianGrid horizontal={false} strokeDasharray="3 3" className="stroke-border" />
+              <CartesianGrid
+                horizontal={false}
+                strokeDasharray="3 3"
+                className="stroke-border"
+              />
               <XAxis
                 type="number"
                 tickLine={false}
@@ -96,10 +104,7 @@ export function ErrorBarChart({ data }: ErrorBarChartProps) {
               />
               <Bar dataKey="value" radius={[0, 4, 4, 0]}>
                 {data.map((_, i) => (
-                  <Cell
-                    key={i}
-                    fill={BAR_COLORS[i % BAR_COLORS.length]}
-                  />
+                  <Cell key={i} fill={BAR_COLORS[i % BAR_COLORS.length]} />
                 ))}
               </Bar>
             </BarChart>

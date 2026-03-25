@@ -150,6 +150,13 @@ export interface SecuritySnapshot {
 
   // Bitcoin RPC
   rpcConnected: number | null; // null = bitcoin disabled
+  keypoolSize: number | null;
+  // null  = bitcoin disabled (BTC_ENABLED=false)
+  // -1    = bitcoin enabled, no wallet loaded yet
+  // 0     = wallet exists but pool exhausted — run keypoolrefill
+  // 1-99  = low — run keypoolrefill soon
+  // ≥100  = healthy
+  rpcCallErrorsLastHour: number; // sum of all bitcoin_rpc_errors_total in last hour
 
   // Bitcoin financial integrity (ZERO TOLERANCE)
   balanceDriftSatoshis: number | null; // null = bitcoin disabled
@@ -542,6 +549,42 @@ function computeAnomalies(snap: PartialSnap): Anomaly[] {
     });
   }
 
+  if (snap.keypoolSize === -1) {
+    anomalies.push({
+      id: "keypool_no_wallet",
+      severity: "warning",
+      title: "No Bitcoin wallet loaded",
+      detail: "Bitcoin Core has no wallet. Invoice creation is unavailable. Run: bitcoin-cli createwallet \"store\"",
+      detectedAt: now,
+    });
+  } else if (snap.keypoolSize !== null && snap.keypoolSize >= 0 && snap.keypoolSize < 10) {
+    anomalies.push({
+      id: "keypool_critical",
+      severity: "critical",
+      title: "Bitcoin keypool critically low",
+      detail: `Only ${snap.keypoolSize} pre-generated address${snap.keypoolSize !== 1 ? "es" : ""} remain — invoice creation will fail imminently. Run keypoolrefill immediately.`,
+      detectedAt: now,
+    });
+  } else if (snap.keypoolSize !== null && snap.keypoolSize < 100) {
+    anomalies.push({
+      id: "keypool_low",
+      severity: "warning",
+      title: "Bitcoin keypool running low",
+      detail: `${snap.keypoolSize} addresses remaining in keypool (threshold: 100). Run keypoolrefill before it hits zero.`,
+      detectedAt: now,
+    });
+  }
+
+  if (snap.rpcConnected !== null && snap.rpcCallErrorsLastHour > 10) {
+    anomalies.push({
+      id: "rpc_errors_elevated",
+      severity: "warning",
+      title: "Bitcoin RPC errors elevated",
+      detail: `${snap.rpcCallErrorsLastHour} RPC call error${snap.rpcCallErrorsLastHour !== 1 ? "s" : ""} in the past hour — check node connectivity and wallet state.`,
+      detectedAt: now,
+    });
+  }
+
   // ── Bitcoin financial integrity (ZERO TOLERANCE) ──────────────────────────
   if (snap.balanceDriftSatoshis !== null && snap.balanceDriftSatoshis !== 0) {
     anomalies.push({
@@ -804,18 +847,30 @@ function deriveServices(p: {
     // RPC: conditional on rpcConnected being published
     if (p.rpcConnected !== null) {
       const rpcLag = (p.reconciliationLagBlocks ?? 0) > 6;
+      const noWallet = p.keypoolSize === -1;
+      const keypoolCritical = p.keypoolSize !== null && p.keypoolSize >= 0 && p.keypoolSize < 10;
+      const keypoolLow = p.keypoolSize !== null && p.keypoolSize >= 0 && p.keypoolSize < 100 && !keypoolCritical;
       const rpcStatus: ServiceStatus =
-        p.rpcConnected === 0 ? "down" : rpcLag ? "degraded" : "healthy";
+        p.rpcConnected === 0 ? "down"
+        : keypoolCritical ? "down"
+        : noWallet || rpcLag || keypoolLow ? "degraded"
+        : "healthy";
 
       services.push({
         name: "Bitcoin RPC",
         status: rpcStatus,
         detail:
-          rpcStatus === "down"
+          p.rpcConnected === 0
             ? "RPC client disconnected from Bitcoin Core"
-            : rpcLag
-              ? `${p.reconciliationLagBlocks} blocks behind chain tip`
-              : "Connected to Bitcoin Core",
+            : noWallet
+              ? "No wallet loaded — run bitcoin-cli createwallet"
+              : keypoolCritical
+                ? `Keypool critical — ${p.keypoolSize} addresses left`
+                : keypoolLow
+                  ? `Keypool low — ${p.keypoolSize} addresses left`
+                  : rpcLag
+                    ? `${p.reconciliationLagBlocks} blocks behind chain tip`
+                    : "Connected to Bitcoin Core",
       });
     }
 
@@ -896,6 +951,8 @@ function unreachableSnapshot(): SecuritySnapshot {
     zmqHandlerTimeoutsLastHour: 0,
     zmqHandlerGoroutines: 0,
     rpcConnected: null,
+    keypoolSize: null,
+    rpcCallErrorsLastHour: 0,
     balanceDriftSatoshis: null,
     reconciliationHoldActive: false,
     reorgDetectedLastDay: 0,
@@ -1055,8 +1112,10 @@ export async function fetchSecuritySnapshot(
       handlerGoroutinesRaw,
       sseConnectionsRaw,
 
-      // ── Bitcoin RPC (1) ───────────────────────────────────────────────────
+      // ── Bitcoin RPC (3) ───────────────────────────────────────────────────
       rpcConnectedRaw,
+      keypoolSizeRaw,
+      rpcCallErrorsRaw,
 
       // ── Bitcoin financial integrity (5) ───────────────────────────────────
       balanceDriftRaw,
@@ -1171,6 +1230,8 @@ export async function fetchSecuritySnapshot(
 
       // Bitcoin RPC
       instant("bitcoin_rpc_connected"),
+      instant("bitcoin_keypool_size"),
+      instant("sum(increase(bitcoin_rpc_errors_total[1h])) or vector(0)"),
 
       // Bitcoin financial integrity — binary-state gauges use gaugeOf
       instant("bitcoin_balance_drift_satoshis"),
@@ -1207,10 +1268,11 @@ export async function fetchSecuritySnapshot(
       // Active HTTP pings — runs concurrently with all Prometheus queries.
       // When skipPings=true (e.g. CI), returns "unknown" stubs immediately.
       opts?.skipPings
-        ? (Promise.resolve([
+        ? Promise.resolve([
             { name: "Backend API", status: "unknown" as const, latencyMs: null, detail: "Ping skipped (ping=skip)" },
-            { name: "Bitcoin RPC", status: "unknown" as const, latencyMs: null, detail: "Ping skipped (ping=skip)" },
-          ]) as ReturnType<typeof pingActiveServices>)
+            { name: "Database",    status: "unknown" as const, latencyMs: null, detail: "Ping skipped (ping=skip)" },
+            { name: "Redis",       status: "unknown" as const, latencyMs: null, detail: "Ping skipped (ping=skip)" },
+          ] satisfies ServicePingResult[])
         : pingActiveServices(),
 
       // Chart series
@@ -1268,6 +1330,8 @@ export async function fetchSecuritySnapshot(
     const zmqConnectedValue = gaugeOf(zmqConnectedRaw);
     const zmqLastMessageAgeSec = gaugeOf(zmqLastMsgAgeRaw);
     const rpcConnectedValue = gaugeOf(rpcConnectedRaw);
+    const keypoolSizeValue = gaugeOf(keypoolSizeRaw);
+    const rpcCallErrorsLastHour = Math.round(scalarOf(rpcCallErrorsRaw));
     const balanceDriftValue = gaugeOf(balanceDriftRaw);
     const reconHoldValue = gaugeOf(reconHoldRaw);
     const reconciliationHoldActive = reconHoldValue === 1;
@@ -1291,24 +1355,14 @@ export async function fetchSecuritySnapshot(
     const jobDurationP95Sec = gaugeOf(jobDurationP95Raw);
 
     // ── Build ping results ────────────────────────────────────────────────────
-    const [backendPing, rpcPing] = activePings;
-
-    const pingResults: ServicePingResult[] = [backendPing];
-
-    // Include Bitcoin RPC active ping only when Bitcoin is deployed
-    if (zmqConnectedValue !== null) {
-      pingResults.push(rpcPing);
-    }
-
-    // Derived pings from Prometheus gauges
-    const derived = buildDerivedPings({
-      dbUp: dbUpValue,
-      redisUp: redisUpValue,
-      zmqConnected: zmqConnectedValue,
-      zmqLastMessageAgeSec,
-      infraPollerAgeSeconds,
-    });
-    pingResults.push(...derived);
+    // activePings already contains real probe results for:
+    //   Backend API, Database, Redis, Bitcoin ZMQ (if enabled), Bitcoin RPC (if enabled)
+    // buildDerivedPings adds the Infra Poller — the only service whose health
+    // is derived from a Prometheus gauge rather than a live network probe.
+    const pingResults: ServicePingResult[] = [
+      ...activePings,
+      ...buildDerivedPings({ infraPollerAgeSeconds }),
+    ];
 
     // ── Assemble partial snapshot ─────────────────────────────────────────────
     const partial: PartialSnap = {
@@ -1345,6 +1399,8 @@ export async function fetchSecuritySnapshot(
       zmqHandlerTimeoutsLastHour: Math.round(scalarOf(handlerTimeoutsRaw)),
       zmqHandlerGoroutines: Math.round(scalarOf(handlerGoroutinesRaw)),
       rpcConnected: rpcConnectedValue,
+      keypoolSize: keypoolSizeValue,
+      rpcCallErrorsLastHour,
       balanceDriftSatoshis: balanceDriftValue,
       reconciliationHoldActive,
       reorgDetectedLastDay: Math.round(scalarOf(reorgDetectedRaw)),
@@ -1368,6 +1424,9 @@ export async function fetchSecuritySnapshot(
       requestRateSeries: fillSeries(seriesOf(reqRateSeries), now, 30 * 60, 60),
     };
 
+    const backendPingStatus =
+      pingResults.find((p) => p.name === "Backend API")?.status ?? "unknown";
+
     const services = deriveServices({
       dbUp: dbUpValue,
       dbErr,
@@ -1381,12 +1440,13 @@ export async function fetchSecuritySnapshot(
       zmqConnected: zmqConnectedValue,
       zmqLastMessageAgeSec,
       rpcConnected: rpcConnectedValue,
+      keypoolSize: keypoolSizeValue,
       reconciliationLagBlocks,
       balanceDriftSatoshis: balanceDriftValue,
       reconciliationHoldActive,
       payoutFailuresLastHour: partial.payoutFailuresLastHour,
       sweepStuckLastHour: partial.sweepStuckLastHour,
-      backendPingStatus: backendPing.status,
+      backendPingStatus,
     });
 
     const hasDown = services.some((s) => s.status === "down");

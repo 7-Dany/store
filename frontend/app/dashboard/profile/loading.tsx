@@ -1,4 +1,4 @@
-import { ProfilePageSkeleton } from "@/features/dashboard/components/profile/profile-skeleton";
+import { ProfilePageSkeleton } from "@/features/profile/components/profile-skeleton";
 
 export default function ProfileLoading() {
   return <ProfilePageSkeleton />;

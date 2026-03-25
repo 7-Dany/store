@@ -4,8 +4,8 @@ import {
   fetchSecuritySnapshot,
   SecuritySnapshot,
 } from "@/lib/api/telemetry/prometheus";
-import { SecurityDashboard } from "@/features/dashboard/components/security/security-dashboard";
-import { SecurityDashboardSkeleton } from "@/features/dashboard/components/security/skeleton";
+import { SecurityDashboard } from "@/features/security/components/security-dashboard";
+import { SecurityDashboardSkeleton } from "@/features/security/components/skeleton";
 import { getMockSnapshot } from "@/lib/api/telemetry/mock-snapshots";
 
 export const metadata: Metadata = { title: "System Health — Store" };

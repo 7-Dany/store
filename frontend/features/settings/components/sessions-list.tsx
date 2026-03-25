@@ -6,7 +6,7 @@ import {
   IconDeviceDesktop, IconDeviceMobile, IconDeviceTablet,
   IconLoader2, IconLogout, IconMapPin, IconClock,
 } from "@tabler/icons-react";
-import { useSessions } from "@/features/dashboard/hooks/use-sessions";
+import { useSessions } from "@/features/settings/hooks/use-sessions";
 import type { Session } from "@/lib/api/types";
 import { formatDistanceToNow } from "date-fns";
 

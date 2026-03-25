@@ -1,16 +1,31 @@
 /**
- * Active health pings — lightweight service probes that run in parallel with
+ * Active health pings — real service probes that run in parallel with
  * the Prometheus queries on every /api/telemetry request.
  *
- * Only two services receive real HTTP probes (Backend API and Bitcoin RPC).
- * The remaining four services are derived from Prometheus gauges already
- * queried in fetchSecuritySnapshot() — no separate network round-trip needed.
+ * GET /api/v1/health?ping=true returns a structured body:
+ *
+ *   {
+ *     "status":   "ok" | "degraded",
+ *     "pong":     true,
+ *     "services": [
+ *       { "name": "Database",    "status": "up"|"down", "latency_ms": 4,  "detail": "…" },
+ *       { "name": "Redis",       "status": "up"|"down", "latency_ms": 1,  "detail": "…" },
+ *       { "name": "Bitcoin ZMQ", "status": "up"|"down",                   "detail": "…" },
+ *       { "name": "Bitcoin RPC", "status": "up"|"down", "latency_ms": 12, "detail": "…" }
+ *     ]
+ *   }
+ *
+ * The backend runs all probes concurrently under a 2 s deadline.
+ * Bitcoin services are only included when BitcoinEnabled=true.
+ *
+ * Infra Poller health is derived from the infra_poller_last_run_timestamp_seconds
+ * Prometheus gauge in buildDerivedPings() — it cannot be probed via HTTP.
  *
  * Server-only. Never imported by Client Components.
  */
 
 const BACKEND_URL = process.env.BACKEND_URL ?? "http://localhost:8080";
-const PING_TIMEOUT_MS = 2_000;
+const PING_TIMEOUT_MS = 3_000;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -21,144 +36,142 @@ export interface ServicePingResult {
   detail: string;
 }
 
-// ─── Active HTTP probes ───────────────────────────────────────────────────────
+// Shape of one entry in the backend's "services" array.
+interface BackendServiceProbe {
+  name: string;
+  status: "up" | "down";
+  latency_ms?: number;
+  detail?: string;
+}
 
-async function pingUrl(name: string, url: string): Promise<ServicePingResult> {
+// Shape of the full backend health response body.
+interface BackendHealthBody {
+  status: "ok" | "degraded";
+  pong: true;
+  services: BackendServiceProbe[];
+}
+
+// ─── Active HTTP probe ────────────────────────────────────────────────────────
+
+/**
+ * Pings the Backend API at GET /api/v1/health?ping=true.
+ *
+ * On success the backend returns { pong: true, services: [...] } with real
+ * probe results for Database, Redis, Bitcoin ZMQ, and Bitcoin RPC.
+ * Those results are mapped into ServicePingResults and returned alongside a
+ * synthetic "Backend API" entry representing the HTTP round-trip itself.
+ *
+ * On any failure (timeout, non-200, bad JSON, missing pong) every service is
+ * returned as "down" with an explanatory detail string.
+ *
+ * Never throws — all failures are returned as { status: "down" }.
+ */
+export async function pingActiveServices(): Promise<ServicePingResult[]> {
+  const url = `${BACKEND_URL}/api/v1/health?ping=true`;
   const start = Date.now();
+
+  let res: Response;
   try {
-    const res = await fetch(url, {
+    res = await fetch(url, {
       method: "GET",
       signal: AbortSignal.timeout(PING_TIMEOUT_MS),
       cache: "no-store",
     });
-    const latencyMs = Date.now() - start;
-    if (res.ok) {
-      return { name, status: "up", latencyMs, detail: `HTTP ${res.status}` };
-    }
-    return {
-      name,
-      status: "down",
-      latencyMs,
-      detail: `HTTP ${res.status} — unexpected response`,
-    };
   } catch (err) {
     const latencyMs = Date.now() - start;
-    const message =
+    const detail =
       err instanceof Error
         ? err.name === "TimeoutError"
           ? `Timed out after ${PING_TIMEOUT_MS}ms`
           : err.message
         : String(err);
-    return { name, status: "down", latencyMs, detail: message };
+    // Backend unreachable — all services unknown.
+    return [
+      { name: "Backend API", status: "down", latencyMs, detail },
+      { name: "Database",    status: "unknown", latencyMs: null, detail: "Backend unreachable" },
+      { name: "Redis",       status: "unknown", latencyMs: null, detail: "Backend unreachable" },
+    ];
   }
+
+  const latencyMs = Date.now() - start;
+
+  if (!res.ok) {
+    const detail = `HTTP ${res.status} — unexpected response`;
+    return [
+      { name: "Backend API", status: "down", latencyMs, detail },
+      { name: "Database",    status: "unknown", latencyMs: null, detail: "Backend unreachable" },
+      { name: "Redis",       status: "unknown", latencyMs: null, detail: "Backend unreachable" },
+    ];
+  }
+
+  // Parse and validate the pong body.
+  let body: BackendHealthBody;
+  try {
+    const raw = await res.json();
+    if (
+      typeof raw !== "object" ||
+      raw === null ||
+      raw.pong !== true ||
+      !Array.isArray(raw.services)
+    ) {
+      throw new Error("pong missing or services not an array");
+    }
+    body = raw as BackendHealthBody;
+  } catch (err) {
+    const detail = `HTTP ${res.status} — invalid response: ${err instanceof Error ? err.message : String(err)}`;
+    return [
+      { name: "Backend API", status: "down", latencyMs, detail },
+      { name: "Database",    status: "unknown", latencyMs: null, detail: "Bad health response" },
+      { name: "Redis",       status: "unknown", latencyMs: null, detail: "Bad health response" },
+    ];
+  }
+
+  // Backend API is "up" even when some sub-services are "down" — it responded
+  // correctly and the HTTP probe succeeded.
+  const backendEntry: ServicePingResult = {
+    name: "Backend API",
+    status: "up",
+    latencyMs,
+    detail: `HTTP ${res.status} — pong ✓`,
+  };
+
+  // Map each backend service probe into a ServicePingResult.
+  const serviceEntries: ServicePingResult[] = body.services.map(
+    (svc): ServicePingResult => ({
+      name: svc.name,
+      status: svc.status === "up" ? "up" : "down",
+      latencyMs: typeof svc.latency_ms === "number" ? svc.latency_ms : null,
+      detail: svc.detail ?? "",
+    }),
+  );
+
+  return [backendEntry, ...serviceEntries];
 }
 
-/**
- * Pings Backend API and Bitcoin RPC in parallel.
- * Never throws — any failure is returned as { status: "down" }.
- *
- * Called inside the main Promise.all in fetchSecuritySnapshot() so it runs
- * concurrently with all Prometheus queries (zero additional waterfall).
- */
-export async function pingActiveServices(): Promise<
-  [backendPing: ServicePingResult, rpcPing: ServicePingResult]
-> {
-  const [backend, rpc] = await Promise.all([
-    pingUrl("Backend API", `${BACKEND_URL}/health`),
-    pingUrl("Bitcoin RPC", `${BACKEND_URL}/internal/bitcoin/rpc-health`),
-  ]);
-  return [backend, rpc];
-}
-
-// ─── Derived pings from Prometheus values ─────────────────────────────────────
-
-const ZMQ_IDLE_TIMEOUT_SEC = 120; // 2 min — degrade if no message for 2× this
+// ─── Derived ping from Prometheus (Infra Poller only) ────────────────────────
 
 /**
- * Builds ServicePingResults for services whose health is reflected in
- * Prometheus gauges already queried in the main Promise.all.
+ * Builds a ServicePingResult for the Infra Poller — the only service whose
+ * health cannot be probed via a direct network call. Its liveness is reflected
+ * by the infra_poller_last_run_timestamp_seconds Prometheus gauge, which is
+ * already queried in the main Promise.all of fetchSecuritySnapshot().
  *
  * Called AFTER the Promise.all resolves so there is no extra waterfall.
+ * Database, Redis, ZMQ, and RPC are now real probes from the backend — they
+ * no longer need Prometheus-derived entries here.
  */
 export function buildDerivedPings(p: {
-  dbUp: number | null;
-  redisUp: number | null;
-  zmqConnected: number | null;
-  zmqLastMessageAgeSec: number | null;
   infraPollerAgeSeconds: number;
 }): ServicePingResult[] {
-  const derived: ServicePingResult[] = [];
-
-  // Database ─ from db_up gauge (flips within one InfraPoller cycle, 15 s)
-  if (p.dbUp === null) {
-    derived.push({
-      name: "Database",
-      status: "unknown",
-      latencyMs: null,
-      detail: "Metric not yet published",
-    });
-  } else {
-    derived.push({
-      name: "Database",
-      status: p.dbUp === 1 ? "up" : "down",
-      latencyMs: null,
-      detail:
-        p.dbUp === 1 ? "DB ping succeeded" : "DB ping failed (db_up = 0)",
-    });
-  }
-
-  // Redis ─ from redis_up gauge
-  if (p.redisUp === null) {
-    derived.push({
-      name: "Redis",
-      status: "unknown",
-      latencyMs: null,
-      detail: "Metric not yet published",
-    });
-  } else {
-    derived.push({
-      name: "Redis",
-      status: p.redisUp === 1 ? "up" : "down",
-      latencyMs: null,
-      detail:
-        p.redisUp === 1
-          ? "Redis ping succeeded"
-          : "Redis ping failed (redis_up = 0)",
-    });
-  }
-
-  // Bitcoin ZMQ ─ only when Bitcoin is deployed
-  if (p.zmqConnected !== null) {
-    const disconnected = p.zmqConnected === 0;
-    const messageStale =
-      !disconnected &&
-      p.zmqLastMessageAgeSec !== null &&
-      p.zmqLastMessageAgeSec > ZMQ_IDLE_TIMEOUT_SEC * 2;
-
-    const status: ServicePingResult["status"] =
-      disconnected || messageStale ? "down" : "up";
-
-    const detail = disconnected
-      ? "ZMQ subscriber disconnected from Bitcoin Core"
-      : messageStale
-        ? `No ZMQ message for ${Math.round(p.zmqLastMessageAgeSec!)}s (idle timeout × 2)`
-        : p.zmqLastMessageAgeSec !== null
-          ? `Last message ${Math.round(p.zmqLastMessageAgeSec)}s ago`
-          : "Connected to Bitcoin Core";
-
-    derived.push({ name: "Bitcoin ZMQ", status, latencyMs: null, detail });
-  }
-
-  // Infra Poller ─ from infra_poller_last_run_timestamp_seconds age
   const pollerStale = p.infraPollerAgeSeconds > 60;
-  derived.push({
-    name: "Infra Poller",
-    status: pollerStale ? "down" : "up",
-    latencyMs: null,
-    detail: pollerStale
-      ? `Poller stuck — last heartbeat ${Math.round(p.infraPollerAgeSeconds)}s ago`
-      : `Last heartbeat ${Math.round(p.infraPollerAgeSeconds)}s ago`,
-  });
-
-  return derived;
+  return [
+    {
+      name: "Infra Poller",
+      status: pollerStale ? "down" : "up",
+      latencyMs: null,
+      detail: pollerStale
+        ? `Poller stuck — last heartbeat ${Math.round(p.infraPollerAgeSeconds)}s ago`
+        : `Last heartbeat ${Math.round(p.infraPollerAgeSeconds)}s ago`,
+    },
+  ];
 }

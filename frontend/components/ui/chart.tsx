@@ -48,10 +48,43 @@ function ChartContainer({
 }) {
   const uniqueId = React.useId();
   const chartId = `chart-${id || uniqueId.replace(/:/g, "")}`;
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const [containerHeight, setContainerHeight] = React.useState(0);
+
+  // Measure the wrapper div's rendered height and pass it as a fixed number
+  // to ResponsiveContainer. This avoids two sources of Recharts' "width/height
+  // must be > 0" warning:
+  //   1. The initial render always starts at Recharts' internal sentinel (-1)
+  //      before any ResizeObserver fires.
+  //   2. Charts inside inactive tabs get display:none from the tab panel,
+  //      making getBoundingClientRect() return 0.
+  // By withholding ResponsiveContainer until we have a positive measured
+  // height, and passing that height as an explicit number, calculatedHeight is
+  // always a concrete positive value so the OR-check inside Recharts never
+  // triggers the warning — even when containerWidth is still -1 on the very
+  // first render cycle.
+  React.useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const update = (h: number) => {
+      if (h > 0) setContainerHeight(h);
+    };
+
+    // Immediate measurement for already-visible elements.
+    update(el.getBoundingClientRect().height);
+
+    const observer = new ResizeObserver((entries) => {
+      update(entries[0]?.contentRect.height ?? 0);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <ChartContext.Provider value={{ config }}>
       <div
+        ref={containerRef}
         data-slot="chart"
         data-chart={chartId}
         className={cn(
@@ -61,9 +94,14 @@ function ChartContainer({
         {...props}
       >
         <ChartStyle id={chartId} config={config} />
-        <RechartsPrimitive.ResponsiveContainer width="100%" height="100%">
-          {children}
-        </RechartsPrimitive.ResponsiveContainer>
+        {containerHeight > 0 && (
+          <RechartsPrimitive.ResponsiveContainer
+            width="100%"
+            height={containerHeight}
+          >
+            {children}
+          </RechartsPrimitive.ResponsiveContainer>
+        )}
       </div>
     </ChartContext.Provider>
   );

@@ -1385,56 +1385,71 @@ function BitcoinSection({
               }}
             />
           )}
-          {data.keypoolSize !== null && (() => {
-            const noWallet = data.keypoolSize === -1;
-            const exhausted = data.keypoolSize === 0;
-            const critical = data.keypoolSize >= 0 && data.keypoolSize < 10;
-            const low = data.keypoolSize >= 10 && data.keypoolSize < 100;
-            return (
-              <StatCard
-                title="Address pool"
-                value={
-                  noWallet ? "No wallet" :
-                  exhausted ? "Exhausted" :
-                  data.keypoolSize.toLocaleString()
-                }
-                sub={
-                  noWallet ? "Wallet not created yet" :
-                  exhausted ? "Run keypoolrefill immediately" :
-                  "Ready to assign to invoices"
-                }
-                icon={IconStack2}
-                iconColor={
-                  noWallet || exhausted || critical
-                    ? "bg-destructive/10 text-destructive"
-                    : low
-                      ? "bg-amber-500/10 text-amber-600"
-                      : "bg-green-500/10 text-green-600"
-                }
-                status={
-                  noWallet ? "Setup needed" :
-                  critical ? "CRITICAL" :
-                  low ? "Refill needed" :
-                  undefined
-                }
-                statusVariant={
-                  noWallet || exhausted || critical ? "destructive" : "outline"
-                }
-                tooltip={{
-                  metricKey: "Invoice address pool",
-                  description:
+          {data.keypoolSize !== null &&
+            (() => {
+              const noWallet = data.keypoolSize === -1;
+              const exhausted = data.keypoolSize === 0;
+              const critical = data.keypoolSize >= 0 && data.keypoolSize < 10;
+              const low = data.keypoolSize >= 10 && data.keypoolSize < 100;
+              return (
+                <StatCard
+                  title="Address pool"
+                  value={
                     noWallet
-                      ? "No Bitcoin wallet has been created yet. Invoice creation requires a wallet. Run: bitcoin-cli createwallet \"store\""
+                      ? "No wallet"
+                      : exhausted
+                        ? "Exhausted"
+                        : data.keypoolSize.toLocaleString()
+                  }
+                  sub={
+                    noWallet
+                      ? "Wallet not created yet"
+                      : exhausted
+                        ? "Run keypoolrefill immediately"
+                        : "Ready to assign to invoices"
+                  }
+                  icon={IconStack2}
+                  iconColor={
+                    noWallet || exhausted || critical
+                      ? "bg-destructive/10 text-destructive"
+                      : low
+                        ? "bg-amber-500/10 text-amber-600"
+                        : "bg-green-500/10 text-green-600"
+                  }
+                  status={
+                    noWallet
+                      ? "Setup needed"
+                      : critical
+                        ? "CRITICAL"
+                        : low
+                          ? "Refill needed"
+                          : undefined
+                  }
+                  statusVariant={
+                    noWallet || exhausted || critical
+                      ? "destructive"
+                      : "outline"
+                  }
+                  tooltip={{
+                    metricKey: "Invoice address pool",
+                    description: noWallet
+                      ? 'No Bitcoin wallet has been created yet. Invoice creation requires a wallet. Run: bitcoin-cli createwallet "store"'
                       : "How many Bitcoin payment addresses have been pre-generated and are ready to assign to new invoices. When this reaches zero, invoice creation stops working.",
-                  thresholds: [
-                    { color: "green", label: "Good: 1,000 or more" },
-                    { color: "amber", label: "Low: under 100 — run keypoolrefill soon" },
-                    { color: "red", label: "Critical: under 10 — new invoices will fail" },
-                  ],
-                }}
-              />
-            );
-          })()}
+                    thresholds: [
+                      { color: "green", label: "Good: 1,000 or more" },
+                      {
+                        color: "amber",
+                        label: "Low: under 100 — run keypoolrefill soon",
+                      },
+                      {
+                        color: "red",
+                        label: "Critical: under 10 — new invoices will fail",
+                      },
+                    ],
+                  }}
+                />
+              );
+            })()}
         </div>
       </SectionBlock>
 
@@ -2141,17 +2156,25 @@ export function SecurityDashboard({
   }, []);
 
   const [activeTab, setActiveTab] = useState("infra");
-  const [hiddenSections, setHiddenSections] = useState<HiddenMap>(() => {
-    if (typeof window === "undefined") {
-      return Object.fromEntries(
+  // Always initialise from DEFAULT_HIDDEN so the server and client agree on
+  // the first render. Reading localStorage here would cause a hydration
+  // mismatch because the server never has access to it.
+  const [hiddenSections, setHiddenSections] = useState<HiddenMap>(
+    () =>
+      Object.fromEntries(
         (Object.keys(TAB_SECTIONS) as TabId[]).map((k) => [
           k,
           new Set<string>(DEFAULT_HIDDEN[k]),
         ]),
-      ) as HiddenMap;
-    }
-    return loadHiddenSections();
-  });
+      ) as HiddenMap,
+  );
+
+  // After hydration, pull the user's persisted preferences from localStorage.
+  // Running this in useEffect guarantees it only happens on the client, after
+  // React has already reconciled the server-rendered HTML.
+  useEffect(() => {
+    setHiddenSections(loadHiddenSections());
+  }, []);
 
   const toggleSection = useCallback((tabId: TabId, sectionId: string) => {
     setHiddenSections((prev) => {

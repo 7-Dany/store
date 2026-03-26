@@ -12,10 +12,22 @@
  *   (payout_records was created in 015_btc_payouts.sql with dispute_id as a plain
  *    UUID column — no FK — because dispute_records didn't exist yet. Now that it does,
  *    we add the FK constraint here.)
- *                     resolved_buyer, resolved_platform, withdrawn, escalated.
- *     Without the correct states: auto-resolution job cannot run (awaiting_vendor missing),
- *     payout unfreeze has no target status to check, entire dispute workflow unimplementable.
- *     vendor_id: denormalized for payout freeze/unfreeze queries.
+ *
+ * DESIGN NOTE — dispute_records.vendor_id is RESTRICT (not SET NULL):
+ *   The vendor_id column is RESTRICT to prevent a fund-freeze trap. If vendor_id were
+ *   SET NULL on deletion, the payout freeze/unfreeze job (which queries by vendor_id) could
+ *   no longer locate or unfreeze the frozen payout records, permanently trapping funds.
+ *   RESTRICT is correct: a vendor with an active (non-terminal) dispute cannot be deleted
+ *   until the dispute is resolved. The application must enforce deletion ordering:
+ *   resolve all non-terminal disputes before permitting vendor account deletion.
+ *   Terminal disputes (resolved_vendor, resolved_buyer, resolved_platform, withdrawn) have
+ *   already unfrozen all associated payout records, so the RESTRICT is safe to lift
+ *   at the application layer once resolution is confirmed.
+ *
+ * DESIGN NOTE — escalated disputes require explicit resolution:
+ *   Disputes in 'escalated' status freeze payout records indefinitely. The platform must
+ *   manually transition them to a terminal status (resolved_*) or 'withdrawn'. An
+ *   escalation_deadline column and monitoring index are provided so SLA timers can fire.
  *
  * Depends on: 015_btc_payouts.sql (payout_records), 012_btc_invoices.sql (invoices)
  *             010_btc_core.sql (vendor_wallet_config), 001_core.sql (users)
@@ -96,11 +108,16 @@ CREATE TABLE dispute_records (
     -- ── Dispute party denormalization ───────────────────────────────
 
     -- Vendor party to the dispute. Denormalized from the invoice for freeze/unfreeze
-    -- queries (WHERE vendor_id = @vendor_id). SET NULL on user deletion so the
-    -- audit row survives even after the account is removed.
-    vendor_id       UUID REFERENCES users(id) ON DELETE SET NULL,
+    -- queries (WHERE vendor_id = @vendor_id).
+    --
+    -- RESTRICT (not SET NULL): if this were SET NULL on vendor deletion, the freeze/
+    -- unfreeze job would lose the ability to locate frozen payout records for this vendor,
+    -- permanently trapping funds. RESTRICT ensures the vendor cannot be deleted while an
+    -- active dispute exists, forcing explicit resolution before account deletion.
+    vendor_id       UUID REFERENCES users(id) ON DELETE RESTRICT,
 
-    -- Buyer party to the dispute. SET NULL on user deletion.
+    -- Buyer party to the dispute. SET NULL on user deletion so the dispute record survives
+    -- for vendor and admin audit purposes even after the buyer's account is removed.
     buyer_id        UUID REFERENCES users(id) ON DELETE SET NULL,
 
     -- Deadline by which the vendor must respond when status = 'awaiting_vendor'.
@@ -109,6 +126,14 @@ CREATE TABLE dispute_records (
     --   AND vendor_deadline < NOW() → auto-resolve to resolved_buyer.
     -- NULL for all other statuses.
     vendor_deadline TIMESTAMPTZ,
+
+    -- Deadline for resolving escalated disputes. Set when status transitions to
+    -- 'escalated'. The SLA monitoring job queries: WHERE status = 'escalated'
+    --   AND escalation_deadline < NOW() → alert ops for immediate intervention.
+    -- NULL for all non-escalated statuses.
+    -- NOTE: There is no auto-resolution for escalated disputes; the platform must
+    -- manually transition to a terminal status after legal/external review.
+    escalation_deadline TIMESTAMPTZ,
 
     -- SLA start anchor. Usually equals created_at but is preserved separately so
     -- the 2-business-day first-response SLA can be measured even if created_at drifts.
@@ -127,7 +152,16 @@ CREATE INDEX idx_dr_vendor ON dispute_records(raised_by, created_at DESC);
 COMMENT ON TABLE dispute_records IS
     'Buyer/vendor payment disputes. '
     'At least one of invoice_id or payout_record_id must be set (chk_dr_has_subject). '
-    'Lifecycle: open → investigating → resolved or rejected.';
+    'Lifecycle: open → awaiting_vendor | awaiting_buyer | escalated → resolved_* | withdrawn. '
+    'vendor_id is RESTRICT (not SET NULL): vendor cannot be deleted while an active dispute exists. '
+    'This prevents frozen payout records from becoming permanently unresolvable after vendor deletion.';
+COMMENT ON COLUMN dispute_records.vendor_id IS
+    'RESTRICT FK: vendor cannot be deleted while this dispute is open. '
+    'Application must resolve all non-terminal disputes before permitting vendor account deletion. '
+    'Terminal disputes (resolved_*, withdrawn) have already unfrozen associated payout records.';
+COMMENT ON COLUMN dispute_records.escalation_deadline IS
+    'NULL for non-escalated disputes. Set when status transitions to escalated. '
+    'Monitored by idx_dr_escalated_deadline. No auto-resolution — requires manual admin action.';
 
 -- Auto-resolution background job: "which awaiting_vendor disputes have a past deadline?"
 CREATE INDEX idx_dr_awaiting_vendor_deadline
@@ -135,8 +169,20 @@ CREATE INDEX idx_dr_awaiting_vendor_deadline
     WHERE status = 'awaiting_vendor' AND vendor_deadline IS NOT NULL;
 
 COMMENT ON INDEX idx_dr_awaiting_vendor_deadline IS
-    'used by the auto-resolution job: '
-    'WHERE status = ''awaiting_vendor'' AND vendor_deadline < NOW() → auto-resolve buyer.';
+    'Used by the auto-resolution job: '
+    'WHERE status = ''awaiting_vendor'' AND vendor_deadline < NOW() → auto-resolve to resolved_buyer.';
+
+-- Escalated dispute SLA monitoring: alert ops when escalated disputes exceed their deadline.
+-- Unlike awaiting_vendor, escalated disputes have NO auto-resolution path — manual action only.
+-- This index supports: WHERE status = 'escalated' AND escalation_deadline < NOW()
+CREATE INDEX idx_dr_escalated_deadline
+    ON dispute_records(escalation_deadline)
+    WHERE status = 'escalated' AND escalation_deadline IS NOT NULL;
+
+COMMENT ON INDEX idx_dr_escalated_deadline IS
+    'SLA monitoring for escalated disputes: '
+    'WHERE status = ''escalated'' AND escalation_deadline < NOW() → alert ops for intervention. '
+    'No auto-resolution path for escalated status — manual transition to terminal state required.';
 
 
 /* ═════════════════════════════════════════════════════════════
@@ -169,6 +215,7 @@ COMMENT ON COLUMN payout_records.dispute_id IS
 -- +goose StatementBegin
 
 ALTER TABLE payout_records DROP CONSTRAINT IF EXISTS fk_pr_dispute_id;
+DROP INDEX IF EXISTS idx_dr_escalated_deadline;
 DROP INDEX IF EXISTS idx_dr_awaiting_vendor_deadline;
 DROP TABLE IF EXISTS dispute_records CASCADE;
 

@@ -215,7 +215,16 @@ CREATE TABLE payout_records (
         CHECK (fee_breakdown IS NULL OR jsonb_typeof(fee_breakdown) = 'object'),
     -- Coherence: dispute_id requires hold_reason = 'dispute_hold'.
     CONSTRAINT chk_pr_dispute_id_coherent
-        CHECK (dispute_id IS NULL OR hold_reason = 'dispute_hold')
+        CHECK (dispute_id IS NULL OR hold_reason = 'dispute_hold'),
+
+    -- Restrict hold_reason to documented values so the fee-floor re-evaluation job
+    -- (which skips all non-NULL hold_reason rows) cannot be silently fooled by a
+    -- typo or debug value permanently trapping a payout record.
+    -- NULL means normal fee-floor hold (below miner fee floor).
+    -- 'dispute_hold' = frozen by an active dispute_records row.
+    -- 'fee_spike'    = temporarily held because fee rate exceeds miner_fee_cap.
+    CONSTRAINT chk_pr_hold_reason_valid
+        CHECK (hold_reason IS NULL OR hold_reason IN ('dispute_hold', 'fee_spike'))
 
 );
 

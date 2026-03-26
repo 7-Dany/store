@@ -7,11 +7,21 @@
  * Tables defined here:
  *   btc_tier_config_history        — immutable log of every btc_tier_config row change
  *   vendor_wallet_config_history   — field-level history of key vendor_wallet_config changes
+ *                                    (tracks: address, wallet_mode, tier_id, suspended,
+ *                                     kyc_status, auto_sweep_threshold_sat)
  *   reconciliation_run_history     — full history of every reconciliation run result
- *   sse_token_issuances            — SSE token issuance audit log
+ *   sse_token_issuances            — SSE token issuance audit log (GDPR-erasable)
  *   btc_zmq_dead_letter            — ZMQ events that could not be matched to an active invoice
- *     deletable. SET NULL allows deletion while preserving the jti_hash audit trail.
- *     Consistent with financial_audit_events.actor_id (also SET NULL).
+ *
+ * DESIGN NOTE — sse_token_issuances.vendor_id is nullable (ON DELETE SET NULL):
+ *   The column must be nullable to be compatible with ON DELETE SET NULL. Making it
+ *   NOT NULL with SET NULL causes a runtime error when the vendor is deleted.
+ *   A nullable FK correctly preserves the row while nulling the vendor reference.
+ *
+ * DESIGN NOTE — btc_tier_config_history.tier_id is RESTRICT:
+ *   Tiers can never be hard-deleted while history rows exist. In test environments,
+ *   truncate history tables before the tier table, or use CASCADE. Soft-deactivation
+ *   (btc_tier_config.status = 'inactive') is the correct production lifecycle.
  *
  * Depends on: 010_btc_core.sql (btc_tier_config FK, vendor_wallet_config FK)
  *             015_btc_payouts.sql (payout_records FK in reconciliation_run_history)
@@ -83,12 +93,17 @@ COMMENT ON COLUMN btc_tier_config_history.changed_by_label IS
  * Tracks individual field changes rather than full row snapshots. This enables
  * targeted queries like "show all address changes for vendor X" without parsing JSON.
  *
- * Fields tracked: bridge_destination_address, wallet_mode, tier_id, suspended, kyc_status.
+ * Fields tracked: bridge_destination_address, wallet_mode, tier_id, suspended,
+ *   kyc_status, auto_sweep_threshold_sat.
  *
  * Without this table, the previous destination address is permanently lost on update.
  * A compliance review asking "what address was vendor X using during March 2024?" would
  * be unanswerable. Historical payout routing cannot be reconstructed from payout_records
  * alone because those records only show the address at payout creation time.
+ *
+ * auto_sweep_threshold_sat is tracked because hybrid-mode threshold changes directly
+ * affect which payout records get promoted and when sweeps fire. Without this,
+ * a dispute over a missed sweep cannot be fully reconstructed from DB evidence.
  *
  * One row per changed field per UPDATE. An UPDATE that changes three fields generates
  * three rows in this table.
@@ -106,10 +121,16 @@ CREATE TABLE vendor_wallet_config_history (
     changed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
     -- Admin or system that made the change. SET NULL if account is later deleted.
-    changed_by  UUID        REFERENCES users(id) ON DELETE SET NULL,
+    -- changed_by_label preserves the actor identity even after the account is deleted.
+    changed_by       UUID        REFERENCES users(id) ON DELETE SET NULL,
+
+    -- Stable snapshot of the changer's identity at the time of the change.
+    -- Populated from app.current_actor_label session variable by fn_vwc_history (024).
+    -- 'system' for automated changes. Preserved after changed_by goes NULL on deletion.
+    changed_by_label TEXT        NOT NULL DEFAULT '',
 
     -- Which field changed. Examples: 'bridge_destination_address', 'wallet_mode',
-    -- 'tier_id', 'suspended', 'kyc_status'.
+    -- 'tier_id', 'suspended', 'kyc_status', 'auto_sweep_threshold_sat'.
     field_name  TEXT        NOT NULL,
 
     -- Value before the change. NULL if the field was previously NULL.
@@ -129,11 +150,15 @@ CREATE INDEX idx_vwch_vendor ON vendor_wallet_config_history(vendor_id, network,
 COMMENT ON TABLE vendor_wallet_config_history IS
     'Field-level history of vendor wallet config changes. '
     'One row per changed field per UPDATE. '
-    'Populated by fn_vwc_history AFTER UPDATE trigger (011). '
+    'Populated by fn_vwc_history AFTER UPDATE trigger (024). '
     'Required for compliance: "what address/mode/tier did vendor X have during period Y?"';
 COMMENT ON COLUMN vendor_wallet_config_history.field_name IS
     'Which field changed. Tracked fields: bridge_destination_address, wallet_mode, '
-    'tier_id, suspended, kyc_status.';
+    'tier_id, suspended, kyc_status, auto_sweep_threshold_sat.';
+COMMENT ON COLUMN vendor_wallet_config_history.changed_by_label IS
+    'Stable identity snapshot from app.current_actor_label session variable. '
+    'Preserved permanently after changed_by goes NULL on user deletion. '
+    'This is the only identity record remaining once the user account is deleted.';
 
 
 /* ═════════════════════════════════════════════════════════════
@@ -219,6 +244,13 @@ COMMENT ON TABLE reconciliation_run_history IS
  *   On GDPR erasure request: UPDATE SET erased = TRUE, source_ip_hash = NULL.
  *   chk_sti_erased_coherent ensures source_ip_hash is NULL when erased = TRUE.
  *
+ * CRITICAL — vendor_id is NULLABLE (ON DELETE SET NULL):
+ *   vendor_id must be nullable to be compatible with ON DELETE SET NULL. A NOT NULL
+ *   column with SET NULL causes a runtime constraint violation when the vendor row is
+ *   deleted, aborting the entire DELETE transaction. Because vendors can receive SSE
+ *   tokens, a NOT NULL + SET NULL combination would silently prevent all vendor account
+ *   deletions (including GDPR erasure). The column is intentionally nullable.
+ *
  * RETENTION:
  *   Rows may be pruned once expires_at has passed AND erased = TRUE (or erased = FALSE
  *   and the retention window has elapsed). The exact retention policy is in
@@ -228,8 +260,7 @@ CREATE TABLE sse_token_issuances (
     id              BIGSERIAL   PRIMARY KEY,
 
     -- The vendor who requested the SSE token.
-    -- RESTRICT: vendor cannot be deleted while issuance records exist.
-    vendor_id       UUID        NOT NULL REFERENCES users(id) ON DELETE SET NULL,
+    vendor_id       UUID        REFERENCES users(id) ON DELETE SET NULL,
 
     -- 'mainnet' or 'testnet4'. The SSE stream is network-specific.
     network         TEXT        NOT NULL,
@@ -276,7 +307,12 @@ COMMENT ON TABLE sse_token_issuances IS
     'Replaces source_ip in financial_audit_events.metadata (SEC-07 decision). '
     'jti_hash = HMAC-SHA256(jti, server_secret) — non-reversible. '
     'source_ip_hash = SHA256(ip || daily_rotation_key) — non-reversible after key rotation. '
+    'vendor_id is nullable (ON DELETE SET NULL) — must not be NOT NULL or vendor deletion fails. '
     'GDPR erasure: SET erased=TRUE, source_ip_hash=NULL.';
+COMMENT ON COLUMN sse_token_issuances.vendor_id IS
+    'Nullable. ON DELETE SET NULL preserves the issuance record after vendor deletion. '
+    'NULL rows are still processed by the GDPR erasure job (erased column applies). '
+    'Do NOT add NOT NULL to this column — it will break all vendor account deletions.';
 
 
 /* ═════════════════════════════════════════════════════════════
@@ -346,11 +382,18 @@ CREATE TABLE btc_zmq_dead_letter (
 CREATE INDEX idx_zdl_unresolved ON btc_zmq_dead_letter(network, received_at DESC)
     WHERE resolved = FALSE;
 
+-- Resolved dead letter cleanup: find rows eligible for retention-window pruning.
+-- A separate cleanup index is needed because idx_zdl_unresolved (partial on resolved=FALSE)
+-- cannot be used for the inverse scan on resolved=TRUE rows.
+CREATE INDEX idx_zdl_resolved_cleanup ON btc_zmq_dead_letter(resolved_at)
+    WHERE resolved = TRUE;
+
 COMMENT ON TABLE btc_zmq_dead_letter IS
     'ZMQ events that could not be matched to an active monitoring record. '
     'Captures: late payments, double-spend attempts, retired addresses, unknown txids. '
     'Periodic review of resolved=FALSE rows detects missed payments and anomalies. '
-    'Not all dead letters are errors — late payments on expired invoices are expected.';
+    'Not all dead letters are errors — late payments on expired invoices are expected. '
+    'Resolved rows accumulate indefinitely; prune via idx_zdl_resolved_cleanup after retention window.';
 
 
 

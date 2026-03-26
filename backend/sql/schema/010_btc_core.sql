@@ -352,7 +352,18 @@ CREATE TABLE platform_config (
             OR (sweep_hold_reason IS NOT NULL AND sweep_hold_activated_at IS NOT NULL)),
 
     CONSTRAINT chk_pconfig_consolidation_window_coherent
-        CHECK ((consolidation_window_start IS NULL) = (consolidation_window_end IS NULL))
+        CHECK ((consolidation_window_start IS NULL) = (consolidation_window_end IS NULL)),
+
+    -- Enforce that the window start is strictly before end.
+    -- An inverted window (start >= end) is always FALSE in a BETWEEN check, causing the
+    -- consolidation job to silently never run. An overnight window (e.g. 23:00–04:00)
+    -- cannot be represented with a simple TIME BETWEEN and must be handled in application
+    -- logic using modular arithmetic. If you need an overnight window, set start and end
+    -- in application logic (not this constraint), and document the wrap-around handling.
+    CONSTRAINT chk_pconfig_consolidation_window_order
+        CHECK (consolidation_window_start IS NULL OR
+               consolidation_window_end IS NULL OR
+               consolidation_window_start < consolidation_window_end)
 );
 
 CREATE TRIGGER trg_platform_config_updated_at

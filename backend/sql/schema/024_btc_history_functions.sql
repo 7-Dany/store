@@ -66,17 +66,17 @@ CREATE OR REPLACE FUNCTION fn_vwc_history()
 RETURNS TRIGGER
 LANGUAGE plpgsql AS $fn$
 DECLARE
-    v_changed_by UUID;
+    v_changed_by       UUID;
     v_changed_by_label TEXT;
 BEGIN
-    v_changed_by := NULLIF(current_setting('app.current_actor_id', TRUE), '')::UUID;
+    v_changed_by       := NULLIF(current_setting('app.current_actor_id', TRUE), '')::UUID;
     v_changed_by_label := COALESCE(current_setting('app.current_actor_label', TRUE), 'system');
 
     IF OLD.bridge_destination_address IS DISTINCT FROM NEW.bridge_destination_address THEN
         INSERT INTO vendor_wallet_config_history
-            (vendor_id, network, changed_by, field_name, old_value, new_value)
+            (vendor_id, network, changed_by, changed_by_label, field_name, old_value, new_value)
         VALUES (
-            NEW.vendor_id, NEW.network, v_changed_by,
+            NEW.vendor_id, NEW.network, v_changed_by, v_changed_by_label,
             'bridge_destination_address',
             OLD.bridge_destination_address,
             NEW.bridge_destination_address
@@ -85,9 +85,9 @@ BEGIN
 
     IF OLD.wallet_mode IS DISTINCT FROM NEW.wallet_mode THEN
         INSERT INTO vendor_wallet_config_history
-            (vendor_id, network, changed_by, field_name, old_value, new_value)
+            (vendor_id, network, changed_by, changed_by_label, field_name, old_value, new_value)
         VALUES (
-            NEW.vendor_id, NEW.network, v_changed_by,
+            NEW.vendor_id, NEW.network, v_changed_by, v_changed_by_label,
             'wallet_mode',
             OLD.wallet_mode::TEXT,
             NEW.wallet_mode::TEXT
@@ -96,9 +96,9 @@ BEGIN
 
     IF OLD.tier_id IS DISTINCT FROM NEW.tier_id THEN
         INSERT INTO vendor_wallet_config_history
-            (vendor_id, network, changed_by, field_name, old_value, new_value)
+            (vendor_id, network, changed_by, changed_by_label, field_name, old_value, new_value)
         VALUES (
-            NEW.vendor_id, NEW.network, v_changed_by,
+            NEW.vendor_id, NEW.network, v_changed_by, v_changed_by_label,
             'tier_id',
             OLD.tier_id::TEXT,
             NEW.tier_id::TEXT
@@ -107,9 +107,9 @@ BEGIN
 
     IF OLD.suspended IS DISTINCT FROM NEW.suspended THEN
         INSERT INTO vendor_wallet_config_history
-            (vendor_id, network, changed_by, field_name, old_value, new_value)
+            (vendor_id, network, changed_by, changed_by_label, field_name, old_value, new_value)
         VALUES (
-            NEW.vendor_id, NEW.network, v_changed_by,
+            NEW.vendor_id, NEW.network, v_changed_by, v_changed_by_label,
             'suspended',
             OLD.suspended::TEXT,
             NEW.suspended::TEXT
@@ -118,12 +118,26 @@ BEGIN
 
     IF OLD.kyc_status IS DISTINCT FROM NEW.kyc_status THEN
         INSERT INTO vendor_wallet_config_history
-            (vendor_id, network, changed_by, field_name, old_value, new_value)
+            (vendor_id, network, changed_by, changed_by_label, field_name, old_value, new_value)
         VALUES (
-            NEW.vendor_id, NEW.network, v_changed_by,
+            NEW.vendor_id, NEW.network, v_changed_by, v_changed_by_label,
             'kyc_status',
             OLD.kyc_status::TEXT,
             NEW.kyc_status::TEXT
+        );
+    END IF;
+
+    -- Track auto_sweep_threshold_sat changes (MED-1):
+    -- Threshold changes directly affect hybrid-mode sweep behaviour. Without this,
+    -- a dispute over a missed auto-sweep cannot be resolved using DB evidence alone.
+    IF OLD.auto_sweep_threshold_sat IS DISTINCT FROM NEW.auto_sweep_threshold_sat THEN
+        INSERT INTO vendor_wallet_config_history
+            (vendor_id, network, changed_by, changed_by_label, field_name, old_value, new_value)
+        VALUES (
+            NEW.vendor_id, NEW.network, v_changed_by, v_changed_by_label,
+            'auto_sweep_threshold_sat',
+            OLD.auto_sweep_threshold_sat::TEXT,
+            NEW.auto_sweep_threshold_sat::TEXT
         );
     END IF;
 
@@ -133,8 +147,10 @@ $fn$;
 
 COMMENT ON FUNCTION fn_vwc_history() IS
     'Writes field-level history rows to vendor_wallet_config_history on key field changes. '
-    'Tracked fields: bridge_destination_address, wallet_mode, tier_id, suspended, kyc_status. '
-    'One row per changed field for targeted historical queries.';
+    'Tracked fields: bridge_destination_address, wallet_mode, tier_id, suspended, '
+    'kyc_status, auto_sweep_threshold_sat. '
+    'One row per changed field for targeted historical queries. '
+    'changed_by_label is populated from app.current_actor_label for identity preservation.';
 
 CREATE TRIGGER trg_vwc_history
     AFTER UPDATE ON vendor_wallet_config

@@ -9,6 +9,10 @@
  *   fn_pr_vendor_consistency()     — enforces vendor/network coherence on payout records
  *   fn_pr_destination_consistency()— ensures destination address matches vendor config
  *   fn_pr_status_guard()           — enforces the payout status transition matrix
+ *   fn_pr_fatf_broadcast_guard()   — blocks broadcast transition if FATF record is
+ *                                    missing when platform_config.fatf_enabled = TRUE
+ *
+ * Status transitions enforced:
  *   confirmed → refunded  (post-settlement payment refund)
  *   failed    → refunded  (admin refunds buyer on-chain)
  *
@@ -208,16 +212,108 @@ CREATE TRIGGER trg_pr_status_guard
     BEFORE UPDATE OF status ON payout_records
     FOR EACH ROW EXECUTE FUNCTION fn_pr_status_guard();
 
+
+/* ════════════════════════════════════════════════════════════
+   FATF TRAVEL RULE BROADCAST GUARD
+   ════════════════════════════════════════════════════════════ */
+
+/*
+ * fn_pr_fatf_broadcast_guard
+ * ──────────────────────────
+ * Blocks the constructing → broadcast status transition when:
+ *   1. platform_config.fatf_enabled = TRUE for this payout's network, AND
+ *   2. No fatf_travel_rule_records row exists for this payout_record_id.
+ *
+ * RATIONALE:
+ *   The FATF Travel Rule (Recommendation 16) requires VASPs to file counterparty data
+ *   before transmitting qualifying transfers. The application layer is expected to create
+ *   the FATF record before broadcasting, but application bugs, retry storms, or missed
+ *   code paths can cause the record to be absent at broadcast time.
+ *
+ *   This trigger is the DB-level backstop. Without it, a single application failure path
+ *   can sweep funds above the jurisdictional threshold without a Travel Rule filing — a
+ *   VASP regulatory violation carrying potential license revocation.
+ *
+ * SCOPE:
+ *   Only fires on constructing → broadcast transitions. Other transitions are unaffected.
+ *   Platform-mode payouts (destination_address IS NULL) are excluded — no on-chain sweep
+ *   occurs and no FATF record is required.
+ *
+ * BYPASS:
+ *   Setting platform_config.fatf_enabled = FALSE disables all FATF enforcement.
+ *   This is intentional: FATF enforcement is controlled by the owner feature flag to
+ *   allow staged rollout after VASP registration (see platform_config comments).
+ */
+CREATE OR REPLACE FUNCTION fn_pr_fatf_broadcast_guard()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS $fn$
+DECLARE
+    v_fatf_enabled BOOLEAN;
+    v_fatf_exists  BOOLEAN;
+BEGIN
+    -- Only enforce on constructing → broadcast transition.
+    IF OLD.status != 'constructing' OR NEW.status != 'broadcast' THEN
+        RETURN NEW;
+    END IF;
+
+    -- Platform-mode payouts have no on-chain destination; FATF does not apply.
+    IF NEW.wallet_mode = 'platform' OR NEW.destination_address IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    -- Check whether FATF enforcement is enabled for this network.
+    SELECT fatf_enabled INTO v_fatf_enabled
+    FROM platform_config
+    WHERE network = NEW.network;
+
+    IF NOT FOUND OR NOT v_fatf_enabled THEN
+        RETURN NEW;
+    END IF;
+
+    -- Verify that a fatf_travel_rule_records row exists for this payout.
+    SELECT EXISTS (
+        SELECT 1 FROM fatf_travel_rule_records
+        WHERE payout_record_id = NEW.id
+    ) INTO v_fatf_exists;
+
+    IF NOT v_fatf_exists THEN
+        RAISE EXCEPTION
+            'payout_records: FATF Travel Rule record is required before broadcast for '
+            'payout % on % (net_satoshis=%). '
+            'Create a fatf_travel_rule_records row before transitioning to broadcast. '
+            'FATF enforcement is active: platform_config.fatf_enabled = TRUE for network %.',
+            NEW.id, NEW.network, NEW.net_satoshis, NEW.network
+            USING ERRCODE = 'P0001';
+    END IF;
+
+    RETURN NEW;
+END;
+$fn$;
+
+COMMENT ON FUNCTION fn_pr_fatf_broadcast_guard() IS
+    'Blocks constructing → broadcast when fatf_enabled = TRUE and no '
+    'fatf_travel_rule_records row exists for the payout. '
+    'Platform-mode payouts (no destination address) are exempt. '
+    'FATF enforcement is disabled when platform_config.fatf_enabled = FALSE. '
+    'DB-level backstop; application layer should also enforce before sweep construction.';
+
+CREATE TRIGGER trg_pr_fatf_broadcast_guard
+    BEFORE UPDATE OF status ON payout_records
+    FOR EACH ROW EXECUTE FUNCTION fn_pr_fatf_broadcast_guard();
+
+
 -- +goose StatementEnd
 
 -- +goose Down
 -- +goose StatementBegin
 
+DROP TRIGGER IF EXISTS trg_pr_fatf_broadcast_guard    ON payout_records;
 DROP TRIGGER IF EXISTS trg_pr_status_guard            ON payout_records;
 DROP TRIGGER IF EXISTS trg_pr_destination_consistency ON payout_records;
 DROP TRIGGER IF EXISTS trg_pr_vendor_consistency      ON payout_records;
 DROP TRIGGER IF EXISTS trg_payout_records_guard       ON payout_records;
 
+DROP FUNCTION IF EXISTS fn_pr_fatf_broadcast_guard();
 DROP FUNCTION IF EXISTS fn_pr_status_guard();
 DROP FUNCTION IF EXISTS fn_pr_destination_consistency();
 DROP FUNCTION IF EXISTS fn_pr_vendor_consistency();

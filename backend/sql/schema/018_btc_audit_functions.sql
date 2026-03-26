@@ -98,12 +98,13 @@ BEGIN
         RETURN NEW;
     END IF;
 
-    -- Use COALESCE(email, username) so OAuth-only accounts that have no email
-    -- (users.email IS NULL) are matched against their username instead. Without this,
-    -- v_expected_label would be NULL for any OAuth-only user and the trigger would
-    -- always raise a false-positive spoofing exception for those actors.
+    -- FOR SHARE: acquires a shared lock on the user row to prevent concurrent
+    -- deletion or email change from racing with this validation.
+    -- COALESCE(email, username): OAuth-only accounts may have no email; fall back
+    -- to username so those actors are not always rejected.
     SELECT COALESCE(email, username) INTO v_expected_label
-    FROM users WHERE id = NEW.actor_id;
+    FROM users WHERE id = NEW.actor_id
+    FOR SHARE;
 
     IF v_expected_label IS NULL THEN
         RAISE EXCEPTION
@@ -116,7 +117,9 @@ BEGIN
     IF v_expected_label IS DISTINCT FROM NEW.actor_label THEN
         RAISE EXCEPTION
             'financial_audit_events: actor_label ''%'' does not match '
-            'COALESCE(email, username) ''%'' for actor_id %. Possible actor spoofing.',
+            'COALESCE(email, username) ''%'' for actor_id %. '
+            'If actor_label stores HMAC-SHA256(email, server_secret), verify the HMAC '
+            'is computed correctly and the server secret matches. Possible actor spoofing.',
             NEW.actor_label, v_expected_label, NEW.actor_id;
     END IF;
 
@@ -128,8 +131,11 @@ COMMENT ON FUNCTION fn_fae_validate_actor_label() IS
     'Rejects INSERT on financial_audit_events when actor_label does not match '
     'COALESCE(users.email, users.username) for the given actor_id. '
     'COALESCE handles OAuth-only accounts that have no email address set. '
-    'Prevents identity spoofing in the audit trail. '
-    'Skips validation for system actors and NULL actor_id rows.';
+    'Uses SELECT FOR SHARE to prevent false-positive failures from concurrent user '
+    'deletion or email updates racing with this trigger (HIGH-2 fix). '
+    'Skips validation for system actors and NULL actor_id rows. '
+    'GDPR: financial_audit_events is immutable; store HMAC-SHA256(email, server_secret) '
+    'in actor_label instead of raw email to satisfy Article 17. See COMP-02 in todo.md.';
 
 CREATE TRIGGER trg_fae_validate_actor
     BEFORE INSERT ON financial_audit_events

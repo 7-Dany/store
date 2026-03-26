@@ -1,0 +1,249 @@
+---
+title: "Tx Status Batch"
+description: "Look up the on-chain status of up to 20 wallet transactions in a single request."
+api: "GET /bitcoin/tx/status"
+---
+
+<ParamField query="ids" type="string" required>
+  A comma-separated list of transaction IDs to look up. Between 1 and 20 IDs per
+  request. Each ID must be a 64-character hex string. IDs may be submitted in
+  upper or lower case — they are normalised to lowercase before lookup.
+
+  Duplicate IDs are silently deduplicated; the response map will contain only one
+  entry per unique transaction ID.
+
+  **Example:** `ids=abc123...def,456fed...789`
+</ParamField>
+
+<Warning>
+  **Wallet transactions only.** This endpoint resolves transactions tracked by
+  the node's wallet, or currently in the public mempool. Arbitrary on-chain
+  transactions from other addresses will return `not_found` or a node error.
+  Support for querying any transaction via a block explorer is planned but not
+  yet available.
+</Warning>
+
+## Behaviour
+
+Returns a map of `txid → status object` for every unique transaction ID in the
+request. The possible statuses for each entry are the same as the single-lookup
+endpoint ([`GET /bitcoin/tx/{txid}/status`](/api-reference/bitcoin/txstatus/get-tx-status)):
+
+| Status | Meaning |
+|---|---|
+| `confirmed` | The transaction has at least one confirmation. `confirmations` and `block_height` are included. |
+| `mempool` | The transaction is in the public mempool with zero confirmations. `confirmations` is `0`. |
+| `not_found` | The transaction is unknown to the node and absent from the mempool. |
+| `conflicting` | The transaction was double-spent or replaced and will never confirm. |
+| `abandoned` | The transaction has been permanently abandoned and will never confirm. |
+
+**Deduplication** — If the same `txid` appears more than once in `ids`, it is
+looked up once and appears exactly once in the response map.
+
+**Partial results** — The response always contains one entry per unique input ID.
+There is no partial-success error; if the node is unavailable the entire request
+fails with `502`.
+
+**`block_height`** — Only present on entries where `status` is `confirmed`.
+
+## Rate Limiting
+
+**20 requests per 1 minute per IP address** (shared with the single-lookup endpoint).
+
+The rate limiter runs **before** JWT authentication. Requests that exceed the
+limit are rejected with `429` before token validation occurs.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response
+with a `Retry-After` header indicating when they may retry.
+
+<ResponseExample>
+```json 200
+{
+  "statuses": {
+    "a1b2c3d4...": {
+      "status": "confirmed",
+      "confirmations": 12,
+      "block_height": 2817430
+    },
+    "e5f6a7b8...": {
+      "status": "mempool",
+      "confirmations": 0
+    },
+    "deadbeef...": {
+      "status": "not_found"
+    }
+  }
+}
+```
+
+```json 400
+{
+  "code": "missing_ids",
+  "message": "ids query parameter is required"
+}
+```
+
+```json 400
+{
+  "code": "too_many_ids",
+  "message": "at most 20 transaction IDs may be queried per request"
+}
+```
+
+```json 400
+{
+  "code": "invalid_txid",
+  "message": "each txid must be a 64-character hex string"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "authentication required"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+
+```json 502
+{
+  "code": "service_unavailable",
+  "message": "bitcoin node is temporarily unreachable"
+}
+```
+
+```json 503
+{
+  "code": "wallet_not_loaded",
+  "message": "bitcoin node has no wallet loaded — contact support"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    All transactions were resolved. The response contains a `statuses` map keyed
+    by `txid`. Each value has the same shape as the single-lookup response.
+
+    ```json
+    {
+      "statuses": {
+        "a1b2c3d4...": {
+          "status": "confirmed",
+          "confirmations": 12,
+          "block_height": 2817430
+        },
+        "e5f6a7b8...": {
+          "status": "mempool",
+          "confirmations": 0
+        },
+        "deadbeef...": {
+          "status": "not_found"
+        }
+      }
+    }
+    ```
+
+    | Field | Type | Notes |
+    |---|---|---|
+    | `statuses` | object | Map of `txid → status object` |
+    | `statuses[txid].status` | string | One of `confirmed`, `mempool`, `not_found`, `conflicting`, `abandoned` |
+    | `statuses[txid].confirmations` | integer | Present for `confirmed` and `mempool` only |
+    | `statuses[txid].block_height` | integer | Present for `confirmed` only |
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    One of several validation failures. Inspect `code` to determine the cause.
+
+    **`missing_ids`** — The `ids` query parameter was not provided or is empty.
+    ```json
+    {
+      "code": "missing_ids",
+      "message": "ids query parameter is required"
+    }
+    ```
+
+    **`too_many_ids`** — More than 20 transaction IDs were submitted.
+    ```json
+    {
+      "code": "too_many_ids",
+      "message": "at most 20 transaction IDs may be queried per request"
+    }
+    ```
+
+    **`invalid_txid`** — One or more IDs is not a valid 64-character hex string.
+    ```json
+    {
+      "code": "invalid_txid",
+      "message": "each txid must be a 64-character hex string"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    No valid JWT was provided or the user ID could not be extracted from the token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 20 requests per 1 minute. Check the `Retry-After`
+    response header for the number of seconds to wait before retrying.
+
+    Note: this limit is enforced **before** JWT authentication.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="502 — Bad Gateway">
+    The Bitcoin node RPC endpoint is temporarily unreachable. Retry after a short delay.
+
+    ```json
+    {
+      "code": "service_unavailable",
+      "message": "bitcoin node is temporarily unreachable"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="503 — Service Unavailable">
+    The Bitcoin node has no wallet loaded. This is a server-side configuration
+    issue — retrying will not help. Contact support.
+
+    ```json
+    {
+      "code": "wallet_not_loaded",
+      "message": "bitcoin node has no wallet loaded — contact support"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

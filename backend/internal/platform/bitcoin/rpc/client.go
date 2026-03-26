@@ -396,6 +396,10 @@ func classifyError(err error) string {
 // Network and timeout errors immediately flip bitcoin_rpc_connected to 0,
 // providing faster disconnection detection than waiting for the next
 // GetBlockchainInfo liveness probe tick.
+//
+// All log records include rpc_code and rpc_message when the error is a
+// structured *RPCError from Bitcoin Core, making log searches by error code
+// reliable (e.g. rpc_code=-5 for not-found, rpc_code=-18 for no wallet).
 func (c *client) call(ctx context.Context, method string, params []any, out any) error {
 	start := time.Now()
 	err := c.doCall(ctx, method, params, out)
@@ -404,31 +408,45 @@ func (c *client) call(ctx context.Context, method string, params []any, out any)
 	if err != nil {
 		errType := classifyError(err)
 
-		switch errType {
-		case RPCErrNotFound, RPCErrPruned:
-			logger.Debug(ctx, "rpc: expected absence",
-				"method", method, "error_type", errType, "error", err)
-		case RPCErrCanceled:
-			// Application or caller shutdown — not a failure worth logging.
-		case RPCErrUnknown:
-			if method == rpcMethodGetRawTransaction {
-				// On a pruned node without txindex, Bitcoin Core returns HTTP 500 when
-				// a transaction left the mempool between the ZMQ hashtx event and this
-				// call. This is an expected race condition, not a node failure.
-				logger.Debug(ctx, "rpc: expected race (tx left mempool before call)",
-					"method", method, "error_type", errType, "error", err)
-			} else {
-				logger.Warn(ctx, "rpc: call failed",
-					"method", method, "error_type", errType,
-					"elapsed_s", elapsed, "error", err)
-			}
-		default:
-			logger.Warn(ctx, "rpc: call failed",
-				"method", method, "error_type", errType,
-				"elapsed_s", elapsed, "error", err)
+		// Extract structured fields
+		rpcAttrs := rpcErrorAttrs(err)
+
+		// Base structured args (shared across all branches)
+		baseArgs := []any{
+			"method", method,
+			"error_type", errType,
+			"error", err,
 		}
 
-		// Proactively mark the node as unreachable on infrastructure errors.
+		switch errType {
+		case RPCErrNotFound, RPCErrPruned:
+			args := append(baseArgs, rpcAttrs...)
+			logger.Debug(ctx, "rpc: expected absence", args...)
+
+		case RPCErrCanceled:
+			// Application or caller shutdown — not a failure worth logging.
+
+		case RPCErrUnknown:
+			if method == rpcMethodGetRawTransaction {
+				args := append(baseArgs, rpcAttrs...)
+				logger.Debug(ctx, "rpc: expected race (tx left mempool before call)", args...)
+			} else {
+				args := append(baseArgs,
+					"elapsed_s", elapsed,
+				)
+				args = append(args, rpcAttrs...)
+				logger.Warn(ctx, "rpc: call failed", args...)
+			}
+
+		default:
+			args := append(baseArgs,
+				"elapsed_s", elapsed,
+			)
+			args = append(args, rpcAttrs...)
+			logger.Warn(ctx, "rpc: call failed", args...)
+		}
+
+		// Infrastructure health tracking
 		if errType == RPCErrNetwork || errType == RPCErrTimeout {
 			c.recorder.SetRPCConnected(false)
 		}
@@ -438,7 +456,20 @@ func (c *client) call(ctx context.Context, method string, params []any, out any)
 	} else {
 		c.recorder.OnRPCCall(method, RPCStatusSuccess, elapsed)
 	}
+
 	return err
+}
+
+// rpcErrorAttrs extracts rpc_code and rpc_message from an *RPCError in the
+// error chain and returns them as a flat key-value slice suitable for slog.
+// Returns an empty slice when the error is not (or does not wrap) an *RPCError,
+// so callers can always splat the result into a log call without a nil check.
+func rpcErrorAttrs(err error) []any {
+	var rpcErr *RPCError
+	if errors.As(err, &rpcErr) {
+		return []any{"rpc_code", rpcErr.Code, "rpc_message", rpcErr.Message}
+	}
+	return nil
 }
 
 // retryCall wraps call() with exponential backoff for idempotent RPC methods.
@@ -453,38 +484,56 @@ func (c *client) call(ctx context.Context, method string, params []any, out any)
 // directly — their callers own retry semantics.
 func (c *client) retryCall(ctx context.Context, method string, params []any, out any) error {
 	backoff := c.retryBase
+
 	for attempt := range rpcMaxRetries {
 		err := c.call(ctx, method, params, out)
 		if err == nil {
 			return nil
 		}
+
 		errType := classifyError(err)
+
 		if errType != RPCErrNetwork && errType != RPCErrTimeout {
 			return err // deterministic error — no point retrying
 		}
+
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+
 		logger.Warn(ctx, "rpc: transient error — retrying",
 			"method", method,
 			"attempt", attempt+1,
 			"max_retries", rpcMaxRetries,
 			"backoff", backoff,
-			"error", err)
+			"error", err,
+		)
+
 		if !sleepCtx(ctx, backoff) {
 			return ctx.Err()
 		}
+
 		backoff = rpcNextBackoff(backoff, c.retryCeiling)
 	}
+
 	// Final attempt — let the error propagate to the caller.
 	err := c.call(ctx, method, params, out)
 	if err != nil {
 		errType := classifyError(err)
+
 		if errType == RPCErrNetwork || errType == RPCErrTimeout {
-			logger.Error(ctx, "rpc: all retries exhausted — node unreachable",
-				"method", method, "max_retries", rpcMaxRetries, "error", err)
+			baseArgs := []any{
+				"method", method,
+				"max_retries", rpcMaxRetries,
+				"error", err,
+			}
+
+			args := append(baseArgs, rpcErrorAttrs(err)...)
+
+			logger.Error(ctx, "rpc: all retries exhausted — node unreachable", args...)
 		}
 	}
+
 	return err
 }
 
@@ -520,6 +569,15 @@ func (c *client) doCall(ctx context.Context, method string, params []any, out an
 	defer resp.Body.Close()
 
 	// Validate HTTP status before reading the body.
+	//
+	// Bitcoin Core returns HTTP 500 for certain application-layer errors that
+	// carry a valid JSON-RPC error body (e.g. gettransaction on a txid not in
+	// the wallet returns {"error":{"code":-5,…}} with HTTP 500). We must read
+	// and parse the body in that case so callers can distinguish an expected
+	// absence (code -5 → IsNotFoundError) from a genuine node failure.
+	//
+	// All other non-200 status codes are infrastructure failures and we return
+	// immediately without attempting to read the body.
 	switch resp.StatusCode {
 	case http.StatusOK:
 		// Normal — fall through.
@@ -529,6 +587,26 @@ func (c *client) doCall(ctx context.Context, method string, params []any, out an
 	case http.StatusForbidden:
 		return telemetry.RPC(method+".auth",
 			fmt.Errorf("HTTP 403 Forbidden — check rpcallowip in bitcoin.conf"))
+	case http.StatusInternalServerError:
+		// Bitcoin Core uses HTTP 500 for both genuine node failures AND
+		// application-layer RPC errors (e.g. code -5 "not in wallet").
+		// Attempt to parse the body as a JSON-RPC error envelope; if it
+		// contains a structured RPCError, return that so callers can
+		// inspect the code (IsNotFoundError, IsPrunedBlockError, etc.).
+		// Only fall back to the generic http_status error when the body is
+		// absent, oversized, or not a valid JSON-RPC error response.
+		ctxBody500 := &contextReader{ctx: ctx, r: resp.Body}
+		raw500, readErr := io.ReadAll(io.LimitReader(ctxBody500, rpcMaxResponseBytes+1))
+		if readErr == nil && len(raw500) <= rpcMaxResponseBytes {
+			var rpcResp500 rpcResponse
+			if jsonErr := json.Unmarshal(raw500, &rpcResp500); jsonErr == nil && rpcResp500.Error != nil {
+				// Structured RPC error — return it unwrapped so errors.As works.
+				return rpcResp500.Error
+			}
+		}
+		// Body missing, oversized, or not a JSON-RPC envelope — genuine node failure.
+		return telemetry.RPC(method+".http_status",
+			fmt.Errorf("unexpected HTTP 500 from Bitcoin Core — check node logs for details"))
 	default:
 		return telemetry.RPC(method+".http_status",
 			fmt.Errorf("unexpected HTTP %d from Bitcoin Core — check node logs for details", resp.StatusCode))
@@ -712,7 +790,7 @@ func (c *client) EstimateSmartFee(ctx context.Context, confTarget int, mode stri
 //     for walletprocesspsbt to locate signing keys)
 func (c *client) WalletCreateFundedPSBT(ctx context.Context, outputs []map[string]any, options map[string]any) (FundedPSBT, error) {
 	if outputs == nil {
-		return FundedPSBT{}, fmt.Errorf("WalletCreateFundedPSBT: outputs must not be nil — "+
+		return FundedPSBT{}, fmt.Errorf("WalletCreateFundedPSBT: outputs must not be nil — " +
 			"pass an empty slice to auto-select UTXOs; nil marshals to JSON null and Bitcoin Core rejects it")
 	}
 	var result FundedPSBT

@@ -273,6 +273,15 @@
                   "api-reference/bitcoin/events/events",
                   "api-reference/bitcoin/events/status"
                 ]
+              },
+              {
+                "group": "Tx Status",
+                "icon": "receipt",
+                "expanded": false,
+                "pages": [
+                  "api-reference/bitcoin/txstatus/get-tx-status",
+                  "api-reference/bitcoin/txstatus/get-tx-status-batch"
+                ]
               }
             ]
           },

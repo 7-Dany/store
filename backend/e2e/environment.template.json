@@ -39,6 +39,13 @@
       "description": "One-time secret that gates POST /owner/bootstrap. Must match BOOTSTRAP_SECRET in .env."
     },
     {
+      "key": "txstatus_known_txid",
+      "value": "4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b",
+      "type": "default",
+      "enabled": true,
+      "description": "A testnet4 txid known to the Bitcoin Core node. Used by the happy-path-single test. This is the testnet4 genesis coinbase transaction (block 0). Replace with any confirmed txid your node knows about."
+    },
+    {
       "key": "gmail_access_token",
       "value": "",
       "type": "secret",

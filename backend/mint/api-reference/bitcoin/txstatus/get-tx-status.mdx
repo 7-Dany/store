@@ -1,0 +1,218 @@
+---
+title: "Tx Status"
+description: "Look up the on-chain status of a wallet transaction by its transaction ID."
+api: "GET /bitcoin/tx/{txid}/status"
+---
+
+<ParamField path="txid" type="string" required>
+  The transaction ID to look up. Must be a 64-character hex string. Upper and
+  lower case are both accepted — the value is normalised to lowercase before lookup.
+</ParamField>
+
+<Warning>
+  **Wallet transactions only.** This endpoint resolves transactions that are
+  tracked by the node's wallet, or that are currently in the public mempool.
+  Arbitrary on-chain transactions from other addresses (e.g. historical
+  transactions not seen by the wallet) will return `not_found` or a node error.
+  Support for querying any transaction via a block explorer is planned but not
+  yet available.
+</Warning>
+
+## Behaviour
+
+Returns the current on-chain status of the given transaction as seen by the
+Bitcoin node. The possible statuses are:
+
+| Status | Meaning |
+|---|---|
+| `confirmed` | The transaction has at least one confirmation. `confirmations` and `block_height` are included. |
+| `mempool` | The transaction is in the public mempool with zero confirmations. `confirmations` is `0`. |
+| `not_found` | The transaction is unknown to the node and absent from the mempool. |
+| `conflicting` | The transaction was double-spent or replaced and will never confirm. |
+| `abandoned` | The transaction has been permanently abandoned and will never confirm. |
+
+**Confirmation count** — `confirmations` reflects the node's current view and
+may change transiently during chain reorganisations. Clients are responsible for
+applying their own minimum-confirmation threshold before treating a transaction
+as final.
+
+**`block_height`** — Only present when `status` is `confirmed`. Omitted for all
+other statuses.
+
+**Case insensitivity** — `txid` may be submitted in upper or lower case. The
+value is normalised to lowercase before lookup.
+
+## Rate Limiting
+
+**20 requests per 1 minute per IP address**.
+
+The rate limiter runs **before** JWT authentication. Requests that exceed the
+limit are rejected with `429` before token validation occurs.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response
+with a `Retry-After` header indicating when they may retry.
+
+<ResponseExample>
+```json 200
+{
+  "status": "confirmed",
+  "confirmations": 6,
+  "block_height": 2817430
+}
+```
+
+```json 200
+{
+  "status": "mempool",
+  "confirmations": 0
+}
+```
+
+```json 200
+{
+  "status": "not_found"
+}
+```
+
+```json 400
+{
+  "code": "invalid_txid",
+  "message": "txid must be a 64-character hex string"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "authentication required"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+
+```json 502
+{
+  "code": "service_unavailable",
+  "message": "bitcoin node is temporarily unreachable"
+}
+```
+
+```json 503
+{
+  "code": "wallet_not_loaded",
+  "message": "bitcoin node has no wallet loaded — contact support"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The transaction was resolved successfully. The shape of the response depends
+    on `status`.
+
+    **Confirmed** — includes `confirmations` (≥ 1) and `block_height`.
+    ```json
+    {
+      "status": "confirmed",
+      "confirmations": 6,
+      "block_height": 2817430
+    }
+    ```
+
+    **Mempool** — includes `confirmations` fixed at `0`. `block_height` is omitted.
+    ```json
+    {
+      "status": "mempool",
+      "confirmations": 0
+    }
+    ```
+
+    **Not found / conflicting / abandoned** — only `status` is present.
+    ```json
+    { "status": "not_found" }
+    ```
+
+    | Field | Type | Notes |
+    |---|---|---|
+    | `status` | string | One of `confirmed`, `mempool`, `not_found`, `conflicting`, `abandoned` |
+    | `confirmations` | integer | Present for `confirmed` and `mempool` only |
+    | `block_height` | integer | Present for `confirmed` only |
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    The `txid` path parameter is not a valid 64-character hex string.
+
+    ```json
+    {
+      "code": "invalid_txid",
+      "message": "txid must be a 64-character hex string"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    No valid JWT was provided or the user ID could not be extracted from the token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 20 requests per 1 minute. Check the `Retry-After`
+    response header for the number of seconds to wait before retrying.
+
+    Note: this limit is enforced **before** JWT authentication.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="502 — Bad Gateway">
+    The Bitcoin node RPC endpoint is temporarily unreachable. Retry after a short delay.
+
+    ```json
+    {
+      "code": "service_unavailable",
+      "message": "bitcoin node is temporarily unreachable"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="503 — Service Unavailable">
+    The Bitcoin node has no wallet loaded. This is a server-side configuration
+    issue — retrying will not help. Contact support.
+
+    ```json
+    {
+      "code": "wallet_not_loaded",
+      "message": "bitcoin node has no wallet loaded — contact support"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

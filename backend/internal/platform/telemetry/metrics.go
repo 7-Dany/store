@@ -141,6 +141,12 @@ type Registry struct {
 	// for total watched addresses, recomputed every 15 min from a Redis SCAN.
 	// network label: "testnet4" | "mainnet". Cardinality: 2.
 	bitcoinGlobalWatchCountEstimate *prometheus.GaugeVec
+
+	// ── Bitcoin TxStatus ───────────────────────────────────────────────────
+	// bitcoinTxStatusResolved counts resolved transaction lookups by outcome.
+	// status label: confirmed | mempool | not_found | conflicting | abandoned.
+	// Cardinality: 5 series.
+	bitcoinTxStatusResolved *prometheus.CounterVec
 }
 
 // NewRegistry constructs a Registry, registers all metric descriptors on a
@@ -535,7 +541,13 @@ func NewRegistry() *Registry {
 			"WARNING below 100; CRITICAL below 10.",
 	})
 
-	// ── Bitcoin Watch ─────────────────────────────────────────────────────
+	// ── Bitcoin TxStatus ───────────────────────────────────────────────────
+	r.bitcoinTxStatusResolved = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "bitcoin_txstatus_resolved_total",
+		Help: "Total transaction status resolutions by status (confirmed|mempool|not_found|conflicting|abandoned).",
+	}, []string{"status"})
+
+	// ── Bitcoin Watch ───────────────────────────────────────────────────
 	r.bitcoinWatchRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "bitcoin_watch_rejected_total",
 		Help: "Total POST /bitcoin/watch requests rejected by reason. " +
@@ -652,6 +664,8 @@ func NewRegistry() *Registry {
 		r.bitcoinRPCDuration,
 		r.bitcoinRPCErrorsTotal,
 		r.bitcoinKeypoolSize,
+		// Bitcoin TxStatus
+		r.bitcoinTxStatusResolved,
 		// Bitcoin Watch
 		r.bitcoinWatchRejected,
 		r.bitcoinGlobalWatchCountEstimate,

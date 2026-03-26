@@ -1,0 +1,1066 @@
+{
+  "info": {
+    "_postman_id": "bitcoin-txstatus-e2e",
+    "name": "Bitcoin – Tx Status (GET /tx/{txid}/status · GET /tx/status)",
+    "description": "E2E tests for the bitcoin transaction-status feature.\n\nRoutes under test:\n  GET /api/v1/bitcoin/tx/{txid}/status   — single-transaction status lookup (JWTAuth required)\n  GET /api/v1/bitcoin/tx/status          — batch status lookup via ?ids= (JWTAuth required)\n\nFolder execution order:\n  1. setup                    — register, verify email (via Gmail), login → txstatus_access_token\n  2. unauthenticated          — requests without JWT → 401\n  3. validation-single        — single-tx path-param guards (invalid txid format)\n  4. happy-path-single        — GET /tx/{txid}/status with known txids → correct status + shape\n  5. validation-batch         — batch query-param guards (missing ids, too many, invalid txid)\n  6. happy-path-batch         — GET /tx/status?ids=... with multiple txids → correct map shape\n  7. rate-limiting            — IP limiter exhaustion: 20 warmup → ok, 21st → 429\n\nPre-requisites:\n  - BTC_NETWORK=testnet4 in .env.\n  - TRUSTED_PROXIES=127.0.0.1/32 in .env so X-Forwarded-For rewrites work.\n  - Run `make _e2e-kv-clean` before each run to reset Redis state.\n  - Run `make _e2e-db-clean` between runs to remove the setup user.\n  - gmail_access_token must be a valid Gmail OAuth2 token set in the Postman environment.\n  - txstatus_known_txid must be set in environment.json to a testnet4 txid known to the node.\n  - txstatus_mempool_txid (optional) — a txid currently in the node's mempool.\n\nNotes on what is NOT covered here (covered by internal unit tests):\n  - isHex validation correctness                    — handler_test.go\n  - Uppercase txid normalisation                    — handler_test.go\n  - ErrRPCUnavailable → 502                         — handler_test.go (mock TxQuerier)\n  - GetMempoolEntry fallback logic                  — service_test.go\n  - Conflicting / abandoned status paths            — service_test.go\n  - Duplicate txid deduplication in batch           — handler_test.go\n  - Metric recording (OnTxStatusResolved)           — service_test.go",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Increment the request sequence counter and derive a unique X-Forwarded-For IP",
+          "// for every request so non-RL folders never exhaust any rate-limit bucket.",
+          "// Rate-limiting folder overrides _xff in its own prerequest script.",
+          "// Requires TRUSTED_PROXIES=127.0.0.1/32 in .env.",
+          "const n = (pm.collectionVariables.get('_req_seq') | 0) + 1;",
+          "pm.collectionVariables.set('_req_seq', n);",
+          "const ip = '10.' + ((n>>16)&0xff) + '.' + ((n>>8)&0xff) + '.' + (n&0xff);",
+          "pm.collectionVariables.set('_xff', ip);"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "setup",
+      "description": "Registers the gmail_test_email user, fetches the OTP from Gmail, verifies the email, then logs in to obtain txstatus_access_token. All downstream folders depend on this token being set.",
+      "item": [
+        {
+          "name": "POST /register → 201 (setup user)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const email = pm.environment.get('gmail_test_email');",
+                  "if (!email) {",
+                  "    console.error('[ERROR] gmail_test_email not set in environment — add it to environment.json.');",
+                  "}",
+                  "pm.collectionVariables.set('txstatus_happy_email', email);",
+                  "pm.collectionVariables.set('txstatus_happy_password', 'P@ssw0rd1!');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 201', () => pm.response.to.have.status(201));",
+                  "pm.test('message field present and non-empty', () => pm.expect(pm.response.json().message).to.be.a('string').and.not.empty);",
+                  "",
+                  "const token = pm.variables.get('gmail_access_token');",
+                  "if (!token) { console.warn('[WARN] gmail_access_token not set — skipping Gmail fetch'); return; }",
+                  "",
+                  "console.log('[INFO] Waiting 8 s for verification email to arrive in Gmail...');",
+                  "const start = Date.now();",
+                  "while (Date.now() - start < 8000) {}",
+                  "",
+                  "const query = encodeURIComponent('subject:\"Verify your\" newer_than:1h');",
+                  "pm.sendRequest({",
+                  "    url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages?q=' + query + '&maxResults=3',",
+                  "    method: 'GET',",
+                  "    header: { Authorization: 'Bearer ' + token }",
+                  "}, (err, res) => {",
+                  "    if (err) { console.error('[ERROR] Gmail list failed:', err); return; }",
+                  "    if (res.code === 401) { console.error('[ERROR] Gmail token expired'); return; }",
+                  "    const msgs = res.json().messages;",
+                  "    if (!msgs || !msgs.length) { console.warn('[WARN] No matching email found in Gmail.'); return; }",
+                  "    pm.sendRequest({",
+                  "        url: 'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + msgs[0].id + '?format=full',",
+                  "        method: 'GET',",
+                  "        header: { Authorization: 'Bearer ' + token }",
+                  "    }, (err2, res2) => {",
+                  "        if (err2) { console.error('[ERROR] Gmail fetch failed:', err2); return; }",
+                  "        const msg = res2.json();",
+                  "        let body = '';",
+                  "        const parts = msg.payload && msg.payload.parts;",
+                  "        if (parts && parts.length) {",
+                  "            const p = parts.find(x => x.mimeType === 'text/plain') || parts.find(x => x.mimeType === 'text/html');",
+                  "            if (p && p.body && p.body.data) body = atob(p.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        } else if (msg.payload && msg.payload.body && msg.payload.body.data) {",
+                  "            body = atob(msg.payload.body.data.replace(/-/g, '+').replace(/_/g, '/'));",
+                  "        }",
+                  "        if (!body) { console.warn('[WARN] Could not decode email body.'); return; }",
+                  "        const match = body.match(/(?<!#)\\b(\\d{6})\\b/);",
+                  "        if (!match) { console.warn('[WARN] No 6-digit OTP found in email body.'); return; }",
+                  "        pm.collectionVariables.set('txstatus_code', match[1]);",
+                  "        console.log('[INFO] OTP stored in txstatus_code:', match[1]);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"display_name\": \"TxStatusHappy\", \"email\": \"{{txstatus_happy_email}}\", \"password\": \"{{txstatus_happy_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/register",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "POST /verification → 200 (consume OTP)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.collectionVariables.get('txstatus_code');",
+                  "if (!code) {",
+                  "    console.error('[ERROR] txstatus_code is empty — Gmail fetch did not complete.');",
+                  "    console.error('        Check: gmail_access_token is set and not expired, --delay-request >= 8000.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('message includes \"verified\"', () => pm.expect(pm.response.json().message).to.include('verified'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"email\": \"{{txstatus_happy_email}}\", \"code\": \"{{txstatus_code}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/verification",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "verification"]
+            }
+          }
+        },
+        {
+          "name": "POST /login → 200 (obtain txstatus_access_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('access_token present and non-empty', () => {",
+                  "    pm.expect(body).to.have.property('access_token');",
+                  "    pm.expect(body.access_token).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.collectionVariables.set('txstatus_access_token', body.access_token);",
+                  "console.log('[INFO] txstatus_access_token stored.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"identifier\": \"{{txstatus_happy_email}}\", \"password\": \"{{txstatus_happy_password}}\"}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "unauthenticated",
+      "description": "Requests without a valid JWT must be rejected before handler logic runs.\nThe IP rate-limiter (btc:txstatus:ip:) runs first (unique XFF from collection prerequest), then deps.JWTAuth rejects.",
+      "item": [
+        {
+          "name": "GET /tx/{txid}/status — no Authorization header → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "const body = pm.response.json();",
+                  "pm.test('code is missing_token or unauthorized', () => {",
+                  "    pm.expect(['missing_token', 'unauthorized']).to.include(body.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000001/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000001", "status"]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/{txid}/status — expired/invalid Bearer JWT → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJub3QtYS1yZWFsLXVzZXIiLCJleHAiOjF9.INVALIDSIG"
+              },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000001/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000001", "status"]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/status — no Authorization header → 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 401', () => pm.response.to.have.status(401));",
+                  "const body = pm.response.json();",
+                  "pm.test('code is missing_token or unauthorized', () => {",
+                  "    pm.expect(['missing_token', 'unauthorized']).to.include(body.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status?ids=0000000000000000000000000000000000000000000000000000000000000001",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"],
+              "query": [{ "key": "ids", "value": "0000000000000000000000000000000000000000000000000000000000000001" }]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "validation-single",
+      "description": "Path-param validation for GET /tx/{txid}/status. All requests are authenticated.\nThe handler normalises txids to lowercase and rejects any value that is not a 64-character hex string.",
+      "item": [
+        {
+          "name": "GET /tx/{txid}/status — txid too short → 400 invalid_txid",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is invalid_txid', () => pm.expect(pm.response.json().code).to.eql('invalid_txid'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/abc123/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "abc123", "status"]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/{txid}/status — txid too long (65 chars) → 400 invalid_txid",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is invalid_txid', () => pm.expect(pm.response.json().code).to.eql('invalid_txid'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/00000000000000000000000000000000000000000000000000000000000000001/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "00000000000000000000000000000000000000000000000000000000000000001", "status"]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/{txid}/status — txid contains non-hex chars → 400 invalid_txid",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is invalid_txid', () => pm.expect(pm.response.json().code).to.eql('invalid_txid'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", "status"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "happy-path-single",
+      "description": "Successful GET /tx/{txid}/status lookups. Uses txstatus_access_token from setup.\n\ntxstatus_known_txid must be set in environment.json to a txid the node knows about.\nThe test asserts the response shape but does not assert the exact status value, since\nthe node's view of any given txid can change over time (confirmations increase, etc.).\n\nA not_found lookup is performed against the all-zeros txid, which no real transaction\ncan ever have.",
+      "item": [
+        {
+          "name": "GET /tx/{txid}/status — known txid → 200 with valid status shape",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const txid = pm.environment.get('txstatus_known_txid');",
+                  "if (!txid || txid.length !== 64) {",
+                  "    console.warn('[WARN] txstatus_known_txid not set or invalid in environment.json — this test may fail.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.response.code;",
+                  "if (code === 502) {",
+                  "    pm.test('node unreachable \u2014 handler correctly returned 502', () => {",
+                  "        pm.expect(pm.response.json().code).to.eql('service_unavailable');",
+                  "    });",
+                  "    console.log('[INFO] Bitcoin node not reachable (expected in offline CI).');",
+                  "} else {",
+                  "    pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "    const body = pm.response.json();",
+                  "    const validStatuses = ['confirmed', 'mempool', 'not_found', 'conflicting', 'abandoned'];",
+                  "    pm.test('status field is a valid TxStatus', () => {",
+                  "        pm.expect(body).to.have.property('status');",
+                  "        pm.expect(validStatuses).to.include(body.status);",
+                  "    });",
+                  "    if (body.status === 'confirmed') {",
+                  "        pm.test('confirmed: confirmations is a positive integer', () => {",
+                  "            pm.expect(body).to.have.property('confirmations');",
+                  "            pm.expect(body.confirmations).to.be.a('number').and.above(0);",
+                  "            pm.expect(Number.isInteger(body.confirmations)).to.be.true;",
+                  "        });",
+                  "        pm.test('confirmed: block_height is a positive integer', () => {",
+                  "            pm.expect(body).to.have.property('block_height');",
+                  "            pm.expect(body.block_height).to.be.a('number').and.above(0);",
+                  "            pm.expect(Number.isInteger(body.block_height)).to.be.true;",
+                  "        });",
+                  "    }",
+                  "    if (body.status === 'mempool') {",
+                  "        pm.test('mempool: confirmations is 0', () => {",
+                  "            pm.expect(body).to.have.property('confirmations');",
+                  "            pm.expect(body.confirmations).to.eql(0);",
+                  "        });",
+                  "        pm.test('mempool: block_height is absent', () => {",
+                  "            pm.expect(body).to.not.have.property('block_height');",
+                  "        });",
+                  "    }",
+                  "    if (['not_found', 'conflicting', 'abandoned'].includes(body.status)) {",
+                  "        pm.test(body.status + ': confirmations is absent', () => {",
+                  "            pm.expect(body).to.not.have.property('confirmations');",
+                  "        });",
+                  "        pm.test(body.status + ': block_height is absent', () => {",
+                  "            pm.expect(body).to.not.have.property('block_height');",
+                  "        });",
+                  "    }",
+                  "    console.log('[INFO] Single-tx status result:', JSON.stringify(body));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/{{txstatus_known_txid}}/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "{{txstatus_known_txid}}", "status"]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/{txid}/status — all-zeros txid → 200 status=not_found",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The all-zeros txid can never exist on any real chain.",
+                  "// The handler reaches the service, which returns not_found (no RPC error).",
+                  "// If the Bitcoin node is unreachable the handler returns 502 instead;",
+                  "// we accept either outcome and skip the not_found assertion in that case.",
+                  "const code = pm.response.code;",
+                  "if (code === 502) {",
+                  "    pm.test('node unreachable — handler correctly returned 502', () => {",
+                  "        pm.expect(pm.response.json().code).to.eql('service_unavailable');",
+                  "    });",
+                  "    console.log('[INFO] Bitcoin node not reachable (expected in offline CI).');",
+                  "} else {",
+                  "    pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "    const body = pm.response.json();",
+                  "    pm.test('status field is not_found', () => pm.expect(body.status).to.eql('not_found'));",
+                  "    pm.test('confirmations is absent for not_found', () => pm.expect(body).to.not.have.property('confirmations'));",
+                  "    pm.test('block_height is absent for not_found', () => pm.expect(body).to.not.have.property('block_height'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/{txid}/status — uppercase txid is normalised → 200 (same result as lowercase)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Build the uppercase variant of the known txid.",
+                  "const txid = pm.environment.get('txstatus_known_txid') || '0000000000000000000000000000000000000000000000000000000000000000';",
+                  "pm.collectionVariables.set('_txid_upper', txid.toUpperCase());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The handler normalises txids to lowercase before processing.",
+                  "// Submitting an UPPERCASE txid must produce the same HTTP 200 result",
+                  "// (or 502 if the node is down) — never a 400 invalid_txid.",
+                  "pm.test('status is not 400 (uppercase accepted)', () => pm.expect(pm.response.code).to.not.eql(400));",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('response body has a status field', () => {",
+                  "        pm.expect(pm.response.json()).to.have.property('status');",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/{{_txid_upper}}/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "{{_txid_upper}}", "status"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "validation-batch",
+      "description": "Query-param validation for GET /tx/status?ids=... All requests are authenticated.\nGuards checked in handler order: missing ids → 400, >20 ids → 400, any invalid txid → 400.",
+      "item": [
+        {
+          "name": "GET /tx/status — missing ids param → 400 missing_ids",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is missing_ids', () => pm.expect(pm.response.json().code).to.eql('missing_ids'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/status — empty ids param → 400 missing_ids",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is missing_ids', () => pm.expect(pm.response.json().code).to.eql('missing_ids'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status?ids=",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"],
+              "query": [{ "key": "ids", "value": "" }]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/status — 21 txids → 400 too_many_ids",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Build a comma-separated list of 21 valid txids.",
+                  "const txid = '0000000000000000000000000000000000000000000000000000000000000001';",
+                  "const ids = Array(21).fill(txid).join(',');",
+                  "pm.collectionVariables.set('_batch_21_ids', ids);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is too_many_ids', () => pm.expect(pm.response.json().code).to.eql('too_many_ids'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status?ids={{_batch_21_ids}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"],
+              "query": [{ "key": "ids", "value": "{{_batch_21_ids}}" }]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/status — one invalid txid in batch → 400 invalid_txid",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// One valid txid followed by one invalid one — handler rejects the whole batch.",
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is invalid_txid', () => pm.expect(pm.response.json().code).to.eql('invalid_txid'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status?ids=0000000000000000000000000000000000000000000000000000000000000001,notahex",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"],
+              "query": [{ "key": "ids", "value": "0000000000000000000000000000000000000000000000000000000000000001,notahex" }]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/status — txid in batch is 63 chars (too short) → 400 invalid_txid",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 400', () => pm.response.to.have.status(400));",
+                  "pm.test('code is invalid_txid', () => pm.expect(pm.response.json().code).to.eql('invalid_txid'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status?ids=000000000000000000000000000000000000000000000000000000000000001",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"],
+              "query": [{ "key": "ids", "value": "000000000000000000000000000000000000000000000000000000000000001" }]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "happy-path-batch",
+      "description": "Successful GET /tx/status?ids=... lookups. Uses txstatus_access_token from setup.\n\nThe response is a JSON object with a 'statuses' map keyed by txid.\nEach value must have the same shape as a single-tx status response.\nDuplicate txids in the request must collapse to a single map entry.",
+      "item": [
+        {
+          "name": "GET /tx/status — single txid in batch → 200 statuses map with 1 entry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.response.code;",
+                  "if (code === 502) {",
+                  "    pm.test('node unreachable — handler correctly returned 502', () => {",
+                  "        pm.expect(pm.response.json().code).to.eql('service_unavailable');",
+                  "    });",
+                  "    console.log('[INFO] Bitcoin node not reachable (expected in offline CI).');",
+                  "} else {",
+                  "    pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "    const body = pm.response.json();",
+                  "    pm.test('statuses map is present', () => pm.expect(body).to.have.property('statuses').that.is.an('object'));",
+                  "    pm.test('statuses has exactly 1 key', () => pm.expect(Object.keys(body.statuses)).to.have.lengthOf(1));",
+                  "    const txid = '0000000000000000000000000000000000000000000000000000000000000000';",
+                  "    pm.test('statuses key is the queried txid', () => pm.expect(body.statuses).to.have.property(txid));",
+                  "    const entry = body.statuses[txid];",
+                  "    const validStatuses = ['confirmed', 'mempool', 'not_found', 'conflicting', 'abandoned'];",
+                  "    pm.test('entry has a valid status field', () => {",
+                  "        pm.expect(entry).to.have.property('status');",
+                  "        pm.expect(validStatuses).to.include(entry.status);",
+                  "    });",
+                  "    console.log('[INFO] Batch single-entry result:', JSON.stringify(body));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status?ids=0000000000000000000000000000000000000000000000000000000000000000",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"],
+              "query": [{ "key": "ids", "value": "0000000000000000000000000000000000000000000000000000000000000000" }]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/status — two distinct txids → 200 statuses map with 2 entries",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.response.code;",
+                  "if (code === 502) {",
+                  "    pm.test('node unreachable — handler correctly returned 502', () => {",
+                  "        pm.expect(pm.response.json().code).to.eql('service_unavailable');",
+                  "    });",
+                  "    console.log('[INFO] Bitcoin node not reachable (expected in offline CI).');",
+                  "} else {",
+                  "    pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "    const body = pm.response.json();",
+                  "    pm.test('statuses map is present', () => pm.expect(body).to.have.property('statuses').that.is.an('object'));",
+                  "    pm.test('statuses has exactly 2 keys', () => pm.expect(Object.keys(body.statuses)).to.have.lengthOf(2));",
+                  "    const validStatuses = ['confirmed', 'mempool', 'not_found', 'conflicting', 'abandoned'];",
+                  "    Object.entries(body.statuses).forEach(([txid, entry]) => {",
+                  "        pm.test('entry ' + txid.slice(0,8) + '... has valid status', () => {",
+                  "            pm.expect(validStatuses).to.include(entry.status);",
+                  "        });",
+                  "    });",
+                  "    console.log('[INFO] Batch two-entry result:', JSON.stringify(body));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status?ids=0000000000000000000000000000000000000000000000000000000000000000,0000000000000000000000000000000000000000000000000000000000000001",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"],
+              "query": [{ "key": "ids", "value": "0000000000000000000000000000000000000000000000000000000000000000,0000000000000000000000000000000000000000000000000000000000000001" }]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/status — duplicate txids collapse to 1 entry",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sending the same txid twice must produce exactly ONE map entry.",
+                  "// Deduplication is performed in the handler before the service call.",
+                  "const code = pm.response.code;",
+                  "if (code === 502) {",
+                  "    pm.test('node unreachable — handler correctly returned 502', () => {",
+                  "        pm.expect(pm.response.json().code).to.eql('service_unavailable');",
+                  "    });",
+                  "    console.log('[INFO] Bitcoin node not reachable (expected in offline CI).');",
+                  "} else {",
+                  "    pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "    const body = pm.response.json();",
+                  "    pm.test('statuses map is present', () => pm.expect(body).to.have.property('statuses').that.is.an('object'));",
+                  "    pm.test('duplicate txids collapsed to 1 entry', () => pm.expect(Object.keys(body.statuses)).to.have.lengthOf(1));",
+                  "    console.log('[INFO] Deduplication result:', JSON.stringify(body));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status?ids=0000000000000000000000000000000000000000000000000000000000000000,0000000000000000000000000000000000000000000000000000000000000000",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"],
+              "query": [{ "key": "ids", "value": "0000000000000000000000000000000000000000000000000000000000000000,0000000000000000000000000000000000000000000000000000000000000000" }]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/status — maximum allowed (20 txids) → 200 statuses map",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Build 20 distinct-looking txids by varying the last byte.",
+                  "// They will all resolve as not_found but the handler must accept all 20.",
+                  "const base = '000000000000000000000000000000000000000000000000000000000000';",
+                  "const ids = [];",
+                  "for (let i = 0; i < 20; i++) {",
+                  "    ids.push(base + i.toString(16).padStart(4, '0'));",
+                  "}",
+                  "pm.collectionVariables.set('_batch_20_ids', ids.join(','));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const code = pm.response.code;",
+                  "if (code === 502) {",
+                  "    pm.test('node unreachable — handler correctly returned 502', () => {",
+                  "        pm.expect(pm.response.json().code).to.eql('service_unavailable');",
+                  "    });",
+                  "    console.log('[INFO] Bitcoin node not reachable (expected in offline CI).');",
+                  "} else {",
+                  "    pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "    const body = pm.response.json();",
+                  "    pm.test('statuses map is present', () => pm.expect(body).to.have.property('statuses').that.is.an('object'));",
+                  "    pm.test('statuses has 20 entries', () => pm.expect(Object.keys(body.statuses)).to.have.lengthOf(20));",
+                  "    console.log('[INFO] Batch 20-entry result: keys=', Object.keys(body.statuses).length);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status?ids={{_batch_20_ids}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"],
+              "query": [{ "key": "ids", "value": "{{_batch_20_ids}}" }]
+            }
+          }
+        },
+        {
+          "name": "GET /tx/status — uppercase txids in batch are normalised → 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Uppercase txids must be accepted and normalised to lowercase.",
+                  "// The response map key must be the lowercase form.",
+                  "const code = pm.response.code;",
+                  "if (code === 502) {",
+                  "    pm.test('node unreachable — handler correctly returned 502', () => {",
+                  "        pm.expect(pm.response.json().code).to.eql('service_unavailable');",
+                  "    });",
+                  "    console.log('[INFO] Bitcoin node not reachable (expected in offline CI).');",
+                  "} else {",
+                  "    pm.test('status is 200', () => pm.response.to.have.status(200));",
+                  "    const body = pm.response.json();",
+                  "    pm.test('statuses map present', () => pm.expect(body).to.have.property('statuses').that.is.an('object'));",
+                  "    const keys = Object.keys(body.statuses);",
+                  "    pm.test('all statuses keys are lowercase', () => {",
+                  "        keys.forEach(k => pm.expect(k).to.eql(k.toLowerCase()));",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" },
+              { "key": "X-Forwarded-For", "value": "{{_xff}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/status?ids=0000000000000000000000000000000000000000000000000000000000000000,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "status"],
+              "query": [{ "key": "ids", "value": "0000000000000000000000000000000000000000000000000000000000000000,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "rate-limiting",
+      "description": "Verifies the btc:txstatus:ip: IP rate limiter (burst=20, rate=20/60s).\nExpected Retry-After: ceil(1 / (20/60)) = ceil(3) = 3 seconds.\n\nAll requests use a fixed XFF (127.0.0.6) to isolate this bucket from other bitcoin folders.\nRequests without a JWT still consume rate-limit tokens — the limiter runs before JWTAuth,\nso warmup requests return 401 but count toward the bucket.\n\nWe use 21 warmup requests (burst=20 + the initial token already consumed) then assert\nthe 22nd is rejected. The burst is 20 per the Routes() configuration.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": ["pm.collectionVariables.set('_xff', '127.0.0.6');"]
+          }
+        }
+      ],
+      "item": [
+        { "name": "warmup 1/20",  "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 1)',  () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 2/20",  "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 2)',  () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 3/20",  "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 3)',  () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 4/20",  "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 4)',  () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 5/20",  "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 5)',  () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 6/20",  "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 6)',  () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 7/20",  "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 7)',  () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 8/20",  "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 8)',  () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 9/20",  "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 9)',  () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 10/20", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 10)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 11/20", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 11)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 12/20", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 12)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 13/20", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 13)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 14/20", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 14)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 15/20", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 15)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 16/20", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 16)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 17/20", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 17)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 18/20", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 18)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 19/20", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 19)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        { "name": "warmup 20/20 — last allowed", "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited (txstatus slot 20 — last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}], "request": {"method": "GET", "header": [{"key": "X-Forwarded-For", "value": "{{_xff}}"}], "url": {"raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status", "host": ["{{base_url}}"], "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]}} },
+        {
+          "name": "21st request → 429 (btc:txstatus:ip: bucket exhausted)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status is 429', () => pm.response.to.have.status(429));",
+                  "pm.test('code is rate_limit_exceeded', () => pm.expect(pm.response.json().code).to.eql('rate_limit_exceeded'));",
+                  "// Retry-After = ceil(1 / (20/60)) = ceil(3) = 3 seconds.",
+                  "pm.test('Retry-After header is 3', () => {",
+                  "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('3');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Forwarded-For", "value": "{{_xff}}" }],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bitcoin/tx/0000000000000000000000000000000000000000000000000000000000000000/status",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "bitcoin", "tx", "0000000000000000000000000000000000000000000000000000000000000000", "status"]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "_req_seq",
+      "value": "0",
+      "description": "Auto-incremented counter for unique X-Forwarded-For IPs."
+    },
+    {
+      "key": "_xff",
+      "value": "",
+      "description": "Current X-Forwarded-For value. Set by collection prerequest; overridden to 127.0.0.6 in rate-limiting folder."
+    },
+    {
+      "key": "txstatus_happy_email",
+      "value": "",
+      "description": "Set by setup folder from gmail_test_email."
+    },
+    {
+      "key": "txstatus_happy_password",
+      "value": "",
+      "description": "Set by setup folder."
+    },
+    {
+      "key": "txstatus_code",
+      "value": "",
+      "description": "OTP fetched from Gmail by setup/register test script."
+    },
+    {
+      "key": "txstatus_access_token",
+      "value": "",
+      "description": "JWT access_token from a successful login; used by all non-setup folders."
+    },
+    {
+      "key": "_txid_upper",
+      "value": "",
+      "description": "Uppercase variant of txstatus_known_txid; set by happy-path-single/uppercase test prerequest."
+    },
+    {
+      "key": "_batch_21_ids",
+      "value": "",
+      "description": "Comma-separated list of 21 txids; populated by validation-batch/too_many prerequest."
+    },
+    {
+      "key": "_batch_20_ids",
+      "value": "",
+      "description": "Comma-separated list of 20 distinct txids; populated by happy-path-batch/max prerequest."
+    }
+  ]
+}

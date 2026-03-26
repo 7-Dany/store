@@ -319,3 +319,16 @@ func (r *Registry) SetGlobalWatchCountEstimate(network string, count float64) {
 	}
 	r.bitcoinGlobalWatchCountEstimate.WithLabelValues(network).Set(count)
 }
+
+// ── Bitcoin TxStatus ───────────────────────────────────────────────────
+
+// OnTxStatusResolved increments bitcoin_txstatus_resolved_total{status}.
+//
+// status must be one of the TxStatus* constant string values defined in the
+// txstatus package: "confirmed", "mempool", "not_found", "conflicting", "abandoned".
+func (r *Registry) OnTxStatusResolved(status string) {
+	if r == nil {
+		return
+	}
+	r.bitcoinTxStatusResolved.WithLabelValues(status).Inc()
+}

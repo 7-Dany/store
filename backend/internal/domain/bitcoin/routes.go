@@ -9,6 +9,7 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/domain/bitcoin/events"
+	"github.com/7-Dany/store/backend/internal/domain/bitcoin/txstatus"
 	"github.com/7-Dany/store/backend/internal/domain/bitcoin/watch"
 )
 
@@ -35,6 +36,7 @@ func Routes(ctx context.Context, deps *app.Deps) *chi.Mux {
 
 	watch.Routes(ctx, r, deps)
 	events.Routes(ctx, r, deps)
+	txstatus.Routes(ctx, r, deps)
 
 	return r
 }

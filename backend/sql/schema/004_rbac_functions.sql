@@ -357,7 +357,30 @@ DECLARE
  v_granter_is_owner BOOLEAN;
  v_granter_has_perm  BOOLEAN;
 BEGIN
- -- Escape hatch for test fixtures and seeding scripts only.
+ -- ════════════════════════════════════════════════════════════════════════
+ -- ⚠️  MED-9 — CONNECTION POOL BYPASS RISK
+ -- ════════════════════════════════════════════════════════════════════════
+ -- This escape hatch MUST be set with SET LOCAL (transaction-scoped):
+ --
+ --   SET LOCAL rbac.skip_escalation_check = '1';  ← CORRECT
+ --
+ -- Using plain SET (session-scoped) is UNSAFE in connection pools:
+ --
+ --   SET rbac.skip_escalation_check = '1';         ← NEVER DO THIS
+ --
+ -- With plain SET, the setting persists on the pooled connection after the
+ -- transaction commits. The next request from ANY user on that connection
+ -- executes with all privilege escalation checks silently disabled.
+ -- The RBAC audit trail records the grant as if it were legitimate.
+ --
+ -- Checklist for every call site:
+ --   [ ] Uses BEGIN / SET LOCAL / <grant op> / COMMIT  (not bare SET)
+ --   [ ] SET LOCAL is inside the same transaction as the INSERT/UPDATE
+ --   [ ] After transaction commits, verify current_setting returns ''
+ --
+ -- Reserved for seeding scripts and test fixtures ONLY.
+ -- MUST NOT be reachable from any HTTP handler, background job, or CLI.
+ -- ════════════════════════════════════════════════════════════════════════
  IF current_setting('rbac.skip_escalation_check', TRUE) = '1' THEN
  RETURN NEW;
  END IF;
@@ -413,7 +436,9 @@ COMMENT ON FUNCTION fn_prevent_privilege_escalation() IS
  'Owner-role users are exempt. Middleware should check first; this is the DB backstop. '
  'Receiving a direct user_permissions grant does NOT confer re-grant rights; '
  'only role-based grants count for escalation checks. '
- 'Denied grants do not confer re-grant rights — enforced by access_type != ''denied'' filter on the EXISTS check.';
+ 'Denied grants do not confer re-grant rights — enforced by access_type != ''denied'' filter. '
+ 'MED-9: escape hatch (rbac.skip_escalation_check=''1'') MUST use SET LOCAL. '
+ 'Plain SET leaks across pooled connections, bypassing all checks for subsequent requests.';
 
 CREATE TRIGGER trg_prevent_privilege_escalation
  BEFORE INSERT OR UPDATE ON user_permissions
@@ -510,8 +535,10 @@ RETURNS TRIGGER
 LANGUAGE plpgsql AS $func$
 BEGIN
  -- Escape hatch for test fixtures and seeding scripts only.
- -- Mirrors the same bypass used in fn_prevent_privilege_escalation and
- -- fn_prevent_owner_role_escalation. Must never be set to '1' in production.
+ -- Mirrors fn_prevent_privilege_escalation and fn_prevent_owner_role_escalation.
+ -- MED-9: MUST be set with SET LOCAL (transaction-scoped). Plain SET leaks
+ -- across pooled connections, disabling the orphan-owner guard globally.
+ -- Must NEVER be set to '1' in production code paths.
  IF current_setting('rbac.skip_orphan_check', TRUE) = '1' THEN
   RETURN CASE TG_OP WHEN 'DELETE' THEN OLD ELSE NEW END;
  END IF;

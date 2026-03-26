@@ -87,6 +87,48 @@ FOR UPDATE;
 This prevents concurrent settlements for the same vendor from both creating `held`
 records when the combined total would clear the floor.
 
+### F-01 — Double-credit prevention (crash-and-retry idempotency)
+
+`btc_credit_balance()` is **not idempotent**. If the Phase 2 transaction commits
+`btc_credit_balance()` but crashes before `INSERT INTO payout_records` commits,
+the stale-settling watchdog resets the invoice to its predecessor status. A second
+worker re-runs Phase 2 and calls `btc_credit_balance()` again, creating phantom
+satoshis with no corresponding payout record. The reconciliation formula diverges.
+
+**Required pattern inside every Phase 2 transaction:**
+
+```go
+// Step 1: check for existing payout record BEFORE crediting
+var existingID uuid.UUID
+err := tx.QueryRowContext(ctx,
+    `SELECT id FROM payout_records WHERE invoice_id = $1 FOR SHARE`,
+    invoiceID).Scan(&existingID)
+
+if err == nil {
+    // Payout record already exists from a prior (partial) run.
+    // The balance was already credited. Do NOT call btc_credit_balance again.
+    // Only write the missing financial_audit_events row if absent.
+    return reconcileAuditEventOnly(ctx, tx, existingID)
+}
+if !errors.Is(err, sql.ErrNoRows) {
+    return fmt.Errorf("payout record pre-check: %w", err)
+}
+
+// Step 2: no existing payout record — safe to credit
+newBalance, err := btc_credit_balance(ctx, tx, vendorID, network, netSat)
+if err != nil {
+    return err
+}
+
+// Step 3: insert payout record in the SAME transaction
+// (no commit boundary between credit and insert)
+err = insertPayoutRecord(ctx, tx, ...)
+```
+
+The `FOR SHARE` lock on the `payout_records` check prevents a concurrent worker
+from inserting between the check and the credit within the same transaction.
+This pattern replaces the naive "call credit, then insert" sequence.
+
 ### Broadcast ordering invariant — DB before network
 
 The `constructing → broadcast` DB status update (with txid written) **must commit and
@@ -96,20 +138,37 @@ be verified before `sendrawtransaction` is called**. This is a hard invariant:
 Step A: finalizepsbt → raw_hex
 Step B: Compute txid from raw_hex (deterministic double-SHA256 of serialized tx)
 Step C: DB transaction:
-          UPDATE payout_records SET status='broadcast', txid=$txid, broadcast_at=NOW()
-          WHERE status='constructing' AND batch_id=$batch
+          UPDATE payout_records
+            SET status='broadcast', txid=$txid, broadcast_at=NOW()
+          WHERE status='constructing'
+            AND batch_id=$my_batch_id   ← F-07: REQUIRED — see note below
           -- assert RowsAffected > 0; commit
         If RowsAffected == 0: watchdog already reclaimed these records.
           Abort — do NOT call sendrawtransaction.
         If DB commit fails: return error — do NOT call sendrawtransaction.
 Step D: sendrawtransaction(raw_hex, maxfeerate)
+Step E: If sendrawtransaction returns a clear rejection (not a timeout/conn error):
+          payout remains in 'broadcast' status; watchdog will handle via RBF.
+        If sendrawtransaction times out or loses connection (F-02 ambiguous result):
+          UPDATE payout_records SET rpc_ambiguous=TRUE WHERE batch_id=$my_batch_id
+          Watchdog uses rpc_ambiguous=TRUE to call getrawtransaction before RBF.
 ```
 
-If `sendrawtransaction` subsequently fails after a successful DB commit, the records
-are in `broadcast` status with a txid that never made it to the network. The
-stuck-sweep watchdog (see `../sweep/sweep-technical.md §Stuck Sweep`) will detect
-this and trigger RBF or escalation. This is recoverable. Broadcasting before the DB
-update is NOT recoverable if the DB update then fails.
+**F-07 — batch_id in WHERE clause is mandatory:** Without `AND batch_id=$my_batch_id`,
+a worker whose records were reclaimed by the watchdog and then claimed by a new worker
+can resume and overwrite the new worker's batch association. The vendor's payout record
+shows a `broadcast` status under a txid that does not contain their output. Funds
+are locked until manual admin resolution. Zero `RowsAffected` with `batch_id` in the
+WHERE clause is the correct "I was reclaimed" signal — abort cleanly.
+
+**F-02 — rpc_ambiguous flag:** If `sendrawtransaction` subsequently fails after a
+successful DB commit, the records are in `broadcast` status. A clean RPC rejection
+means the TX is definitely not on the network — RBF immediately. A timeout or
+connection error is ambiguous: the TX may have been accepted but the response lost.
+Setting `rpc_ambiguous=TRUE` instructs the watchdog to call `getrawtransaction`
+before constructing an RBF replacement. If `getrawtransaction` returns the TX,
+wait for confirmation normally. If not found, clear `rpc_ambiguous` and proceed
+with RBF. See `../sweep/sweep-technical.md §7`.
 
 ---
 
@@ -325,6 +384,9 @@ This job acquires SELECT FOR UPDATE on the vendor balance row before acting.
 | TI-6-05 | `TestSettlement_HybridMode_PostThreshold_SmallSettlements_Accumulate` | INTG | **C-02 fix**: after first sweep, subsequent settlements accumulate again |
 | TI-6-06 | `TestSettlement_ConcurrentWorkers_OnlyOneSettles` | INTG RACE | Two workers race; one gets RowsAffected=0 |
 | TI-6-07 | `TestSettlement_RowsAffectedZero_RollsBack` | INTG | settling→settled UPDATE returns 0 rows; tx rolled back |
+| TI-6-27 | `TestSettlement_F01_CreditAndPayoutRecord_SameTransaction` | INTG | **F-01**: credit and payout_record INSERT in same tx; no commit boundary |
+| TI-6-28 | `TestSettlement_F01_CrashAfterCredit_PayoutRecordPreCheck_SkipsDoubleCredit` | INTG | **F-01**: payout_record pre-check detects prior partial run; skips second credit |
+| TI-6-29 | `TestSettlement_F01_PreCheck_ForSharePreventsRace` | INTG RACE | **F-01**: FOR SHARE on pre-check prevents concurrent insert between check and credit |
 | TI-6-08 | `TestSettlement_ZeroNetAmount_TransitionsToFailed` | INTG | Fee = full amount; ErrZeroNetAmount; CRITICAL alert |
 | TI-6-09 | `TestSettlement_EconomicValidation_BelowFloor_HeldPayout` | INTG | Net < floor; payout in held |
 | TI-6-10 | `TestSettlement_Phase1_Underpayment_SkipsSettlingClaim` | INTG | confirming→underpaid direct; no settling claim |

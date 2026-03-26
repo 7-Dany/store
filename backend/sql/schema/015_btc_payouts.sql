@@ -49,6 +49,19 @@
  *   Never reverse this ordering: broadcasting before DB commit means a crash between
  *   the two operations leaves the TX on-chain with no DB record.
  *
+ * F-07 — BATCH_ID PRECONDITION REQUIRED IN BROADCAST WHERE CLAUSE:
+ *   The constructing → broadcast UPDATE MUST include batch_id in its WHERE clause:
+ *     UPDATE payout_records SET status='broadcast', batch_txid=$txid, broadcast_at=NOW()
+ *     WHERE status='constructing' AND batch_id=$my_batch_id
+ *   WITHOUT batch_id, a worker A that was reclaimed by the watchdog (which reset
+ *   the record to 'queued'), and then reclaimed again by worker B (now 'constructing'
+ *   again), will have its 'constructing' status matched by worker A's UPDATE when
+ *   worker A resumes. Worker A overwrites worker B's batch_id with its own txid,
+ *   recording a txid that may not contain this vendor's output. The vendor's funds
+ *   appear 'broadcast' under the wrong txid. Funds locked until manual admin review.
+ *   The fix is simple: always add AND batch_id=$my_batch_id to the WHERE clause.
+ *   Zero RowsAffected then means "watchdog reclaimed me" — abort, do not broadcast.
+ *
  * FEE BREAKDOWN:
  *   The fee_breakdown JSONB column records the exact computation that produced
  *   net_satoshis. This allows vendors to verify their payout and auditors to
@@ -160,6 +173,22 @@ CREATE TABLE payout_records (
     -- Set when status transitions to confirmed (same UPDATE that increments
     -- platform_config.treasury_reserve_satoshis).
     confirmed_at    TIMESTAMPTZ,
+
+    -- TRUE when sendrawtransaction returned an ambiguous result (timeout or connection
+    -- loss) after the constructing→broadcast DB commit succeeded. Indicates the TX
+    -- may or may not have reached the network — the confirmation handler cannot
+    -- distinguish "broadcast succeeded, awaiting confirmation" from "broadcast failed,
+    -- tx never on-chain" without calling getrawtransaction or getrawtransaction RPC.
+    -- F-02: The sweep watchdog must treat rpc_ambiguous=TRUE differently from clean
+    -- broadcast failures:
+    --   rpc_ambiguous=FALSE + no mempool entry → safe to RBF immediately
+    --   rpc_ambiguous=TRUE  + no mempool entry → call getrawtransaction first;
+    --                          if "not found" then safe to RBF; if found then wait.
+    -- Application sets rpc_ambiguous=TRUE in the same UPDATE that sets status='broadcast'
+    -- when sendrawtransaction times out or returns a connection error (not a rejection).
+    -- Clear to FALSE (via RBF UPDATE) once getrawtransaction confirms the original
+    -- TX is not on-chain.
+    rpc_ambiguous   BOOLEAN         NOT NULL DEFAULT FALSE,
 
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -282,7 +311,17 @@ COMMENT ON TABLE payout_records IS
 COMMENT ON COLUMN payout_records.batch_txid IS
     'Set atomically with constructing → broadcast. MUST be committed BEFORE sendrawtransaction. '
     'If sendrawtransaction fails after DB commit, the watchdog detects the stuck record '
-    'and triggers RBF or escalation.';
+    'and triggers RBF or escalation. '
+    'F-07: the broadcast UPDATE WHERE clause MUST include AND batch_id=$my_batch_id. '
+    'Without it, a reclaimed-and-reassigned record can have its batch_txid overwritten '
+    'by the original worker, locking vendor funds under the wrong txid.';
+
+COMMENT ON COLUMN payout_records.rpc_ambiguous IS
+    'F-02: TRUE when sendrawtransaction timed out or lost the connection after '
+    'the constructing→broadcast DB commit succeeded. '
+    'TX may or may not be on the network. '
+    'Watchdog: if TRUE and no mempool entry, call getrawtransaction before RBF. '
+    'Clear to FALSE once getrawtransaction confirms TX is not on-chain.';
 COMMENT ON COLUMN payout_records.fee_breakdown IS
     'Exact fee computation record. '
     'Keys: received_sat, tolerance_adj_sat, processing_fee_sat, miner_fee_sat, net_sat, '

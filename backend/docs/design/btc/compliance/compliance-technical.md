@@ -40,8 +40,43 @@ SweepService.constructAndBroadcast():
         This INSERT fires fn_fatf_address_consistency — will RAISE if address mismatch.
   3. walletcreatefundedpsbt → walletprocesspsbt → finalizepsbt
   4. DB: UPDATE payout_records SET status='broadcast', batch_txid=$txid
+         AND batch_id=$batch_id (F-07)
   5. sendrawtransaction
 ```
+
+### F-10 — FATF record absent after crash between broadcast commit and INSERT
+
+The DB trigger `fn_pr_fatf_broadcast_guard` only fires on the `constructing →
+broadcast` transition. If the application crashes between the successful `broadcast`
+DB commit (step 4) and the FATF INSERT (step 2b was skipped due to a bug or retry
+storm), the TX can confirm on-chain with no Travel Rule filing.
+
+**Required: FATF reconciliation job.** A background reconciliation job MUST run
+periodically to detect this gap:
+
+```sql
+SELECT pr.id, pr.network, pr.net_satoshis, pr.destination_address
+FROM payout_records pr
+WHERE pr.status IN ('broadcast', 'confirmed')
+  AND pr.wallet_mode != 'platform'
+  AND pr.destination_address IS NOT NULL
+  AND pr.net_satoshis * :current_rate > :fatf_threshold
+  AND NOT EXISTS (
+      SELECT 1 FROM fatf_travel_rule_records ftr
+      WHERE ftr.payout_record_id = pr.id
+  );
+```
+
+For each row returned:
+1. If `status = 'broadcast'` and TX not yet confirmed: insert the missing FATF record
+   before confirmation (still within the Travel Rule pre-broadcast window).
+2. If `status = 'confirmed'`: the TX is already on-chain. Insert the FATF record
+   with a `late_filing` flag in `metadata`, file a regulatory disclosure if required
+   by the applicable jurisdiction, and alert the compliance team.
+
+This job MUST run at least once per hour when `fatf_enabled=TRUE`. Alert if it finds
+any `status='confirmed'` rows with missing FATF records — that is a compliance
+violation requiring immediate manual review.
 
 **Platform-mode payouts (no destination address):** `fn_fatf_address_consistency`
 skips the check when `destination_address IS NULL` on the payout record. No FATF
@@ -220,6 +255,9 @@ identity information.
 | TI-25-06 | `TestFATF_AboveThreshold_RecordInserted` | INTG | net_satoshis × rate ≥ threshold → record inserted |
 | TI-25-07 | `TestFATF_BroadcastBlockedWithoutRecord` | INTG | Payout above threshold; no FATF row → broadcast transition fails |
 | TI-25-08 | `TestFATF_PayoutNotFound_TriggerRaises` | INTG | INSERT with non-existent payout_record_id → RAISE |
+| TI-25-09 | `TestFATF_F10_ReconciliationJob_DetectsMissingRecord_Broadcast` | INTG | **F-10**: broadcast payout above threshold with no FATF row → job detects and creates |
+| TI-25-10 | `TestFATF_F10_ReconciliationJob_DetectsMissingRecord_Confirmed_AlertFires` | INTG | **F-10**: confirmed payout above threshold with no FATF row → late_filing flag + CRITICAL alert |
+| TI-25-11 | `TestFATF_F10_ReconciliationJob_RunsHourly_WhenFatfEnabled` | UNIT | **F-10**: job schedule configured at ≤1h interval when fatf_enabled=TRUE |
 
 ### TI-26: GDPR Erasure
 

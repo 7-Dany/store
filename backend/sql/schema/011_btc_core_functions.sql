@@ -92,6 +92,37 @@ CREATE TRIGGER trg_vendor_wallet_config_mode_guard
  *
  * Raises ErrInsufficientBalance (SQLSTATE 23514 via CHECK) on debit below zero.
  * Raises an exception if no vendor_balances row exists for (p_vendor_id, p_network).
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * ⚠️  F-01 — DOUBLE-CREDIT RISK ON SETTLEMENT CRASH-AND-RETRY
+ * ══════════════════════════════════════════════════════════════════════════════
+ * btc_credit_balance() is NOT idempotent. If the settlement transaction commits
+ * btc_credit_balance() but then crashes before INSERT INTO payout_records commits,
+ * the watchdog resets the invoice to 'confirming' and a second worker re-runs
+ * Phase 2. The second call to btc_credit_balance() credits the balance again —
+ * creating phantom satoshis with no corresponding payout_record.
+ *
+ * The reconciliation formula diverges by exactly net_satoshis per occurrence:
+ *   vendor_balances.balance_satoshis > SUM(held/queued payout_records)
+ *
+ * APPLICATION LAYER REQUIREMENT:
+ *   Settlement Phase 2 MUST execute btc_credit_balance() and INSERT INTO payout_records
+ *   in the SAME database transaction. There must be no commit boundary between them.
+ *
+ *   Before calling btc_credit_balance(), check whether a payout_record already
+ *   exists for this invoice_id (the UNIQUE constraint will 23505 on the second
+ *   INSERT, but the balance is already double-credited by then):
+ *
+ *     SELECT id FROM payout_records WHERE invoice_id = $invoice_id FOR SHARE;
+ *     -- If found: payout_record exists from a previous (possibly partial) run.
+ *     --   Do NOT call btc_credit_balance() again.
+ *     --   The prior credit is still in the balance; proceed to audit event only.
+ *     -- If not found: safe to call btc_credit_balance() and insert payout_record.
+ *
+ *   This pre-check MUST run inside the same transaction as the credit, with
+ *   FOR SHARE on the payout_records row to prevent a concurrent worker from
+ *   inserting between the check and the credit.
+ * ══════════════════════════════════════════════════════════════════════════════
  */
 CREATE OR REPLACE FUNCTION btc_credit_balance(
     p_vendor_id UUID,
@@ -125,7 +156,12 @@ COMMENT ON FUNCTION btc_credit_balance(UUID, TEXT, BIGINT) IS
     'Credits vendor_balances.balance_satoshis atomically with row-level lock. '
     'Returns new balance for use in financial_audit_events.balance_after_sat. '
     'Caller must write the audit event in the same transaction. '
-    'Direct UPDATE on vendor_balances is revoked from btc_app_role.';
+    'Direct UPDATE on vendor_balances is revoked from btc_app_role. '
+    'F-01 WARNING: NOT idempotent. btc_credit_balance() and INSERT INTO payout_records '
+    'MUST execute in the same DB transaction with no commit boundary between them. '
+    'Before calling, check SELECT id FROM payout_records WHERE invoice_id=$id FOR SHARE '
+    'inside the same transaction. If a payout_record exists, skip the credit — '
+    'the prior credit is already in the balance. See F-01 in settlement-technical.md §1.';
 
 
 CREATE OR REPLACE FUNCTION btc_debit_balance(

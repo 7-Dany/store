@@ -465,7 +465,7 @@ func (q *Queries) TestGetOpenOutage(ctx context.Context, network string) (BtcOut
 }
 
 const TestGetPayoutRecord = `-- name: TestGetPayoutRecord :one
-SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE id = $1::uuid
+SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, rpc_ambiguous, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE id = $1::uuid
 `
 
 // Fetch a raw payout record for assertion.
@@ -494,6 +494,7 @@ func (q *Queries) TestGetPayoutRecord(ctx context.Context, payoutID pgtype.UUID)
 		&i.ResolutionAdminID,
 		&i.BroadcastAt,
 		&i.ConfirmedAt,
+		&i.RpcAmbiguous,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HoldReason,
@@ -503,7 +504,7 @@ func (q *Queries) TestGetPayoutRecord(ctx context.Context, payoutID pgtype.UUID)
 }
 
 const TestGetPayoutRecordByInvoice = `-- name: TestGetPayoutRecordByInvoice :one
-SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE invoice_id = $1::uuid
+SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, rpc_ambiguous, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE invoice_id = $1::uuid
 `
 
 // Fetch the payout record for an invoice directly.
@@ -532,6 +533,7 @@ func (q *Queries) TestGetPayoutRecordByInvoice(ctx context.Context, invoiceID pg
 		&i.ResolutionAdminID,
 		&i.BroadcastAt,
 		&i.ConfirmedAt,
+		&i.RpcAmbiguous,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HoldReason,

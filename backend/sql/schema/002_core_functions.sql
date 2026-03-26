@@ -86,10 +86,35 @@ CREATE TRIGGER trg_user_identity_tokens_updated_at
  * Voluntary revocation reasons (logout, session_expired, pre_verification) do NOT
  * trigger the cascade — only reuse-detection revocations do.
  *
- * ⚠️ DEADLOCK RISK: this function issues an UPDATE on refresh_tokens from within
- * an AFTER trigger on refresh_tokens. Two concurrent sessions that both detect reuse
- * on the same family_id can deadlock. The application layer must treat SQLSTATE 40P01
- * (deadlock_detected) as a retryable error and re-attempt in a new transaction.
+ * ══════════════════════════════════════════════════════════════════════════
+ * ⚠️  HIGH-3 — DEADLOCK RISK ON CONCURRENT REUSE DETECTION
+ * ══════════════════════════════════════════════════════════════════════════
+ * This trigger issues an UPDATE on refresh_tokens from within an AFTER trigger
+ * on the same table. Two concurrent sessions detecting reuse on the same
+ * family_id can deadlock:
+ *
+ *   Session A: holds lock on token X → trigger fires → UPDATE tries to lock token Y
+ *   Session B: holds lock on token Y → trigger fires → UPDATE tries to lock token X
+ *   Result: PostgreSQL raises SQLSTATE 40P01 (deadlock_detected)
+ *
+ * APPLICATION LAYER REQUIREMENTS:
+ *   1. Catch SQLSTATE 40P01 as a distinct, named error — not as a generic DB error.
+ *   2. Abort the ENTIRE enclosing transaction (not just the failed statement).
+ *      Retrying a single statement inside a deadlocked transaction is incorrect.
+ *   3. Retry the complete token rotation/revocation operation in a NEW transaction.
+ *   4. Emit a warning metric on each deadlock — frequent deadlocks indicate a
+ *      problem with concurrent session management.
+ *
+ * PREFERRED LONG-TERM REMEDIATION:
+ *   Move family revocation out of this trigger into an async operation:
+ *     1. Commit the single-token revocation with no cascade in the trigger.
+ *     2. After commit, enqueue a job (family_id, revoke_reason).
+ *     3. The job acquires pg_advisory_xact_lock(hashtext(family_id::text))
+ *        before running the batch UPDATE — eliminates the concurrent-trigger
+ *        deadlock entirely and makes the revocation observable in the audit log
+ *        as a distinct event.
+ *   Until that refactor is in place, 40P01 retry at the call site is mandatory.
+ * ══════════════════════════════════════════════════════════════════════════
  *
  * Re-entry guard: app.revoking_family session local prevents the cascade UPDATE from
  * re-triggering this function for each sibling row (trigger storm prevention).
@@ -126,7 +151,12 @@ END;
 $fn$;
 
 COMMENT ON FUNCTION fn_revoke_token_family() IS
- 'On theft-detection revocation, revokes all tokens sharing the same family_id. Skips voluntary revocations (logout, session_expired, pre_verification).';
+ 'On theft-detection revocation, revokes all tokens sharing the same family_id. '
+ 'Skips voluntary revocations (logout, session_expired, pre_verification). '
+ 'HIGH-3: issues UPDATE on refresh_tokens from within an AFTER trigger on the same table. '
+ 'Concurrent reuse-detection on the same family_id WILL deadlock (SQLSTATE 40P01). '
+ 'Application MUST catch 40P01 and retry the ENTIRE transaction in a new connection. '
+ 'Preferred fix: move family revocation to an async job with pg_advisory_xact_lock on family_id.';
 
 -- Fires after revoked_at is set so the cascade UPDATE sees the triggering row already committed.
 CREATE TRIGGER trg_revoke_token_family

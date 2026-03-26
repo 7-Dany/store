@@ -422,7 +422,7 @@ VALUES (
     $8::btc_kyc_status,
     $9::jsonb
 )
-RETURNING id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at, hold_reason, dispute_id
+RETURNING id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, rpc_ambiguous, created_at, updated_at, hold_reason, dispute_id
 `
 
 type CreatePayoutRecordParams struct {
@@ -478,6 +478,7 @@ func (q *Queries) CreatePayoutRecord(ctx context.Context, arg CreatePayoutRecord
 		&i.ResolutionAdminID,
 		&i.BroadcastAt,
 		&i.ConfirmedAt,
+		&i.RpcAmbiguous,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HoldReason,
@@ -1385,7 +1386,7 @@ func (q *Queries) GetOutageOverlapForInvoice(ctx context.Context, arg GetOutageO
 }
 
 const GetPayoutRecord = `-- name: GetPayoutRecord :one
-SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE id = $1::uuid
+SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, rpc_ambiguous, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE id = $1::uuid
 `
 
 func (q *Queries) GetPayoutRecord(ctx context.Context, payoutID pgtype.UUID) (PayoutRecord, error) {
@@ -1413,6 +1414,7 @@ func (q *Queries) GetPayoutRecord(ctx context.Context, payoutID pgtype.UUID) (Pa
 		&i.ResolutionAdminID,
 		&i.BroadcastAt,
 		&i.ConfirmedAt,
+		&i.RpcAmbiguous,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HoldReason,
@@ -1422,7 +1424,7 @@ func (q *Queries) GetPayoutRecord(ctx context.Context, payoutID pgtype.UUID) (Pa
 }
 
 const GetPayoutRecordByInvoice = `-- name: GetPayoutRecordByInvoice :one
-SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE invoice_id = $1::uuid
+SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, rpc_ambiguous, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE invoice_id = $1::uuid
 `
 
 // Fetch the payout for a settled invoice. Uses the implicit unique index
@@ -1452,6 +1454,7 @@ func (q *Queries) GetPayoutRecordByInvoice(ctx context.Context, invoiceID pgtype
 		&i.ResolutionAdminID,
 		&i.BroadcastAt,
 		&i.ConfirmedAt,
+		&i.RpcAmbiguous,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.HoldReason,
@@ -1938,7 +1941,7 @@ const GetVendorWalletConfig = `-- name: GetVendorWalletConfig :one
    VENDOR WALLET CONFIG
    ════════════════════════════════════════════════════════════ */
 
-SELECT vendor_id, network, tier_id, wallet_mode, bridge_destination_address, auto_sweep_threshold_sat, kyc_status, suspended, suspended_at, suspension_reason, mode_frozen, mode_frozen_reason, created_at, updated_at
+SELECT vendor_id, network, tier_id, wallet_mode, bridge_destination_address, auto_sweep_threshold_sat, kyc_status, suspended, suspended_at, suspension_reason, mode_frozen, mode_frozen_reason, mode_frozen_at, created_at, updated_at
 FROM vendor_wallet_config
 WHERE vendor_id = $1::uuid
   AND network   = $2
@@ -1967,6 +1970,7 @@ func (q *Queries) GetVendorWalletConfig(ctx context.Context, arg GetVendorWallet
 		&i.SuspensionReason,
 		&i.ModeFrozen,
 		&i.ModeFrozenReason,
+		&i.ModeFrozenAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

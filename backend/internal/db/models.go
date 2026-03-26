@@ -1787,7 +1787,7 @@ type BtcOutageLog struct {
 	EndedAt pgtype.Timestamptz `db:"ended_at" json:"ended_at"`
 }
 
-// Subscription fee debit requests. debit_defer_count + debit_first_deferred_at are the persistent Gap C state: they survive restarts so the safety valve '3 deferrals over 24h → forced-proceed' works correctly across process restarts.
+// Subscription fee debit requests. debit_defer_count + debit_first_deferred_at are the persistent Gap C state: they survive restarts so the safety valve '3 deferrals over 24h → forced-proceed' works correctly across process restarts. RETRY CONTRACT: uq_bsd_vendor_period is a FULL unique index (includes failed rows). On INSERT 23505, billing system must: (a) check existing row status, (b) if failed — UPDATE the row to reset it or DELETE and re-INSERT; never silently ignore the violation. Silently ignoring 23505 on a failed row means the vendor is permanently undercharged for that billing period. See patch comment for full decision tree.
 type BtcSubscriptionDebit struct {
 	ID               uuid.UUID      `db:"id" json:"id"`
 	VendorID         pgtype.UUID    `db:"vendor_id" json:"vendor_id"`
@@ -1797,7 +1797,8 @@ type BtcSubscriptionDebit struct {
 	FiatCurrencyCode string         `db:"fiat_currency_code" json:"fiat_currency_code"`
 	SatoshisDebited  pgtype.Int8    `db:"satoshis_debited" json:"satoshis_debited"`
 	RateUsed         pgtype.Numeric `db:"rate_used" json:"rate_used"`
-	Status           string         `db:"status" json:"status"`
+	// Debit lifecycle status. pending:   awaiting rate availability. completed: debit executed; balance decremented; financial_audit_events written. failed:    permanent failure (e.g. insufficient balance, billing override). deferred:  rate too stale; retry scheduled by billing system. 'failed' row still holds the UNIQUE (vendor_id, billing_period_ref) slot. Billing system must explicitly UPDATE or DELETE a failed row before re-issuing a debit for the same period — a new INSERT will 23505 until that is done.
+	Status string `db:"status" json:"status"`
 	// Persisted across restarts.Safety valve: when >= 3 AND NOW() - debit_first_deferred_at > 24h → proceed with stale rate.
 	DebitDeferCount       int32              `db:"debit_defer_count" json:"debit_defer_count"`
 	DebitFirstDeferredAt  pgtype.Timestamptz `db:"debit_first_deferred_at" json:"debit_first_deferred_at"`
@@ -1862,12 +1863,13 @@ type BtcWithdrawalRequest struct {
 	PayoutRecordID     pgtype.UUID         `db:"payout_record_id" json:"payout_record_id"`
 	ReviewedBy         pgtype.UUID         `db:"reviewed_by" json:"reviewed_by"`
 	RejectionReason    pgtype.Text         `db:"rejection_reason" json:"rejection_reason"`
-	ReviewedAt         pgtype.Timestamptz  `db:"reviewed_at" json:"reviewed_at"`
-	CreatedAt          time.Time           `db:"created_at" json:"created_at"`
-	UpdatedAt          time.Time           `db:"updated_at" json:"updated_at"`
+	// Set for approved, auto_approved, and rejected withdrawals (chk_bwr_reviewed_coherent). For auto_approved rows: records when the automated decision committed. reviewed_by is NULL for auto_approved (no human actor); reviewed_at is NOT NULL. Application must set both atomically in the same transaction as the status change.
+	ReviewedAt pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
+	CreatedAt  time.Time          `db:"created_at" json:"created_at"`
+	UpdatedAt  time.Time          `db:"updated_at" json:"updated_at"`
 }
 
-// ZMQ events that could not be matched to an active monitoring record. Captures: late payments, double-spend attempts, retired addresses, unknown txids. Periodic review of resolved=FALSE rows detects missed payments and anomalies. Not all dead letters are errors — late payments on expired invoices are expected.
+// ZMQ events that could not be matched to an active monitoring record. Captures: late payments, double-spend attempts, retired addresses, unknown txids. Periodic review of resolved=FALSE rows detects missed payments and anomalies. Not all dead letters are errors — late payments on expired invoices are expected. Resolved rows accumulate indefinitely; prune via idx_zdl_resolved_cleanup after retention window.
 type BtcZmqDeadLetter struct {
 	ID             uuid.UUID          `db:"id" json:"id"`
 	Network        string             `db:"network" json:"network"`
@@ -1880,7 +1882,7 @@ type BtcZmqDeadLetter struct {
 	ResolutionNote pgtype.Text        `db:"resolution_note" json:"resolution_note"`
 }
 
-// Buyer/vendor payment disputes. At least one of invoice_id or payout_record_id must be set (chk_dr_has_subject). Lifecycle: open → investigating → resolved or rejected.
+// Buyer/vendor payment disputes. At least one of invoice_id or payout_record_id must be set (chk_dr_has_subject). Lifecycle: open → awaiting_vendor | awaiting_buyer | escalated → resolved_* | withdrawn. vendor_id is RESTRICT (not SET NULL): vendor cannot be deleted while an active dispute exists. This prevents frozen payout records from becoming permanently unresolvable after vendor deletion.
 type DisputeRecord struct {
 	ID             uuid.UUID          `db:"id" json:"id"`
 	InvoiceID      pgtype.UUID        `db:"invoice_id" json:"invoice_id"`
@@ -1893,10 +1895,13 @@ type DisputeRecord struct {
 	ResolutionNote pgtype.Text        `db:"resolution_note" json:"resolution_note"`
 	CreatedAt      time.Time          `db:"created_at" json:"created_at"`
 	ResolvedAt     pgtype.Timestamptz `db:"resolved_at" json:"resolved_at"`
+	// RESTRICT FK: vendor cannot be deleted while this dispute is open. Application must resolve all non-terminal disputes before permitting vendor account deletion. Terminal disputes (resolved_*, withdrawn) have already unfrozen associated payout records.
 	VendorID       pgtype.UUID        `db:"vendor_id" json:"vendor_id"`
 	BuyerID        pgtype.UUID        `db:"buyer_id" json:"buyer_id"`
 	VendorDeadline pgtype.Timestamptz `db:"vendor_deadline" json:"vendor_deadline"`
-	OpenedAt       pgtype.Timestamptz `db:"opened_at" json:"opened_at"`
+	// NULL for non-escalated disputes. Set when status transitions to escalated. Monitored by idx_dr_escalated_deadline. No auto-resolution — requires manual admin action.
+	EscalationDeadline pgtype.Timestamptz `db:"escalation_deadline" json:"escalation_deadline"`
+	OpenedAt           pgtype.Timestamptz `db:"opened_at" json:"opened_at"`
 }
 
 type FatfTravelRuleRecord struct {
@@ -2188,7 +2193,7 @@ type PayoutRecord struct {
 	// Copied from invoice.bridge_destination_address at creation. fn_pr_destination_consistency (011) verifies this matches the invoice snapshot. NULL for platform wallet mode.
 	DestinationAddress pgtype.Text `db:"destination_address" json:"destination_address"`
 	BatchID            pgtype.UUID `db:"batch_id" json:"batch_id"`
-	// Set atomically with constructing → broadcast. MUST be committed BEFORE sendrawtransaction. If sendrawtransaction fails after DB commit, the watchdog detects the stuck record and triggers RBF or escalation.
+	// Set atomically with constructing → broadcast. MUST be committed BEFORE sendrawtransaction. If sendrawtransaction fails after DB commit, the watchdog detects the stuck record and triggers RBF or escalation. F-07: the broadcast UPDATE WHERE clause MUST include AND batch_id=$my_batch_id. Without it, a reclaimed-and-reassigned record can have its batch_txid overwritten by the original worker, locking vendor funds under the wrong txid.
 	BatchTxid        pgtype.Text    `db:"batch_txid" json:"batch_txid"`
 	VoutIndexInBatch pgtype.Int4    `db:"vout_index_in_batch" json:"vout_index_in_batch"`
 	FeeRateSatVbyte  pgtype.Numeric `db:"fee_rate_sat_vbyte" json:"fee_rate_sat_vbyte"`
@@ -2202,9 +2207,11 @@ type PayoutRecord struct {
 	ResolutionAdminID pgtype.UUID        `db:"resolution_admin_id" json:"resolution_admin_id"`
 	BroadcastAt       pgtype.Timestamptz `db:"broadcast_at" json:"broadcast_at"`
 	ConfirmedAt       pgtype.Timestamptz `db:"confirmed_at" json:"confirmed_at"`
-	CreatedAt         time.Time          `db:"created_at" json:"created_at"`
-	UpdatedAt         time.Time          `db:"updated_at" json:"updated_at"`
-	HoldReason        pgtype.Text        `db:"hold_reason" json:"hold_reason"`
+	// F-02: TRUE when sendrawtransaction timed out or lost the connection after the constructing→broadcast DB commit succeeded. TX may or may not be on the network. Watchdog: if TRUE and no mempool entry, call getrawtransaction before RBF. Clear to FALSE once getrawtransaction confirms TX is not on-chain.
+	RpcAmbiguous bool        `db:"rpc_ambiguous" json:"rpc_ambiguous"`
+	CreatedAt    time.Time   `db:"created_at" json:"created_at"`
+	UpdatedAt    time.Time   `db:"updated_at" json:"updated_at"`
+	HoldReason   pgtype.Text `db:"hold_reason" json:"hold_reason"`
 	// FK to dispute_records added in 022_btc_disputes.sql (was plain UUID in 015). SET NULL on dispute deletion (forensics path only). NULL unless hold_reason = 'dispute_hold'. Sweep job checks IS NOT NULL at broadcast boundary to abort sweep for dispute-frozen records.
 	DisputeID pgtype.UUID `db:"dispute_id" json:"dispute_id"`
 }
@@ -2541,9 +2548,10 @@ type RolePermissionsAudit struct {
 	ChangeReason  pgtype.Text         `db:"change_reason" json:"change_reason"`
 }
 
-// SSE token issuance records with pseudonymised IP hash. Replaces source_ip in financial_audit_events.metadata (SEC-07 decision). jti_hash = HMAC-SHA256(jti, server_secret) — non-reversible. source_ip_hash = SHA256(ip || daily_rotation_key) — non-reversible after key rotation. GDPR erasure: SET erased=TRUE, source_ip_hash=NULL.
+// SSE token issuance records with pseudonymised IP hash. Replaces source_ip in financial_audit_events.metadata (SEC-07 decision). jti_hash = HMAC-SHA256(jti, server_secret) — non-reversible. source_ip_hash = SHA256(ip || daily_rotation_key) — non-reversible after key rotation. vendor_id is nullable (ON DELETE SET NULL) — must not be NOT NULL or vendor deletion fails. GDPR erasure: SET erased=TRUE, source_ip_hash=NULL.
 type SseTokenIssuance struct {
-	ID           uuid.UUID          `db:"id" json:"id"`
+	ID uuid.UUID `db:"id" json:"id"`
+	// Nullable. ON DELETE SET NULL preserves the issuance record after vendor deletion. NULL rows are still processed by the GDPR erasure job (erased column applies). Do NOT add NOT NULL to this column — it will break all vendor account deletions.
 	VendorID     pgtype.UUID        `db:"vendor_id" json:"vendor_id"`
 	Network      string             `db:"network" json:"network"`
 	JtiHash      string             `db:"jti_hash" json:"jti_hash"`
@@ -2780,21 +2788,24 @@ type VendorWalletConfig struct {
 	Suspended             bool               `db:"suspended" json:"suspended"`
 	SuspendedAt           pgtype.Timestamptz `db:"suspended_at" json:"suspended_at"`
 	SuspensionReason      pgtype.Text        `db:"suspension_reason" json:"suspension_reason"`
-	// TRUE when tier downgrade removed permission for the current wallet_mode. New invoice creation is blocked. Clears only on explicit vendor reconfiguration — never auto-clears.
-	ModeFrozen       bool        `db:"mode_frozen" json:"mode_frozen"`
-	ModeFrozenReason pgtype.Text `db:"mode_frozen_reason" json:"mode_frozen_reason"`
-	CreatedAt        time.Time   `db:"created_at" json:"created_at"`
-	UpdatedAt        time.Time   `db:"updated_at" json:"updated_at"`
+	// TRUE when tier downgrade removed permission for the current wallet_mode. New invoice creation is blocked. Clears only on explicit vendor reconfiguration — never auto-clears. mode_frozen_at and mode_frozen_reason are required when TRUE (chk_vwc_mode_frozen_coherent).
+	ModeFrozen       bool               `db:"mode_frozen" json:"mode_frozen"`
+	ModeFrozenReason pgtype.Text        `db:"mode_frozen_reason" json:"mode_frozen_reason"`
+	ModeFrozenAt     pgtype.Timestamptz `db:"mode_frozen_at" json:"mode_frozen_at"`
+	CreatedAt        time.Time          `db:"created_at" json:"created_at"`
+	UpdatedAt        time.Time          `db:"updated_at" json:"updated_at"`
 }
 
-// Field-level history of vendor wallet config changes. One row per changed field per UPDATE. Populated by fn_vwc_history AFTER UPDATE trigger (011). Required for compliance: "what address/mode/tier did vendor X have during period Y?"
+// Field-level history of vendor wallet config changes. One row per changed field per UPDATE. Populated by fn_vwc_history AFTER UPDATE trigger (024). Required for compliance: "what address/mode/tier did vendor X have during period Y?"
 type VendorWalletConfigHistory struct {
 	ID        uuid.UUID          `db:"id" json:"id"`
 	VendorID  pgtype.UUID        `db:"vendor_id" json:"vendor_id"`
 	Network   string             `db:"network" json:"network"`
 	ChangedAt pgtype.Timestamptz `db:"changed_at" json:"changed_at"`
 	ChangedBy pgtype.UUID        `db:"changed_by" json:"changed_by"`
-	// Which field changed. Tracked fields: bridge_destination_address, wallet_mode, tier_id, suspended, kyc_status.
+	// Stable identity snapshot from app.current_actor_label session variable. Preserved permanently after changed_by goes NULL on user deletion. This is the only identity record remaining once the user account is deleted.
+	ChangedByLabel string `db:"changed_by_label" json:"changed_by_label"`
+	// Which field changed. Tracked fields: bridge_destination_address, wallet_mode, tier_id, suspended, kyc_status, auto_sweep_threshold_sat.
 	FieldName string      `db:"field_name" json:"field_name"`
 	OldValue  pgtype.Text `db:"old_value" json:"old_value"`
 	NewValue  pgtype.Text `db:"new_value" json:"new_value"`

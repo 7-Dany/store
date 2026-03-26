@@ -83,13 +83,31 @@ checkAddressOwnership(address) → ismine bool | rpc_error
     (Bitcoin txid = double-SHA256 of serialized tx, byte-reversed for display)
 5b. DB transaction:
       UPDATE payout_records SET status='broadcast', txid=$txid, broadcast_at=NOW()
-      WHERE status='constructing' AND batch_id=$batch_id
+      WHERE status='constructing'
+        AND batch_id=$batch_id   ← F-07: REQUIRED — prevents reclaimed-worker overwrite
     Assert RowsAffected > 0; commit.
-    If RowsAffected == 0: another process reclaimed records — abort, do NOT broadcast.
+    If RowsAffected == 0: watchdog reclaimed records — abort, do NOT broadcast.
     If commit fails: return error — do NOT broadcast.
 6. sendrawtransaction(raw_hex, maxfeerate)    → txid (verify matches computed txid)
    where maxfeerate = tier_cap_sat_per_vbyte × 0.00001  (sat/vbyte → BTC/kvbyte)
+   On clean RPC rejection: payout stays 'broadcast'; watchdog handles RBF.
+   On timeout/connection error (F-02 ambiguous):
+     UPDATE payout_records SET rpc_ambiguous=TRUE WHERE batch_id=$batch_id
+     Do NOT treat as "broadcast failed" — TX may have reached the network.
 ```
+
+**F-07 — batch_id in WHERE clause:** Without `AND batch_id=$my_batch_id` on step 5b,
+a reclaimed-and-reassigned worker can overwrite another worker's `batch_txid`. The
+vendor's payout record shows `broadcast` under a txid that may not include their
+output. Always include `batch_id` in the WHERE and treat 0 RowsAffected as a clean
+"reclaimed" abort — never broadcast after 0 RowsAffected.
+
+**F-02 — rpc_ambiguous on timeout:** A timeout from `sendrawtransaction` does not
+mean the TX was rejected. Bitcoin Core may have accepted it before the connection
+dropped. Setting `rpc_ambiguous=TRUE` instructs the stuck-sweep watchdog to call
+`getrawtransaction` before constructing any RBF replacement:
+- If `getrawtransaction` returns the TX → it is on the network; wait for confirmation.
+- If `getrawtransaction` returns "not found" → clear `rpc_ambiguous`, proceed with RBF.
 
 ---
 
@@ -190,6 +208,13 @@ confirmation window**.
 current_estimate = estimatesmartfee(target) × 1.10
 ```
 
+**F-02 — rpc_ambiguous pre-check (runs before all cases below):** Before evaluating
+whether to RBF a stuck broadcast, check `payout_records.rpc_ambiguous`:
+- If `rpc_ambiguous=TRUE`: call `getrawtransaction($batch_txid)`.
+  - Found in mempool/chain → clear `rpc_ambiguous=FALSE`, continue normal monitoring.
+  - Not found → TX was never broadcast; set `rpc_ambiguous=FALSE`, proceed to RBF.
+- If `rpc_ambiguous=FALSE`: proceed to normal stuck detection below.
+
 **Case 1 — current estimate > original fee used:** RBF triggered automatically.
 Replacement uses `current_estimate`. `sendrawtransaction` called with
 `maxfeerate = tier_cap` to prevent fee estimation bugs from overpaying. Admin alerted.
@@ -240,8 +265,13 @@ for this job type.
 | TI-11-02 | `TestPayout_Queued_To_Constructing_SweepJob` | INTG | Sweep job claims queued records |
 | TI-11-03 | `TestPayout_Constructing_StaleWatchdog_ReturnsToQueued` | INTG | > 10min in constructing; watchdog → queued; WARNING |
 | TI-11-04 | `TestPayout_DBUpdateBeforeBroadcast_Invariant` | INTG | **C-03/H-02**: constructing→broadcast DB commits BEFORE sendrawtransaction |
+| TI-11-04b | `TestPayout_F07_BatchIdInWhereClause_ReclamedWorkerAborts` | INTG | **F-07**: broadcast WHERE includes batch_id; reclaimed worker gets 0 rows, aborts |
+| TI-11-04c | `TestPayout_F07_ReclamedReassignedRecord_OriginalWorkerCannotOverwrite` | INTG RACE | **F-07**: record reclaimed+reassigned; original worker UPDATE affects 0 rows |
 | TI-11-05 | `TestPayout_DBUpdateReturnsZeroRows_BroadcastAborted` | INTG | **C-03**: 0 rows → no broadcast called |
 | TI-11-06 | `TestPayout_DBCommitFails_BroadcastAborted` | INTG | **C-03**: DB commit error → no broadcast called |
+| TI-11-06b | `TestPayout_F02_SendRawTimeout_SetsRpcAmbiguous` | INTG | **F-02**: sendrawtransaction timeout → rpc_ambiguous=TRUE; not treated as rejection |
+| TI-11-06c | `TestPayout_F02_RpcAmbiguous_Watchdog_CallsGetRawTransaction` | INTG | **F-02**: watchdog sees rpc_ambiguous=TRUE → calls getrawtransaction before RBF |
+| TI-11-06d | `TestPayout_F02_RpcAmbiguous_TxFound_ClearsFlag_NoRBF` | INTG | **F-02**: getrawtransaction returns TX → rpc_ambiguous cleared; no RBF |
 | TI-11-07 | `TestPayout_TxidComputed_Before_Broadcast` | UNIT | **C-03**: txid derived from raw hex before sendrawtransaction |
 | TI-11-08 | `TestPayout_Broadcast_To_Confirmed_AtThreeBlocks` | INTG | 3-block depth; broadcast → confirmed |
 | TI-11-09 | `TestPayout_BatchAtomicConfirmation_AllRecordsInOneTx` | INTG | Batch confirmed; all records in same DB tx |

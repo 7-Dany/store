@@ -200,6 +200,83 @@ func AllAuthProviderValues() []AuthProvider {
 	}
 }
 
+// Dispute lifecycle (dispute-technical.md §1). Terminal statuses: resolved_vendor, resolved_buyer, resolved_platform, withdrawn. All terminal transitions require step-up authentication. awaiting_vendor triggers a 7-day SLA timer (vendor_deadline on dispute_records). NEVER remove a value — live rows would fail to decode.
+type BtcDisputeStatus string
+
+const (
+	BtcDisputeStatusOpen             BtcDisputeStatus = "open"
+	BtcDisputeStatusAwaitingVendor   BtcDisputeStatus = "awaiting_vendor"
+	BtcDisputeStatusAwaitingBuyer    BtcDisputeStatus = "awaiting_buyer"
+	BtcDisputeStatusResolvedVendor   BtcDisputeStatus = "resolved_vendor"
+	BtcDisputeStatusResolvedBuyer    BtcDisputeStatus = "resolved_buyer"
+	BtcDisputeStatusResolvedPlatform BtcDisputeStatus = "resolved_platform"
+	BtcDisputeStatusWithdrawn        BtcDisputeStatus = "withdrawn"
+	BtcDisputeStatusEscalated        BtcDisputeStatus = "escalated"
+)
+
+func (e *BtcDisputeStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = BtcDisputeStatus(s)
+	case string:
+		*e = BtcDisputeStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for BtcDisputeStatus: %T", src)
+	}
+	return nil
+}
+
+type NullBtcDisputeStatus struct {
+	BtcDisputeStatus BtcDisputeStatus `json:"btc_dispute_status"`
+	Valid            bool             `json:"valid"` // Valid is true if BtcDisputeStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullBtcDisputeStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.BtcDisputeStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.BtcDisputeStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullBtcDisputeStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.BtcDisputeStatus), nil
+}
+
+func (e BtcDisputeStatus) Valid() bool {
+	switch e {
+	case BtcDisputeStatusOpen,
+		BtcDisputeStatusAwaitingVendor,
+		BtcDisputeStatusAwaitingBuyer,
+		BtcDisputeStatusResolvedVendor,
+		BtcDisputeStatusResolvedBuyer,
+		BtcDisputeStatusResolvedPlatform,
+		BtcDisputeStatusWithdrawn,
+		BtcDisputeStatusEscalated:
+		return true
+	}
+	return false
+}
+
+func AllBtcDisputeStatusValues() []BtcDisputeStatus {
+	return []BtcDisputeStatus{
+		BtcDisputeStatusOpen,
+		BtcDisputeStatusAwaitingVendor,
+		BtcDisputeStatusAwaitingBuyer,
+		BtcDisputeStatusResolvedVendor,
+		BtcDisputeStatusResolvedBuyer,
+		BtcDisputeStatusResolvedPlatform,
+		BtcDisputeStatusWithdrawn,
+		BtcDisputeStatusEscalated,
+	}
+}
+
 // Invoice lifecycle: 16 states, 38 permitted transitions (settlement-technical.md §3). Never remove a value — live rows would fail to decode. Add new states with ALTER TYPE … ADD VALUE.
 type BtcInvoiceStatus string
 
@@ -363,6 +440,74 @@ func AllBtcKycStatusValues() []BtcKycStatus {
 		BtcKycStatusPending,
 		BtcKycStatusApproved,
 		BtcKycStatusRejected,
+	}
+}
+
+// KYC submission workflow (kyc-technical.md §1). Separate from btc_kyc_status (aggregate gate on vendor_wallet_config/payout_records). Transitions: submitted→under_review→approved/rejected, approved→expired. expired is terminal for the submission row; a new submission is required. NEVER remove a value — live rows would fail to decode.
+type BtcKycSubmissionStatus string
+
+const (
+	BtcKycSubmissionStatusSubmitted   BtcKycSubmissionStatus = "submitted"
+	BtcKycSubmissionStatusUnderReview BtcKycSubmissionStatus = "under_review"
+	BtcKycSubmissionStatusApproved    BtcKycSubmissionStatus = "approved"
+	BtcKycSubmissionStatusRejected    BtcKycSubmissionStatus = "rejected"
+	BtcKycSubmissionStatusExpired     BtcKycSubmissionStatus = "expired"
+)
+
+func (e *BtcKycSubmissionStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = BtcKycSubmissionStatus(s)
+	case string:
+		*e = BtcKycSubmissionStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for BtcKycSubmissionStatus: %T", src)
+	}
+	return nil
+}
+
+type NullBtcKycSubmissionStatus struct {
+	BtcKycSubmissionStatus BtcKycSubmissionStatus `json:"btc_kyc_submission_status"`
+	Valid                  bool                   `json:"valid"` // Valid is true if BtcKycSubmissionStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullBtcKycSubmissionStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.BtcKycSubmissionStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.BtcKycSubmissionStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullBtcKycSubmissionStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.BtcKycSubmissionStatus), nil
+}
+
+func (e BtcKycSubmissionStatus) Valid() bool {
+	switch e {
+	case BtcKycSubmissionStatusSubmitted,
+		BtcKycSubmissionStatusUnderReview,
+		BtcKycSubmissionStatusApproved,
+		BtcKycSubmissionStatusRejected,
+		BtcKycSubmissionStatusExpired:
+		return true
+	}
+	return false
+}
+
+func AllBtcKycSubmissionStatusValues() []BtcKycSubmissionStatus {
+	return []BtcKycSubmissionStatus{
+		BtcKycSubmissionStatusSubmitted,
+		BtcKycSubmissionStatusUnderReview,
+		BtcKycSubmissionStatusApproved,
+		BtcKycSubmissionStatusRejected,
+		BtcKycSubmissionStatusExpired,
 	}
 }
 
@@ -806,6 +951,77 @@ func AllBtcWalletModeValues() []BtcWalletMode {
 		BtcWalletModeBridge,
 		BtcWalletModePlatform,
 		BtcWalletModeHybrid,
+	}
+}
+
+// Platform-mode vendor withdrawal request lifecycle (settlement-feature.md §9). Terminal statuses: rejected, cancelled, completed. Below approval threshold: auto_approved immediately with payout_record creation. NEVER remove a value — live rows would fail to decode.
+type BtcWithdrawalStatus string
+
+const (
+	BtcWithdrawalStatusPendingApproval BtcWithdrawalStatus = "pending_approval"
+	BtcWithdrawalStatusApproved        BtcWithdrawalStatus = "approved"
+	BtcWithdrawalStatusAutoApproved    BtcWithdrawalStatus = "auto_approved"
+	BtcWithdrawalStatusRejected        BtcWithdrawalStatus = "rejected"
+	BtcWithdrawalStatusCancelled       BtcWithdrawalStatus = "cancelled"
+	BtcWithdrawalStatusCompleted       BtcWithdrawalStatus = "completed"
+)
+
+func (e *BtcWithdrawalStatus) Scan(src interface{}) error {
+	switch s := src.(type) {
+	case []byte:
+		*e = BtcWithdrawalStatus(s)
+	case string:
+		*e = BtcWithdrawalStatus(s)
+	default:
+		return fmt.Errorf("unsupported scan type for BtcWithdrawalStatus: %T", src)
+	}
+	return nil
+}
+
+type NullBtcWithdrawalStatus struct {
+	BtcWithdrawalStatus BtcWithdrawalStatus `json:"btc_withdrawal_status"`
+	Valid               bool                `json:"valid"` // Valid is true if BtcWithdrawalStatus is not NULL
+}
+
+// Scan implements the Scanner interface.
+func (ns *NullBtcWithdrawalStatus) Scan(value interface{}) error {
+	if value == nil {
+		ns.BtcWithdrawalStatus, ns.Valid = "", false
+		return nil
+	}
+	ns.Valid = true
+	return ns.BtcWithdrawalStatus.Scan(value)
+}
+
+// Value implements the driver Valuer interface.
+func (ns NullBtcWithdrawalStatus) Value() (driver.Value, error) {
+	if !ns.Valid {
+		return nil, nil
+	}
+	return string(ns.BtcWithdrawalStatus), nil
+}
+
+func (e BtcWithdrawalStatus) Valid() bool {
+	switch e {
+	case BtcWithdrawalStatusPendingApproval,
+		BtcWithdrawalStatusApproved,
+		BtcWithdrawalStatusAutoApproved,
+		BtcWithdrawalStatusRejected,
+		BtcWithdrawalStatusCancelled,
+		BtcWithdrawalStatusCompleted:
+		return true
+	}
+	return false
+}
+
+func AllBtcWithdrawalStatusValues() []BtcWithdrawalStatus {
+	return []BtcWithdrawalStatus{
+		BtcWithdrawalStatusPendingApproval,
+		BtcWithdrawalStatusApproved,
+		BtcWithdrawalStatusAutoApproved,
+		BtcWithdrawalStatusRejected,
+		BtcWithdrawalStatusCancelled,
+		BtcWithdrawalStatusCompleted,
 	}
 }
 
@@ -1571,6 +1787,26 @@ type BtcOutageLog struct {
 	EndedAt pgtype.Timestamptz `db:"ended_at" json:"ended_at"`
 }
 
+// Subscription fee debit requests. debit_defer_count + debit_first_deferred_at are the persistent Gap C state: they survive restarts so the safety valve '3 deferrals over 24h → forced-proceed' works correctly across process restarts.
+type BtcSubscriptionDebit struct {
+	ID               uuid.UUID      `db:"id" json:"id"`
+	VendorID         pgtype.UUID    `db:"vendor_id" json:"vendor_id"`
+	Network          string         `db:"network" json:"network"`
+	BillingPeriodRef string         `db:"billing_period_ref" json:"billing_period_ref"`
+	FiatAmount       int64          `db:"fiat_amount" json:"fiat_amount"`
+	FiatCurrencyCode string         `db:"fiat_currency_code" json:"fiat_currency_code"`
+	SatoshisDebited  pgtype.Int8    `db:"satoshis_debited" json:"satoshis_debited"`
+	RateUsed         pgtype.Numeric `db:"rate_used" json:"rate_used"`
+	Status           string         `db:"status" json:"status"`
+	// Persisted across restarts.Safety valve: when >= 3 AND NOW() - debit_first_deferred_at > 24h → proceed with stale rate.
+	DebitDeferCount       int32              `db:"debit_defer_count" json:"debit_defer_count"`
+	DebitFirstDeferredAt  pgtype.Timestamptz `db:"debit_first_deferred_at" json:"debit_first_deferred_at"`
+	ExecutedWithStaleRate bool               `db:"executed_with_stale_rate" json:"executed_with_stale_rate"`
+	RequestedAt           pgtype.Timestamptz `db:"requested_at" json:"requested_at"`
+	ExecutedAt            pgtype.Timestamptz `db:"executed_at" json:"executed_at"`
+	UpdatedAt             time.Time          `db:"updated_at" json:"updated_at"`
+}
+
 // Owner-managed tier presets. All financial rules are defined here and snapshotted immutably onto every invoice at creation (after COALESCE with vendor_tier_overrides). Soft-deactivated (status=inactive), never hard-deleted — invoices hold a RESTRICT FK. role_id bridges tiers to RBAC: fn_sync_vendor_tier_role (011) keeps user_roles in sync. Changes are captured in btc_tier_config_history (010) by fn_tier_config_history (011).
 type BtcTierConfig struct {
 	ID uuid.UUID `db:"id" json:"id"`
@@ -1591,8 +1827,11 @@ type BtcTierConfig struct {
 	OverpaymentRelativeThresholdPct pgtype.Numeric   `db:"overpayment_relative_threshold_pct" json:"overpayment_relative_threshold_pct"`
 	OverpaymentAbsoluteThresholdSat int64            `db:"overpayment_absolute_threshold_sat" json:"overpayment_absolute_threshold_sat"`
 	// Batch-amortised fee floor: floor = (fee_estimate × 1.1 × vbytes) / expected_batch_size. Default 50 for Free, 20 for Growth/Pro.
-	ExpectedBatchSize         int32 `db:"expected_batch_size" json:"expected_batch_size"`
-	PlatformWalletModeAllowed bool  `db:"platform_wallet_mode_allowed" json:"platform_wallet_mode_allowed"`
+	ExpectedBatchSize                   int32       `db:"expected_batch_size" json:"expected_batch_size"`
+	WebhookLevel                        string      `db:"webhook_level" json:"webhook_level"`
+	KycCheckRequiredAtThresholdSatoshis pgtype.Int8 `db:"kyc_check_required_at_threshold_satoshis" json:"kyc_check_required_at_threshold_satoshis"`
+	KycApprovalValidityDays             int32       `db:"kyc_approval_validity_days" json:"kyc_approval_validity_days"`
+	KycResubmissionCooldownHours        int32       `db:"kyc_resubmission_cooldown_hours" json:"kyc_resubmission_cooldown_hours"`
 	// btc_tier_status ENUM. active → deactivating (pre-sweep) → inactive. New invoice creation blocked in deactivating and inactive states.
 	Status    BtcTierStatus `db:"status" json:"status"`
 	CreatedAt time.Time     `db:"created_at" json:"created_at"`
@@ -1609,6 +1848,23 @@ type BtcTierConfigHistory struct {
 	ChangedByLabel string `db:"changed_by_label" json:"changed_by_label"`
 	OldValues      []byte `db:"old_values" json:"old_values"`
 	NewValues      []byte `db:"new_values" json:"new_values"`
+}
+
+// Platform-mode vendor withdrawal requests. below approval threshold → auto_approved + payout_record immediately. above threshold → pending_approval → admin review → approved/rejected. destination_address: validated (network-aware + RPC ismine) before row inserted. payout_record_id: linked when request is approved; tracks the full sweep lifecycle.
+type BtcWithdrawalRequest struct {
+	ID        uuid.UUID   `db:"id" json:"id"`
+	VendorID  pgtype.UUID `db:"vendor_id" json:"vendor_id"`
+	Network   string      `db:"network" json:"network"`
+	AmountSat int64       `db:"amount_sat" json:"amount_sat"`
+	// Network-aware bech32 address. Validated with RPC getaddressinfo ismine at save time to reject platform-managed addresses. Immutable after creation.
+	DestinationAddress string              `db:"destination_address" json:"destination_address"`
+	Status             BtcWithdrawalStatus `db:"status" json:"status"`
+	PayoutRecordID     pgtype.UUID         `db:"payout_record_id" json:"payout_record_id"`
+	ReviewedBy         pgtype.UUID         `db:"reviewed_by" json:"reviewed_by"`
+	RejectionReason    pgtype.Text         `db:"rejection_reason" json:"rejection_reason"`
+	ReviewedAt         pgtype.Timestamptz  `db:"reviewed_at" json:"reviewed_at"`
+	CreatedAt          time.Time           `db:"created_at" json:"created_at"`
+	UpdatedAt          time.Time           `db:"updated_at" json:"updated_at"`
 }
 
 // ZMQ events that could not be matched to an active monitoring record. Captures: late payments, double-spend attempts, retired addresses, unknown txids. Periodic review of resolved=FALSE rows detects missed payments and anomalies. Not all dead letters are errors — late payments on expired invoices are expected.
@@ -1632,28 +1888,29 @@ type DisputeRecord struct {
 	RaisedBy       pgtype.UUID        `db:"raised_by" json:"raised_by"`
 	DisputeType    string             `db:"dispute_type" json:"dispute_type"`
 	Description    string             `db:"description" json:"description"`
-	Status         string             `db:"status" json:"status"`
+	Status         BtcDisputeStatus   `db:"status" json:"status"`
 	ResolvedBy     pgtype.UUID        `db:"resolved_by" json:"resolved_by"`
 	ResolutionNote pgtype.Text        `db:"resolution_note" json:"resolution_note"`
 	CreatedAt      time.Time          `db:"created_at" json:"created_at"`
 	ResolvedAt     pgtype.Timestamptz `db:"resolved_at" json:"resolved_at"`
+	VendorID       pgtype.UUID        `db:"vendor_id" json:"vendor_id"`
+	BuyerID        pgtype.UUID        `db:"buyer_id" json:"buyer_id"`
+	VendorDeadline pgtype.Timestamptz `db:"vendor_deadline" json:"vendor_deadline"`
+	OpenedAt       pgtype.Timestamptz `db:"opened_at" json:"opened_at"`
 }
 
-// FATF Travel Rule compliance records for payouts above the threshold. Must be created BEFORE the constructing → broadcast transition. compliance_status tracks transmission to the receiving VASP. beneficiary_address must match payout_records.destination_address (application-enforced and DB trigger-enforced by fn_fatf_address_consistency in 011).
 type FatfTravelRuleRecord struct {
-	ID             uuid.UUID   `db:"id" json:"id"`
-	PayoutRecordID pgtype.UUID `db:"payout_record_id" json:"payout_record_id"`
-	// The threshold that was exceeded at record creation time, in satoshis. Thresholds: USA $1000, EU €1000. Recorded for self-contained audit.
-	ThresholdSat       int64       `db:"threshold_sat" json:"threshold_sat"`
-	OriginatorName     string      `db:"originator_name" json:"originator_name"`
-	OriginatorVasp     pgtype.Text `db:"originator_vasp" json:"originator_vasp"`
-	BeneficiaryName    string      `db:"beneficiary_name" json:"beneficiary_name"`
-	BeneficiaryVasp    pgtype.Text `db:"beneficiary_vasp" json:"beneficiary_vasp"`
-	BeneficiaryAddress string      `db:"beneficiary_address" json:"beneficiary_address"`
-	// pending=not yet transmitted. sent=initiated. acknowledged=VASP confirmed. failed=transmission failed, requires manual follow-up.
-	ComplianceStatus string             `db:"compliance_status" json:"compliance_status"`
-	SubmittedAt      pgtype.Timestamptz `db:"submitted_at" json:"submitted_at"`
-	CreatedAt        time.Time          `db:"created_at" json:"created_at"`
+	ID                 uuid.UUID          `db:"id" json:"id"`
+	PayoutRecordID     pgtype.UUID        `db:"payout_record_id" json:"payout_record_id"`
+	ThresholdSat       int64              `db:"threshold_sat" json:"threshold_sat"`
+	OriginatorName     string             `db:"originator_name" json:"originator_name"`
+	OriginatorVasp     pgtype.Text        `db:"originator_vasp" json:"originator_vasp"`
+	BeneficiaryName    string             `db:"beneficiary_name" json:"beneficiary_name"`
+	BeneficiaryVasp    pgtype.Text        `db:"beneficiary_vasp" json:"beneficiary_vasp"`
+	BeneficiaryAddress string             `db:"beneficiary_address" json:"beneficiary_address"`
+	ComplianceStatus   string             `db:"compliance_status" json:"compliance_status"`
+	SubmittedAt        pgtype.Timestamptz `db:"submitted_at" json:"submitted_at"`
+	CreatedAt          time.Time          `db:"created_at" json:"created_at"`
 }
 
 // Immutable append-only financial audit trail. Retained indefinitely. Immutability layer 1: btc_app_role has INSERT+SELECT only. Immutability layer 2: fn_btc_audit_immutable + fn_btc_audit_no_truncate (011) block all mutations. Admin corrections: new rows with references_event_id — original rows never modified. GDPR: do NOT store source_ip here — use sse_token_issuances table. Reconciliation: balance_before/after columns enable full balance history reconstruction.
@@ -1869,12 +2126,12 @@ type KycSubmission struct {
 	VendorID pgtype.UUID `db:"vendor_id" json:"vendor_id"`
 	Provider string      `db:"provider" json:"provider"`
 	// Provider's own reference ID. UNIQUE per (provider, ref_id) to prevent duplicate submissions.
-	ProviderRefID   string             `db:"provider_ref_id" json:"provider_ref_id"`
-	Status          BtcKycStatus       `db:"status" json:"status"`
-	SubmittedAt     pgtype.Timestamptz `db:"submitted_at" json:"submitted_at"`
-	ReviewedAt      pgtype.Timestamptz `db:"reviewed_at" json:"reviewed_at"`
-	ReviewerID      pgtype.UUID        `db:"reviewer_id" json:"reviewer_id"`
-	RejectionReason pgtype.Text        `db:"rejection_reason" json:"rejection_reason"`
+	ProviderRefID   string                 `db:"provider_ref_id" json:"provider_ref_id"`
+	Status          BtcKycSubmissionStatus `db:"status" json:"status"`
+	SubmittedAt     pgtype.Timestamptz     `db:"submitted_at" json:"submitted_at"`
+	ReviewedAt      pgtype.Timestamptz     `db:"reviewed_at" json:"reviewed_at"`
+	ReviewerID      pgtype.UUID            `db:"reviewer_id" json:"reviewer_id"`
+	RejectionReason pgtype.Text            `db:"rejection_reason" json:"rejection_reason"`
 	// When this KYC approval expires. NULL = no expiry. Application should alert vendors approaching expiry (typically 2 years from approval).
 	ExpiresAt pgtype.Timestamptz `db:"expires_at" json:"expires_at"`
 }
@@ -1947,6 +2204,9 @@ type PayoutRecord struct {
 	ConfirmedAt       pgtype.Timestamptz `db:"confirmed_at" json:"confirmed_at"`
 	CreatedAt         time.Time          `db:"created_at" json:"created_at"`
 	UpdatedAt         time.Time          `db:"updated_at" json:"updated_at"`
+	HoldReason        pgtype.Text        `db:"hold_reason" json:"hold_reason"`
+	// FK to dispute_records added in 022_btc_disputes.sql (was plain UUID in 015). SET NULL on dispute deletion (forensics path only). NULL unless hold_reason = 'dispute_hold'. Sweep job checks IS NOT NULL at broadcast boundary to abort sweep for dispute-frozen records.
+	DisputeID pgtype.UUID `db:"dispute_id" json:"dispute_id"`
 }
 
 // Permission definitions. Canonical form: resource_type:name (e.g. product:create). Soft-delete via is_active.
@@ -2055,8 +2315,12 @@ type PlatformConfig struct {
 	// Owner kill-switch for the dispute system. FALSE = dispute creation endpoint returns 503. No payout freezing, no SLA timers. Requires admin playbook before enabling.
 	DisputesEnabled bool `db:"disputes_enabled" json:"disputes_enabled"`
 	// Owner kill-switch for the GDPR erasure background job. FALSE = requests are accepted and recorded but PII is not yet erased. Enable after job validation.
-	GdprErasureJobEnabled bool      `db:"gdpr_erasure_job_enabled" json:"gdpr_erasure_job_enabled"`
-	UpdatedAt             time.Time `db:"updated_at" json:"updated_at"`
+	GdprErasureJobEnabled       bool        `db:"gdpr_erasure_job_enabled" json:"gdpr_erasure_job_enabled"`
+	UpdatedAt                   time.Time   `db:"updated_at" json:"updated_at"`
+	ConsolidationEnabled        bool        `db:"consolidation_enabled" json:"consolidation_enabled"`
+	ConsolidationMaxFeeSatVbyte pgtype.Int4 `db:"consolidation_max_fee_sat_vbyte" json:"consolidation_max_fee_sat_vbyte"`
+	ConsolidationWindowStart    pgtype.Time `db:"consolidation_window_start" json:"consolidation_window_start"`
+	ConsolidationWindowEnd      pgtype.Time `db:"consolidation_window_end" json:"consolidation_window_end"`
 }
 
 // Latest reconciliation run result per network. last_successful_run_at drives the "Reconciliation job missed" CRITICAL alert (> 8h stale). Only updated on result = ok. Failing runs update last_run_at but not last_successful_run_at. Full run history is in reconciliation_run_history (010_btc_payouts.sql).
@@ -2536,6 +2800,24 @@ type VendorWalletConfigHistory struct {
 	NewValue  pgtype.Text `db:"new_value" json:"new_value"`
 }
 
+// Per-vendor webhook endpoint config (one row per vendor per network). endpoint_url: HTTPS-only, validated with test ping at save time. webhook_secret_enc: AES-256-GCM; decrypted with TOKEN_ENCRYPTION_KEY at delivery. suspended: set TRUE by background job after > 100 dead letters in 7 days. Re-enabled by vendor via dashboard after fixing endpoint.
+type VendorWebhookConfig struct {
+	VendorID    pgtype.UUID `db:"vendor_id" json:"vendor_id"`
+	Network     string      `db:"network" json:"network"`
+	EndpointUrl string      `db:"endpoint_url" json:"endpoint_url"`
+	// AES-256-GCM encrypted. Key: TOKEN_ENCRYPTION_KEY. NULL = no secret header sent. NEVER log or expose the decrypted value outside the delivery worker.
+	WebhookSecretEnc []byte             `db:"webhook_secret_enc" json:"webhook_secret_enc"`
+	MaxAttempts      int32              `db:"max_attempts" json:"max_attempts"`
+	Suspended        bool               `db:"suspended" json:"suspended"`
+	SuspendedAt      pgtype.Timestamptz `db:"suspended_at" json:"suspended_at"`
+	// Rolling 7-day dead-letter count. Background job sets suspended=TRUE when > 100. Reset to 0 when vendor re-enables endpoint via dashboard.
+	DeadLettered7d  int32              `db:"dead_lettered_7d" json:"dead_lettered_7d"`
+	LastPingAt      pgtype.Timestamptz `db:"last_ping_at" json:"last_ping_at"`
+	LastPingSuccess pgtype.Bool        `db:"last_ping_success" json:"last_ping_success"`
+	CreatedAt       time.Time          `db:"created_at" json:"created_at"`
+	UpdatedAt       time.Time          `db:"updated_at" json:"updated_at"`
+}
+
 // Wallet backup completion records. Written only after RPC + copy + verify all succeed. "Wallet backup overdue" CRITICAL alert fires when latest timestamp is stale (> 4h mainnet, > 24h testnet4). A failed copy step means no row is written here.
 type WalletBackupSuccess struct {
 	ID      uuid.UUID `db:"id" json:"id"`
@@ -2558,7 +2840,7 @@ type WebhookDelivery struct {
 	PayoutRecordID pgtype.UUID `db:"payout_record_id" json:"payout_record_id"`
 	Status         string      `db:"status" json:"status"`
 	AttemptCount   int32       `db:"attempt_count" json:"attempt_count"`
-	// Maximum delivery attempts before status → dead_lettered. Default 5.
+	// Maximum delivery attempts before status → dead_lettered. Default 10 (webhook-feature.md §Retry Policy).
 	MaxAttempts int32 `db:"max_attempts" json:"max_attempts"`
 	// NULL = deliver immediately. Set with exponential backoff after each failed attempt.
 	NextRetryAt pgtype.Timestamptz `db:"next_retry_at" json:"next_retry_at"`

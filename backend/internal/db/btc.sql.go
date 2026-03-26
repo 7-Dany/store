@@ -422,7 +422,7 @@ VALUES (
     $8::btc_kyc_status,
     $9::jsonb
 )
-RETURNING id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at
+RETURNING id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at, hold_reason, dispute_id
 `
 
 type CreatePayoutRecordParams struct {
@@ -480,6 +480,8 @@ func (q *Queries) CreatePayoutRecord(ctx context.Context, arg CreatePayoutRecord
 		&i.ConfirmedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HoldReason,
+		&i.DisputeID,
 	)
 	return i, err
 }
@@ -1383,7 +1385,7 @@ func (q *Queries) GetOutageOverlapForInvoice(ctx context.Context, arg GetOutageO
 }
 
 const GetPayoutRecord = `-- name: GetPayoutRecord :one
-SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at FROM payout_records WHERE id = $1::uuid
+SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE id = $1::uuid
 `
 
 func (q *Queries) GetPayoutRecord(ctx context.Context, payoutID pgtype.UUID) (PayoutRecord, error) {
@@ -1413,12 +1415,14 @@ func (q *Queries) GetPayoutRecord(ctx context.Context, payoutID pgtype.UUID) (Pa
 		&i.ConfirmedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HoldReason,
+		&i.DisputeID,
 	)
 	return i, err
 }
 
 const GetPayoutRecordByInvoice = `-- name: GetPayoutRecordByInvoice :one
-SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at FROM payout_records WHERE invoice_id = $1::uuid
+SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE invoice_id = $1::uuid
 `
 
 // Fetch the payout for a settled invoice. Uses the implicit unique index
@@ -1450,6 +1454,8 @@ func (q *Queries) GetPayoutRecordByInvoice(ctx context.Context, invoiceID pgtype
 		&i.ConfirmedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HoldReason,
+		&i.DisputeID,
 	)
 	return i, err
 }
@@ -1558,7 +1564,7 @@ const GetPlatformConfig = `-- name: GetPlatformConfig :one
    PLATFORM CONFIG
    ════════════════════════════════════════════════════════════ */
 
-SELECT network, treasury_reserve_satoshis, sweep_hold_mode, sweep_hold_reason, sweep_hold_activated_at, platform_wallet_mode_legal_approved, reconciliation_start_height, kyc_enabled, fatf_enabled, webhooks_enabled, disputes_enabled, gdpr_erasure_job_enabled, updated_at
+SELECT network, treasury_reserve_satoshis, sweep_hold_mode, sweep_hold_reason, sweep_hold_activated_at, platform_wallet_mode_legal_approved, reconciliation_start_height, kyc_enabled, fatf_enabled, webhooks_enabled, disputes_enabled, gdpr_erasure_job_enabled, updated_at, consolidation_enabled, consolidation_max_fee_sat_vbyte, consolidation_window_start, consolidation_window_end
 FROM platform_config
 WHERE network = $1
 `
@@ -1583,6 +1589,10 @@ func (q *Queries) GetPlatformConfig(ctx context.Context, network string) (Platfo
 		&i.DisputesEnabled,
 		&i.GdprErasureJobEnabled,
 		&i.UpdatedAt,
+		&i.ConsolidationEnabled,
+		&i.ConsolidationMaxFeeSatVbyte,
+		&i.ConsolidationWindowStart,
+		&i.ConsolidationWindowEnd,
 	)
 	return i, err
 }

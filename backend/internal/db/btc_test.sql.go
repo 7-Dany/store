@@ -465,7 +465,7 @@ func (q *Queries) TestGetOpenOutage(ctx context.Context, network string) (BtcOut
 }
 
 const TestGetPayoutRecord = `-- name: TestGetPayoutRecord :one
-SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at FROM payout_records WHERE id = $1::uuid
+SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE id = $1::uuid
 `
 
 // Fetch a raw payout record for assertion.
@@ -496,12 +496,14 @@ func (q *Queries) TestGetPayoutRecord(ctx context.Context, payoutID pgtype.UUID)
 		&i.ConfirmedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HoldReason,
+		&i.DisputeID,
 	)
 	return i, err
 }
 
 const TestGetPayoutRecordByInvoice = `-- name: TestGetPayoutRecordByInvoice :one
-SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at FROM payout_records WHERE invoice_id = $1::uuid
+SELECT id, invoice_id, vendor_id, network, status, net_satoshis, platform_fee_satoshis, wallet_mode, destination_address, batch_id, batch_txid, vout_index_in_batch, fee_rate_sat_vbyte, miner_fee_satoshis, original_txid, fee_breakdown, kyc_status, resolution_reason, resolution_admin_id, broadcast_at, confirmed_at, created_at, updated_at, hold_reason, dispute_id FROM payout_records WHERE invoice_id = $1::uuid
 `
 
 // Fetch the payout record for an invoice directly.
@@ -532,12 +534,14 @@ func (q *Queries) TestGetPayoutRecordByInvoice(ctx context.Context, invoiceID pg
 		&i.ConfirmedAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.HoldReason,
+		&i.DisputeID,
 	)
 	return i, err
 }
 
 const TestGetPlatformConfig = `-- name: TestGetPlatformConfig :one
-SELECT network, treasury_reserve_satoshis, sweep_hold_mode, sweep_hold_reason, sweep_hold_activated_at, platform_wallet_mode_legal_approved, reconciliation_start_height, kyc_enabled, fatf_enabled, webhooks_enabled, disputes_enabled, gdpr_erasure_job_enabled, updated_at FROM platform_config WHERE network = $1
+SELECT network, treasury_reserve_satoshis, sweep_hold_mode, sweep_hold_reason, sweep_hold_activated_at, platform_wallet_mode_legal_approved, reconciliation_start_height, kyc_enabled, fatf_enabled, webhooks_enabled, disputes_enabled, gdpr_erasure_job_enabled, updated_at, consolidation_enabled, consolidation_max_fee_sat_vbyte, consolidation_window_start, consolidation_window_end FROM platform_config WHERE network = $1
 `
 
 func (q *Queries) TestGetPlatformConfig(ctx context.Context, network string) (PlatformConfig, error) {
@@ -557,6 +561,10 @@ func (q *Queries) TestGetPlatformConfig(ctx context.Context, network string) (Pl
 		&i.DisputesEnabled,
 		&i.GdprErasureJobEnabled,
 		&i.UpdatedAt,
+		&i.ConsolidationEnabled,
+		&i.ConsolidationMaxFeeSatVbyte,
+		&i.ConsolidationWindowStart,
+		&i.ConsolidationWindowEnd,
 	)
 	return i, err
 }

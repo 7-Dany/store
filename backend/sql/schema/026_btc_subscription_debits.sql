@@ -22,6 +22,21 @@
  * forced-proceed safety valve can never trigger — subscription fees would never be
  * collected during an extended rate outage, silently accumulating vendor debt.
  *
+ * RETRY CONTRACT (billing system must implement):
+ *   1. On INSERT → 23505 unique violation:
+ *      a. SELECT status, debit_defer_count FROM btc_subscription_debits
+ *         WHERE vendor_id = $v AND billing_period_ref = $r.
+ *      b. If status = 'failed': the previous attempt permanently failed.
+ *         The billing system must decide whether to:
+ *           - DELETE the failed row and re-INSERT (creates a fresh debit attempt), OR
+ *           - UPDATE status = 'pending', executed_at = NULL, debit_defer_count = 0
+ *             (resets the same row for another attempt — preferred for audit continuity).
+ *         Never silently ignore the 23505 and assume the charge succeeded.
+ *      c. If status = 'pending' or 'deferred': a prior attempt is still in flight.
+ *         Do not create a duplicate — the existing row will be processed.
+ *      d. If status = 'completed': the billing period has already been charged.
+ *         Log and discard the duplicate request.
+ *
  * Depends on: 010_btc_core.sql (vendor_wallet_config, vendor_balances FKs)
  *             017_btc_audit.sql (financial_audit_events for completed debits)
  */
@@ -123,7 +138,22 @@ COMMENT ON TABLE btc_subscription_debits IS
     'Subscription fee debit requests. '
     'debit_defer_count + debit_first_deferred_at are the persistent Gap C state: '
     'they survive restarts so the safety valve ''3 deferrals over 24h → forced-proceed'' '
-    'works correctly across process restarts.';
+    'works correctly across process restarts. '
+    'RETRY CONTRACT: uq_bsd_vendor_period is a FULL unique index (includes failed rows). '
+    'On INSERT 23505, billing system must: (a) check existing row status, (b) if failed — '
+    'UPDATE the row to reset it or DELETE and re-INSERT; never silently ignore the violation. '
+    'Silently ignoring 23505 on a failed row means the vendor is permanently undercharged '
+    'for that billing period. See patch comment for full decision tree.';
+
+COMMENT ON COLUMN btc_subscription_debits.status IS
+    'Debit lifecycle status. '
+    'pending:   awaiting rate availability. '
+    'completed: debit executed; balance decremented; financial_audit_events written. '
+    'failed:    permanent failure (e.g. insufficient balance, billing override). '
+    'deferred:  rate too stale; retry scheduled by billing system. '
+    '''failed'' row still holds the UNIQUE (vendor_id, billing_period_ref) slot. '
+    'Billing system must explicitly UPDATE or DELETE a failed row before re-issuing '
+    'a debit for the same period — a new INSERT will 23505 until that is done.';
 
 COMMENT ON COLUMN btc_subscription_debits.debit_defer_count IS
     'Persisted across restarts.'

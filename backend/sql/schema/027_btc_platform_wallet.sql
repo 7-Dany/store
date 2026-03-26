@@ -53,12 +53,16 @@ CREATE TABLE btc_withdrawal_requests (
     payout_record_id    UUID                    REFERENCES payout_records(id) ON DELETE RESTRICT,
 
     -- Admin who approved or rejected the request. SET NULL on account deletion.
+    -- NULL for auto_approved withdrawals (no human reviewer).
     reviewed_by         UUID                    REFERENCES users(id) ON DELETE SET NULL,
 
     -- Mandatory rejection reason. Required when status = 'rejected'.
     rejection_reason    TEXT,
 
-    -- When the request was reviewed (approved or rejected).
+    -- When the request was reviewed (approved, auto_approved, or rejected).
+    -- Required for approved, auto_approved, and rejected (chk_bwr_reviewed_coherent).
+    -- Application must set reviewed_at = NOW() atomically when setting
+    -- status = 'auto_approved', even though reviewed_by remains NULL for that path.
     reviewed_at         TIMESTAMPTZ,
 
     created_at          TIMESTAMPTZ             NOT NULL DEFAULT NOW(),
@@ -70,8 +74,9 @@ CREATE TABLE btc_withdrawal_requests (
         CHECK (amount_sat > 0),
     CONSTRAINT chk_bwr_rejection_coherent
         CHECK (status != 'rejected' OR rejection_reason IS NOT NULL),
+
     CONSTRAINT chk_bwr_reviewed_coherent
-        CHECK (status NOT IN ('approved', 'rejected') OR reviewed_at IS NOT NULL)
+        CHECK (status NOT IN ('approved', 'auto_approved', 'rejected') OR reviewed_at IS NOT NULL)
 );
 
 CREATE TRIGGER trg_btc_withdrawal_requests_updated_at
@@ -97,6 +102,12 @@ COMMENT ON TABLE btc_withdrawal_requests IS
 COMMENT ON COLUMN btc_withdrawal_requests.destination_address IS
     'Network-aware bech32 address. Validated with RPC getaddressinfo ismine at save time '
     'to reject platform-managed addresses. Immutable after creation.';
+
+COMMENT ON COLUMN btc_withdrawal_requests.reviewed_at IS
+    'Set for approved, auto_approved, and rejected withdrawals (chk_bwr_reviewed_coherent). '
+    'For auto_approved rows: records when the automated decision committed. '
+    'reviewed_by is NULL for auto_approved (no human actor); reviewed_at is NOT NULL. '
+    'Application must set both atomically in the same transaction as the status change.';
 
 -- +goose StatementEnd
 

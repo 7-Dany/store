@@ -597,6 +597,11 @@ CREATE TABLE vendor_wallet_config (
     -- Human-readable reason why mode_frozen was set. Required when mode_frozen = TRUE.
     mode_frozen_reason  TEXT,
 
+    -- Timestamp when mode_frozen was last set TRUE. Required when mode_frozen = TRUE.
+    -- LOW-3: mirrors the suspended_at pattern on the suspension block so incident
+    -- timeline reconstruction for a mode freeze is possible without relying on ops logs.
+    mode_frozen_at      TIMESTAMPTZ,
+
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
@@ -625,9 +630,11 @@ CREATE TABLE vendor_wallet_config (
     CONSTRAINT chk_vwc_hybrid_threshold_minimum
         CHECK (auto_sweep_threshold_sat IS NULL OR auto_sweep_threshold_sat >= 10000),
 
-    -- mode_frozen coherence: reason required so vendor and admin can understand the block.
+    -- mode_frozen coherence: reason and timestamp required for incident forensics.
+    -- LOW-3: timestamp mirrors the suspended_at pattern so freeze duration can be computed.
     CONSTRAINT chk_vwc_mode_frozen_coherent
-        CHECK (mode_frozen = FALSE OR mode_frozen_reason IS NOT NULL),
+        CHECK (mode_frozen = FALSE
+            OR (mode_frozen_reason IS NOT NULL AND mode_frozen_at IS NOT NULL)),
 
     -- Suspension coherence: timestamp and reason required for incident forensics.
     CONSTRAINT chk_vwc_suspension_coherent
@@ -673,7 +680,8 @@ COMMENT ON COLUMN vendor_wallet_config.auto_sweep_threshold_sat IS
     'NULL for bridge and platform modes (enforced by constraints).';
 COMMENT ON COLUMN vendor_wallet_config.mode_frozen IS
     'TRUE when tier downgrade removed permission for the current wallet_mode. '
-    'New invoice creation is blocked. Clears only on explicit vendor reconfiguration — never auto-clears.';
+    'New invoice creation is blocked. Clears only on explicit vendor reconfiguration — never auto-clears. '
+    'mode_frozen_at and mode_frozen_reason are required when TRUE (chk_vwc_mode_frozen_coherent).';
 
 
 /* ═════════════════════════════════════════════════════════════
@@ -944,6 +952,11 @@ CREATE TABLE btc_exchange_rate_log (
 
     CONSTRAINT chk_ber_network
         CHECK (network IN ('mainnet', 'testnet4')),
+    -- LOW-2: enforce ISO 4217 format (exactly 3 uppercase letters).
+    -- Prevents storing 'usd' or 'USD ' which would cause currency-scoped rate lookups
+    -- to silently miss entries, making invoice creation fail or use a stale rate.
+    CONSTRAINT chk_ber_fiat_currency_format
+        CHECK (length(fiat_currency) = 3 AND fiat_currency = upper(fiat_currency)),
     CONSTRAINT chk_ber_rate_positive
         CHECK (rate > 0),
     -- Coherence: anomaly_reason required when anomaly_flag is set.

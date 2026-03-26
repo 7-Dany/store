@@ -89,6 +89,13 @@ CREATE TABLE kyc_submissions (
 -- Per-vendor KYC history: "show all submissions for vendor X, most recent first."
 CREATE INDEX idx_kyc_vendor ON kyc_submissions(vendor_id, submitted_at DESC);
 
+-- LOW-1: Cross-vendor admin pending queue: "show all submissions awaiting KYC review."
+-- The per-vendor idx_kyc_pending index cannot serve admin queries across all vendors.
+-- Without this, an admin's "show all pending" query does a full table scan.
+CREATE INDEX idx_kyc_admin_pending
+    ON kyc_submissions(submitted_at DESC)
+    WHERE status IN ('submitted', 'under_review');
+
 -- Pending queue: "which vendors are waiting for KYC review?"
 
 -- Expiry alert: "which approved submissions are approaching or past expiry?"
@@ -270,6 +277,15 @@ CREATE TABLE gdpr_erasure_requests (
 -- Active request queue: "show all pending/in-progress erasure requests."
 CREATE INDEX idx_ger_pending ON gdpr_erasure_requests(requested_at DESC)
     WHERE status IN ('pending', 'in_progress');
+
+-- MED-4: Prevent multiple concurrent active erasure requests for the same user.
+-- Two concurrent workers processing different request rows for the same user interfere
+-- with each other's tables_processed resume state and can cause double-nullification.
+-- Partial index: once a request reaches 'completed' or 'rejected' it is terminal and
+-- a new request may be created.
+CREATE UNIQUE INDEX uq_ger_one_active_per_user
+    ON gdpr_erasure_requests(user_id)
+    WHERE user_id IS NOT NULL AND status IN ('pending', 'in_progress');
 
 COMMENT ON TABLE gdpr_erasure_requests IS
     'GDPR Article 17 erasure request tracking. '

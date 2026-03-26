@@ -230,7 +230,12 @@ CREATE TABLE financial_audit_events (
     -- Non-system actors must have a non-empty label.
     -- After actor_id goes NULL on user deletion, the label is the only identity record.
     CONSTRAINT chk_fae_actor_label_present
-        CHECK (actor_type = 'system' OR length(actor_label) > 0)
+        CHECK (actor_type = 'system' OR length(actor_label) > 0),
+
+    -- MED-11: fiat_equivalent without fiat_currency_code is meaningless for accounting
+    -- reconstruction. A non-null fiat amount with no currency code cannot be interpreted.
+    CONSTRAINT chk_fae_fiat_coherent
+        CHECK (fiat_equivalent IS NULL OR fiat_currency_code IS NOT NULL)
 );
 
 -- BRIN replaces B-tree for timestamp on this append-only table. (IDX-07)

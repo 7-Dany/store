@@ -541,6 +541,13 @@ CREATE TABLE one_time_tokens (
  CHECK (token_type != 'account_deletion'
  OR expires_at <= created_at + INTERVAL '15 minutes'),
 
+ -- MED-7: password_reset TTL cap was missing. A misconfigured application could issue
+ -- a 7-day reset token. Cap at 1 hour — generous enough for legitimate use, short enough
+ -- to limit exposure if a reset link is intercepted.
+ CONSTRAINT chk_ott_pr_ttl_max
+ CHECK (token_type != 'password_reset'
+ OR expires_at <= created_at + INTERVAL '1 hour'),
+
  CONSTRAINT chk_ott_attempts_non_negative
  CHECK (attempts >= 0),
 

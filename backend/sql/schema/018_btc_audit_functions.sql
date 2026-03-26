@@ -77,31 +77,53 @@ CREATE TRIGGER trg_fae_no_truncate
 /*
  * fn_fae_validate_actor_label
  * ───────────────────────────
- * Verifies that actor_label matches users.email for the given actor_id at INSERT time.
+ * Validates actor_label on INSERT to financial_audit_events.
  * Prevents falsely attributing actions to the wrong identity in the permanent audit trail.
  *
- * Rationale: nothing in the schema stops a bug (or malicious code) from inserting
- * actor_id = alice_uuid with actor_label = 'bob@company.com'. After alice's account is
- * deleted, actor_id becomes NULL and only the spoofed label remains permanently.
+ * HIGH-1 / GDPR compliance:
+ *   financial_audit_events is immutable (DELETE blocked by trigger). Storing a raw email
+ *   address in actor_label means that data can NEVER be erased for GDPR Article 17
+ *   requests. The application MUST store HMAC-SHA256(email, server_secret) instead.
  *
- * This trigger fires BEFORE INSERT and rejects the row if the label doesn't match.
- * System actors (actor_type = 'system') are excluded — they have no users row.
- * Actors with NULL actor_id are excluded — the label alone is the identifier after deletion.
+ * This trigger supports two validation modes:
+ *
+ *   MODE A — HMAC mode (REQUIRED for GDPR compliance):
+ *     actor_label is exactly 64 lowercase hex characters — the output of
+ *     HMAC-SHA256(COALESCE(email, username), server_secret).
+ *     The DB cannot verify the HMAC (no access to server_secret), so we verify only
+ *     that actor_id references a live user row. The application layer is responsible
+ *     for computing the HMAC correctly. This is the mandated production mode.
+ *
+ *   MODE B — raw-label mode (legacy / dev only, NOT GDPR-safe):
+ *     actor_label is compared directly against COALESCE(users.email, users.username).
+ *     This mode is only permitted during initial development before HMAC is implemented.
+ *     It MUST NOT be used in production systems subject to GDPR.
+ *
+ * Detection: if actor_label is exactly 64 hex chars, Mode A is assumed; otherwise Mode B.
+ *
+ * FOR SHARE: acquires a shared lock on the user row to prevent concurrent
+ * deletion or email change from racing with this validation (HIGH-2 fix).
+ *
+ * System actors (actor_type = 'system') and NULL actor_id rows are skipped.
  */
 CREATE OR REPLACE FUNCTION fn_fae_validate_actor_label()
 RETURNS TRIGGER
 LANGUAGE plpgsql AS $fn$
 DECLARE
     v_expected_label TEXT;
+    v_is_hmac_format  BOOLEAN;
 BEGIN
     IF NEW.actor_id IS NULL OR NEW.actor_type = 'system' THEN
         RETURN NEW;
     END IF;
 
-    -- FOR SHARE: acquires a shared lock on the user row to prevent concurrent
-    -- deletion or email change from racing with this validation.
-    -- COALESCE(email, username): OAuth-only accounts may have no email; fall back
-    -- to username so those actors are not always rejected.
+    -- Detect HMAC mode: exactly 64 lowercase hex characters (SHA-256 output length).
+    -- HIGH-1: production deployments MUST use HMAC to satisfy GDPR Article 17.
+    v_is_hmac_format := (length(NEW.actor_label) = 64
+                         AND NEW.actor_label ~ '^[0-9a-f]{64}');
+
+    -- FOR SHARE: prevents concurrent user deletion or email change from causing
+    -- a false-positive rejection of a legitimate audit event (HIGH-2 fix).
     SELECT COALESCE(email, username) INTO v_expected_label
     FROM users WHERE id = NEW.actor_id
     FOR SHARE;
@@ -114,12 +136,22 @@ BEGIN
             NEW.actor_id;
     END IF;
 
+    IF v_is_hmac_format THEN
+        -- Mode A (HMAC): DB cannot verify HMAC without server_secret.
+        -- We have confirmed actor_id is a live user; label format is correct.
+        -- Application layer is responsible for computing HMAC correctly.
+        RETURN NEW;
+    END IF;
+
+    -- Mode B (raw label): compare directly. Used only during development.
+    -- IMPORTANT: this path is NOT GDPR-safe. Migrate to HMAC before production.
     IF v_expected_label IS DISTINCT FROM NEW.actor_label THEN
         RAISE EXCEPTION
             'financial_audit_events: actor_label ''%'' does not match '
             'COALESCE(email, username) ''%'' for actor_id %. '
-            'If actor_label stores HMAC-SHA256(email, server_secret), verify the HMAC '
-            'is computed correctly and the server secret matches. Possible actor spoofing.',
+            'PRODUCTION: actor_label must be HMAC-SHA256(email, server_secret) as a 64-char '
+            'lowercase hex string. Raw email storage violates GDPR Article 17 on this '
+            'immutable table. See HIGH-1 / COMP-02 in the audit report.',
             NEW.actor_label, v_expected_label, NEW.actor_id;
     END IF;
 
@@ -128,14 +160,17 @@ END;
 $fn$;
 
 COMMENT ON FUNCTION fn_fae_validate_actor_label() IS
-    'Rejects INSERT on financial_audit_events when actor_label does not match '
-    'COALESCE(users.email, users.username) for the given actor_id. '
-    'COALESCE handles OAuth-only accounts that have no email address set. '
-    'Uses SELECT FOR SHARE to prevent false-positive failures from concurrent user '
-    'deletion or email updates racing with this trigger (HIGH-2 fix). '
-    'Skips validation for system actors and NULL actor_id rows. '
-    'GDPR: financial_audit_events is immutable; store HMAC-SHA256(email, server_secret) '
-    'in actor_label instead of raw email to satisfy Article 17. See COMP-02 in todo.md.';
+    'HIGH-1 / SEC-05: validates actor_label on INSERT to financial_audit_events. '
+    'Supports two modes: '
+    '(A) HMAC mode [REQUIRED for GDPR]: actor_label = HMAC-SHA256(email, server_secret) '
+    '    as a 64-char lowercase hex string. DB verifies actor_id exists; HMAC correctness '
+    '    is the application''s responsibility. This is the only GDPR-compliant mode since '
+    '    financial_audit_events is immutable and raw emails cannot be erased. '
+    '(B) Raw-label mode [DEV ONLY, NOT GDPR-safe]: actor_label matched directly against '
+    '    COALESCE(users.email, users.username). Must not be used in production. '
+    'Mode detection: exactly 64 lowercase hex chars triggers Mode A, anything else triggers Mode B. '
+    'FOR SHARE on users row prevents concurrent deletion/email-change race (HIGH-2 fix). '
+    'Skips validation for system actors and NULL actor_id rows.';
 
 CREATE TRIGGER trg_fae_validate_actor
     BEFORE INSERT ON financial_audit_events

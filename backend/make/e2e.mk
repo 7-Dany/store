@@ -1,7 +1,7 @@
 # ─── E2E Tests (Newman) ──────────────────────────────────────────────────────
 #
 # One Newman collection per feature (each a flat JSON file):
-#   e2e/health/health.json              → GET /health
+#   e2e/health/health.json              → GET /health  (fast path + ?ping=true full probe)
 #   e2e/auth/register.json              → POST /register
 #   e2e/auth/verify-email.json          → POST /verification + POST /verification/resend
 #   e2e/auth/login.json                 → POST /login
@@ -31,7 +31,10 @@
 #   e2e/bitcoin/txstatus.json            → GET /api/v1/bitcoin/tx/{txid}/status · GET /api/v1/bitcoin/tx/status
 #
 # Individual targets   — run a single collection:
-#   e2e-health, e2e-register, e2e-verify-email, e2e-login, e2e-session,
+# Individual targets   — run a single collection:
+#   e2e-health         (smoke: fast-path + ?ping=true probe shape + security headers;
+#                       rate-limiting: burst=10, rate=30/min; 10 warmups then 11th → 429, Retry-After: 2)
+#   e2e-register, e2e-verify-email, e2e-login, e2e-session,
 #   e2e-unlock, e2e-password, e2e-set-password, e2e-me, e2e-sessions,
 #   e2e-revoke-session, e2e-update-profile, e2e-username, e2e-email,
 #   e2e-delete-account, e2e-identities, e2e-oauth-google, e2e-oauth-telegram,
@@ -364,7 +367,7 @@ e2e-btc: _e2e-check-env ## Run all btc E2E collections in order (watch + events 
 
 # ── health ────────────────────────────────────────────────────────────────────
 
-e2e-health: _e2e-check-env ## Smoke-test GET /health (response shape, security headers, rate-limiting)
+e2e-health: _e2e-check-env ## Smoke-test GET /health (fast-path shape, ?ping=true probe body, security headers, rate-limiting)
 	@$(call _e2e_info,[e2e] --- GET /health ---)
 	@$(MAKE) _e2e-kv-clean
 	@$(call _e2e_gray,[e2e] Running: smoke)

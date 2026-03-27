@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -637,6 +638,535 @@ func TestInMemoryStore_AtomicBackoffContract(t *testing.T) {
 	RunAtomicBackoffContractTests(t, kvstore.NewInMemoryStore(0))
 }
 
+// TestInMemoryStore_WatchCapStoreContract runs the shared WatchCapStore
+// contract suite against InMemoryStore.
+func TestInMemoryStore_WatchCapStoreContract(t *testing.T) {
+	t.Parallel()
+	RunWatchCapStoreContractTests(t, kvstore.NewInMemoryStore(0))
+}
+
+// ── WatchCapStore unit tests ──────────────────────────────────────────────────
+
+// watchTestKeys returns a unique triplet of keys for one logical user in the
+// watch namespace. All three share the same hash-tag prefix so they'd land on
+// the same Redis Cluster slot in production.
+func watchTestKeys() (setKey, regAtKey, lastActiveKey string) {
+	id := contractCounter.Add(1)
+	pfx := fmt.Sprintf("{btc:user:ut%s:%d}", testRunID, id)
+	return pfx + ":addresses", pfx + ":registered_at", pfx + ":last_active"
+}
+
+// TestInMemoryStore_RunWatchCapScript_FirstRegistration verifies the happy path:
+// a clean store accepts addresses and returns the correct counters.
+func TestInMemoryStore_RunWatchCapScript_FirstRegistration(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	succ, newCount, added, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute,
+		[]string{"addr1", "addr2", "addr3"},
+	)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, succ)
+	require.EqualValues(t, 3, newCount)
+	require.EqualValues(t, 3, added)
+
+	// registered_at must have been written.
+	regAtVal, err := s.Get(ctx, regAtKey)
+	require.NoError(t, err)
+	require.NotEmpty(t, regAtVal)
+
+	// last_active must have been written.
+	_, err = s.Get(ctx, lastActiveKey)
+	require.NoError(t, err)
+}
+
+// TestInMemoryStore_RunWatchCapScript_ReRegistration_SameAddresses verifies that
+// submitting already-registered addresses is a success with addedCount=0.
+func TestInMemoryStore_RunWatchCapScript_ReRegistration_SameAddresses(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+	addrs := []string{"addr1", "addr2"}
+
+	_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, addrs)
+	require.NoError(t, err)
+
+	succ, newCount, added, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, addrs)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, succ, "re-registration of same addresses must succeed")
+	require.EqualValues(t, 2, newCount, "count must not change")
+	require.EqualValues(t, 0, added, "addedCount must be 0 — no new addresses")
+}
+
+// TestInMemoryStore_RunWatchCapScript_AddsNewAddressesIncrementally verifies that
+// a second call with new addresses increases the count correctly.
+func TestInMemoryStore_RunWatchCapScript_AddsNewAddressesIncrementally(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr1", "addr2"})
+	require.NoError(t, err)
+
+	succ, newCount, added, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr3", "addr4"})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, succ)
+	require.EqualValues(t, 4, newCount)
+	require.EqualValues(t, 2, added)
+}
+
+// TestInMemoryStore_RunWatchCapScript_MixedExistingAndNew verifies partial overlap:
+// some addresses already registered, some new.
+func TestInMemoryStore_RunWatchCapScript_MixedExistingAndNew(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr1", "addr2"})
+	require.NoError(t, err)
+
+	// addr2 is already registered; addr3 is new.
+	succ, newCount, added, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr2", "addr3"})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, succ)
+	require.EqualValues(t, 3, newCount)
+	require.EqualValues(t, 1, added, "only addr3 is new")
+}
+
+// TestInMemoryStore_RunWatchCapScript_ExactlyAtLimit_Succeeds verifies that
+// filling the watch set to exactly the limit is permitted.
+func TestInMemoryStore_RunWatchCapScript_ExactlyAtLimit_Succeeds(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	succ, newCount, added, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 3,
+		30*time.Minute, 30*time.Minute,
+		[]string{"a", "b", "c"},
+	)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, succ)
+	require.EqualValues(t, 3, newCount)
+	require.EqualValues(t, 3, added)
+}
+
+// TestInMemoryStore_RunWatchCapScript_CapExceeded_RollsBack verifies that
+// exceeding the per-user cap returns success=0 and leaves the set unchanged.
+func TestInMemoryStore_RunWatchCapScript_CapExceeded_RollsBack(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	// Fill the set to the cap.
+	_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 2,
+		30*time.Minute, 30*time.Minute, []string{"addr1", "addr2"})
+	require.NoError(t, err)
+
+	// Attempt to add one more address — must be rejected.
+	succ, newCount, added, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 2,
+		30*time.Minute, 30*time.Minute, []string{"addr3"})
+	require.NoError(t, err)
+	require.EqualValues(t, 0, succ, "cap exceeded must return success=0")
+	require.EqualValues(t, 2, newCount, "reported count must be the pre-attempt count")
+	require.EqualValues(t, 0, added)
+
+	// addr3 must NOT be in the set — the speculative add was rolled back.
+	members, _, err := s.SScan(ctx, setKey, 0, "", 100)
+	require.NoError(t, err)
+	require.NotContains(t, members, "addr3", "addr3 must have been rolled back")
+	require.ElementsMatch(t, []string{"addr1", "addr2"}, members)
+}
+
+// TestInMemoryStore_RunWatchCapScript_CapExceeded_MultipleAddresses verifies
+// rollback when several addresses are submitted at once and collectively exceed
+// the cap. All speculative adds must be undone atomically.
+func TestInMemoryStore_RunWatchCapScript_CapExceeded_MultipleAddresses(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	// Set has 1 address; limit is 2. Adding 2 new would make 3 → cap exceeded.
+	_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 2,
+		30*time.Minute, 30*time.Minute, []string{"addr1"})
+	require.NoError(t, err)
+
+	succ, newCount, added, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 2,
+		30*time.Minute, 30*time.Minute, []string{"addr2", "addr3"})
+	require.NoError(t, err)
+	require.EqualValues(t, 0, succ)
+	require.EqualValues(t, 1, newCount)
+	require.EqualValues(t, 0, added)
+
+	// Both addr2 and addr3 must have been rolled back.
+	members, _, err := s.SScan(ctx, setKey, 0, "", 100)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"addr1"}, members,
+		"all speculative adds must be rolled back on cap overflow")
+}
+
+// TestInMemoryStore_RunWatchCapScript_SevenDayWindowExpired verifies that a
+// registered_at timestamp older than 7 days (604 800 s) causes success=-1.
+func TestInMemoryStore_RunWatchCapScript_SevenDayWindowExpired(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	// Plant a registered_at that is 8 days old (beyond the 7-day window).
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-8*24*time.Hour).Unix())
+	require.NoError(t, s.Set(ctx, regAtKey, oldTS, 0))
+
+	succ, newCount, added, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr1"})
+	require.NoError(t, err)
+	require.EqualValues(t, -1, succ, "expired 7-day window must return success=-1")
+	require.EqualValues(t, 0, newCount)
+	require.EqualValues(t, 0, added)
+}
+
+// TestInMemoryStore_RunWatchCapScript_SevenDayExpiry_SetsCleanupTTL verifies
+// the M-02/OD-07 cleanup: after returning -1, registered_at must have a
+// cleanup TTL set (minimum 1-day grace period) so stale keys don't accumulate.
+func TestInMemoryStore_RunWatchCapScript_SevenDayExpiry_SetsCleanupTTL(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	// Plant a registered_at exactly 30 days ago — the 30-day cleanup TTL minus
+	// elapsed would be 0, so the 1-day minimum floor must apply.
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-30*24*time.Hour).Unix())
+	require.NoError(t, s.Set(ctx, regAtKey, oldTS, 0))
+
+	_, _, _, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr1"})
+	require.NoError(t, err)
+
+	// registered_at must still be readable (the TTL just got set, not expired).
+	_, err = s.Get(ctx, regAtKey)
+	require.NoError(t, err, "registered_at must still exist immediately after cleanup TTL is set")
+
+	// 28-day-old registration: cleanupIn = 2592000 - elapsed ≈ 2 days remaining.
+	oldTS28 := fmt.Sprintf("%d", time.Now().Add(-28*24*time.Hour).Unix())
+	setKey2, regAtKey2, lastActiveKey2 := watchTestKeys()
+	require.NoError(t, s.Set(ctx, regAtKey2, oldTS28, 0))
+	_, _, _, err = s.RunWatchCapScript(
+		ctx, setKey2, regAtKey2, lastActiveKey2, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr1"})
+	require.NoError(t, err)
+	_, err = s.Get(ctx, regAtKey2)
+	require.NoError(t, err, "registered_at must be readable with remaining cleanup TTL")
+}
+
+// TestInMemoryStore_RunWatchCapScript_NX_RegAtKeyNotOverwritten verifies that
+// registered_at is written exactly once (NX semantics): subsequent calls with
+// new addresses must not reset the original timestamp.
+func TestInMemoryStore_RunWatchCapScript_NX_RegAtKeyNotOverwritten(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	// First registration: seeds registered_at.
+	_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr1"})
+	require.NoError(t, err)
+
+	firstTS, err := s.Get(ctx, regAtKey)
+	require.NoError(t, err)
+
+	// Sleep 1 ms so a second write would produce a different timestamp.
+	time.Sleep(time.Millisecond)
+
+	// Second registration with a new address — NX must prevent overwrite.
+	_, _, _, err = s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr2"})
+	require.NoError(t, err)
+
+	secondTS, err := s.Get(ctx, regAtKey)
+	require.NoError(t, err)
+	require.Equal(t, firstTS, secondTS, "registered_at must not be overwritten by subsequent registrations")
+}
+
+// TestInMemoryStore_RunWatchCapScript_LastActive_AlwaysRefreshed verifies that
+// last_active is refreshed on every successful call, even when no new addresses
+// are added (re-registration of existing addresses).
+func TestInMemoryStore_RunWatchCapScript_LastActive_AlwaysRefreshed(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	addrs := []string{"addr1"}
+	_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, addrs)
+	require.NoError(t, err)
+
+	firstActive, err := s.Get(ctx, lastActiveKey)
+	require.NoError(t, err)
+
+	time.Sleep(time.Millisecond)
+
+	// Re-registration of the same address.
+	_, _, _, err = s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, addrs)
+	require.NoError(t, err)
+
+	secondActive, err := s.Get(ctx, lastActiveKey)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, secondActive, firstActive,
+		"last_active timestamp must be refreshed on every call (including re-registration)")
+}
+
+// TestInMemoryStore_RunWatchCapScript_LastActive_HasTTL verifies that last_active
+// is stored with the provided lastActiveTTL so it will expire naturally.
+func TestInMemoryStore_RunWatchCapScript_LastActive_HasTTL(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 5*time.Millisecond, // very short TTL
+		[]string{"addr1"})
+	require.NoError(t, err)
+
+	// Immediately readable.
+	_, err = s.Get(ctx, lastActiveKey)
+	require.NoError(t, err)
+
+	time.Sleep(10 * time.Millisecond)
+
+	// Must have expired.
+	_, err = s.Get(ctx, lastActiveKey)
+	require.ErrorIs(t, err, kvstore.ErrNotFound, "last_active must expire after lastActiveTTL")
+}
+
+// TestInMemoryStore_RunWatchCapScript_EmptyAddresses_StillRefreshesLastActive verifies
+// that passing an empty address slice is a no-op (addedCount=0) but last_active
+// is still refreshed — matching the Lua script's unconditional SET at the end.
+func TestInMemoryStore_RunWatchCapScript_EmptyAddresses_StillRefreshesLastActive(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	// Seed last_active via a first registration.
+	_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr1"})
+	require.NoError(t, err)
+
+	firstActive, err := s.Get(ctx, lastActiveKey)
+	require.NoError(t, err)
+
+	time.Sleep(time.Millisecond)
+
+	// Second call with empty address list.
+	succ, newCount, added, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{})
+	require.NoError(t, err)
+	require.EqualValues(t, 1, succ)
+	require.EqualValues(t, 1, newCount, "count must not change")
+	require.EqualValues(t, 0, added)
+
+	secondActive, err := s.Get(ctx, lastActiveKey)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, secondActive, firstActive,
+		"last_active must be refreshed even when address slice is empty")
+}
+
+// TestInMemoryStore_RunWatchCapScript_DuplicateAddressesInSlice verifies that
+// submitting duplicates within a single call doesn't double-count.
+func TestInMemoryStore_RunWatchCapScript_DuplicateAddressesInSlice(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	succ, newCount, added, err := s.RunWatchCapScript(
+		ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute,
+		[]string{"addr1", "addr1", "addr1"},
+	)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, succ)
+	require.EqualValues(t, 1, newCount, "duplicates must be deduplicated by set semantics")
+	require.EqualValues(t, 1, added)
+}
+
+// TestInMemoryStore_RunWatchCapScript_NX_ResetsAfterExpiredRegAtKey verifies
+// the bug fix: if regAtKey is still in the map but has expired (cleanup TTL
+// elapsed), a new registration must reset it rather than leaving the stale
+// entry in place.
+func TestInMemoryStore_RunWatchCapScript_NX_ResetsAfterExpiredRegAtKey(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	// Plant a regAtKey that is already expired (1 ms TTL).
+	oldTS := fmt.Sprintf("%d", time.Now().Add(-1*time.Second).Unix())
+	require.NoError(t, s.Set(ctx, regAtKey, oldTS, time.Millisecond))
+	time.Sleep(5 * time.Millisecond) // wait for expiry
+
+	// Now register — the expired regAtKey must be treated as absent (NX resets).
+	now := time.Now()
+	_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+		30*time.Minute, 30*time.Minute, []string{"addr1"})
+	require.NoError(t, err)
+
+	newTSStr, err := s.Get(ctx, regAtKey)
+	require.NoError(t, err)
+	newTS, err := strconv.ParseInt(newTSStr, 10, 64)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, newTS, now.Unix(),
+		"expired regAtKey must be reset to current time, not left as old stale value")
+}
+
+// TestInMemoryStore_RunWatchCapScript_ConcurrentCalls_NoRace verifies that
+// concurrent calls on the same user keys do not produce a data race and that
+// the final count does not exceed the cap.
+func TestInMemoryStore_RunWatchCapScript_ConcurrentCalls_NoRace(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+	setKey, regAtKey, lastActiveKey := watchTestKeys()
+
+	const goroutines = 30
+	const limit = 10
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	var capExceeded atomic.Int64
+	for i := range goroutines {
+		go func(i int) {
+			defer wg.Done()
+			addr := fmt.Sprintf("addr%d", i)
+			succ, _, _, _ := s.RunWatchCapScript(
+				ctx, setKey, regAtKey, lastActiveKey, limit,
+				30*time.Minute, 30*time.Minute, []string{addr})
+			if succ == 0 {
+				capExceeded.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// After all goroutines finish the set must not exceed the cap.
+	members, _, err := s.SScan(ctx, setKey, 0, "", 100)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(members), limit,
+		"concurrent registrations must never exceed the cap")
+	// At least one goroutine must have been rejected when goroutines > limit.
+	require.Positive(t, capExceeded.Load(),
+		"at least one goroutine must have seen cap exceeded (goroutines=%d > limit=%d)",
+		goroutines, limit)
+}
+
+// ── ScanWatchAddressKeys ──────────────────────────────────────────────────────
+
+// TestInMemoryStore_ScanWatchAddressKeys_EmptyStore verifies that an empty
+// store returns an empty slice and cursor=0.
+func TestInMemoryStore_ScanWatchAddressKeys_EmptyStore(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+
+	keys, cursor, err := s.ScanWatchAddressKeys(context.Background(), 0, 100)
+	require.NoError(t, err)
+	require.Empty(t, keys)
+	require.EqualValues(t, 0, cursor)
+}
+
+// TestInMemoryStore_ScanWatchAddressKeys_FiltersNonAddressKeys verifies that
+// only set keys whose name ends with ":addresses" are returned; other set keys
+// (e.g. ":last_active" stored as plain KV, or other set namespaces) are ignored.
+func TestInMemoryStore_ScanWatchAddressKeys_FiltersNonAddressKeys(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	// Insert an ":addresses" set key and an unrelated set key.
+	_, err := s.SAdd(ctx, "btc:user:1:addresses", "addr1")
+	require.NoError(t, err)
+	_, err = s.SAdd(ctx, "btc:user:1:other_set", "member1")
+	require.NoError(t, err)
+	// Also add a plain KV entry to confirm we don't scan items.
+	require.NoError(t, s.Set(ctx, "btc:user:1:registered_at", "12345", 0))
+
+	keys, _, err := s.ScanWatchAddressKeys(ctx, 0, 100)
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{"btc:user:1:addresses"}, keys)
+}
+
+// TestInMemoryStore_ScanWatchAddressKeys_ReturnsAllMatchingKeys verifies that
+// all set keys ending in ":addresses" across multiple users are returned.
+func TestInMemoryStore_ScanWatchAddressKeys_ReturnsAllMatchingKeys(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	want := []string{
+		"btc:user:alice:addresses",
+		"btc:user:bob:addresses",
+		"btc:user:carol:addresses",
+	}
+	for _, k := range want {
+		_, err := s.SAdd(ctx, k, "addr1")
+		require.NoError(t, err)
+	}
+	// Noise key that must not appear.
+	_, err := s.SAdd(ctx, "btc:user:alice:other", "member")
+	require.NoError(t, err)
+
+	keys, cursor, err := s.ScanWatchAddressKeys(ctx, 0, 100)
+	require.NoError(t, err)
+	require.EqualValues(t, 0, cursor, "InMemoryStore always returns cursor=0")
+	require.ElementsMatch(t, want, keys)
+}
+
+// TestInMemoryStore_ScanWatchAddressKeys_CursorIgnored verifies that InMemoryStore
+// always returns all matching keys regardless of the cursor or count hint,
+// and always responds with nextCursor=0.
+func TestInMemoryStore_ScanWatchAddressKeys_CursorIgnored(t *testing.T) {
+	t.Parallel()
+	s := newStore(t)
+	ctx := context.Background()
+
+	_, err := s.SAdd(ctx, "btc:user:x:addresses", "addr1")
+	require.NoError(t, err)
+
+	// Non-zero cursor and small count hint — must still return all keys.
+	keys, cursor, err := s.ScanWatchAddressKeys(ctx, 99, 1)
+	require.NoError(t, err)
+	require.EqualValues(t, 0, cursor)
+	require.ElementsMatch(t, []string{"btc:user:x:addresses"}, keys)
+}
+
 // ── Contract test helpers ─────────────────────────────────────────────────────
 //
 // RunStoreContractTests, RunTokenBlocklistContractTests, and
@@ -788,6 +1318,124 @@ func RunTokenBlocklistContractTests(t *testing.T, b kvstore.TokenBlocklist) {
 		blocked, err := b.IsTokenBlocked(ctx, jti)
 		require.NoError(t, err)
 		require.True(t, blocked)
+	})
+}
+
+// RunWatchCapStoreContractTests verifies WatchCapStore semantics against any
+// implementation. It is called from both InMemoryStore and RedisStore test suites.
+func RunWatchCapStoreContractTests(t *testing.T, s kvstore.WatchCapStore) {
+	t.Helper()
+	ctx := context.Background()
+
+	// contractWatchKeys returns a unique triplet of related keys for one logical
+	// user. Keys share the same hash-tag prefix so they'd land on the same Redis
+	// Cluster slot in production.
+	contractWatchKeys := func() (setKey, regAtKey, lastActiveKey string) {
+		id := contractCounter.Add(1)
+		pfx := fmt.Sprintf("{btc:user:ct%s:%d}", testRunID, id)
+		return pfx + ":addresses", pfx + ":registered_at", pfx + ":last_active"
+	}
+
+	t.Run("FirstRegistration_Success", func(t *testing.T) {
+		t.Parallel()
+		setKey, regAtKey, lastActiveKey := contractWatchKeys()
+		succ, newCount, added, err := s.RunWatchCapScript(
+			ctx, setKey, regAtKey, lastActiveKey, 10,
+			30*time.Minute, 30*time.Minute,
+			[]string{"addr1", "addr2"},
+		)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, succ)
+		require.EqualValues(t, 2, newCount)
+		require.EqualValues(t, 2, added)
+	})
+
+	t.Run("ReRegistration_SameAddresses_AddedCountZero", func(t *testing.T) {
+		t.Parallel()
+		setKey, regAtKey, lastActiveKey := contractWatchKeys()
+		addrs := []string{"addr1", "addr2"}
+		_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+			30*time.Minute, 30*time.Minute, addrs)
+		require.NoError(t, err)
+
+		succ, newCount, added, err := s.RunWatchCapScript(
+			ctx, setKey, regAtKey, lastActiveKey, 10,
+			30*time.Minute, 30*time.Minute, addrs)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, succ, "re-registration must succeed")
+		require.EqualValues(t, 2, newCount, "count must not change")
+		require.EqualValues(t, 0, added, "no new addresses added")
+	})
+
+	t.Run("CapExceeded_ReturnsZero", func(t *testing.T) {
+		t.Parallel()
+		setKey, regAtKey, lastActiveKey := contractWatchKeys()
+		// Fill to limit=2.
+		_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 2,
+			30*time.Minute, 30*time.Minute, []string{"addr1", "addr2"})
+		require.NoError(t, err)
+
+		// Try to add a third address beyond the limit.
+		succ, newCount, added, err := s.RunWatchCapScript(
+			ctx, setKey, regAtKey, lastActiveKey, 2,
+			30*time.Minute, 30*time.Minute, []string{"addr3"})
+		require.NoError(t, err)
+		require.EqualValues(t, 0, succ, "cap exceeded must return success=0")
+		require.EqualValues(t, 2, newCount, "count must be the pre-attempt count")
+		require.EqualValues(t, 0, added)
+	})
+
+	t.Run("ExactlyAtLimit_Succeeds", func(t *testing.T) {
+		t.Parallel()
+		setKey, regAtKey, lastActiveKey := contractWatchKeys()
+		succ, newCount, added, err := s.RunWatchCapScript(
+			ctx, setKey, regAtKey, lastActiveKey, 3,
+			30*time.Minute, 30*time.Minute,
+			[]string{"a", "b", "c"},
+		)
+		require.NoError(t, err)
+		require.EqualValues(t, 1, succ)
+		require.EqualValues(t, 3, newCount)
+		require.EqualValues(t, 3, added)
+	})
+
+	t.Run("SevenDayWindowExpired_ReturnsMinus1", func(t *testing.T) {
+		t.Parallel()
+		setKey, regAtKey, lastActiveKey := contractWatchKeys()
+		// Pre-seed regAtKey with a timestamp 8 days in the past.
+		// We do this through a first RunWatchCapScript call, then directly
+		// mutate the timestamp via the Store base interface.
+		_, _, _, err := s.RunWatchCapScript(ctx, setKey, regAtKey, lastActiveKey, 10,
+			30*time.Minute, 30*time.Minute, []string{"addr1"})
+		require.NoError(t, err)
+
+		// Overwrite registered_at with a timestamp 8 days ago.
+		oldTS := fmt.Sprintf("%d", time.Now().Add(-8*24*time.Hour).Unix())
+		require.NoError(t, s.Set(ctx, regAtKey, oldTS, 0))
+
+		succ, _, _, err := s.RunWatchCapScript(
+			ctx, setKey, regAtKey, lastActiveKey, 10,
+			30*time.Minute, 30*time.Minute, []string{"addr2"})
+		require.NoError(t, err)
+		require.EqualValues(t, -1, succ, "7-day window expired must return -1")
+	})
+
+	t.Run("Concurrent_NoRace", func(t *testing.T) {
+		t.Parallel()
+		setKey, regAtKey, lastActiveKey := contractWatchKeys()
+		const goroutines = 20
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := range goroutines {
+			go func(i int) {
+				defer wg.Done()
+				addr := fmt.Sprintf("addr%d", i)
+				_, _, _, _ = s.RunWatchCapScript(
+					ctx, setKey, regAtKey, lastActiveKey, goroutines,
+					30*time.Minute, 30*time.Minute, []string{addr})
+			}(i)
+		}
+		wg.Wait()
 	})
 }
 

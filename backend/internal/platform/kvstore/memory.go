@@ -643,6 +643,107 @@ func (s *InMemoryStore) ConsumeOnce(_ context.Context, key string, ttl time.Dura
 	return true, nil
 }
 
+// ── WatchCapStore ─────────────────────────────────────────────────────────────
+//
+// InMemoryStore implements WatchCapStore for local development and e2e testing.
+// The 7-day registration window is enforced via s.items timestamp keys.
+// TTL on the address set itself is not enforced — sets in InMemoryStore have
+// no expiry mechanism — which is acceptable for non-production use.
+
+// RunWatchCapScript mirrors the semantics of watchCapLuaScript (scripts.go)
+// under s.mu for single-process atomicity.
+//
+// Returns (success, newCount, addedCount):
+//
+//	success ==  1: completed; addedCount may be 0 (all addresses pre-existing)
+//	success ==  0: per-user count cap exceeded; watch set is unchanged
+//	success == -1: 7-day absolute registration window has expired
+func (s *InMemoryStore) RunWatchCapScript(
+	_ context.Context,
+	setKey, regAtKey, lastActiveKey string,
+	limit int,
+	_ time.Duration, // watchTTL — not enforced on in-memory sets
+	lastActiveTTL time.Duration,
+	addresses []string,
+) (success, newCount, addedCount int64, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	nowUnix := now.Unix()
+
+	// 7-day absolute cap check — mirrors the Lua TIME + EXPIRE logic.
+	if it, ok := s.items[regAtKey]; ok && !it.expired(now) {
+		regAtSec, _ := strconv.ParseInt(it.value, 10, 64)
+		if nowUnix-regAtSec > 604800 {
+			// M-02/OD-07: schedule cleanup so stale keys do not accumulate.
+			// 30-day TTL from first registration; minimum 1-day grace period.
+			elapsed := nowUnix - regAtSec
+			cleanupIn := int64(2592000) - elapsed
+			if cleanupIn < 86400 {
+				cleanupIn = 86400
+			}
+			it.expiresAt = now.Add(time.Duration(cleanupIn) * time.Second)
+			return -1, 0, 0, nil
+		}
+	}
+
+	current := int64(len(s.sets[setKey]))
+
+	// Speculatively add addresses.
+	if s.sets[setKey] == nil {
+		s.sets[setKey] = make(map[string]struct{})
+	}
+	var added []string
+	for _, addr := range addresses {
+		if _, exists := s.sets[setKey][addr]; !exists {
+			s.sets[setKey][addr] = struct{}{}
+			added = append(added, addr)
+		}
+	}
+
+	// Roll back if cap would be exceeded.
+	if current+int64(len(added)) > int64(limit) {
+		for _, addr := range added {
+			delete(s.sets[setKey], addr)
+		}
+		return 0, current, 0, nil
+	}
+
+	if len(added) > 0 {
+		// NX: set registered_at only on first registration.
+		// Guard also covers lazy-expired entries still in the map so that a
+		// regAtKey whose cleanup TTL has elapsed (set by the 7-day path above)
+		// is reset correctly on the next registration cycle, matching Redis
+		// SET … NX semantics (expired keys are treated as non-existent).
+		if existing, ok := s.items[regAtKey]; !ok || existing.expired(now) {
+			s.items[regAtKey] = &item{value: strconv.FormatInt(nowUnix, 10)}
+		}
+	}
+
+	// Always refresh last_active (even on re-registration).
+	s.items[lastActiveKey] = &item{
+		value:     strconv.FormatInt(nowUnix, 10),
+		expiresAt: now.Add(lastActiveTTL),
+	}
+
+	return 1, current + int64(len(added)), int64(len(added)), nil
+}
+
+// ScanWatchAddressKeys returns all set keys whose name ends with ":addresses".
+// InMemoryStore returns all matches in one call; nextCursor is always 0.
+func (s *InMemoryStore) ScanWatchAddressKeys(_ context.Context, _ uint64, _ int64) (keys []string, nextCursor uint64, err error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for k := range s.sets {
+		if strings.HasSuffix(k, ":addresses") {
+			keys = append(keys, k)
+		}
+	}
+	return keys, 0, nil
+}
+
 // compile-time interface checks.
 var _ Store = (*InMemoryStore)(nil)
 var _ TokenBlocklist = (*InMemoryStore)(nil)
@@ -652,3 +753,4 @@ var _ ListStore = (*InMemoryStore)(nil)
 var _ PubSubStore = (*InMemoryStore)(nil)
 var _ SetStore = (*InMemoryStore)(nil)
 var _ OnceStore = (*InMemoryStore)(nil)
+var _ WatchCapStore = (*InMemoryStore)(nil)

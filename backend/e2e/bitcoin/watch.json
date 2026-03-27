@@ -1049,7 +1049,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
-                  "pm.test('code is rate_limit_exceeded', () => pm.expect(pm.response.json().code).to.eql('rate_limit_exceeded'));",
+                  "pm.test('code is too_many_requests', () => pm.expect(pm.response.json().code).to.eql('too_many_requests'));",
                   "// Retry-After = ceil(1 / (10/60)) = ceil(6) = 6 seconds.",
                   "pm.test('Retry-After header is 6', () => {",
                   "    pm.expect(pm.response.headers.get('Retry-After')).to.eql('6');",

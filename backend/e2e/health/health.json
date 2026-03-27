@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "health-e2e",
     "name": "Health (GET /health)",
-    "description": "E2E tests for GET /health.\n\nFolder execution order (orchestrated by make e2e-health):\n  1. smoke          — 200 response shape + security headers\n  2. rate-limiting  — 429 after bucket exhaustion (Makefile flushes Redis before this folder)\n\nRate-limiter config (routes.go): burst=3, rate=3/min per IP.\nThe rate-limiting folder sends 3 warmup GETs to drain the bucket, then the 4th must 429.",
+    "description": "E2E tests for GET /health.\n\nHandler behaviour (health.go):\n  • Without ?ping=true  — fast path for load-balancer probes: 200 {status:'ok'}\n  • With    ?ping=true  — parallel service probes: 200 {status,pong:true,services[]} when all up; 503 when any probe is down\n\nFolder execution order (orchestrated by make e2e-health):\n  1. smoke          — fast-path shape, ?ping=true shape + probe fields, security headers\n  2. rate-limiting  — 429 after bucket exhaustion (Makefile flushes Redis before this folder)\n\nRate-limiter config (routes.go): burst=10, rate=30/min (0.5 tok\/s) per IP.\nRetry-After = ceil(1 \/0.5) = 2 s.\nThe rate-limiting folder sends 10 warmup GETs to drain the bucket, then the 11th must 429.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "item": [
@@ -31,6 +31,81 @@
               "raw": "{{base_url}}/api/v1/health",
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "health"]
+            }
+          }
+        },
+
+        {
+          "name": "GET /health?ping=true → probe body shape (200 all-up or 503 degraded)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var b = pm.response.json();",
+                  "pm.test('HTTP status is 200 or 503', function() {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([200, 503]);",
+                  "});",
+                  "pm.test('body.status is ok or degraded', function() {",
+                  "  pm.expect(b.status).to.be.oneOf(['ok', 'degraded']);",
+                  "});",
+                  "pm.test('HTTP code matches body.status', function() {",
+                  "  if (b.status === 'ok') { pm.expect(pm.response.code).to.eql(200); }",
+                  "  if (b.status === 'degraded') { pm.expect(pm.response.code).to.eql(503); }",
+                  "});",
+                  "pm.test('body.pong is true', function() {",
+                  "  pm.expect(b.pong).to.eql(true);",
+                  "});",
+                  "pm.test('body.services is a non-empty array', function() {",
+                  "  pm.expect(b.services).to.be.an('array').with.lengthOf.above(0);",
+                  "});",
+                  "(b.services || []).forEach(function(svc, i) {",
+                  "  var tag = 'services[' + i + '] (' + svc.name + ')';",
+                  "  pm.test(tag + '.name is a non-empty string', function() {",
+                  "    pm.expect(svc.name).to.be.a('string').and.have.lengthOf.above(0);",
+                  "  });",
+                  "  pm.test(tag + '.status is up or down', function() {",
+                  "    pm.expect(svc.status).to.be.oneOf(['up', 'down']);",
+                  "  });",
+                  "  if (svc.latency_ms !== undefined) {",
+                  "    pm.test(tag + '.latency_ms is a non-negative number', function() {",
+                  "      pm.expect(svc.latency_ms).to.be.a('number').and.to.be.at.least(0);",
+                  "    });",
+                  "  }",
+                  "});",
+                  "pm.test('Database probe present', function() {",
+                  "  pm.expect(b.services.some(function(s) { return s.name === 'Database'; })).to.be.true;",
+                  "});",
+                  "pm.test('Redis probe present', function() {",
+                  "  pm.expect(b.services.some(function(s) { return s.name === 'Redis'; })).to.be.true;",
+                  "});",
+                  "var REQUIRED = ['Database', 'Redis'];",
+                  "var down = (b.services || []).filter(function(s) { return s.status === 'down'; });",
+                  "var downRequired = down.filter(function(s) { return REQUIRED.indexOf(s.name) !== -1; });",
+                  "var downOptional = down.filter(function(s) { return REQUIRED.indexOf(s.name) === -1; });",
+                  "if (downOptional.length > 0) {",
+                  "  var optMsg = downOptional.map(function(s) { return s.name + (s.detail ? ' (' + s.detail + ')' : ''); }).join(', ');",
+                  "  console.warn('INFO: optional services not running (expected in dev): ' + optMsg);",
+                  "}",
+                  "if (downRequired.length > 0) {",
+                  "  var reqMsg = downRequired.map(function(s) { return s.name + (s.detail ? ' (' + s.detail + ')' : ''); }).join(', ');",
+                  "  pm.test('REQUIRED services down: ' + reqMsg, function() {",
+                  "    pm.expect(false, 'Required services are down: ' + reqMsg).to.be.true;",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/health?ping=true",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "health"],
+              "query": [{"key": "ping", "value": "true"}]
             }
           }
         },
@@ -68,82 +143,61 @@
 
     {
       "name": "rate-limiting",
-      "description": "Burst=3 (NewIPRateLimiter rate=3/60 burst=3). Send 3 warmups to drain the bucket, then the 4th must 429. Requests fire with --delay-request 1 so refill (0.05 tok/s) is negligible between back-to-back calls.",
+      "description": "Burst=10 (NewIPRateLimiter rate=30/60 burst=10). Send 10 warmups to drain the bucket, then the 11th must 429. Requests fire with --delay-request 1 so refill (0.5 tok/s ≈ 1 token per 2 s) is negligible between rapid back-to-back calls.",
       "item": [
         {
-          "name": "warmup 1/3 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/v1/health",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "health"]
-            }
-          }
+          "name": "warmup 1/10 — consume slot (→ not 429)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 1)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
+        },
+        {
+          "name": "warmup 2/10 — consume slot (→ not 429)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
+        },
+        {
+          "name": "warmup 3/10 — consume slot (→ not 429)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 3)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
+        },
+        {
+          "name": "warmup 4/10 — consume slot (→ not 429)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 4)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
+        },
+        {
+          "name": "warmup 5/10 — consume slot (→ not 429)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 5)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
+        },
+        {
+          "name": "warmup 6/10 — consume slot (→ not 429)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 6)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
+        },
+        {
+          "name": "warmup 7/10 — consume slot (→ not 429)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 7)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
+        },
+        {
+          "name": "warmup 8/10 — consume slot (→ not 429)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 8)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
+        },
+        {
+          "name": "warmup 9/10 — consume slot (→ not 429)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 9)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
+        },
+        {
+          "name": "warmup 10/10 — consume slot (→ not 429, last allowed)",
+          "event": [{"listen": "test", "script": {"type": "text/javascript", "exec": ["pm.test('not rate-limited yet (slot 10 - last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"]}}],
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
         },
 
         {
-          "name": "warmup 2/3 — consume slot (→ not 429)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (slot 2)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/v1/health",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "health"]
-            }
-          }
-        },
-
-        {
-          "name": "warmup 3/3 — consume slot (→ not 429, last allowed)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('not rate-limited yet (slot 3 - last allowed)', () => pm.expect(pm.response.code).to.not.eql(429));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/v1/health",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "health"]
-            }
-          }
-        },
-
-        {
-          "name": "4th request → 429 (bucket exhausted)",
+          "name": "11th request → 429 (bucket exhausted)",
           "event": [
             {
               "listen": "test",
@@ -153,20 +207,12 @@
                   "pm.test('status is 429', () => pm.response.to.have.status(429));",
                   "const b = pm.response.json();",
                   "pm.test('code is too_many_requests', () => pm.expect(b.code).to.eql('too_many_requests'));",
-                  "pm.test('Retry-After header present', () => pm.expect(pm.response.headers.get('Retry-After')).to.eql('20'));"
+                  "pm.test('Retry-After header is 2', () => pm.expect(pm.response.headers.get('Retry-After')).to.eql('2'));"
                 ]
               }
             }
           ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/v1/health",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "health"]
-            }
-          }
+          "request": {"method": "GET", "header": [], "url": {"raw": "{{base_url}}/api/v1/health", "host": ["{{base_url}}"], "path": ["api", "v1", "health"]}}
         }
       ]
     }

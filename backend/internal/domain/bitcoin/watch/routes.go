@@ -90,8 +90,8 @@ func watchIPRateLimitMiddleware(
 				_ = store.WriteAuditLog(auditCtx, audit.EventBitcoinWatchRateLimitHit, "", ip, nil)
 				rec.OnWatchRejected("rate_limit")
 				w.Header().Set("Retry-After", limiter.RetryAfter())
-				respond.Error(w, http.StatusTooManyRequests, "rate_limit_exceeded",
-					"too many requests")
+				respond.Error(w, http.StatusTooManyRequests, "too_many_requests",
+					"too_many_requests — please slow down")
 				return
 			}
 			next.ServeHTTP(w, r)

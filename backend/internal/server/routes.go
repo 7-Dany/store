@@ -15,6 +15,21 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
+// maintenanceMiddleware returns a middleware that returns 503 Service Unavailable
+// when maintenance mode is enabled. Health checks are exempt.
+func maintenanceMiddleware(enabled bool) func(http.Handler) http.Handler {
+	if !enabled {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"error":"Service temporarily unavailable for maintenance"}`))
+		})
+	}
+}
+
 // newRouter wires global middleware and mounts every versioned API sub-router.
 // ctx is the application root context; it is threaded into domain assemblers
 // so they can start cleanup goroutines that respect graceful shutdown (RULES §2.6).
@@ -114,6 +129,9 @@ func newRouter(ctx context.Context, deps *app.Deps, registry *telemetry.Registry
 		// deadline) and returns 200 when all services are up, 503 when any is down.
 		// See server/health.go for probe implementations.
 		r.With(healthLimiter.Limit).Get("/health", handleHealth(deps))
+
+		// Maintenance mode: return 503 for all API routes except health
+		r.Use(maintenanceMiddleware(deps.MaintenanceMode))
 
 		domain.Mount(ctx, r, deps)
 	})

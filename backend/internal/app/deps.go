@@ -98,6 +98,9 @@ type Deps struct {
 	// HTTPSEnabled controls HSTS header injection. When true, every response
 	// carries Strict-Transport-Security.
 	HTTPSEnabled bool
+	// MaintenanceMode mirrors config.Config.MaintenanceMode. When true, all API
+	// routes except health checks return 503 Service Unavailable.
+	MaintenanceMode bool
 
 	// ── OTP ───────────────────────────────────────────────────────────────────
 	// OTPTokenTTL is the lifetime of every OTP token (email_verification,

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/bitcoin/zmq"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/respond"
+	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // healthCheckTimeout is the per-probe deadline. All probes run in parallel
@@ -209,3 +211,44 @@ func intToStr(n int) string {
 	}
 	return string(buf[pos:])
 }
+
+// startupHealthCheck runs all service probes sequentially at startup.
+// It logs each probe result and returns an error if any service is down,
+// preventing the server from starting until all dependencies are healthy.
+func startupHealthCheck(ctx context.Context, deps *app.Deps, log *telemetry.Logger) error {
+	// Run probes sequentially for clear startup logging
+	probes := []func() serviceProbe{
+		func() serviceProbe { return probeDB(ctx, deps.Pool) },
+		func() serviceProbe { return probeRedis(ctx, deps.KVStore) },
+	}
+	if deps.BitcoinEnabled && deps.BitcoinZMQ != nil {
+		probes = append(probes, func() serviceProbe { return probeZMQ(deps.BitcoinZMQ) })
+	}
+	if deps.BitcoinEnabled && deps.BitcoinRPC != nil {
+		probes = append(probes, func() serviceProbe { return probeRPC(ctx, deps.BitcoinRPC) })
+	}
+
+	for _, probeFn := range probes {
+		probe := probeFn()
+		if probe.Status == "down" {
+			log.Error(ctx, "startup health check failed", "service", probe.Name, "detail", probe.Detail)
+			return fmt.Errorf("service %s is down: %s", probe.Name, probe.Detail)
+		}
+		if probe.LatencyMs != nil {
+			log.Info(ctx, "startup health check passed", "service", probe.Name, "latency_ms", *probe.LatencyMs)
+		} else {
+			log.Info(ctx, "startup health check passed", "service", probe.Name, "detail", probe.Detail)
+		}
+	}
+	log.Info(ctx, "all startup health checks passed")
+	return nil
+}
+
+// TODO: Add deep maintenance check functions for:
+// - Wallet integrity: verify UTXO reconciliation, check for discrepancies
+// - Vendor balances: validate balance sums against transactions, check for negative balances
+// - Jobs synchronization: verify job queue state, check for stuck jobs
+// - Audit logs: ensure all financial operations are logged
+// - Bitcoin network: check block height, peer connections
+// - Database consistency: foreign key checks, index health
+// These should be callable via a maintenance endpoint or CLI command.

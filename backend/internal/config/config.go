@@ -38,6 +38,9 @@ type Config struct {
 	// in known development/test environments. The default (false) keeps cookies
 	// Secure-only, which is the safe production default.
 	HTTPSDisabled bool
+	// MaintenanceMode enables maintenance mode, returning 503 Service Unavailable
+	// for all API requests except health checks. Default: false.
+	MaintenanceMode bool
 	// TrustedProxies is the raw comma-separated CIDR string forwarded to the
 	// TrustedProxyRealIP middleware. An empty string means no proxy is trusted.
 	TrustedProxies string
@@ -237,6 +240,7 @@ func Load() (*Config, error) {
 		AppName:             trimAppName(getEnv("APP_NAME", "Store")),
 		HTTPSEnabled:        parseBoolEnv("HTTPS_ENABLED"),
 		HTTPSDisabled:       parseBoolEnv("HTTPS_DISABLED"),
+		MaintenanceMode:     parseBoolEnv("MAINTENANCE_MODE"),
 		TrustedProxies:      os.Getenv("TRUSTED_PROXIES"),
 		MailWorkers:         getEnvInt("MAIL_WORKERS", 4),
 		MailDeliveryTimeout: getEnvDuration("MAIL_DELIVERY_TIMEOUT", 30*time.Second),

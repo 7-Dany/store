@@ -208,6 +208,7 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		AllowedOrigins:      cfg.AllowedOrigins,
 		TrustedProxyCIDRs:   trustedCIDRs,
 		HTTPSEnabled:        cfg.HTTPSEnabled,
+		MaintenanceMode:     cfg.MaintenanceMode,
 		OTPTokenTTL:         time.Duration(cfg.OTPValidMinutes) * time.Minute,
 		Encryptor:           encryptor,
 		RBAC:                rbacChecker,
@@ -239,6 +240,14 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		BitcoinPendingMempoolMaxSize:    cfg.BitcoinPendingMempoolMaxSize,
 		BitcoinMempoolPendingMaxAgeDays: cfg.BitcoinMempoolPendingMaxAgeDays,
 		BitcoinBlockRPCTimeoutSeconds:   cfg.BitcoinBlockRPCTimeoutSeconds,
+	}
+
+	// ── Startup health check ─────────────────────────────────────────────────
+	// In maintenance mode, run health checks to diagnose issues.
+	if cfg.MaintenanceMode {
+		if err := startupHealthCheck(ctx, deps, log); err != nil {
+			log.Warn(ctx, "startup health check failed in maintenance mode", "error", err)
+		}
 	}
 
 	// ── HTTP server ───────────────────────────────────────────────────────

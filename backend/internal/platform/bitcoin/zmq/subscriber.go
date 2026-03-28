@@ -380,20 +380,44 @@ func (s *subscriber) Run(ctx context.Context) error {
 		panic("zmq: Run: must not be called more than once")
 	}
 
+	logger.Debug(ctx, "zmq: starting worker pool",
+		"block_workers", defaultWorkerCount,
+		"rawtx_workers", defaultWorkerCount,
+		"settle_workers", defaultWorkerCount)
 	s.startWorkers(ctx)
 
+	logger.Debug(ctx, "zmq: launching reader goroutines",
+		"block_endpoint", s.blockEndpoint, "tx_endpoint", s.txEndpoint)
 	var readersWg sync.WaitGroup
 	readersWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error(ctx, "zmq: block reader goroutine panicked -- subscriber will not recover without restart",
+					"panic", r)
+			}
+		}()
 		var state readerState
 		s.runReader(ctx, s.blockReaderConfig(), &state)
 	})
 	// Settlement path: hashtx → TxEvent → txCh
 	readersWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error(ctx, "zmq: settlement-tx reader goroutine panicked -- subscriber will not recover without restart",
+					"panic", r)
+			}
+		}()
 		var state readerState
 		s.runReader(ctx, s.txReaderConfig(), &state)
 	})
 	// SSE display path: rawtx → RawTxEvent → rawTxCh
 	readersWg.Go(func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error(ctx, "zmq: rawtx reader goroutine panicked -- subscriber will not recover without restart",
+					"panic", r)
+			}
+		}()
 		s.runRawTxReader(ctx)
 	})
 	readersWg.Wait()
@@ -569,11 +593,15 @@ func (s *subscriber) blockReaderConfig() readerConfig {
 			// Single atomic Store: IsConnected() and LastSeenHash() always read
 			// a consistent snapshot — hash and timestamp are never torn.
 			s.live.Store(&liveness{hash: event.HashHex(), at: time.Now()})
+			logger.Debug(context.Background(), "zmq: block event dispatched",
+				"hash", event.HashHex(), "seq", event.Sequence)
 			select {
 			case s.blockCh <- event:
 			default:
 				// Buffer full — drop and meter. The read loop must never block
 				// or it stalls delivery for the entire block socket.
+				logger.Warn(context.Background(), "zmq: blockCh full -- dropping block event (HWM)",
+					"hash", event.HashHex(), "channel_cap", cap(s.blockCh))
 				s.recorder.OnMessageDropped("hwm")
 			}
 		},
@@ -652,11 +680,18 @@ func (s *subscriber) rawTxReaderConfig() readerConfig {
 func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *readerState) {
 	backoff := reconnectBase
 	everConnected := false
+	attempt := 0
 
 	for {
 		if ctx.Err() != nil {
+			logger.Debug(ctx, "zmq: runReader: context cancelled, exiting",
+				"topic", string(cfg.topic))
 			return
 		}
+
+		attempt++
+		logger.Debug(ctx, "zmq: runReader: dial attempt",
+			"topic", string(cfg.topic), "endpoint", cfg.endpoint, "attempt", attempt, "backoff", backoff)
 
 		conn, err := dialZMTP(ctx, cfg.endpoint, cfg.topic)
 		if err != nil {
@@ -664,9 +699,9 @@ func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *rea
 				return
 			}
 			cfg.onDialFail()
-			logger.Warn(ctx, "zmq: connection failed — retrying",
+			logger.Warn(ctx, "zmq: connection failed -- retrying",
 				"topic", string(cfg.topic), "endpoint", cfg.endpoint,
-				"backoff", backoff, "error", err)
+				"backoff", backoff, "attempt", attempt, "error", err)
 			if !sleepCtx(ctx, backoff) {
 				return
 			}
@@ -675,11 +710,15 @@ func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *rea
 		}
 
 		cfg.onDialOK()
+		logger.Debug(ctx, "zmq: runReader: connected",
+			"topic", string(cfg.topic), "endpoint", cfg.endpoint, "attempt", attempt)
 
 		// Fire recovery before delivering the first post-reconnect event so
 		// handlers can fill any gap before new events arrive. Skip on the very
 		// first connection — no gap is possible before any message is received.
 		if everConnected {
+			logger.Debug(ctx, "zmq: runReader: firing recovery after reconnect",
+				"topic", string(cfg.topic), "last_seq", state.lastSeq)
 			s.fireRecovery(ctx, state.lastSeq)
 		}
 		everConnected = true
@@ -694,6 +733,8 @@ func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *rea
 		if ctx.Err() != nil {
 			return
 		}
+		logger.Debug(ctx, "zmq: runReader: session ended, will reconnect",
+			"topic", string(cfg.topic), "next_backoff", backoff)
 		if !sleepCtx(ctx, backoff) {
 			return
 		}
@@ -710,13 +751,17 @@ func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *r
 		frames, err := conn.RecvMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
+				logger.Debug(ctx, "zmq: receiveLoop: context cancelled",
+					"topic", string(cfg.topic))
 				return
 			}
 			cfg.onRecvErr()
-			logger.Warn(ctx, "zmq: receive error — reconnecting",
+			logger.Warn(ctx, "zmq: receive error -- reconnecting",
 				"topic", string(cfg.topic), "error", err)
 			return
 		}
+		logger.Debug(ctx, "zmq: receiveLoop: got message",
+			"topic", string(cfg.topic), "frame_count", len(frames))
 		if err := s.processFrame(ctx, frames, cfg.topic, state, cfg.onEvent); err != nil {
 			logger.Warn(ctx, "zmq: frame rejected",
 				"topic", string(cfg.topic), "error", err)
@@ -735,19 +780,24 @@ func (s *subscriber) runRawTxReader(ctx context.Context) {
 	backoff := reconnectBase
 	everConnected := false
 	var state readerState
+	attempt := 0
 
 	for {
 		if ctx.Err() != nil {
+			logger.Debug(ctx, "zmq: runRawTxReader: context cancelled, exiting")
 			return
 		}
+		attempt++
+		logger.Debug(ctx, "zmq: runRawTxReader: dial attempt",
+			"endpoint", cfg.endpoint, "attempt", attempt, "backoff", backoff)
 		conn, err := dialZMTP(ctx, cfg.endpoint, cfg.topic)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
 			cfg.onDialFail()
-			logger.Warn(ctx, "zmq: rawtx connection failed — retrying",
-				"endpoint", cfg.endpoint, "backoff", backoff, "error", err)
+			logger.Warn(ctx, "zmq: rawtx connection failed -- retrying",
+				"endpoint", cfg.endpoint, "backoff", backoff, "attempt", attempt, "error", err)
 			if !sleepCtx(ctx, backoff) {
 				return
 			}
@@ -755,7 +805,11 @@ func (s *subscriber) runRawTxReader(ctx context.Context) {
 			continue
 		}
 		cfg.onDialOK()
+		logger.Debug(ctx, "zmq: runRawTxReader: connected",
+			"endpoint", cfg.endpoint, "attempt", attempt)
 		if everConnected {
+			logger.Debug(ctx, "zmq: runRawTxReader: firing recovery after reconnect",
+				"last_seq", state.lastSeq)
 			s.fireRecovery(ctx, state.lastSeq)
 		}
 		everConnected = true
@@ -764,6 +818,8 @@ func (s *subscriber) runRawTxReader(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		logger.Debug(ctx, "zmq: runRawTxReader: session ended, will reconnect",
+			"next_backoff", backoff)
 		if !sleepCtx(ctx, backoff) {
 			return
 		}
@@ -779,13 +835,15 @@ func (s *subscriber) rawTxReceiveLoop(ctx context.Context, cfg readerConfig, sta
 		frames, err := conn.RecvMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
+				logger.Debug(ctx, "zmq: rawTxReceiveLoop: context cancelled")
 				return
 			}
 			cfg.onRecvErr()
-			logger.Warn(ctx, "zmq: rawtx receive error — reconnecting",
+			logger.Warn(ctx, "zmq: rawtx receive error -- reconnecting",
 				"endpoint", cfg.endpoint, "error", err)
 			return
 		}
+		logger.Debug(ctx, "zmq: rawTxReceiveLoop: got message", "frame_count", len(frames))
 		if err := s.processRawTxFrame(ctx, frames, state); err != nil {
 			logger.Warn(ctx, "zmq: rawtx frame rejected", "error", err)
 		}
@@ -815,10 +873,12 @@ func (s *subscriber) processRawTxFrame(ctx context.Context, msg [][]byte, state 
 
 	// Sequence gap detection — same logic as processFrame.
 	if state.lastSeqSeen && seq != state.lastSeq+1 {
-		logger.Warn(ctx, "zmq: rawtx sequence gap — frames were dropped at the ZMQ layer",
-			"expected", state.lastSeq+1, "got", seq)
+		logger.Warn(ctx, "zmq: rawtx sequence gap -- frames were dropped at the ZMQ layer",
+			"expected", state.lastSeq+1, "got", seq, "dropped", seq-state.lastSeq-1)
 		s.recorder.OnMessageDropped("sequence_gap")
 		s.fireRecovery(ctx, state.lastSeq)
+	} else if state.lastSeqSeen {
+		logger.Debug(ctx, "zmq: rawtx processFrame: seq OK", "seq", seq)
 	}
 	state.lastSeq = seq
 	state.lastSeqSeen = true
@@ -826,16 +886,24 @@ func (s *subscriber) processRawTxFrame(ctx context.Context, msg [][]byte, state 
 	event, err := ParseRawTx(msg[1])
 	if err != nil {
 		// A malformed tx must not stall the reader — log, meter, continue.
-		logger.Warn(ctx, "zmq: rawtx parse failed — dropping frame",
+		logger.Warn(ctx, "zmq: rawtx parse failed -- dropping frame",
 			"seq", seq, "raw_len", len(msg[1]), "error", err)
 		s.recorder.OnMessageDropped("parse_error")
 		return nil
 	}
 	event.Sequence = seq
 
+	logger.Debug(ctx, "zmq: rawtx frame decoded",
+		"txid", event.TxIDHex(), "seq", seq,
+		"inputs", len(event.Inputs), "outputs", len(event.Outputs),
+		"raw_len", len(msg[1]))
+
 	select {
 	case s.rawTxCh <- event:
+		logger.Debug(ctx, "zmq: rawtx event dispatched to rawTxCh", "txid", event.TxIDHex())
 	default:
+		logger.Warn(ctx, "zmq: rawTxCh full -- dropping rawtx event (HWM)",
+			"txid", event.TxIDHex(), "channel_cap", cap(s.rawTxCh))
 		s.recorder.OnMessageDropped("hwm")
 	}
 	return nil
@@ -886,10 +954,13 @@ func (s *subscriber) processFrame(
 	// state.lastSeq+1 also wraps to 0, so seq == state.lastSeq+1 and no gap
 	// is reported.
 	if state.lastSeqSeen && seq != state.lastSeq+1 {
-		logger.Warn(ctx, "zmq: sequence gap — frames were dropped at the ZMQ layer",
-			"topic", string(topic), "expected", state.lastSeq+1, "got", seq)
+		logger.Warn(ctx, "zmq: sequence gap -- frames were dropped at the ZMQ layer",
+			"topic", string(topic), "expected", state.lastSeq+1, "got", seq, "dropped", seq-state.lastSeq-1)
 		s.recorder.OnMessageDropped("sequence_gap")
 		s.fireRecovery(ctx, state.lastSeq)
+	} else if state.lastSeqSeen {
+		logger.Debug(ctx, "zmq: processFrame: seq OK",
+			"topic", string(topic), "seq", seq)
 	}
 
 	state.lastSeq = seq
@@ -897,6 +968,9 @@ func (s *subscriber) processFrame(
 
 	var hash [32]byte
 	copy(hash[:], msg[1])
+
+	logger.Debug(ctx, "zmq: processFrame: dispatching event",
+		"topic", string(topic), "seq", seq)
 	onEvent(hash, seq)
 
 	return nil
@@ -918,6 +992,8 @@ func (s *subscriber) fireRecovery(ctx context.Context, lastSeq uint32) {
 	if len(s.recoveryHandlers) == 0 {
 		return
 	}
+	logger.Debug(ctx, "zmq: fireRecovery",
+		"last_seq", lastSeq, "handler_count", len(s.recoveryHandlers))
 	event := RecoveryEvent{
 		ReconnectedAt:    time.Now(),
 		LastSeenSequence: lastSeq,
@@ -925,6 +1001,7 @@ func (s *subscriber) fireRecovery(ctx context.Context, lastSeq uint32) {
 	for _, h := range s.recoveryHandlers {
 		invokeHandler(s, ctx, h, event, "recovery")
 	}
+	logger.Debug(ctx, "zmq: fireRecovery complete")
 }
 
 // ── Handler invocation ────────────────────────────────────────────────────────
@@ -978,7 +1055,9 @@ func invokeHandler[E any](s *subscriber, parentCtx context.Context, h func(conte
 			}
 		}()
 
+		logger.Debug(hCtx, "zmq: invokeHandler: starting", "handler", name)
 		h(hCtx, e)
+		logger.Debug(hCtx, "zmq: invokeHandler: done", "handler", name)
 	})
 
 	select {

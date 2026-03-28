@@ -315,25 +315,78 @@ func (t *MempoolTracker) HandleRawTxEvent(ctx context.Context, e zmq.RawTxEvent)
 // every hashblock ZMQ message.
 //
 // Flow:
-//  1. GetBlockHeader → emit new_block to all connected users.
-//  2. GetBlock(verbosity=1) → list of txids in the block.
-//  3. For each txid present in pendingMempool:
+//  1. Snapshot connected users immediately — before any I/O — so the list is
+//     consistent for this block and is not affected by RPC call duration.
+//  2. GetBlockHeader → emit new_block to all connected users.
+//     If GetBlockHeader fails (transient RPC error), new_block is still emitted
+//     with height=0 and the current wall-clock time so connected clients are
+//     notified of the block regardless of RPC availability.
+//  3. GetBlock(verbosity=1) → list of txids in the block.
+//  4. For each txid present in pendingMempool:
 //     a. Collect watched addresses from the entry (under write lock).
 //     b. Remove from pendingMempool + spentOutpoints (via reverse index).
 //     c. Emit confirmed_tx to each connected user whose watch set overlaps.
 func (t *MempoolTracker) HandleBlockEvent(ctx context.Context, e zmq.BlockEvent) {
 	hashHex := e.HashHex()
 
+	// Snapshot connected users BEFORE any I/O. This prevents a race where
+	// GetBlockHeader takes several seconds (retries) and a user who was present
+	// at ZMQ-event time disconnects before EmitToUser runs.
+	userIDs := t.broker.ConnectedUserIDs()
+
 	rpcCtx, cancel := context.WithTimeout(ctx, t.cfg.BlockRPCTimeout)
 	defer cancel()
 
-	header, err := t.rpc.GetBlockHeader(rpcCtx, hashHex)
-	if err != nil {
+	// Bitcoin Core fires the ZMQ hashblock notification from UpdateTip before the
+	// block is fully committed to the block index. getblockheader returns RPC -5
+	// ("Block not found") during this brief window even for a valid hash.
+	// retryCall in the RPC client never retries on -5 (it is normally a permanent
+	// absence), so we close the race here with an explicit backoff loop:
+	// 100 ms → 200 → 400 → 800 → 1600 ms (≤ 3.1 s total), well inside
+	// BlockRPCTimeout and the 10-minute mainnet block interval.
+	const (
+		maxHeaderRetries   = 5
+		headerRetryBase    = 100 * time.Millisecond
+		headerRetryCeiling = 2 * time.Second
+	)
+	var header rpc.BlockHeader
+	var headerErr error
+	headerBackoff := headerRetryBase
+	for attempt := 0; ; attempt++ {
+		header, headerErr = t.rpc.GetBlockHeader(rpcCtx, hashHex)
+		if headerErr == nil || !rpc.IsNotFoundError(headerErr) || rpcCtx.Err() != nil || attempt >= maxHeaderRetries {
+			break
+		}
+		log.Warn(ctx, "events.HandleBlockEvent: ZMQ/RPC timing race — retrying GetBlockHeader",
+			"hash", hashHex, "attempt", attempt+1, "max_retries", maxHeaderRetries, "backoff", headerBackoff)
+		timer := time.NewTimer(headerBackoff)
+		select {
+		case <-timer.C:
+		case <-rpcCtx.Done():
+			timer.Stop()
+		}
+		headerBackoff = min(headerBackoff*2, headerRetryCeiling)
+	}
+
+	if headerErr != nil {
+		// All retries exhausted or a non-transient error. Emit a degraded
+		// new_block event with height=0 and current wall-clock time so connected
+		// clients are still notified. pendingMempool cleanup is skipped — entries
+		// will be confirmed on the next successful block or removed by the hourly
+		// pruning goroutine.
+		log.Warn(ctx, "events.HandleBlockEvent: GetBlockHeader failed — emitting degraded new_block event",
+			"hash", hashHex, "error", headerErr)
+		degradedPayload, _ := json.Marshal(map[string]any{
+			"hash":   hashHex,
+			"height": 0,
+			"time":   time.Now().Unix(),
+		})
+		for _, uid := range userIDs {
+			t.broker.EmitToUser(uid, Event{Type: "new_block", Payload: degradedPayload})
+		}
 		return
 	}
 
-	// Emit new_block to all connected users.
-	userIDs := t.broker.ConnectedUserIDs()
 	newBlockPayload, _ := json.Marshal(map[string]any{
 		"hash":   hashHex,
 		"height": header.Height,

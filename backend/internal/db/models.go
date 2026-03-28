@@ -1767,7 +1767,7 @@ type BitcoinSyncState struct {
 
 // Time-series BTC/fiat rate feed. Written on every rate fetch from the provider. Enables audit of: "what was the rate at time T?" and "which invoices used an anomalous rate?" invoices.btc_rate_at_creation is authoritative per invoice; this table provides the context.
 type BtcExchangeRateLog struct {
-	ID           uuid.UUID          `db:"id" json:"id"`
+	ID           int64              `db:"id" json:"id"`
 	Network      string             `db:"network" json:"network"`
 	FiatCurrency string             `db:"fiat_currency" json:"fiat_currency"`
 	Rate         pgtype.Numeric     `db:"rate" json:"rate"`
@@ -1780,7 +1780,7 @@ type BtcExchangeRateLog struct {
 
 // Node outage periods for invoice expiry-timer compensation. INSERT on disconnect; UPDATE ended_at on reconnect; close stale records on startup. Advisory lock (hashtext('btc_outage_log:' || network)) prevents concurrent duplicate INSERTs. uq_outage_one_open_per_network is both the uniqueness guard AND the hot-path lookup index. 6-hour maintenance job closes records older than 48 hours.
 type BtcOutageLog struct {
-	ID        uuid.UUID          `db:"id" json:"id"`
+	ID        int64              `db:"id" json:"id"`
 	Network   string             `db:"network" json:"network"`
 	StartedAt pgtype.Timestamptz `db:"started_at" json:"started_at"`
 	// NULL = outage ongoing. Application startup MUST close any open record left by a crashed process before accepting new connections.
@@ -1841,7 +1841,7 @@ type BtcTierConfig struct {
 
 // Immutable history of btc_tier_config changes. Populated by fn_tier_config_history AFTER UPDATE trigger (011). Required for SOC 2 audit: "what were the fee rates for tier X during period Y?"
 type BtcTierConfigHistory struct {
-	ID        uuid.UUID          `db:"id" json:"id"`
+	ID        int64              `db:"id" json:"id"`
 	TierID    pgtype.UUID        `db:"tier_id" json:"tier_id"`
 	ChangedAt pgtype.Timestamptz `db:"changed_at" json:"changed_at"`
 	ChangedBy pgtype.UUID        `db:"changed_by" json:"changed_by"`
@@ -1871,7 +1871,7 @@ type BtcWithdrawalRequest struct {
 
 // ZMQ events that could not be matched to an active monitoring record. Captures: late payments, double-spend attempts, retired addresses, unknown txids. Periodic review of resolved=FALSE rows detects missed payments and anomalies. Not all dead letters are errors — late payments on expired invoices are expected. Resolved rows accumulate indefinitely; prune via idx_zdl_resolved_cleanup after retention window.
 type BtcZmqDeadLetter struct {
-	ID             uuid.UUID          `db:"id" json:"id"`
+	ID             int64              `db:"id" json:"id"`
 	Network        string             `db:"network" json:"network"`
 	EventType      string             `db:"event_type" json:"event_type"`
 	RawPayload     string             `db:"raw_payload" json:"raw_payload"`
@@ -1920,7 +1920,7 @@ type FatfTravelRuleRecord struct {
 
 // Immutable append-only financial audit trail. Retained indefinitely. Immutability layer 1: btc_app_role has INSERT+SELECT only. Immutability layer 2: fn_btc_audit_immutable + fn_btc_audit_no_truncate (011) block all mutations. Admin corrections: new rows with references_event_id — original rows never modified. GDPR: do NOT store source_ip here — use sse_token_issuances table. Reconciliation: balance_before/after columns enable full balance history reconstruction.
 type FinancialAuditEvent struct {
-	ID        uuid.UUID          `db:"id" json:"id"`
+	ID        int64              `db:"id" json:"id"`
 	EventType string             `db:"event_type" json:"event_type"`
 	Timestamp pgtype.Timestamptz `db:"timestamp" json:"timestamp"`
 	// NULL for system events not network-specific. When set, must be mainnet or testnet4 (chk_fae_network).
@@ -2006,7 +2006,7 @@ type Invoice struct {
 
 // One P2WPKH bech32 address per invoice, derived from Bitcoin Core HD keypool. UNIQUE (address, network): duplicate = KeypoolOrRPCError CRITICAL — do NOT retry. label = 'invoice' enforced by CHECK — critical for Scenario D recovery. hd_derivation_index required for Scenario B/C wallet recovery.
 type InvoiceAddress struct {
-	ID        uuid.UUID   `db:"id" json:"id"`
+	ID        int64       `db:"id" json:"id"`
 	InvoiceID pgtype.UUID `db:"invoice_id" json:"invoice_id"`
 	Address   string      `db:"address" json:"address"`
 	Network   string      `db:"network" json:"network"`
@@ -2019,7 +2019,7 @@ type InvoiceAddress struct {
 
 // Authoritative ZMQ watch list. Survives restarts; consistent across horizontal replicas. fn_iam_address_consistency (011) verifies address matches invoice_addresses at INSERT. Registration order: INSERT invoice_addresses → INSERT monitoring → RegisterImmediate(). Retired rows never deleted — partial index WHERE status=active keeps hot path fast.
 type InvoiceAddressMonitoring struct {
-	ID        uuid.UUID   `db:"id" json:"id"`
+	ID        int64       `db:"id" json:"id"`
 	InvoiceID pgtype.UUID `db:"invoice_id" json:"invoice_id"`
 	Address   string      `db:"address" json:"address"`
 	Network   string      `db:"network" json:"network"`
@@ -2032,7 +2032,7 @@ type InvoiceAddressMonitoring struct {
 
 // Append-only on-chain payment records. One row per (txid, vout_index). Always INSERT with ON CONFLICT (txid, vout_index) DO NOTHING for idempotency. Multi-output TXs generate one row per vout — settlement Phase 1 SUMs all rows for invoice. idx_ip_invoice_id uses INCLUDE for index-only Phase 1 SUM scan.
 type InvoicePayment struct {
-	ID         uuid.UUID          `db:"id" json:"id"`
+	ID         int64              `db:"id" json:"id"`
 	InvoiceID  pgtype.UUID        `db:"invoice_id" json:"invoice_id"`
 	Txid       string             `db:"txid" json:"txid"`
 	VoutIndex  int32              `db:"vout_index" json:"vout_index"`
@@ -2166,7 +2166,7 @@ type OneTimeToken struct {
 
 // Non-financial admin operation audit trail. Covers: tier fee changes, vendor suspensions, sweep_hold_mode toggles, legal flag changes, tier-role syncs. Complements financial_audit_events (which covers financial flows only). Rows CAN be deleted after the compliance retention window (unlike financial_audit_events). Populated by triggers in 011_btc_functions.sql.
 type OpsAuditLog struct {
-	ID         uuid.UUID          `db:"id" json:"id"`
+	ID         int64              `db:"id" json:"id"`
 	Timestamp  pgtype.Timestamptz `db:"timestamp" json:"timestamp"`
 	ActorID    pgtype.UUID        `db:"actor_id" json:"actor_id"`
 	ActorLabel string             `db:"actor_label" json:"actor_label"`
@@ -2344,7 +2344,7 @@ type ReconciliationJobState struct {
 
 // Full history of reconciliation runs. reconciliation_job_state holds only the latest per network; this table enables trend analysis: "discrepancy in last 30 days?", "average run time?", etc.
 type ReconciliationRunHistory struct {
-	ID             uuid.UUID                   `db:"id" json:"id"`
+	ID             int64                       `db:"id" json:"id"`
 	Network        string                      `db:"network" json:"network"`
 	StartedAt      pgtype.Timestamptz          `db:"started_at" json:"started_at"`
 	FinishedAt     pgtype.Timestamptz          `db:"finished_at" json:"finished_at"`
@@ -2550,7 +2550,7 @@ type RolePermissionsAudit struct {
 
 // SSE token issuance records with pseudonymised IP hash. Replaces source_ip in financial_audit_events.metadata (SEC-07 decision). jti_hash = HMAC-SHA256(jti, server_secret) — non-reversible. source_ip_hash = SHA256(ip || daily_rotation_key) — non-reversible after key rotation. vendor_id is nullable (ON DELETE SET NULL) — must not be NOT NULL or vendor deletion fails. GDPR erasure: SET erased=TRUE, source_ip_hash=NULL.
 type SseTokenIssuance struct {
-	ID uuid.UUID `db:"id" json:"id"`
+	ID int64 `db:"id" json:"id"`
 	// Nullable. ON DELETE SET NULL preserves the issuance record after vendor deletion. NULL rows are still processed by the GDPR erasure job (erased column applies). Do NOT add NOT NULL to this column — it will break all vendor account deletions.
 	VendorID     pgtype.UUID        `db:"vendor_id" json:"vendor_id"`
 	Network      string             `db:"network" json:"network"`
@@ -2798,7 +2798,7 @@ type VendorWalletConfig struct {
 
 // Field-level history of vendor wallet config changes. One row per changed field per UPDATE. Populated by fn_vwc_history AFTER UPDATE trigger (024). Required for compliance: "what address/mode/tier did vendor X have during period Y?"
 type VendorWalletConfigHistory struct {
-	ID        uuid.UUID          `db:"id" json:"id"`
+	ID        int64              `db:"id" json:"id"`
 	VendorID  pgtype.UUID        `db:"vendor_id" json:"vendor_id"`
 	Network   string             `db:"network" json:"network"`
 	ChangedAt pgtype.Timestamptz `db:"changed_at" json:"changed_at"`
@@ -2831,8 +2831,8 @@ type VendorWebhookConfig struct {
 
 // Wallet backup completion records. Written only after RPC + copy + verify all succeed. "Wallet backup overdue" CRITICAL alert fires when latest timestamp is stale (> 4h mainnet, > 24h testnet4). A failed copy step means no row is written here.
 type WalletBackupSuccess struct {
-	ID      uuid.UUID `db:"id" json:"id"`
-	Network string    `db:"network" json:"network"`
+	ID      int64  `db:"id" json:"id"`
+	Network string `db:"network" json:"network"`
 	// Time the completed backup (all three steps). This is the alert basis — NOT job start time. A job that runs but fails copy/verify does not write here, ensuring the alert fires.
 	Timestamp       pgtype.Timestamptz `db:"timestamp" json:"timestamp"`
 	Filename        string             `db:"filename" json:"filename"`

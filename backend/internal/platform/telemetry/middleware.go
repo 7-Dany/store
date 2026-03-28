@@ -125,6 +125,25 @@ func (sr *statusRecorder) WriteHeader(code int) {
 	sr.ResponseWriter.WriteHeader(code)
 }
 
+// Flush implements http.Flusher by delegating to the wrapped ResponseWriter.
+// Without this method the SSE handler's w.(http.Flusher) type-assertion fails
+// because embedding http.ResponseWriter (an interface) only promotes Header,
+// Write, and WriteHeader — not the optional Flush method.
+func (sr *statusRecorder) Flush() {
+	if f, ok := sr.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap returns the underlying ResponseWriter so that http.ResponseController
+// can traverse the middleware chain to find optional interfaces such as
+// SetWriteDeadline (needed by the SSE handler to clear the server-level
+// WriteTimeout). Without Unwrap, ResponseController stops here and returns
+// "feature not supported".
+func (sr *statusRecorder) Unwrap() http.ResponseWriter {
+	return sr.ResponseWriter
+}
+
 // ── routePattern ─────────────────────────────────────────────────────────────
 
 // routePattern returns the matched chi route pattern for the request.

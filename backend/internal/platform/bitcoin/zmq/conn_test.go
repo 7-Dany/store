@@ -3,6 +3,7 @@ package zmq
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"io"
 	"net"
@@ -279,7 +280,7 @@ func TestReadFrame_ShortFrame_ReturnsBodyAndFlags(t *testing.T) {
 	body := []byte("hello")
 	wire := encodeShortFrame(flagMore, body)
 	c := connFromBytes(wire)
-	flags, got, err := c.readFrame()
+	flags, got, err := c.readFrame(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, flagMore, flags)
 	require.Equal(t, body, got)
@@ -290,7 +291,7 @@ func TestReadFrame_LongFrame_ReturnsBodyAndFlags(t *testing.T) {
 	body := bytes.Repeat([]byte("x"), 10)
 	wire := encodeLongFrame(flagMore, body)
 	c := connFromBytes(wire)
-	flags, got, err := c.readFrame()
+	flags, got, err := c.readFrame(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, flagMore|flagLong, flags)
 	require.Equal(t, body, got)
@@ -302,7 +303,7 @@ func TestReadFrame_CommandFrame_FlagsPreserved(t *testing.T) {
 	// Wrap as a short frame with flagCommand set.
 	wire := encodeShortFrame(flagCommand, body)
 	c := connFromBytes(wire)
-	flags, _, err := c.readFrame()
+	flags, _, err := c.readFrame(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, flagCommand, flags)
 }
@@ -311,7 +312,7 @@ func TestReadFrame_EmptyBody_Succeeds(t *testing.T) {
 	t.Parallel()
 	wire := encodeShortFrame(0x00, nil)
 	c := connFromBytes(wire)
-	flags, got, err := c.readFrame()
+	flags, got, err := c.readFrame(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, byte(0x00), flags)
 	require.Empty(t, got)
@@ -326,7 +327,7 @@ func TestReadFrame_OversizedBody_ReturnsError(t *testing.T) {
 	wire := append([]byte{flagLong}, sz[:]...)
 	// Do NOT append actual body bytes — the check fires before the read.
 	c := connFromBytes(wire)
-	_, _, err := c.readFrame()
+	_, _, err := c.readFrame(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "exceeds")
 }
@@ -334,7 +335,7 @@ func TestReadFrame_OversizedBody_ReturnsError(t *testing.T) {
 func TestReadFrame_EOFOnFlagsByte_ReturnsError(t *testing.T) {
 	t.Parallel()
 	c := connFromBytes(nil) // empty reader
-	_, _, err := c.readFrame()
+	_, _, err := c.readFrame(context.Background())
 	require.ErrorIs(t, err, io.EOF)
 }
 
@@ -342,7 +343,7 @@ func TestReadFrame_EOFDuringShortSizeByte_ReturnsError(t *testing.T) {
 	t.Parallel()
 	// Only the flags byte, no size byte.
 	c := connFromBytes([]byte{flagMore})
-	_, _, err := c.readFrame()
+	_, _, err := c.readFrame(context.Background())
 	require.Error(t, err)
 }
 
@@ -350,7 +351,7 @@ func TestReadFrame_EOFDuringLongSizeField_ReturnsError(t *testing.T) {
 	t.Parallel()
 	// flags = flagLong set, but only 3 of the 8 size bytes are present.
 	c := connFromBytes([]byte{flagLong, 0, 0, 0})
-	_, _, err := c.readFrame()
+	_, _, err := c.readFrame(context.Background())
 	require.Error(t, err)
 }
 
@@ -359,7 +360,7 @@ func TestReadFrame_EOFDuringBody_ReturnsError(t *testing.T) {
 	// Header claims 5 bytes of body but only 2 are provided.
 	wire := append([]byte{flagMore, 5}, []byte("ab")...)
 	c := connFromBytes(wire)
-	_, _, err := c.readFrame()
+	_, _, err := c.readFrame(context.Background())
 	require.Error(t, err)
 }
 
@@ -371,7 +372,7 @@ func TestReadAndValidateGreeting_ValidNULL_Succeeds(t *testing.T) {
 	t.Parallel()
 	g := buildValidGreeting64(3, 1, "NULL")
 	c := connFromBytes(g[:])
-	require.NoError(t, c.readAndValidateGreeting())
+	require.NoError(t, c.readAndValidateGreeting(context.Background()))
 }
 
 func TestReadAndValidateGreeting_MajorVersion4_Succeeds(t *testing.T) {
@@ -379,7 +380,7 @@ func TestReadAndValidateGreeting_MajorVersion4_Succeeds(t *testing.T) {
 	// Major version ≥ 3 is accepted for forward-compat.
 	g := buildValidGreeting64(4, 0, "NULL")
 	c := connFromBytes(g[:])
-	require.NoError(t, c.readAndValidateGreeting())
+	require.NoError(t, c.readAndValidateGreeting(context.Background()))
 }
 
 func TestReadAndValidateGreeting_WrongSignatureByte0_ReturnsError(t *testing.T) {
@@ -387,7 +388,7 @@ func TestReadAndValidateGreeting_WrongSignatureByte0_ReturnsError(t *testing.T) 
 	g := buildValidGreeting64(3, 1, "NULL")
 	g[0] = 0x00 // corrupt signature prefix
 	c := connFromBytes(g[:])
-	require.Error(t, c.readAndValidateGreeting())
+	require.Error(t, c.readAndValidateGreeting(context.Background()))
 }
 
 func TestReadAndValidateGreeting_WrongSignatureByte9_ReturnsError(t *testing.T) {
@@ -395,14 +396,14 @@ func TestReadAndValidateGreeting_WrongSignatureByte9_ReturnsError(t *testing.T) 
 	g := buildValidGreeting64(3, 1, "NULL")
 	g[9] = 0x00 // corrupt signature suffix
 	c := connFromBytes(g[:])
-	require.Error(t, c.readAndValidateGreeting())
+	require.Error(t, c.readAndValidateGreeting(context.Background()))
 }
 
 func TestReadAndValidateGreeting_MajorVersionTooOld_ReturnsError(t *testing.T) {
 	t.Parallel()
 	g := buildValidGreeting64(2, 0, "NULL")
 	c := connFromBytes(g[:])
-	err := c.readAndValidateGreeting()
+	err := c.readAndValidateGreeting(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "too old")
 }
@@ -412,7 +413,7 @@ func TestReadAndValidateGreeting_NonNULLMechanism_ReturnsError(t *testing.T) {
 	for _, mech := range []string{"PLAIN", "CURVE", "GSSAPI"} {
 		g := buildValidGreeting64(3, 1, mech)
 		c := connFromBytes(g[:])
-		err := c.readAndValidateGreeting()
+		err := c.readAndValidateGreeting(context.Background())
 		require.Error(t, err, "mechanism %q should be rejected", mech)
 		require.Contains(t, err.Error(), mech)
 	}
@@ -422,13 +423,13 @@ func TestReadAndValidateGreeting_ShortRead_ReturnsError(t *testing.T) {
 	t.Parallel()
 	// Provide only 32 bytes instead of 64.
 	c := connFromBytes(make([]byte, 32))
-	require.Error(t, c.readAndValidateGreeting())
+	require.Error(t, c.readAndValidateGreeting(context.Background()))
 }
 
 func TestReadAndValidateGreeting_EmptyReader_ReturnsError(t *testing.T) {
 	t.Parallel()
 	c := connFromBytes(nil)
-	require.Error(t, c.readAndValidateGreeting())
+	require.Error(t, c.readAndValidateGreeting(context.Background()))
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -439,14 +440,14 @@ func TestReadExpectedCommand_CorrectName_Succeeds(t *testing.T) {
 	t.Parallel()
 	frame := buildCommand("READY", nil)
 	c := connFromBytes(frame)
-	require.NoError(t, c.readExpectedCommand("READY"))
+	require.NoError(t, c.readExpectedCommand(context.Background(), "READY"))
 }
 
 func TestReadExpectedCommand_WrongName_ReturnsError(t *testing.T) {
 	t.Parallel()
 	frame := buildCommand("ERROR", nil)
 	c := connFromBytes(frame)
-	err := c.readExpectedCommand("READY")
+	err := c.readExpectedCommand(context.Background(), "READY")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "READY")
 	require.Contains(t, err.Error(), "ERROR")
@@ -457,7 +458,7 @@ func TestReadExpectedCommand_MessageFrameNotCommand_ReturnsError(t *testing.T) {
 	// A message frame (flagMore set, no flagCommand).
 	wire := encodeShortFrame(flagMore, []byte("data"))
 	c := connFromBytes(wire)
-	err := c.readExpectedCommand("READY")
+	err := c.readExpectedCommand(context.Background(), "READY")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "command frame")
 }
@@ -467,13 +468,13 @@ func TestReadExpectedCommand_MalformedCommandBody_ReturnsError(t *testing.T) {
 	// A command frame whose body is empty (no nameLen byte).
 	wire := encodeShortFrame(flagCommand, nil)
 	c := connFromBytes(wire)
-	require.Error(t, c.readExpectedCommand("READY"))
+	require.Error(t, c.readExpectedCommand(context.Background(), "READY"))
 }
 
 func TestReadExpectedCommand_EmptyReader_ReturnsError(t *testing.T) {
 	t.Parallel()
 	c := connFromBytes(nil)
-	require.Error(t, c.readExpectedCommand("READY"))
+	require.Error(t, c.readExpectedCommand(context.Background(), "READY"))
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -510,7 +511,7 @@ func TestHandleIncomingCommand_PING_SendsCorrectPONG(t *testing.T) {
 		received <- buf[:n]
 	}()
 
-	err := c.handleIncomingCommand(pingBody)
+	err := c.handleIncomingCommand(context.Background(), pingBody)
 	require.NoError(t, err)
 
 	got := <-received
@@ -540,7 +541,7 @@ func TestHandleIncomingCommand_PING_NoContext_SendsEmptyPONG(t *testing.T) {
 		received <- buf[:n]
 	}()
 
-	require.NoError(t, c.handleIncomingCommand(pingBody))
+	require.NoError(t, c.handleIncomingCommand(context.Background(), pingBody))
 	require.Equal(t, want, <-received, "PONG for TTL-only PING must have empty context")
 }
 
@@ -565,7 +566,7 @@ func TestHandleIncomingCommand_PING_TruncatedTTL_SendsEmptyPONG(t *testing.T) {
 		received <- buf[:n]
 	}()
 
-	require.NoError(t, c.handleIncomingCommand(pingBody))
+	require.NoError(t, c.handleIncomingCommand(context.Background(), pingBody))
 	require.Equal(t, want, <-received, "truncated PING must produce empty PONG context")
 }
 
@@ -580,7 +581,7 @@ func TestHandleIncomingCommand_NonPING_ReturnsNilAndWritesNothing(t *testing.T) 
 
 	// ERROR command — should be silently ignored.
 	errorBody := []byte{5, 'E', 'R', 'R', 'O', 'R', 'x'}
-	err := c.handleIncomingCommand(errorBody)
+	err := c.handleIncomingCommand(context.Background(), errorBody)
 	require.NoError(t, err)
 
 	// Verify nothing was written to the wire.
@@ -605,7 +606,7 @@ func TestHandleIncomingCommand_MalformedBody_ReturnsNil(t *testing.T) {
 		{},
 		{5, 'P', 'I'}, // nameLen=5 but only 2 name bytes
 	} {
-		err := c.handleIncomingCommand(body)
+		err := c.handleIncomingCommand(context.Background(), body)
 		require.NoError(t, err, "malformed body must return nil without panicking")
 	}
 }
@@ -617,5 +618,5 @@ func TestHandleIncomingCommand_SUBSCRIBE_ReturnsNil(t *testing.T) {
 	// not the publisher). No tcp write needed.
 	c := &zmtpConn{}
 	body := []byte{9, 'S', 'U', 'B', 'S', 'C', 'R', 'I', 'B', 'E'}
-	require.NoError(t, c.handleIncomingCommand(body))
+	require.NoError(t, c.handleIncomingCommand(context.Background(), body))
 }

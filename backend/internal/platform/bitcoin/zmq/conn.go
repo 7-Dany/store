@@ -92,11 +92,19 @@ type zmtpConn struct {
 func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, error) {
 	host := strings.TrimPrefix(endpoint, "tcp://")
 
+	logger.Debug(ctx, "zmq: dialing ZMTP endpoint",
+		"endpoint", endpoint, "topic", string(topic))
+
 	d := net.Dialer{Timeout: zmtpDialTimeout}
 	tcp, err := d.DialContext(ctx, "tcp", host)
 	if err != nil {
+		logger.Debug(ctx, "zmq: TCP dial failed",
+			"endpoint", endpoint, "error", err)
 		return nil, fmt.Errorf("dial %s: %w", endpoint, err)
 	}
+
+	logger.Debug(ctx, "zmq: TCP connection established",
+		"endpoint", endpoint, "local", tcp.LocalAddr(), "remote", tcp.RemoteAddr())
 
 	// TCP_NODELAY: our frames are tiny (< 50 bytes each). Disabling Nagle
 	// ensures they are sent immediately rather than coalesced, keeping
@@ -107,11 +115,15 @@ func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, er
 
 	c := &zmtpConn{tcp: tcp, r: bufio.NewReaderSize(tcp, zmtpReadBuf)}
 
-	if err := c.handshake(topic); err != nil {
+	if err := c.handshake(ctx, topic); err != nil {
+		logger.Debug(ctx, "zmq: ZMTP handshake failed",
+			"endpoint", endpoint, "error", err)
 		tcp.Close()
 		return nil, fmt.Errorf("handshake with %s: %w", endpoint, err)
 	}
 
+	logger.Debug(ctx, "zmq: ZMTP handshake complete — connection ready",
+		"endpoint", endpoint, "topic", string(topic))
 	return c, nil
 }
 
@@ -132,8 +144,10 @@ func (c *zmtpConn) RecvMessage(ctx context.Context) ([][]byte, error) {
 	for {
 		c.tcp.SetReadDeadline(time.Now().Add(zmtpReadPoll))
 
-		msg, err := c.readMessage()
+		msg, err := c.readMessage(ctx)
 		if err == nil {
+			logger.Debug(ctx, "zmq: message received",
+				"frames", len(msg))
 			return msg, nil
 		}
 
@@ -141,12 +155,14 @@ func (c *zmtpConn) RecvMessage(ctx context.Context) ([][]byte, error) {
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
 			if ctx.Err() != nil {
+				logger.Debug(ctx, "zmq: RecvMessage: context cancelled during poll")
 				return nil, ctx.Err()
 			}
 			// Deadline elapsed but context is still live — poll again.
 			continue
 		}
 
+		logger.Debug(ctx, "zmq: RecvMessage: read error", "error", err)
 		return nil, err
 	}
 }
@@ -164,7 +180,7 @@ func (c *zmtpConn) Close() error {
 //  3. Send SUBSCRIBE command for topic.
 //
 // The handshake runs under zmtpHandshakeTimeout from start to finish.
-func (c *zmtpConn) handshake(topic []byte) error {
+func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 	c.tcp.SetDeadline(time.Now().Add(zmtpHandshakeTimeout))
 	defer c.tcp.SetDeadline(time.Time{}) // clear deadline — RecvMessage manages its own
 
@@ -172,25 +188,31 @@ func (c *zmtpConn) handshake(topic []byte) error {
 	// ZMTP requires both sides to send simultaneously; in practice, with TCP
 	// buffering and 64-byte greetings, sending then reading is safe and avoids
 	// the complexity of concurrent goroutines during setup.
+	logger.Debug(ctx, "zmq: handshake step 1 -- sending greeting")
 	if _, err := c.tcp.Write(buildGreeting()); err != nil {
 		return fmt.Errorf("send greeting: %w", err)
 	}
-	if err := c.readAndValidateGreeting(); err != nil {
+	if err := c.readAndValidateGreeting(ctx); err != nil {
 		return fmt.Errorf("read greeting: %w", err)
 	}
+	logger.Debug(ctx, "zmq: handshake step 1 -- greeting exchanged OK")
 
 	// ── Step 2: exchange READY commands ──────────────────────────────────
+	logger.Debug(ctx, "zmq: handshake step 2 -- sending READY SUB")
 	if _, err := c.tcp.Write(buildReady("SUB")); err != nil {
 		return fmt.Errorf("send READY: %w", err)
 	}
-	if err := c.readExpectedCommand("READY"); err != nil {
+	if err := c.readExpectedCommand(ctx, "READY"); err != nil {
 		return fmt.Errorf("read READY: %w", err)
 	}
+	logger.Debug(ctx, "zmq: handshake step 2 -- READY exchanged OK")
 
 	// ── Step 3: subscribe ─────────────────────────────────────────────────
+	logger.Debug(ctx, "zmq: handshake step 3 -- sending SUBSCRIBE", "topic", string(topic))
 	if _, err := c.tcp.Write(buildSubscribe(topic)); err != nil {
 		return fmt.Errorf("send SUBSCRIBE: %w", err)
 	}
+	logger.Debug(ctx, "zmq: handshake step 3 -- SUBSCRIBE sent OK")
 
 	return nil
 }
@@ -200,16 +222,16 @@ func (c *zmtpConn) handshake(topic []byte) error {
 // readMessage reads frames until it has assembled a complete multipart message
 // (the last frame has MORE=0). Intervening command frames are handled in-place:
 // PING is answered with PONG; all others are ignored.
-func (c *zmtpConn) readMessage() ([][]byte, error) {
+func (c *zmtpConn) readMessage(ctx context.Context) ([][]byte, error) {
 	var frames [][]byte
 	for {
-		flags, body, err := c.readFrame()
+		flags, body, err := c.readFrame(ctx)
 		if err != nil {
 			return nil, err
 		}
 
 		if flags&flagCommand != 0 {
-			if err := c.handleIncomingCommand(body); err != nil {
+			if err := c.handleIncomingCommand(ctx, body); err != nil {
 				return nil, fmt.Errorf("handle command: %w", err)
 			}
 			continue
@@ -224,7 +246,7 @@ func (c *zmtpConn) readMessage() ([][]byte, error) {
 
 // readFrame reads exactly one ZMTP frame from the connection.
 // Returns the flags byte and the body bytes.
-func (c *zmtpConn) readFrame() (flags byte, body []byte, err error) {
+func (c *zmtpConn) readFrame(ctx context.Context) (flags byte, body []byte, err error) {
 	flags, err = c.r.ReadByte()
 	if err != nil {
 		return 0, nil, fmt.Errorf("read flags byte: %w", err)
@@ -257,6 +279,11 @@ func (c *zmtpConn) readFrame() (flags byte, body []byte, err error) {
 		return 0, nil, fmt.Errorf("read frame body (%d bytes): %w", bodyLen, err)
 	}
 
+	logger.Debug(ctx, "zmq: frame read",
+		"flags", fmt.Sprintf("0x%02x", flags),
+		"is_command", flags&flagCommand != 0,
+		"has_more", flags&flagMore != 0,
+		"body_len", bodyLen)
 	return flags, body, nil
 }
 
@@ -264,11 +291,13 @@ func (c *zmtpConn) readFrame() (flags byte, body []byte, err error) {
 // PING is answered with PONG (ZMTP 3.1 heartbeat, §4). All other commands
 // are silently ignored — Bitcoin Core does not currently send any others during
 // normal operation, but future ZeroMQ versions may add new ones.
-func (c *zmtpConn) handleIncomingCommand(body []byte) error {
+func (c *zmtpConn) handleIncomingCommand(ctx context.Context, body []byte) error {
 	name, data, ok := parseCommandBody(body)
 	if !ok {
+		logger.Debug(ctx, "zmq: received malformed command frame -- skipping")
 		return nil // malformed but harmless — skip
 	}
+	logger.Debug(ctx, "zmq: incoming command frame", "command", name, "data_len", len(data))
 	if name == "PING" {
 		// ZMTP 3.1 §4: PONG must echo the ping context only — NOT the
 		// 2-byte TTL field that precedes it in the PING body.
@@ -283,6 +312,7 @@ func (c *zmtpConn) handleIncomingCommand(body []byte) error {
 		if len(data) >= 2 {
 			pongContext = data[2:] // skip TTL, echo context only
 		}
+		logger.Debug(ctx, "zmq: sending PONG", "context_len", len(pongContext))
 		_, err := c.tcp.Write(buildCommand("PONG", pongContext))
 		return err
 	}
@@ -292,51 +322,71 @@ func (c *zmtpConn) handleIncomingCommand(body []byte) error {
 
 // readAndValidateGreeting reads the server's 64-byte greeting and validates
 // the ZMTP signature, major version, and security mechanism.
-func (c *zmtpConn) readAndValidateGreeting() error {
+func (c *zmtpConn) readAndValidateGreeting(ctx context.Context) error {
+	logger.Debug(ctx, "zmq: readAndValidateGreeting: reading 64-byte greeting")
 	var g [64]byte
 	if _, err := io.ReadFull(c.r, g[:]); err != nil {
+		logger.Debug(ctx, "zmq: readAndValidateGreeting: short read", "error", err)
 		return fmt.Errorf("read: %w", err)
 	}
 
 	// Validate ZMTP signature: 0xFF ... 0x7F
 	if g[0] != 0xFF || g[9] != 0x7F {
+		logger.Warn(ctx, "zmq: readAndValidateGreeting: invalid ZMTP signature -- possible non-ZMTP server or corrupt stream",
+			"byte0", fmt.Sprintf("%02x", g[0]), "byte9", fmt.Sprintf("%02x", g[9]),
+			"expected_byte0", "ff", "expected_byte9", "7f")
 		return fmt.Errorf("invalid ZMTP signature (byte[0]=%02x byte[9]=%02x; expected 0xff...0x7f)",
 			g[0], g[9])
 	}
 
 	// Require ZMTP major version 3+.
 	if g[10] < 3 {
+		logger.Warn(ctx, "zmq: readAndValidateGreeting: server ZMTP major version too old",
+			"server_major", g[10], "required_minimum", 3)
 		return fmt.Errorf("server ZMTP major version %d is too old (need ≥ 3)", g[10])
 	}
 
 	// Require NULL security mechanism — the only mechanism Bitcoin Core uses.
 	mech := strings.TrimRight(string(g[12:32]), "\x00")
 	if mech != "NULL" {
+		logger.Warn(ctx, "zmq: readAndValidateGreeting: unsupported security mechanism -- Bitcoin Core always uses NULL; check zmq endpoint config",
+			"server_mechanism", mech, "required_mechanism", "NULL")
 		return fmt.Errorf("server advertises %q security; only NULL is supported "+
 			"(Bitcoin Core always uses NULL — check zmq endpoint config)", mech)
 	}
 
+	logger.Debug(ctx, "zmq: readAndValidateGreeting: greeting valid",
+		"major", g[10], "minor", g[11], "mechanism", mech)
 	return nil
 }
 
 // readExpectedCommand reads one command frame and verifies its name.
 // Used to consume the server's READY command during the handshake.
-func (c *zmtpConn) readExpectedCommand(want string) error {
-	flags, body, err := c.readFrame()
+func (c *zmtpConn) readExpectedCommand(ctx context.Context, want string) error {
+	logger.Debug(ctx, "zmq: readExpectedCommand: awaiting command frame", "want", want)
+	flags, body, err := c.readFrame(ctx)
 	if err != nil {
+		logger.Debug(ctx, "zmq: readExpectedCommand: frame read failed", "want", want, "error", err)
 		return err
 	}
 	if flags&flagCommand == 0 {
+		logger.Warn(ctx, "zmq: readExpectedCommand: received message frame instead of command frame -- server may not be a ZeroMQ PUB socket",
+			"want", want, "flags", fmt.Sprintf("0x%02x", flags))
 		return fmt.Errorf("expected ZMTP command frame, got message frame (flags=0x%02x) — "+
 			"server may not be a ZeroMQ PUB socket", flags)
 	}
 	name, _, ok := parseCommandBody(body)
 	if !ok {
+		logger.Warn(ctx, "zmq: readExpectedCommand: malformed command body",
+			"want", want, "body_len", len(body))
 		return fmt.Errorf("malformed command frame body (length %d)", len(body))
 	}
 	if name != want {
+		logger.Warn(ctx, "zmq: readExpectedCommand: unexpected command name -- possible protocol mismatch",
+			"want", want, "got", name)
 		return fmt.Errorf("expected %q command, got %q", want, name)
 	}
+	logger.Debug(ctx, "zmq: readExpectedCommand: OK", "name", name)
 	return nil
 }
 

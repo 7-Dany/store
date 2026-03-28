@@ -3,6 +3,7 @@ package password_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,14 @@ import (
 	authsharedtest "github.com/7-Dany/store/backend/internal/domain/auth/shared/testutil"
 	"github.com/stretchr/testify/require"
 )
+
+// dummyHashCounterMu serialises the two subtests that assert on the global
+// GetDummyOTPHash call counter. Because those subtests live in different parent
+// test functions (both marked t.Parallel()), they can run concurrently and
+// each other's service call would corrupt the expected delta of exactly +1.
+// Holding this mutex for the capture→assert window prevents the race without
+// changing the parallelism of every other subtest in the suite.
+var dummyHashCounterMu sync.Mutex
 
 // makeServiceToken returns a VerificationToken valid for checkFn tests.
 // The code hash is computed via authsharedtest.MustHashOTPCode, which uses
@@ -62,6 +71,8 @@ func TestService_RequestPasswordReset(t *testing.T) {
 
 	t.Run("unknown email returns zero result and nil error (timing invariant)", func(t *testing.T) {
 		t.Parallel()
+		dummyHashCounterMu.Lock()
+		defer dummyHashCounterMu.Unlock()
 		before := authshared.GetDummyOTPHashCallCount()
 		resetTxCalled := false
 		store := &authsharedtest.PasswordFakeStorer{
@@ -782,6 +793,8 @@ func TestService_VerifyResetCode(t *testing.T) {
 
 	t.Run("token not found calls dummy hash and returns ErrTokenNotFound", func(t *testing.T) {
 		t.Parallel()
+		dummyHashCounterMu.Lock()
+		defer dummyHashCounterMu.Unlock()
 		before := authshared.GetDummyOTPHashCallCount()
 		store := &authsharedtest.PasswordFakeStorer{
 			GetPasswordResetTokenForVerifyFn: func(_ context.Context, _ string) (authshared.VerificationToken, error) {

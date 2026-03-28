@@ -128,12 +128,17 @@ func newRouter(ctx context.Context, deps *app.Deps, registry *telemetry.Registry
 		// The full check runs DB, Redis, ZMQ, and RPC probes in parallel (2 s
 		// deadline) and returns 200 when all services are up, 503 when any is down.
 		// See server/health.go for probe implementations.
+		// Health is intentionally outside the maintenance group so it remains
+		// reachable (load-balancer probes, Next.js health-ping) during maintenance.
 		r.With(healthLimiter.Limit).Get("/health", handleHealth(deps))
 
-		// Maintenance mode: return 503 for all API routes except health
-		r.Use(maintenanceMiddleware(deps.MaintenanceMode))
-
-		domain.Mount(ctx, r, deps)
+		// Maintenance mode: return 503 for all API routes except health.
+		// Wrapped in a sub-group so the Use() call precedes any route
+		// registrations on that mux (chi panics otherwise).
+		r.Group(func(r chi.Router) {
+			r.Use(maintenanceMiddleware(deps.MaintenanceMode))
+			domain.Mount(ctx, r, deps)
+		})
 	})
 
 	return r

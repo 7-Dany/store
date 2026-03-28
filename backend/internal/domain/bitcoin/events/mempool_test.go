@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -401,7 +402,17 @@ func TestMempoolTracker_HandleBlockEvent_EmitsNewBlock(t *testing.T) {
 	assert.Equal(t, float64(42), payload["height"])
 }
 
-func TestMempoolTracker_HandleBlockEvent_RPCHeaderError_NoEvents(t *testing.T) {
+// TestMempoolTracker_HandleBlockEvent_RPCHeaderError_EmitsDegradedNewBlock verifies
+// the degraded fallback: when GetBlockHeader returns -5 on every attempt and
+// BlockRPCTimeout expires, HandleBlockEvent must still emit a new_block event
+// with height=0 so connected SSE clients are notified of the block.
+//
+// This test uses a short BlockRPCTimeout to bound the retry window to ~350 ms.
+//
+// Previously this test was named "RPCHeaderError_NoEvents" and asserted that ALL
+// events were suppressed — which was the exact bug. That assertion let the bug
+// ship silently because the test validated the broken behaviour.
+func TestMempoolTracker_HandleBlockEvent_RPCHeaderError_EmitsDegradedNewBlock(t *testing.T) {
 	t.Parallel()
 	broker := NewBroker(10, nil)
 	ch, _ := broker.Subscribe("user-1")
@@ -412,11 +423,101 @@ func TestMempoolTracker_HandleBlockEvent_RPCHeaderError_NoEvents(t *testing.T) {
 		},
 	}
 
+	cfg := testTrackerCfg()
+	cfg.BlockRPCTimeout = 350 * time.Millisecond // short timeout: ~2 retries then context expires
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	tracker := NewMempoolTracker(ctx, &localFakeStorer{}, broker, rpcClient, nil, cfg)
+	tracker.HandleBlockEvent(context.Background(), makeBlockEvent(testBlockHash))
+
+	events := drainEvents(ch, 1, 2*time.Second)
+	require.Len(t, events, 1, "degraded new_block must be emitted even when GetBlockHeader always fails")
+	assert.Equal(t, "new_block", events[0].Type)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(events[0].Payload, &payload))
+	assert.Equal(t, float64(0), payload["height"], "degraded event must have height=0")
+	assert.Equal(t, testBlockHash, payload["hash"], "degraded event must carry the correct block hash")
+	assert.NotZero(t, payload["time"], "degraded event must carry a non-zero timestamp")
+}
+
+// TestMempoolTracker_HandleBlockEvent_ZMQRPCTimingRace_SucceedsOnRetry verifies
+// that the ZMQ/RPC race window is closed: when GetBlockHeader returns -5 on the
+// first call (block not yet committed to the index) but succeeds on the second,
+// HandleBlockEvent must emit a full new_block event with the correct height.
+//
+// This is the exact failure mode observed in production: Bitcoin Core fires the
+// ZMQ hashblock notification from UpdateTip before the block index is updated.
+func TestMempoolTracker_HandleBlockEvent_ZMQRPCTimingRace_SucceedsOnRetry(t *testing.T) {
+	t.Parallel()
+	broker := NewBroker(10, nil)
+	ch, _ := broker.Subscribe("user-1")
+
+	var callCount int32
+	rpcClient := &fakeRPCClient{
+		GetBlockHeaderFn: func(_ context.Context, _ string) (rpc.BlockHeader, error) {
+			n := atomic.AddInt32(&callCount, 1)
+			if n == 1 {
+				// First call: ZMQ fired before block index was updated.
+				return rpc.BlockHeader{}, rpcErrNotFound("block not found")
+			}
+			// Subsequent calls: block index is now ready.
+			return rpc.BlockHeader{Height: 127672, Hash: testBlockHash, Time: 1700000000}, nil
+		},
+		GetBlockFn: func(_ context.Context, _ string, _ int) (json.RawMessage, error) {
+			return json.RawMessage(`{"tx":[]}`), nil
+		},
+	}
+
 	tracker := newTestTracker(t, &localFakeStorer{}, broker, rpcClient)
 	tracker.HandleBlockEvent(context.Background(), makeBlockEvent(testBlockHash))
 
-	events := drainEvents(ch, 1, 100*time.Millisecond)
-	assert.Empty(t, events, "RPC header error must suppress all events")
+	events := drainEvents(ch, 1, 2*time.Second)
+	require.Len(t, events, 1, "must emit new_block after retry succeeds")
+	assert.Equal(t, "new_block", events[0].Type)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(events[0].Payload, &payload))
+	assert.Equal(t, float64(127672), payload["height"], "full event must carry the height returned by RPC")
+	assert.Equal(t, testBlockHash, payload["hash"])
+
+	assert.GreaterOrEqual(t, atomic.LoadInt32(&callCount), int32(2),
+		"GetBlockHeader must have been called at least twice (first fails, second succeeds)")
+}
+
+// TestMempoolTracker_HandleBlockEvent_NonTransientRPCError_EmitsDegradedNewBlock
+// verifies that non-404 RPC errors (e.g. pruned block, code -1) are NOT retried
+// by the -5 retry loop and still produce a degraded new_block event immediately,
+// with exactly one call to GetBlockHeader.
+func TestMempoolTracker_HandleBlockEvent_NonTransientRPCError_EmitsDegradedNewBlock(t *testing.T) {
+	t.Parallel()
+	broker := NewBroker(10, nil)
+	ch, _ := broker.Subscribe("user-1")
+
+	var callCount int32
+	rpcClient := &fakeRPCClient{
+		GetBlockHeaderFn: func(_ context.Context, _ string) (rpc.BlockHeader, error) {
+			atomic.AddInt32(&callCount, 1)
+			// Code -1 (pruned block) — not a -5, so the retry loop must not retry.
+			return rpc.BlockHeader{}, &rpc.RPCError{Code: -1, Message: "Block not available (pruned data)"}
+		},
+	}
+
+	tracker := newTestTracker(t, &localFakeStorer{}, broker, rpcClient)
+	tracker.HandleBlockEvent(context.Background(), makeBlockEvent(testBlockHash))
+
+	events := drainEvents(ch, 1, time.Second)
+	require.Len(t, events, 1, "degraded new_block must be emitted on non-transient RPC error")
+	assert.Equal(t, "new_block", events[0].Type)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(events[0].Payload, &payload))
+	assert.Equal(t, float64(0), payload["height"], "degraded event must have height=0")
+	assert.Equal(t, testBlockHash, payload["hash"])
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&callCount),
+		"non-transient RPC error must not trigger retries — exactly one call expected")
 }
 
 func TestMempoolTracker_HandleBlockEvent_ConfirmedTx_EmitsConfirmedTxAndRemovesFromPending(t *testing.T) {

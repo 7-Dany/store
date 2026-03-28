@@ -77,6 +77,36 @@ sql:
         # Type Overrides
         # Override default type mappings for specific columns
         overrides:
+          # BIGSERIAL id columns — must be listed BEFORE the *.id wildcard so
+          # sqlc picks the more-specific override. The wildcard maps every
+          # other "id" column (UUID primary keys) to uuid.UUID.
+          - column: "btc_exchange_rate_log.id"
+            go_type: "int64"
+          - column: "invoice_addresses.id"
+            go_type: "int64"
+          - column: "invoice_address_monitoring.id"
+            go_type: "int64"
+          - column: "invoice_payments.id"
+            go_type: "int64"
+          - column: "btc_outage_log.id"
+            go_type: "int64"
+          - column: "financial_audit_events.id"
+            go_type: "int64"
+          - column: "wallet_backup_success.id"
+            go_type: "int64"
+          - column: "ops_audit_log.id"
+            go_type: "int64"
+          - column: "btc_tier_config_history.id"
+            go_type: "int64"
+          - column: "vendor_wallet_config_history.id"
+            go_type: "int64"
+          - column: "reconciliation_run_history.id"
+            go_type: "int64"
+          - column: "sse_token_issuances.id"
+            go_type: "int64"
+          - column: "btc_zmq_dead_letter.id"
+            go_type: "int64"
+
           # UUID columns
           - column: "*.id"
             go_type:
@@ -150,6 +180,21 @@ sql:
         emit_all_enum_values: true
         json_tags_case_style: "snake"
         overrides:
+          # BIGSERIAL id columns — same pattern as the main block above
+          - column: "sse_token_issuances.id"
+            go_type: "int64"
+          - column: "reconciliation_run_history.id"
+            go_type: "int64"
+          - column: "btc_zmq_dead_letter.id"
+            go_type: "int64"
+          - column: "btc_tier_config_history.id"
+            go_type: "int64"
+          - column: "vendor_wallet_config_history.id"
+            go_type: "int64"
+          - column: "btc_outage_log.id"
+            go_type: "int64"
+
+          # UUID columns
           - column: "*.id"
             go_type:
               import: "github.com/google/uuid"

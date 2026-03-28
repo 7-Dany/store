@@ -142,22 +142,30 @@ func NewHandler(
 //     3–7. service.IssueToken
 //  8. Set-Cookie: btc_sse_jti; respond 204
 func (h *Handler) IssueToken(w http.ResponseWriter, r *http.Request) {
+	clientIP := respond.ClientIP(r)
+
 	// Step 1: auth guard — JWTAuth middleware populates context; handler reads it.
 	userID, ok := token.UserIDFromContext(r.Context())
 	if !ok {
+		log.Warn(r.Context(), "events.IssueToken: missing auth context — JWTAuth middleware may not be wired",
+			"source_ip", clientIP)
 		respond.Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
 		return
 	}
 
 	uid, err := uuid.Parse(userID)
 	if err != nil {
+		log.Warn(r.Context(), "events.IssueToken: user_id in JWT context is not a valid UUID",
+			"user_id", userID, "source_ip", clientIP, "error", err)
 		respond.Error(w, http.StatusUnauthorized, "unauthorized", "invalid user ID")
 		return
 	}
 
 	// SessionID is injected by the auth middleware alongside userID.
 	sessionID, _ := token.SessionIDFromContext(r.Context())
-	clientIP := respond.ClientIP(r)
+
+	log.Info(r.Context(), "events.IssueToken: issuing SSE one-time token",
+		"user_id", userID, "source_ip", clientIP)
 
 	result, err := h.svc.IssueToken(r.Context(), IssueTokenInput{
 		VendorID:  [16]byte(uid),
@@ -167,13 +175,19 @@ func (h *Handler) IssueToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrSSERedisUnavailable):
+			log.Error(r.Context(), "events.IssueToken: Redis unavailable — cannot store session binding",
+				"user_id", userID, "source_ip", clientIP, "error", err)
 			respond.Error(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable")
 		default:
-			log.Error(r.Context(), "events.IssueToken: unexpected error", "error", err)
+			log.Error(r.Context(), "events.IssueToken: unexpected error",
+				"user_id", userID, "source_ip", clientIP, "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
 	}
+
+	log.Info(r.Context(), "events.IssueToken: token issued OK",
+		"user_id", userID, "source_ip", clientIP, "ttl_seconds", result.MaxAge)
 
 	// Set the SSE cookie — HttpOnly, SameSite=Strict, scoped to the events path.
 	http.SetCookie(w, &http.Cookie{
@@ -206,21 +220,32 @@ func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 	clientIP := respond.ClientIP(r)
 	startTime := time.Now()
 
+	log.Info(r.Context(), "events.Events: SSE connection attempt",
+		"source_ip", clientIP,
+		"origin", r.Header.Get("Origin"),
+		"user_agent", r.Header.Get("User-Agent"))
+
 	// Step 2: origin check — must run before any JWT / Redis I/O to avoid
 	// leaking timing or error information to cross-origin requests.
 	origin := r.Header.Get("Origin")
 	if origin == "" {
+		log.Warn(r.Context(), "events.Events: step 2 FAIL — Origin header missing",
+			"source_ip", clientIP)
 		_ = h.svc.WriteAuditLog(r.Context(), audit.EventBitcoinSSETokenConsumeFailure, "",
 			map[string]any{"reason": "missing_origin", "source_ip": clientIP})
 		respond.Error(w, http.StatusForbidden, "forbidden", "missing Origin header")
 		return
 	}
 	if _, allowed := h.allowedOrigins[origin]; !allowed {
+		log.Warn(r.Context(), "events.Events: step 2 FAIL — Origin not in allow-list",
+			"origin", origin, "source_ip", clientIP)
 		_ = h.svc.WriteAuditLog(r.Context(), audit.EventBitcoinSSETokenConsumeFailure, "",
 			map[string]any{"reason": "bad_origin", "origin": origin, "source_ip": clientIP})
 		respond.Error(w, http.StatusForbidden, "forbidden", "origin not permitted")
 		return
 	}
+	log.Info(r.Context(), "events.Events: step 2 OK — origin accepted",
+		"origin", origin, "source_ip", clientIP)
 
 	// doCleanup — called exactly once via sync.Once regardless of exit path.
 	// acquired / subscribed flags prevent double-release when a guard exits
@@ -257,6 +282,8 @@ func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 	// Steps 3–7: parse + verify the SSE cookie JWT, consume JTI.
 	cookie, cookieErr := r.Cookie(sseCookieName)
 	if cookieErr != nil {
+		log.Warn(r.Context(), "events.Events: steps 3-7 FAIL — SSE cookie missing",
+			"cookie_name", sseCookieName, "source_ip", clientIP)
 		_ = h.svc.WriteAuditLog(r.Context(), audit.EventBitcoinSSETokenConsumeFailure, "",
 			map[string]any{"reason": "missing_cookie", "source_ip": clientIP})
 		respond.Error(w, http.StatusUnauthorized, "unauthorized", "SSE token cookie missing")
@@ -270,61 +297,117 @@ func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrSSETokenInvalid):
+			log.Warn(r.Context(), "events.Events: steps 3-7 FAIL — token invalid or already consumed",
+				"source_ip", clientIP)
 			respond.Error(w, http.StatusUnauthorized, "unauthorized", "token invalid or expired")
 		case errors.Is(err, ErrSSETokenExpired):
+			log.Warn(r.Context(), "events.Events: steps 3-7 FAIL — token session binding expired in Redis",
+				"source_ip", clientIP)
 			respond.Error(w, http.StatusUnauthorized, "unauthorized", "token session binding expired — request a new token")
 		case errors.Is(err, ErrSSESIDMismatch):
+			log.Warn(r.Context(), "events.Events: steps 3-7 FAIL — SID HMAC mismatch (possible token theft or session rotation)",
+				"source_ip", clientIP)
 			respond.Error(w, http.StatusUnauthorized, "sid_mismatch", "session binding mismatch")
 		case errors.Is(err, ErrSSEIPMismatch):
+			log.Warn(r.Context(), "events.Events: steps 3-7 FAIL — IP subnet mismatch",
+				"source_ip", clientIP)
 			respond.Error(w, http.StatusUnauthorized, "ip_mismatch", "IP binding mismatch")
 		case errors.Is(err, ErrSSECapExceeded):
+			log.Warn(r.Context(), "events.Events: steps 3-7 FAIL — per-user connection cap exceeded",
+				"source_ip", clientIP)
 			respond.Error(w, http.StatusTooManyRequests, "user_connection_limit", "per-user connection limit reached")
 		default:
+			log.Error(r.Context(), "events.Events: steps 3-7 FAIL — Redis unavailable during token verification",
+				"source_ip", clientIP, "error", err)
 			respond.Error(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable")
 		}
 		return
 	}
 	userID = verified.UserID
+	log.Info(r.Context(), "events.Events: steps 3-7 OK — token verified and consumed",
+		"user_id", userID, "source_ip", clientIP)
 
 	// Step 8: acquire connection slot.
 	if err := h.svc.AcquireSlot(r.Context(), userID); err != nil {
 		switch {
 		case errors.Is(err, ErrSSECapExceeded):
+			log.Warn(r.Context(), "events.Events: step 8 FAIL — per-user connection cap exceeded",
+				"user_id", userID, "source_ip", clientIP)
 			respond.Error(w, http.StatusTooManyRequests, "user_connection_limit", "per-user connection limit reached")
 		default:
+			log.Error(r.Context(), "events.Events: step 8 FAIL — Redis unavailable during slot acquisition",
+				"user_id", userID, "source_ip", clientIP, "error", err)
 			respond.Error(w, http.StatusServiceUnavailable, "service_unavailable", "service temporarily unavailable")
 		}
 		return
 	}
 	acquired = true
+	log.Info(r.Context(), "events.Events: step 8 OK — connection slot acquired",
+		"user_id", userID, "source_ip", clientIP)
 
 	// Step 9: subscribe to the broker.
 	ch, err := h.svc.Subscribe(r.Context(), userID)
 	if err != nil {
 		if errors.Is(err, ErrSSEProcessCapReached) {
+			log.Warn(r.Context(), "events.Events: step 9 FAIL — process-wide SSE broker capacity reached",
+				"user_id", userID, "source_ip", clientIP)
 			respond.Error(w, http.StatusServiceUnavailable, "sse_cap_reached", "server SSE capacity reached")
 		} else {
+			log.Error(r.Context(), "events.Events: step 9 FAIL — broker subscribe returned unexpected error",
+				"user_id", userID, "source_ip", clientIP, "error", err)
 			respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		}
 		return
 	}
 	subscribed = true
 	connCh = ch
+	log.Info(r.Context(), "events.Events: step 9 OK — subscribed to SSE broker",
+		"user_id", userID, "source_ip", clientIP)
 
 	// Step 10: ZMQ health gate — checked after subscription so the slot is
 	// released by doCleanup if ZMQ is unhealthy.
 	if err := h.svc.IsZMQRunning(); err != nil {
+		// Pull a full status snapshot so the log shows exactly why IsConnected()
+		// returned false: which socket failed, or whether the idle timeout fired.
+		snap := h.svc.Status(r.Context())
+		log.Error(r.Context(), "events.Events: step 10 FAIL — ZMQ subscriber unhealthy, refusing SSE stream",
+			"user_id", userID,
+			"source_ip", clientIP,
+			"zmq_connected", snap.ZMQConnected,
+			"rpc_connected", snap.RPCConnected,
+			"last_block_hash_age_seconds", snap.LastBlockHashAge,
+			"active_sse_connections", snap.ActiveConnections,
+			"error", err)
 		respond.Error(w, http.StatusInternalServerError, "zmq_unhealthy", "Bitcoin ZMQ subscriber not running")
 		return
 	}
+	log.Info(r.Context(), "events.Events: step 10 OK — ZMQ healthy",
+		"user_id", userID, "source_ip", clientIP)
 
 	// Step 11: verify streaming support + set SSE headers.
 	// The flusher check must happen before WriteHeader — respond.Error calls
 	// are still available here because Content-Type has not been set yet.
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		log.Error(r.Context(), "events.Events: step 11 FAIL — http.ResponseWriter does not implement http.Flusher (wrong server or middleware wrapping)",
+			"user_id", userID, "source_ip", clientIP)
 		respond.Error(w, http.StatusInternalServerError, "internal_error", "streaming not supported")
 		return
+	}
+
+	// Clear the server-level write deadline so the SSE connection can stay
+	// open indefinitely. The http.Server has WriteTimeout: 30s which would
+	// kill the stream after the first ping interval — the same duration as
+	// defaultPingInterval — causing the proxy (Next.js) to receive
+	// UND_ERR_SOCKET and return 500 to the browser.
+	// http.NewResponseController is Go 1.20+ and is always safe to call here
+	// because the flusher check above already confirmed the ResponseWriter is
+	// backed by a real net/http connection.
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		log.Warn(r.Context(), "events.Events: step 11 WARN — could not clear write deadline; SSE may time out at WriteTimeout boundary",
+			"user_id", userID, "source_ip", clientIP, "error", err)
+		// Non-fatal: continue — the stream will work but may be killed after WriteTimeout.
 	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -332,6 +415,9 @@ func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
+
+	log.Info(r.Context(), "events.Events: SSE stream OPEN — all guards passed",
+		"user_id", userID, "source_ip", clientIP, "origin", origin)
 
 	// Step 12: audit — connection established.
 	auditCtx := context.WithoutCancel(r.Context())
@@ -348,18 +434,27 @@ func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 		select {
 		case e, more := <-connCh:
 			if !more {
+				log.Info(r.Context(), "events.Events: broker channel closed — SSE stream ending",
+					"user_id", userID, "source_ip", clientIP)
 				return
 			}
 			if err := writeSSEEvent(w, flusher, e); err != nil {
+				log.Info(r.Context(), "events.Events: write error — client likely disconnected",
+					"user_id", userID, "source_ip", clientIP, "error", err)
 				return // write error → doCleanup fires via defer
 			}
 
 		case <-pingTicker.C:
 			if err := writeSSEPing(w, flusher, h.staticPingFrame); err != nil {
+				log.Info(r.Context(), "events.Events: ping write error — client likely disconnected",
+					"user_id", userID, "source_ip", clientIP, "error", err)
 				return
 			}
 
 		case <-r.Context().Done():
+			log.Info(r.Context(), "events.Events: request context cancelled — SSE stream ending",
+				"user_id", userID, "source_ip", clientIP,
+				"duration_ms", time.Since(startTime).Milliseconds())
 			return
 		}
 	}

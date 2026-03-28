@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"sync/atomic"
 )
 
@@ -17,10 +18,27 @@ var globalRegistry atomic.Pointer[Registry]
 // writes to stdout.
 //
 // Must be called once in server.New before any domain code runs.
+// resolveLogLevel returns the slog level from the LOG_LEVEL environment
+// variable. Accepts "debug", "info", "warn", "error" (case-insensitive).
+// Defaults to Info when the variable is absent or unrecognised.
+func resolveLogLevel() slog.Level {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
 func SetDefault(registry *Registry) {
 	globalRegistry.Store(registry)
+	level := resolveLogLevel()
 	jsonHandler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		Level: level,
 	})
 	slog.SetDefault(slog.New(newTelemetryHandler(jsonHandler, registry)))
 }

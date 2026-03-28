@@ -363,7 +363,7 @@ type CreateInvoiceAddressMonitoringParams struct {
 }
 
 type CreateInvoiceAddressMonitoringRow struct {
-	ID           uuid.UUID           `db:"id" json:"id"`
+	ID           int64               `db:"id" json:"id"`
 	InvoiceID    pgtype.UUID         `db:"invoice_id" json:"invoice_id"`
 	Address      string              `db:"address" json:"address"`
 	Network      string              `db:"network" json:"network"`
@@ -629,7 +629,7 @@ type GetActiveMonitoringByAddressParams struct {
 }
 
 type GetActiveMonitoringByAddressRow struct {
-	ID           uuid.UUID           `db:"id" json:"id"`
+	ID           int64               `db:"id" json:"id"`
 	InvoiceID    pgtype.UUID         `db:"invoice_id" json:"invoice_id"`
 	Address      string              `db:"address" json:"address"`
 	Network      string              `db:"network" json:"network"`
@@ -708,7 +708,7 @@ ORDER BY timestamp DESC
 `
 
 type GetAuditEventsForInvoiceRow struct {
-	ID               uuid.UUID          `db:"id" json:"id"`
+	ID               int64              `db:"id" json:"id"`
 	EventType        string             `db:"event_type" json:"event_type"`
 	Timestamp        pgtype.Timestamptz `db:"timestamp" json:"timestamp"`
 	ActorType        string             `db:"actor_type" json:"actor_type"`
@@ -761,7 +761,7 @@ ORDER BY timestamp DESC
 `
 
 type GetAuditEventsForPayoutRow struct {
-	ID         uuid.UUID          `db:"id" json:"id"`
+	ID         int64              `db:"id" json:"id"`
 	EventType  string             `db:"event_type" json:"event_type"`
 	Timestamp  pgtype.Timestamptz `db:"timestamp" json:"timestamp"`
 	ActorType  string             `db:"actor_type" json:"actor_type"`
@@ -1285,7 +1285,7 @@ type GetLatestExchangeRateParams struct {
 }
 
 type GetLatestExchangeRateRow struct {
-	ID          uuid.UUID          `db:"id" json:"id"`
+	ID          int64              `db:"id" json:"id"`
 	Rate        pgtype.Numeric     `db:"rate" json:"rate"`
 	Source      string             `db:"source" json:"source"`
 	FetchedAt   pgtype.Timestamptz `db:"fetched_at" json:"fetched_at"`
@@ -1333,7 +1333,7 @@ WHERE network  = $1
 `
 
 type GetOpenOutageRow struct {
-	ID        uuid.UUID          `db:"id" json:"id"`
+	ID        int64              `db:"id" json:"id"`
 	Network   string             `db:"network" json:"network"`
 	StartedAt pgtype.Timestamptz `db:"started_at" json:"started_at"`
 }
@@ -1872,7 +1872,7 @@ LIMIT 100
 `
 
 type GetUnresolvedDeadLettersRow struct {
-	ID         uuid.UUID          `db:"id" json:"id"`
+	ID         int64              `db:"id" json:"id"`
 	Network    string             `db:"network" json:"network"`
 	EventType  string             `db:"event_type" json:"event_type"`
 	RawPayload string             `db:"raw_payload" json:"raw_payload"`
@@ -2033,7 +2033,7 @@ type InsertExchangeRateParams struct {
 }
 
 type InsertExchangeRateRow struct {
-	ID           uuid.UUID          `db:"id" json:"id"`
+	ID           int64              `db:"id" json:"id"`
 	Network      string             `db:"network" json:"network"`
 	FiatCurrency string             `db:"fiat_currency" json:"fiat_currency"`
 	Rate         pgtype.Numeric     `db:"rate" json:"rate"`
@@ -2135,7 +2135,7 @@ type InsertFinancialAuditEventParams struct {
 }
 
 type InsertFinancialAuditEventRow struct {
-	ID               uuid.UUID          `db:"id" json:"id"`
+	ID               int64              `db:"id" json:"id"`
 	EventType        string             `db:"event_type" json:"event_type"`
 	Timestamp        pgtype.Timestamptz `db:"timestamp" json:"timestamp"`
 	Network          pgtype.Text        `db:"network" json:"network"`
@@ -2203,7 +2203,7 @@ RETURNING id, network, started_at
 `
 
 type InsertOutageRecordRow struct {
-	ID        uuid.UUID          `db:"id" json:"id"`
+	ID        int64              `db:"id" json:"id"`
 	Network   string             `db:"network" json:"network"`
 	StartedAt pgtype.Timestamptz `db:"started_at" json:"started_at"`
 }
@@ -2228,7 +2228,7 @@ RETURNING id, network, started_at
 `
 
 type InsertReconciliationRunHistoryRow struct {
-	ID        uuid.UUID          `db:"id" json:"id"`
+	ID        int64              `db:"id" json:"id"`
 	Network   string             `db:"network" json:"network"`
 	StartedAt pgtype.Timestamptz `db:"started_at" json:"started_at"`
 }
@@ -2274,7 +2274,7 @@ type InsertSSETokenIssuanceParams struct {
 }
 
 type InsertSSETokenIssuanceRow struct {
-	ID        uuid.UUID          `db:"id" json:"id"`
+	ID        int64              `db:"id" json:"id"`
 	VendorID  pgtype.UUID        `db:"vendor_id" json:"vendor_id"`
 	Network   string             `db:"network" json:"network"`
 	JtiHash   string             `db:"jti_hash" json:"jti_hash"`
@@ -2402,7 +2402,7 @@ type InsertZMQDeadLetterParams struct {
 }
 
 type InsertZMQDeadLetterRow struct {
-	ID         uuid.UUID          `db:"id" json:"id"`
+	ID         int64              `db:"id" json:"id"`
 	Network    string             `db:"network" json:"network"`
 	EventType  string             `db:"event_type" json:"event_type"`
 	RawPayload string             `db:"raw_payload" json:"raw_payload"`

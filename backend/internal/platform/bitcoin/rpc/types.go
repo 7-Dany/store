@@ -40,9 +40,20 @@ func BtcToSat(btc btcRawAmount) (int64, error) {
 
 // BlockHeader is returned by getblockheader.
 type BlockHeader struct {
-	Height int    `json:"height"`
-	Hash   string `json:"hash"`
-	Time   int64  `json:"time"`
+	Confirmations int     `json:"confirmations"`
+	Height        int     `json:"height"`
+	Hash          string  `json:"hash"`
+	Version       int     `json:"version"`
+	MerkleRoot    string  `json:"merkleroot"`
+	Time          int64   `json:"time"`
+	MedianTime    int64   `json:"mediantime"`
+	Nonce         uint32  `json:"nonce"`
+	Bits          string  `json:"bits"`
+	Difficulty    float64 `json:"difficulty"`
+	Chainwork     string  `json:"chainwork"`
+	NTx           int     `json:"nTx"`
+	PreviousBlock string  `json:"previousblockhash"`
+	NextBlock     string  `json:"nextblockhash"`
 }
 
 // BlockchainInfo is returned by getblockchaininfo.

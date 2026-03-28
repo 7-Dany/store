@@ -81,36 +81,39 @@ func (r *testRecorder) connectedValues() []bool {
 // 60s idle timeout. Does not start Run().
 func newTestSubscriber(t *testing.T) *subscriber {
 	t.Helper()
-	s, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", 60*time.Second, nil)
+	iface, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", 60*time.Second, nil)
 	require.NoError(t, err)
-	return s.(*subscriber)
+	sub, ok := iface.(*subscriber)
+	require.True(t, ok)
+	return sub
 }
 
 // newTestSubscriberWithRecorder is like newTestSubscriber but wires a recorder.
 func newTestSubscriberWithRecorder(t *testing.T) (*subscriber, *testRecorder) {
 	t.Helper()
 	rec := &testRecorder{}
-	s, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", 60*time.Second, rec)
+	iface, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", 60*time.Second, rec)
 	require.NoError(t, err)
-	return s.(*subscriber), rec
+	sub, ok := iface.(*subscriber)
+	require.True(t, ok)
+	return sub, rec
 }
 
 // buildZMQMsg constructs a 3-element [][]byte in Bitcoin Core's hashblock/hashtx
 // multipart message format:
 //
 //	[0] topic bytes   ("hashblock" or "hashtx")
-//	[1] 32-byte hash  (ZMQ little-endian, reversed from RPC big-endian)
+//	[1] 32-byte hash  (same byte order used by RPC / explorers)
 //	[2] 4-byte sequence number (little-endian uint32)
 //
-// hashHex must be 64-char big-endian hex (RPC / explorer order).
-func buildZMQMsg(topic string, hashHex string, seq uint32) [][]byte {
-	hashBE, _ := hex.DecodeString(hashHex)
-	var hashLE [32]byte
-	for i, b := range hashBE {
-		hashLE[31-i] = b
+// hashHex must be a 64-char RPC / explorer hash string.
+func buildZMQMsg(topic, hashHex string, seq uint32) [][]byte {
+	hash, err := hex.DecodeString(hashHex)
+	if err != nil {
+		panic(err)
 	}
 	seqBytes := binary.LittleEndian.AppendUint32(nil, seq)
-	return [][]byte{[]byte(topic), hashLE[:], seqBytes}
+	return [][]byte{[]byte(topic), hash, seqBytes}
 }
 
 // buildRawMsg builds a 3-element [][]byte with arbitrary byte slices, used
@@ -123,7 +126,7 @@ func buildRawMsg(topic, hash, seq []byte) [][]byte {
 // updates liveness and sends to blockCh (or drops on full). Used by tests that
 // exercise the full decode path without starting Run().
 func processBlockFrame(sub *subscriber, ctx context.Context, msg [][]byte, state *readerState) error {
-	return sub.processFrame(ctx, msg, []byte("hashblock"), state, func(hash [32]byte, seq uint32) {
+	return sub.processFrame(ctx, msg, []byte("hashblock"), state, func(_ context.Context, hash [32]byte, seq uint32) {
 		event := BlockEvent{Hash: hash, Sequence: seq}
 		sub.live.Store(&liveness{hash: event.HashHex(), at: time.Now()})
 		select {
@@ -137,7 +140,7 @@ func processBlockFrame(sub *subscriber, ctx context.Context, msg [][]byte, state
 // processTxFrame calls processFrame with the standard tx reader onEvent:
 // sends to txCh or drops on full.
 func processTxFrame(sub *subscriber, ctx context.Context, msg [][]byte, state *readerState) error {
-	return sub.processFrame(ctx, msg, []byte("hashtx"), state, func(hash [32]byte, seq uint32) {
+	return sub.processFrame(ctx, msg, []byte("hashtx"), state, func(_ context.Context, hash [32]byte, seq uint32) {
 		event := TxEvent{Hash: hash, Sequence: seq}
 		select {
 		case sub.txCh <- event:
@@ -145,82 +148,6 @@ func processTxFrame(sub *subscriber, ctx context.Context, msg [][]byte, state *r
 			sub.recorder.OnMessageDropped("hwm")
 		}
 	})
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// event.go — HashHex byte-order reversal
-// ═════════════════════════════════════════════════════════════════════════════
-
-// TestBlockEvent_HashHex_ReversesZMQByteOrder verifies that HashHex() returns
-// the hash in RPC/explorer big-endian order, reversing ZMQ's little-endian bytes.
-func TestBlockEvent_HashHex_ReversesZMQByteOrder(t *testing.T) {
-	t.Parallel()
-	const rpcHex = "000000000000000000024bfa6c7805419a31fde7da3cf6517d8bc71b36eb8a5f"
-
-	hashBE, err := hex.DecodeString(rpcHex)
-	require.NoError(t, err)
-	var hashLE [32]byte
-	for i, b := range hashBE {
-		hashLE[31-i] = b
-	}
-
-	e := BlockEvent{Hash: hashLE}
-	require.Equal(t, rpcHex, e.HashHex(),
-		"HashHex() must reverse ZMQ little-endian bytes to match RPC big-endian")
-}
-
-// TestTxEvent_HashHex_ReversesZMQByteOrder mirrors the block test for TxEvent.
-func TestTxEvent_HashHex_ReversesZMQByteOrder(t *testing.T) {
-	t.Parallel()
-	const rpcHex = "a1075db55d416d3ca199f55b6084e2115b9345e16c5cf302fc80e9d5fbf5d48d"
-
-	hashBE, err := hex.DecodeString(rpcHex)
-	require.NoError(t, err)
-	var hashLE [32]byte
-	for i, b := range hashBE {
-		hashLE[31-i] = b
-	}
-
-	e := TxEvent{Hash: hashLE}
-	require.Equal(t, rpcHex, e.HashHex())
-}
-
-// TestBlockEvent_HashHex_DiffersFromRawBytes documents why
-// hex.EncodeToString(e.Hash[:]) is banned by CI lint: it returns the wrong
-// byte order and causes RPC "Block not found" with no other indication.
-func TestBlockEvent_HashHex_DiffersFromRawBytes(t *testing.T) {
-	t.Parallel()
-	const rpcHex = "000000000000000000024bfa6c7805419a31fde7da3cf6517d8bc71b36eb8a5f"
-	hashBE, _ := hex.DecodeString(rpcHex)
-	var hashLE [32]byte
-	for i, b := range hashBE {
-		hashLE[31-i] = b
-	}
-
-	e := BlockEvent{Hash: hashLE}
-	require.NotEqual(t, rpcHex, hex.EncodeToString(e.Hash[:]),
-		"raw bytes (little-endian) must differ from RPC bytes (big-endian)")
-	require.Equal(t, rpcHex, e.HashHex())
-}
-
-// TestHashHex_AllZeroHash verifies that HashHex works on a zero hash (no panic,
-// deterministic output).
-func TestHashHex_AllZeroHash(t *testing.T) {
-	t.Parallel()
-	e := BlockEvent{}
-	require.Equal(t, "0000000000000000000000000000000000000000000000000000000000000000", e.HashHex())
-}
-
-// TestHashHex_AllFFHash verifies HashHex on a max-value hash.
-func TestHashHex_AllFFHash(t *testing.T) {
-	t.Parallel()
-	var hash [32]byte
-	for i := range hash {
-		hash[i] = 0xff
-	}
-	e := BlockEvent{Hash: hash}
-	// Reversed 0xff bytes are still all 0xff.
-	require.Equal(t, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", e.HashHex())
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -255,7 +182,8 @@ func TestNew_NilRecorder_UsesNoop(t *testing.T) {
 	require.NotNil(t, sub)
 	// Type-assert to reach the unexported recorder field (same package, valid in tests).
 	// noopRecorder must not panic on any call.
-	conc := sub.(*subscriber)
+	conc, ok := sub.(*subscriber)
+	require.True(t, ok)
 	require.NotPanics(t, func() {
 		conc.recorder.SetZMQConnected(true)
 		conc.recorder.OnHandlerPanic("x")
@@ -312,18 +240,21 @@ func TestRequireLoopbackTCP(t *testing.T) {
 func TestNew_NonLoopbackEndpoint_PanicsAtConstruction(t *testing.T) {
 	t.Parallel()
 	require.Panics(t, func() {
-		_, _ = New("tcp://0.0.0.0:28332", "tcp://127.0.0.1:28333", 60*time.Second, nil)
+		//nolint:errcheck // This assertion is about the constructor panic, not its returned values.
+		New("tcp://0.0.0.0:28332", "tcp://127.0.0.1:28333", 60*time.Second, nil)
 	}, "non-loopback block endpoint must panic at construction time")
 
 	require.Panics(t, func() {
-		_, _ = New("tcp://127.0.0.1:28332", "tcp://192.168.1.1:28333", 60*time.Second, nil)
+		//nolint:errcheck // This assertion is about the constructor panic, not its returned values.
+		New("tcp://127.0.0.1:28332", "tcp://192.168.1.1:28333", 60*time.Second, nil)
 	}, "non-loopback tx endpoint must panic at construction time")
 }
 
 func TestNew_IPCEndpoint_Panics(t *testing.T) {
 	t.Parallel()
 	require.Panics(t, func() {
-		_, _ = New("ipc:///tmp/block.sock", "tcp://127.0.0.1:28333", 60*time.Second, nil)
+		//nolint:errcheck // This assertion is about the constructor panic, not its returned values.
+		New("ipc:///tmp/block.sock", "tcp://127.0.0.1:28333", 60*time.Second, nil)
 	})
 }
 
@@ -458,7 +389,7 @@ func TestProcessFrame_WrongFrameCount_ReturnsError(t *testing.T) {
 		state := readerState{}
 		err := sub.processFrame(context.Background(),
 			frames, []byte("hashblock"), &state,
-			func([32]byte, uint32) {})
+			func(context.Context, [32]byte, uint32) {})
 		require.Error(t, err, "frame count %d should return error", len(frames))
 		require.Empty(t, sub.blockCh)
 	}
@@ -472,7 +403,7 @@ func TestProcessFrame_WrongTopic_SkippedSilently(t *testing.T) {
 	msg := buildRawMsg([]byte("rawtx"), make([]byte, 32), binary.LittleEndian.AppendUint32(nil, 1))
 	state := readerState{}
 	err := sub.processFrame(context.Background(), msg, []byte("hashblock"), &state,
-		func([32]byte, uint32) {})
+		func(context.Context, [32]byte, uint32) {})
 	require.NoError(t, err, "wrong topic must return nil, not an error")
 	require.Empty(t, sub.blockCh, "wrong-topic message must not reach blockCh")
 }
@@ -489,7 +420,7 @@ func TestProcessFrame_ShortHashFrame_ReturnsError(t *testing.T) {
 		)
 		state := readerState{}
 		err := sub.processFrame(context.Background(), msg, []byte("hashblock"), &state,
-			func([32]byte, uint32) {})
+			func(context.Context, [32]byte, uint32) {})
 		require.Error(t, err, "hash length %d should return error", hashLen)
 	}
 }
@@ -505,7 +436,7 @@ func TestProcessFrame_LongHashFrame_ReturnsError(t *testing.T) {
 	)
 	state := readerState{}
 	err := sub.processFrame(context.Background(), msg, []byte("hashblock"), &state,
-		func([32]byte, uint32) {})
+		func(context.Context, [32]byte, uint32) {})
 	require.Error(t, err)
 }
 
@@ -521,7 +452,7 @@ func TestProcessFrame_ShortSeqFrame_ReturnsError(t *testing.T) {
 		)
 		state := readerState{}
 		err := sub.processFrame(context.Background(), msg, []byte("hashblock"), &state,
-			func([32]byte, uint32) {})
+			func(context.Context, [32]byte, uint32) {})
 		require.Error(t, err, "sequence length %d should return error", seqLen)
 	}
 }
@@ -541,7 +472,7 @@ func TestProcessFrame_ValidMessage_CallsOnEvent(t *testing.T) {
 	called := false
 
 	err := sub.processFrame(context.Background(), msg, []byte("hashblock"), &state,
-		func(hash [32]byte, seq uint32) {
+		func(_ context.Context, hash [32]byte, seq uint32) {
 			gotHash = hash
 			gotSeq = seq
 			called = true
@@ -551,7 +482,7 @@ func TestProcessFrame_ValidMessage_CallsOnEvent(t *testing.T) {
 	require.True(t, called)
 	require.Equal(t, wantSeq, gotSeq)
 	require.Equal(t, rpcHex, BlockEvent{Hash: gotHash}.HashHex(),
-		"onEvent must receive the hash in ZMQ little-endian order, reversible via HashHex()")
+		"onEvent must receive the hash in the same order used by RPC")
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -607,9 +538,12 @@ func TestProcessFrame_SequenceGap_EmitsRecoveryAndMetric(t *testing.T) {
 
 	var recoveryFired atomic.Bool
 	var receivedLastSeq atomic.Uint32
+	var receivedTopic atomic.Pointer[string]
 	sub.RegisterRecoveryHandler(func(_ context.Context, e RecoveryEvent) {
 		recoveryFired.Store(true)
 		receivedLastSeq.Store(e.LastSeenSequence)
+		topic := e.Topic
+		receivedTopic.Store(&topic)
 	})
 
 	state := readerState{}
@@ -624,6 +558,50 @@ func TestProcessFrame_SequenceGap_EmitsRecoveryAndMetric(t *testing.T) {
 	require.True(t, recoveryFired.Load(), "sequence gap must trigger RecoveryEvent")
 	require.Equal(t, uint32(1), receivedLastSeq.Load(),
 		"RecoveryEvent.LastSeenSequence must equal the sequence before the gap")
+	if got := receivedTopic.Load(); got == nil {
+		t.Fatal("RecoveryEvent.Topic must be set")
+	} else {
+		require.Equal(t, "hashblock", *got)
+	}
+	require.Contains(t, rec.droppedReasons(), "sequence_gap")
+}
+
+func TestProcessRawTxFrame_SequenceGap_EmitsRecoveryWithRawtxTopic(t *testing.T) {
+	t.Parallel()
+	sub, rec := newTestSubscriberWithRecorder(t)
+	sub.handlerTimeout = 500 * time.Millisecond
+
+	ctx := t.Context()
+
+	var recoveryFired atomic.Bool
+	var receivedLastSeq atomic.Uint32
+	var receivedTopic atomic.Pointer[string]
+	sub.RegisterRecoveryHandler(func(_ context.Context, e RecoveryEvent) {
+		recoveryFired.Store(true)
+		receivedLastSeq.Store(e.LastSeenSequence)
+		topic := e.Topic
+		receivedTopic.Store(&topic)
+	})
+
+	raw1, err := hex.DecodeString("01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000")
+	require.NoError(t, err)
+	raw2 := append([]byte(nil), raw1...)
+
+	state := readerState{}
+	msg1 := [][]byte{[]byte("rawtx"), raw1, {1, 0, 0, 0}}
+	require.NoError(t, sub.processRawTxFrame(ctx, msg1, &state))
+
+	msg5 := [][]byte{[]byte("rawtx"), raw2, {5, 0, 0, 0}}
+	require.NoError(t, sub.processRawTxFrame(ctx, msg5, &state))
+
+	require.True(t, recoveryFired.Load(), "rawtx sequence gap must trigger RecoveryEvent")
+	require.Equal(t, uint32(1), receivedLastSeq.Load(),
+		"RecoveryEvent.LastSeenSequence must equal the rawtx sequence before the gap")
+	if got := receivedTopic.Load(); got == nil {
+		t.Fatal("RecoveryEvent.Topic must be set for rawtx")
+	} else {
+		require.Equal(t, "rawtx", *got)
+	}
 	require.Contains(t, rec.droppedReasons(), "sequence_gap")
 }
 
@@ -709,7 +687,8 @@ func TestLiveness_AtomicConsistency(t *testing.T) {
 	t.Parallel()
 	sub := newTestSubscriber(t)
 	sub.blockDialOK.Store(true)
-	sub.txDialOK.Store(true)
+	sub.hashtxDialOK.Store(true)
+	sub.rawtxDialOK.Store(true)
 
 	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
@@ -720,7 +699,7 @@ func TestLiveness_AtomicConsistency(t *testing.T) {
 		for ctx.Err() == nil {
 			msg := buildZMQMsg("hashblock", "000000000000000000024bfa6c7805419a31fde7da3cf6517d8bc71b36eb8a5f", seq)
 			state := readerState{lastSeq: seq - 1, lastSeqSeen: seq > 0}
-			_ = processBlockFrame(sub, ctx, msg, &state)
+			require.NoError(t, processBlockFrame(sub, ctx, msg, &state))
 			seq++
 		}
 	}()
@@ -835,7 +814,8 @@ func TestLastHashTime_AtomicConsistency(t *testing.T) {
 	t.Parallel()
 	sub := newTestSubscriber(t)
 	sub.blockDialOK.Store(true)
-	sub.txDialOK.Store(true)
+	sub.hashtxDialOK.Store(true)
+	sub.rawtxDialOK.Store(true)
 
 	// Any non-zero timestamp must be at least 1s before the test starts
 	// to be considered realistic (guards against clock weirdness).
@@ -850,7 +830,7 @@ func TestLastHashTime_AtomicConsistency(t *testing.T) {
 		for ctx.Err() == nil {
 			msg := buildZMQMsg("hashblock", "000000000000000000024bfa6c7805419a31fde7da3cf6517d8bc71b36eb8a5f", seq)
 			state := readerState{lastSeq: seq - 1, lastSeqSeen: seq > 0}
-			_ = processBlockFrame(sub, ctx, msg, &state)
+			require.NoError(t, processBlockFrame(sub, ctx, msg, &state))
 			seq++
 		}
 	}()
@@ -904,33 +884,57 @@ func TestIsConnected_FreshStartup_TrueWhenBothDialsOK(t *testing.T) {
 	t.Parallel()
 	sub := newTestSubscriber(t)
 	sub.blockDialOK.Store(true)
-	sub.txDialOK.Store(true)
+	sub.hashtxDialOK.Store(true)
+	sub.rawtxDialOK.Store(true)
 	require.True(t, sub.IsConnected(),
-		"IsConnected() must return true on fresh startup when both sockets dialled OK")
+		"IsConnected() must return true on fresh startup when all reader sockets dialled OK")
+}
+
+func TestIsReady_FreshStartup_TrueWhenAllDialsOK(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+	sub.blockDialOK.Store(true)
+	sub.hashtxDialOK.Store(true)
+	sub.rawtxDialOK.Store(true)
+	require.True(t, sub.IsReady(),
+		"IsReady() must return true when all reader sockets are dialled OK")
 }
 
 func TestIsConnected_BlockDialFailed_ReturnsFalse(t *testing.T) {
 	t.Parallel()
 	sub := newTestSubscriber(t)
 	sub.blockDialOK.Store(false)
-	sub.txDialOK.Store(true)
+	sub.hashtxDialOK.Store(true)
+	sub.rawtxDialOK.Store(true)
 	require.False(t, sub.IsConnected())
 }
 
-func TestIsConnected_TxDialFailed_ReturnsFalse(t *testing.T) {
+func TestIsConnected_HashtxDialFailed_ReturnsFalse(t *testing.T) {
 	t.Parallel()
 	sub := newTestSubscriber(t)
 	sub.blockDialOK.Store(true)
-	sub.txDialOK.Store(false)
+	sub.hashtxDialOK.Store(false)
+	sub.rawtxDialOK.Store(true)
 	require.False(t, sub.IsConnected(),
-		"IsConnected() must return false when the tx socket has not dialled successfully")
+		"IsConnected() must return false when the hashtx socket has not dialled successfully")
 }
 
-func TestIsConnected_BothDialsFailed_ReturnsFalse(t *testing.T) {
+func TestIsConnected_RawtxDialFailed_ReturnsFalse(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+	sub.blockDialOK.Store(true)
+	sub.hashtxDialOK.Store(true)
+	sub.rawtxDialOK.Store(false)
+	require.False(t, sub.IsConnected(),
+		"IsConnected() must return false when the rawtx socket has not dialled successfully")
+}
+
+func TestIsConnected_AllDialsFailed_ReturnsFalse(t *testing.T) {
 	t.Parallel()
 	sub := newTestSubscriber(t)
 	sub.blockDialOK.Store(false)
-	sub.txDialOK.Store(false)
+	sub.hashtxDialOK.Store(false)
+	sub.rawtxDialOK.Store(false)
 	require.False(t, sub.IsConnected())
 }
 
@@ -938,18 +942,31 @@ func TestIsConnected_StaleBlock_ReturnsFalse(t *testing.T) {
 	t.Parallel()
 	sub := newTestSubscriber(t)
 	sub.blockDialOK.Store(true)
-	sub.txDialOK.Store(true)
+	sub.hashtxDialOK.Store(true)
+	sub.rawtxDialOK.Store(true)
 	// Inject a liveness snapshot that is 2× older than idleTimeout.
 	sub.live.Store(&liveness{hash: "abc", at: time.Now().Add(-2 * sub.idleTimeout)})
 	require.False(t, sub.IsConnected(),
 		"block older than idleTimeout must cause IsConnected() to return false")
 }
 
+func TestIsReady_StaleBlockStillReturnsTrue(t *testing.T) {
+	t.Parallel()
+	sub := newTestSubscriber(t)
+	sub.blockDialOK.Store(true)
+	sub.hashtxDialOK.Store(true)
+	sub.rawtxDialOK.Store(true)
+	sub.live.Store(&liveness{hash: "abc", at: time.Now().Add(-2 * sub.idleTimeout)})
+	require.True(t, sub.IsReady(),
+		"quiet-chain staleness must not make the subscriber transport-unready")
+}
+
 func TestIsConnected_RecentBlock_ReturnsTrue(t *testing.T) {
 	t.Parallel()
 	sub := newTestSubscriber(t)
 	sub.blockDialOK.Store(true)
-	sub.txDialOK.Store(true)
+	sub.hashtxDialOK.Store(true)
+	sub.rawtxDialOK.Store(true)
 	sub.live.Store(&liveness{hash: "abc", at: time.Now()})
 	require.True(t, sub.IsConnected())
 }
@@ -969,11 +986,11 @@ func TestInvokeHandler_PanicIsolated(t *testing.T) {
 	ctx := t.Context()
 
 	var secondCalled atomic.Bool
-	invokeHandler(sub, ctx, func(_ context.Context, _ BlockEvent) {
+	invokeHandler(ctx, sub, func(_ context.Context, _ BlockEvent) {
 		panic("simulated panic")
 	}, BlockEvent{}, "block")
 
-	invokeHandler(sub, ctx, func(_ context.Context, _ BlockEvent) {
+	invokeHandler(ctx, sub, func(_ context.Context, _ BlockEvent) {
 		secondCalled.Store(true)
 	}, BlockEvent{}, "block")
 
@@ -992,7 +1009,7 @@ func TestInvokeHandler_MultiplePanics_EachRecovered(t *testing.T) {
 	ctx := t.Context()
 
 	for range 5 {
-		invokeHandler(sub, ctx, func(_ context.Context, _ TxEvent) {
+		invokeHandler(ctx, sub, func(_ context.Context, _ TxEvent) {
 			panic("panic")
 		}, TxEvent{}, "tx")
 	}
@@ -1008,10 +1025,10 @@ func TestInvokeHandler_PanicInBlockHandler(t *testing.T) {
 	ctx := t.Context()
 
 	var after atomic.Bool
-	invokeHandler(sub, ctx, func(_ context.Context, _ BlockEvent) {
+	invokeHandler(ctx, sub, func(_ context.Context, _ BlockEvent) {
 		panic("block panic")
 	}, BlockEvent{}, "block")
-	invokeHandler(sub, ctx, func(_ context.Context, _ BlockEvent) {
+	invokeHandler(ctx, sub, func(_ context.Context, _ BlockEvent) {
 		after.Store(true)
 	}, BlockEvent{}, "block")
 
@@ -1038,7 +1055,7 @@ func TestInvokeHandler_Timeout_FreesWorkerImmediately(t *testing.T) {
 	t.Cleanup(func() { close(unblock) })
 
 	start := time.Now()
-	invokeHandler(sub, ctx, func(_ context.Context, _ BlockEvent) {
+	invokeHandler(ctx, sub, func(_ context.Context, _ BlockEvent) {
 		<-unblock // deliberately ignores ctx — tests the timeout path
 	}, BlockEvent{}, "block")
 	elapsed := time.Since(start)
@@ -1061,7 +1078,7 @@ func TestInvokeHandler_Timeout_InflightCountReturnsToZero(t *testing.T) {
 	unblock := make(chan struct{})
 
 	for range 3 {
-		invokeHandler(sub, ctx, func(_ context.Context, _ BlockEvent) {
+		invokeHandler(ctx, sub, func(_ context.Context, _ BlockEvent) {
 			<-unblock
 		}, BlockEvent{}, "block")
 	}
@@ -1096,7 +1113,7 @@ func TestInvokeHandler_ParentCancellation_DoesNotKillHandler(t *testing.T) {
 	done := make(chan struct{})
 
 	go func() {
-		invokeHandler(sub, ctx, func(hCtx context.Context, _ BlockEvent) {
+		invokeHandler(ctx, sub, func(hCtx context.Context, _ BlockEvent) {
 			cancel() // cancel the parent mid-handler
 			// The handler's own context should NOT be cancelled yet (it is detached).
 			handlerCtxAliveAfterParentCancel <- hCtx.Err() == nil
@@ -1134,7 +1151,7 @@ func TestShutdown_DrainsInflightHandlers(t *testing.T) {
 
 	// Simulate a worker invoking a handler directly.
 	sub.wg.Go(func() {
-		invokeHandler(sub, ctx, func(_ context.Context, _ BlockEvent) {
+		invokeHandler(ctx, sub, func(_ context.Context, _ BlockEvent) {
 			close(started)
 			<-unblock
 			close(handlerDone)
@@ -1207,7 +1224,7 @@ func TestShutdownTimeout_ConstantIsCorrect(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 
 // TestFireRecovery_AllHandlersCalled verifies that all registered recovery
-// handlers are called and receive the correct LastSeenSequence.
+// handlers are called and receive the correct LastSeenSequence and Topic.
 func TestFireRecovery_AllHandlersCalled(t *testing.T) {
 	t.Parallel()
 	sub, _ := newTestSubscriberWithRecorder(t)
@@ -1216,24 +1233,34 @@ func TestFireRecovery_AllHandlersCalled(t *testing.T) {
 	ctx := t.Context()
 
 	const wantSeq = uint32(77)
+	const wantTopic = "hashtx"
 	var counts [3]atomic.Int32
 	var receivedSeqs [3]atomic.Uint32
+	var receivedTopics [3]atomic.Pointer[string]
 
 	for i := range 3 {
 		i := i
 		sub.RegisterRecoveryHandler(func(_ context.Context, e RecoveryEvent) {
 			counts[i].Add(1)
 			receivedSeqs[i].Store(e.LastSeenSequence)
+			topic := e.Topic
+			receivedTopics[i].Store(&topic)
 		})
 	}
 
-	sub.fireRecovery(ctx, wantSeq)
+	sub.fireRecovery(ctx, wantTopic, wantSeq)
 
 	for i := range 3 {
 		require.Equal(t, int32(1), counts[i].Load(),
 			"recovery handler %d must be called exactly once", i)
 		require.Equal(t, wantSeq, receivedSeqs[i].Load(),
 			"recovery handler %d must receive the correct LastSeenSequence", i)
+		if got := receivedTopics[i].Load(); got == nil {
+			t.Fatalf("recovery handler %d must receive the correct Topic", i)
+		} else {
+			require.Equal(t, wantTopic, *got,
+				"recovery handler %d must receive the correct Topic", i)
+		}
 	}
 }
 
@@ -1244,7 +1271,7 @@ func TestFireRecovery_NoHandlers_NoPanic(t *testing.T) {
 	sub := newTestSubscriber(t)
 	ctx := context.Background()
 	require.NotPanics(t, func() {
-		sub.fireRecovery(ctx, 0)
+		sub.fireRecovery(ctx, "hashblock", 0)
 	})
 }
 
@@ -1279,7 +1306,7 @@ func TestBlockHandler_ReceivesCorrectEvent(t *testing.T) {
 	// Dispatch the way a block worker would.
 	e := <-sub.blockCh
 	for _, h := range sub.blockHandlers {
-		invokeHandler(sub, ctx, h, e, "block")
+		invokeHandler(ctx, sub, h, e, "block")
 	}
 
 	require.True(t, called.Load())
@@ -1303,7 +1330,8 @@ func TestRawTxHandlers_Called(t *testing.T) {
 
 	// Build a rawtx ZMQ message with genesis coinbase raw tx bytes.
 	rawTxHex := "01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000"
-	rawTxBytes, _ := hex.DecodeString(rawTxHex)
+	rawTxBytes, err := hex.DecodeString(rawTxHex)
+	require.NoError(t, err)
 	msg := [][]byte{[]byte("rawtx"), rawTxBytes, {1, 0, 0, 0}} // seq 1
 	state := readerState{}
 	require.NoError(t, sub.processRawTxFrame(ctx, msg, &state))
@@ -1313,7 +1341,7 @@ func TestRawTxHandlers_Called(t *testing.T) {
 	require.Equal(t, 1, len(sub.rawTxCh), "rawTxEvent must be queued for dispatch")
 	e := <-sub.rawTxCh
 	for _, h := range sub.rawTxHandlers {
-		invokeHandler(sub, ctx, h, e, "display_rawtx")
+		invokeHandler(ctx, sub, h, e, "display_rawtx")
 	}
 
 	select {
@@ -1437,7 +1465,7 @@ func TestTxReaderConfig_OnDialFail_DoesNotTouchGauge(t *testing.T) {
 	cfg := sub.txReaderConfig()
 	cfg.onDialFail()
 
-	require.False(t, sub.txDialOK.Load())
+	require.False(t, sub.hashtxDialOK.Load())
 	require.Empty(t, rec.connectedValues(),
 		"tx reader must not call SetZMQConnected — only the block reader drives the gauge")
 }
@@ -1480,34 +1508,59 @@ func TestShutdown_Timeout_ReturnsAfterDeadline(t *testing.T) {
 // Reader config callbacks — previously untested paths
 // ═════════════════════════════════════════════════════════════════════════════
 
-// TestTxReaderConfig_OnDialOK_SetsTxDialOKTrue verifies that the tx reader's
-// onDialOK callback sets txDialOK to true without touching the ZMQ gauge
+// TestTxReaderConfig_OnDialOK_SetsHashtxDialOKTrue verifies that the hashtx reader's
+// onDialOK callback sets hashtxDialOK to true without touching the ZMQ gauge
 // (only the block reader drives SetZMQConnected).
-func TestTxReaderConfig_OnDialOK_SetsTxDialOKTrue(t *testing.T) {
+func TestTxReaderConfig_OnDialOK_SetsHashtxDialOKTrue(t *testing.T) {
 	t.Parallel()
 	sub, rec := newTestSubscriberWithRecorder(t)
 
 	cfg := sub.txReaderConfig()
 	cfg.onDialOK()
 
-	require.True(t, sub.txDialOK.Load(), "txDialOK must be true after onDialOK")
+	require.True(t, sub.hashtxDialOK.Load(), "hashtxDialOK must be true after onDialOK")
 	require.Empty(t, rec.connectedValues(),
 		"tx reader onDialOK must not call SetZMQConnected")
 }
 
-// TestTxReaderConfig_OnRecvErr_SetsTxDialOKFalse verifies that the tx reader's
-// onRecvErr callback clears txDialOK without calling SetZMQConnected.
-func TestTxReaderConfig_OnRecvErr_SetsTxDialOKFalse(t *testing.T) {
+// TestTxReaderConfig_OnRecvErr_SetsHashtxDialOKFalse verifies that the hashtx reader's
+// onRecvErr callback clears hashtxDialOK without calling SetZMQConnected.
+func TestTxReaderConfig_OnRecvErr_SetsHashtxDialOKFalse(t *testing.T) {
 	t.Parallel()
 	sub, rec := newTestSubscriberWithRecorder(t)
-	sub.txDialOK.Store(true) // start healthy
+	sub.hashtxDialOK.Store(true) // start healthy
 
 	cfg := sub.txReaderConfig()
 	cfg.onRecvErr()
 
-	require.False(t, sub.txDialOK.Load(), "txDialOK must be false after onRecvErr")
+	require.False(t, sub.hashtxDialOK.Load(), "hashtxDialOK must be false after onRecvErr")
 	require.Empty(t, rec.connectedValues(),
 		"tx reader onRecvErr must not call SetZMQConnected")
+}
+
+func TestRawTxReaderConfig_OnDialOK_SetsRawtxDialOKTrue(t *testing.T) {
+	t.Parallel()
+	sub, rec := newTestSubscriberWithRecorder(t)
+
+	cfg := sub.rawTxReaderConfig()
+	cfg.onDialOK()
+
+	require.True(t, sub.rawtxDialOK.Load(), "rawtxDialOK must be true after onDialOK")
+	require.Empty(t, rec.connectedValues(),
+		"rawtx reader onDialOK must not call SetZMQConnected")
+}
+
+func TestRawTxReaderConfig_OnRecvErr_SetsRawtxDialOKFalse(t *testing.T) {
+	t.Parallel()
+	sub, rec := newTestSubscriberWithRecorder(t)
+	sub.rawtxDialOK.Store(true)
+
+	cfg := sub.rawTxReaderConfig()
+	cfg.onRecvErr()
+
+	require.False(t, sub.rawtxDialOK.Load(), "rawtxDialOK must be false after onRecvErr")
+	require.Empty(t, rec.connectedValues(),
+		"rawtx reader onRecvErr must not call SetZMQConnected")
 }
 
 // TestBlockReaderConfig_OnRecvErr_SetsConnectedFalse verifies that the block
@@ -1540,7 +1593,7 @@ func TestBlockReaderConfig_OnEvent_HWMDrop(t *testing.T) {
 
 	cfg := sub.blockReaderConfig()
 	var hash [32]byte
-	cfg.onEvent(hash, 99999)
+	cfg.onEvent(context.Background(), hash, 99999)
 
 	require.Contains(t, rec.droppedReasons(), "hwm",
 		"onEvent when blockCh is full must record an hwm drop")
@@ -1591,7 +1644,7 @@ func TestInvokeHandler_NormalCompletion_InflightReturnsToZero(t *testing.T) {
 	ctx := t.Context()
 
 	var called atomic.Bool
-	invokeHandler(sub, ctx, func(_ context.Context, _ BlockEvent) {
+	invokeHandler(ctx, sub, func(_ context.Context, _ BlockEvent) {
 		called.Store(true)
 	}, BlockEvent{}, "block")
 
@@ -1643,14 +1696,16 @@ func FuzzProcessFrame(f *testing.F) {
 			return
 		}
 		// Type-assert to *subscriber to access internal fields (same package).
-		sub := iface.(*subscriber)
+		sub, ok := iface.(*subscriber)
+		require.True(t, ok)
 		sub.handlerTimeout = 10 * time.Millisecond
 
 		msg := [][]byte{topicData, hashData, seqData}
 		state := readerState{}
 		// Must never panic regardless of input.
+		//nolint:errcheck // The fuzz contract is “must not panic”; validation errors are acceptable.
 		_ = sub.processFrame(context.Background(), msg, []byte("hashblock"), &state,
-			func([32]byte, uint32) {})
+			func(context.Context, [32]byte, uint32) {})
 	})
 }
 

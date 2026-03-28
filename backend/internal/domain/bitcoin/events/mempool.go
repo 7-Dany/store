@@ -354,7 +354,10 @@ func (t *MempoolTracker) HandleBlockEvent(ctx context.Context, e zmq.BlockEvent)
 	headerBackoff := headerRetryBase
 	for attempt := 0; ; attempt++ {
 		header, headerErr = t.rpc.GetBlockHeader(rpcCtx, hashHex)
-		if headerErr == nil || !rpc.IsNotFoundError(headerErr) || rpcCtx.Err() != nil || attempt >= maxHeaderRetries {
+		if headerErr == nil {
+			break
+		}
+		if !rpc.IsNotFoundError(headerErr) || rpcCtx.Err() != nil || attempt >= maxHeaderRetries {
 			break
 		}
 		log.Warn(ctx, "events.HandleBlockEvent: ZMQ/RPC timing race — retrying GetBlockHeader",

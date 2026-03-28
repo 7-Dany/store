@@ -134,11 +134,13 @@ func (r *fakeRecorder) OnTokenIssuanceDBMiss()             {}
 
 // fakeSubscriber satisfies the unexported ZMQSubscriber interface.
 type fakeSubscriber struct {
+	ready        bool
 	connected    bool
 	lastSeenHash string
 	lastHashTime int64
 }
 
+func (s *fakeSubscriber) IsReady() bool        { return s.ready }
 func (s *fakeSubscriber) IsConnected() bool    { return s.connected }
 func (s *fakeSubscriber) LastSeenHash() string { return s.lastSeenHash }
 func (s *fakeSubscriber) LastHashTime() int64  { return s.lastHashTime }
@@ -173,7 +175,7 @@ func newTestService(t *testing.T, st Storer, cfg EventsConfig) *Service {
 	t.Helper()
 	broker := NewBroker(cfg.MaxSSEProcess, nil)
 	counter := newTestCounter(cfg.MaxSSEPerUser)
-	svc := NewService(context.Background(), st, broker, counter, &fakeRecorder{}, &fakeSubscriber{connected: true}, cfg)
+	svc := NewService(context.Background(), st, broker, counter, &fakeRecorder{}, &fakeSubscriber{ready: true, connected: true}, cfg)
 	t.Cleanup(func() { svc.Shutdown() })
 	return svc
 }
@@ -593,9 +595,28 @@ func TestIsZMQRunning_DisconnectedReturnsError(t *testing.T) {
 		broker,
 		counter,
 		&fakeRecorder{},
-		&fakeSubscriber{connected: false}, // disconnected
+		&fakeSubscriber{ready: false, connected: false}, // disconnected
 		cfg,
 	)
 	t.Cleanup(svc.Shutdown)
 	assert.ErrorIs(t, svc.IsZMQRunning(), ErrSSEZMQUnhealthy)
+}
+
+func TestIsZMQRunning_StaleBlockStillAllowsSSE(t *testing.T) {
+	t.Parallel()
+	cfg := testCfg()
+	broker := NewBroker(cfg.MaxSSEProcess, nil)
+	counter := newTestCounter(cfg.MaxSSEPerUser)
+	svc := NewService(
+		context.Background(),
+		&localFakeStorer{},
+		broker,
+		counter,
+		&fakeRecorder{},
+		&fakeSubscriber{ready: true, connected: false},
+		cfg,
+	)
+	t.Cleanup(svc.Shutdown)
+	assert.NoError(t, svc.IsZMQRunning(),
+		"stale block age must not block SSE when the ZMQ subscriptions are still ready")
 }

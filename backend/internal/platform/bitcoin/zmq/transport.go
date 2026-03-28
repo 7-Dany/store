@@ -40,27 +40,27 @@ import (
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const (
-	// zmtpDialTimeout is the maximum time allowed for the initial TCP dial.
+	// ZmtpDialTimeout is the maximum time allowed for the initial TCP dial.
 	zmtpDialTimeout = 5 * time.Second
 
-	// zmtpHandshakeTimeout is the maximum time allowed for the full ZMTP
+	// ZmtpHandshakeTimeout is the maximum time allowed for the full ZMTP
 	// handshake (greeting + READY exchange + SUBSCRIBE command) after the
 	// TCP connection is established. Bitcoin Core responds within
 	// milliseconds; 5 s is extremely generous.
 	zmtpHandshakeTimeout = 5 * time.Second
 
-	// zmtpReadPoll is the read deadline applied on each call to RecvMessage.
+	// ZmtpReadPoll is the read deadline applied on each call to RecvMessage.
 	// When no message arrives within this interval, RecvMessage checks
 	// ctx.Err() and retries. Context cancellation is therefore detected
 	// within one poll interval — adequate for a financial event stream.
 	zmtpReadPoll = 250 * time.Millisecond
 
-	// zmtpMaxFrameBody is a sanity cap on frame body length. Frames larger
+	// ZmtpMaxFrameBody is a sanity cap on frame body length. Frames larger
 	// than this are rejected without allocating memory for the body.
 	// Bitcoin Core's ZMQ frames are at most ~100 bytes; 1 MiB is generous.
 	zmtpMaxFrameBody = 1 << 20 // 1 MiB
 
-	// zmtpReadBuf is the size of the bufio.Reader wrapping the TCP socket.
+	// ZmtpReadBuf is the size of the bufio.Reader wrapping the TCP socket.
 	// Bitcoin Core sends all three frames of a multipart message together
 	// in a single TCP segment. A 4 KiB buffer fills on the first system
 	// call and subsequent frame reads come from memory.
@@ -87,7 +87,7 @@ type zmtpConn struct {
 // performs the full ZMTP 3.1 NULL handshake as a SUB socket, and sends a
 // SUBSCRIBE command for topic. Returns a ready-to-receive connection.
 //
-// dialZMTP respects ctx for the dial phase. Once the TCP connection is open,
+// DialZMTP respects ctx for the dial phase. Once the TCP connection is open,
 // the handshake runs under its own internal deadline (zmtpHandshakeTimeout).
 func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, error) {
 	host := strings.TrimPrefix(endpoint, "tcp://")
@@ -110,7 +110,9 @@ func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, er
 	// ensures they are sent immediately rather than coalesced, keeping
 	// end-to-end latency minimal.
 	if tc, ok := tcp.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true) // best-effort; failure does not break anything
+		if err := tc.SetNoDelay(true); err != nil {
+			logger.Debug(ctx, "zmq: failed to enable TCP_NODELAY", "endpoint", endpoint, "error", err)
+		}
 	}
 
 	c := &zmtpConn{tcp: tcp, r: bufio.NewReaderSize(tcp, zmtpReadBuf)}
@@ -118,7 +120,9 @@ func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, er
 	if err := c.handshake(ctx, topic); err != nil {
 		logger.Debug(ctx, "zmq: ZMTP handshake failed",
 			"endpoint", endpoint, "error", err)
-		tcp.Close()
+		if closeErr := tcp.Close(); closeErr != nil {
+			logger.Debug(ctx, "zmq: close after handshake failure failed", "endpoint", endpoint, "error", closeErr)
+		}
 		return nil, fmt.Errorf("handshake with %s: %w", endpoint, err)
 	}
 
@@ -142,7 +146,9 @@ func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, er
 // All other command frames (e.g., ERROR) are logged and skipped.
 func (c *zmtpConn) RecvMessage(ctx context.Context) ([][]byte, error) {
 	for {
-		c.tcp.SetReadDeadline(time.Now().Add(zmtpReadPoll))
+		if err := c.tcp.SetReadDeadline(time.Now().Add(zmtpReadPoll)); err != nil {
+			return nil, fmt.Errorf("set read deadline: %w", err)
+		}
 
 		msg, err := c.readMessage(ctx)
 		if err == nil {
@@ -181,8 +187,14 @@ func (c *zmtpConn) Close() error {
 //
 // The handshake runs under zmtpHandshakeTimeout from start to finish.
 func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
-	c.tcp.SetDeadline(time.Now().Add(zmtpHandshakeTimeout))
-	defer c.tcp.SetDeadline(time.Time{}) // clear deadline — RecvMessage manages its own
+	if err := c.tcp.SetDeadline(time.Now().Add(zmtpHandshakeTimeout)); err != nil {
+		return fmt.Errorf("set handshake deadline: %w", err)
+	}
+	defer func() {
+		if err := c.tcp.SetDeadline(time.Time{}); err != nil {
+			logger.Debug(ctx, "zmq: clear handshake deadline failed", "error", err)
+		}
+	}()
 
 	// ── Step 1: exchange greetings ────────────────────────────────────────
 	// ZMTP requires both sides to send simultaneously; in practice, with TCP
@@ -202,7 +214,7 @@ func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 	if _, err := c.tcp.Write(buildReady("SUB")); err != nil {
 		return fmt.Errorf("send READY: %w", err)
 	}
-	if err := c.readExpectedCommand(ctx, "READY"); err != nil {
+	if err := c.readReadyCommand(ctx); err != nil {
 		return fmt.Errorf("read READY: %w", err)
 	}
 	logger.Debug(ctx, "zmq: handshake step 2 -- READY exchanged OK")
@@ -360,33 +372,34 @@ func (c *zmtpConn) readAndValidateGreeting(ctx context.Context) error {
 	return nil
 }
 
-// readExpectedCommand reads one command frame and verifies its name.
+// readReadyCommand reads one command frame and verifies that it is READY.
 // Used to consume the server's READY command during the handshake.
-func (c *zmtpConn) readExpectedCommand(ctx context.Context, want string) error {
-	logger.Debug(ctx, "zmq: readExpectedCommand: awaiting command frame", "want", want)
+func (c *zmtpConn) readReadyCommand(ctx context.Context) error {
+	const want = "READY"
+	logger.Debug(ctx, "zmq: readReadyCommand: awaiting command frame", "want", want)
 	flags, body, err := c.readFrame(ctx)
 	if err != nil {
-		logger.Debug(ctx, "zmq: readExpectedCommand: frame read failed", "want", want, "error", err)
+		logger.Debug(ctx, "zmq: readReadyCommand: frame read failed", "want", want, "error", err)
 		return err
 	}
 	if flags&flagCommand == 0 {
-		logger.Warn(ctx, "zmq: readExpectedCommand: received message frame instead of command frame -- server may not be a ZeroMQ PUB socket",
+		logger.Warn(ctx, "zmq: readReadyCommand: received message frame instead of command frame -- server may not be a ZeroMQ PUB socket",
 			"want", want, "flags", fmt.Sprintf("0x%02x", flags))
 		return fmt.Errorf("expected ZMTP command frame, got message frame (flags=0x%02x) — "+
 			"server may not be a ZeroMQ PUB socket", flags)
 	}
 	name, _, ok := parseCommandBody(body)
 	if !ok {
-		logger.Warn(ctx, "zmq: readExpectedCommand: malformed command body",
+		logger.Warn(ctx, "zmq: readReadyCommand: malformed command body",
 			"want", want, "body_len", len(body))
 		return fmt.Errorf("malformed command frame body (length %d)", len(body))
 	}
 	if name != want {
-		logger.Warn(ctx, "zmq: readExpectedCommand: unexpected command name -- possible protocol mismatch",
+		logger.Warn(ctx, "zmq: readReadyCommand: unexpected command name -- possible protocol mismatch",
 			"want", want, "got", name)
 		return fmt.Errorf("expected %q command, got %q", want, name)
 	}
-	logger.Debug(ctx, "zmq: readExpectedCommand: OK", "name", name)
+	logger.Debug(ctx, "zmq: readReadyCommand: OK", "name", name)
 	return nil
 }
 
@@ -421,6 +434,9 @@ func buildGreeting() []byte {
 // Uses a LONG size frame (8-byte size) only when the body exceeds 255 bytes.
 func buildCommand(name string, data []byte) []byte {
 	nameLen := len(name)
+	if nameLen > 255 {
+		panic("zmq: command name too long")
+	}
 	bodyLen := 1 + nameLen + len(data) // 1 byte for name-length prefix
 
 	var hdr []byte
@@ -444,10 +460,11 @@ func buildCommand(name string, data []byte) []byte {
 // Metadata format: key-length(1) + key + value-length(4 big-endian) + value.
 func buildReady(socketType string) []byte {
 	const key = "Socket-Type"
-	var meta []byte
+	meta := make([]byte, 0, 1+len(key)+4+len(socketType))
 	meta = append(meta, byte(len(key)))
 	meta = append(meta, key...)
 	var vlen [4]byte
+	//nolint:gosec // socketType is a short protocol constant such as "SUB" or "PUB".
 	binary.BigEndian.PutUint32(vlen[:], uint32(len(socketType)))
 	meta = append(meta, vlen[:]...)
 	meta = append(meta, socketType...)

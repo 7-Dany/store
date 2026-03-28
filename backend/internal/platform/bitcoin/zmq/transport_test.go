@@ -440,14 +440,14 @@ func TestReadExpectedCommand_CorrectName_Succeeds(t *testing.T) {
 	t.Parallel()
 	frame := buildCommand("READY", nil)
 	c := connFromBytes(frame)
-	require.NoError(t, c.readExpectedCommand(context.Background(), "READY"))
+	require.NoError(t, c.readReadyCommand(context.Background()))
 }
 
 func TestReadExpectedCommand_WrongName_ReturnsError(t *testing.T) {
 	t.Parallel()
 	frame := buildCommand("ERROR", nil)
 	c := connFromBytes(frame)
-	err := c.readExpectedCommand(context.Background(), "READY")
+	err := c.readReadyCommand(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "READY")
 	require.Contains(t, err.Error(), "ERROR")
@@ -458,7 +458,7 @@ func TestReadExpectedCommand_MessageFrameNotCommand_ReturnsError(t *testing.T) {
 	// A message frame (flagMore set, no flagCommand).
 	wire := encodeShortFrame(flagMore, []byte("data"))
 	c := connFromBytes(wire)
-	err := c.readExpectedCommand(context.Background(), "READY")
+	err := c.readReadyCommand(context.Background())
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "command frame")
 }
@@ -468,13 +468,13 @@ func TestReadExpectedCommand_MalformedCommandBody_ReturnsError(t *testing.T) {
 	// A command frame whose body is empty (no nameLen byte).
 	wire := encodeShortFrame(flagCommand, nil)
 	c := connFromBytes(wire)
-	require.Error(t, c.readExpectedCommand(context.Background(), "READY"))
+	require.Error(t, c.readReadyCommand(context.Background()))
 }
 
 func TestReadExpectedCommand_EmptyReader_ReturnsError(t *testing.T) {
 	t.Parallel()
 	c := connFromBytes(nil)
-	require.Error(t, c.readExpectedCommand(context.Background(), "READY"))
+	require.Error(t, c.readReadyCommand(context.Background()))
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -489,8 +489,8 @@ func TestHandleIncomingCommand_PING_SendsCorrectPONG(t *testing.T) {
 
 	// Use net.Pipe() so we can observe what is written to the "wire".
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { require.NoError(t, client.Close()) }()
+	defer func() { require.NoError(t, server.Close()) }()
 
 	c := &zmtpConn{
 		tcp: client,
@@ -506,8 +506,9 @@ func TestHandleIncomingCommand_PING_SendsCorrectPONG(t *testing.T) {
 	received := make(chan []byte, 1)
 	go func() {
 		buf := make([]byte, 256)
-		server.SetDeadline(time.Now().Add(time.Second))
-		n, _ := io.ReadFull(server, buf[:len(buildCommand("PONG", pingCtx))])
+		require.NoError(t, server.SetDeadline(time.Now().Add(time.Second)))
+		n, err := io.ReadFull(server, buf[:len(buildCommand("PONG", pingCtx))])
+		require.NoError(t, err)
 		received <- buf[:n]
 	}()
 
@@ -524,8 +525,8 @@ func TestHandleIncomingCommand_PING_NoContext_SendsEmptyPONG(t *testing.T) {
 	t.Parallel()
 
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { require.NoError(t, client.Close()) }()
+	defer func() { require.NoError(t, server.Close()) }()
 
 	c := &zmtpConn{tcp: client, r: bufio.NewReaderSize(client, zmtpReadBuf)}
 
@@ -536,8 +537,9 @@ func TestHandleIncomingCommand_PING_NoContext_SendsEmptyPONG(t *testing.T) {
 	received := make(chan []byte, 1)
 	go func() {
 		buf := make([]byte, 256)
-		server.SetDeadline(time.Now().Add(time.Second))
-		n, _ := io.ReadFull(server, buf[:len(want)])
+		require.NoError(t, server.SetDeadline(time.Now().Add(time.Second)))
+		n, err := io.ReadFull(server, buf[:len(want)])
+		require.NoError(t, err)
 		received <- buf[:n]
 	}()
 
@@ -549,8 +551,8 @@ func TestHandleIncomingCommand_PING_TruncatedTTL_SendsEmptyPONG(t *testing.T) {
 	t.Parallel()
 
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { require.NoError(t, client.Close()) }()
+	defer func() { require.NoError(t, server.Close()) }()
 
 	c := &zmtpConn{tcp: client, r: bufio.NewReaderSize(client, zmtpReadBuf)}
 
@@ -561,8 +563,9 @@ func TestHandleIncomingCommand_PING_TruncatedTTL_SendsEmptyPONG(t *testing.T) {
 	received := make(chan []byte, 1)
 	go func() {
 		buf := make([]byte, 256)
-		server.SetDeadline(time.Now().Add(time.Second))
-		n, _ := io.ReadFull(server, buf[:len(want)])
+		require.NoError(t, server.SetDeadline(time.Now().Add(time.Second)))
+		n, err := io.ReadFull(server, buf[:len(want)])
+		require.NoError(t, err)
 		received <- buf[:n]
 	}()
 
@@ -574,8 +577,8 @@ func TestHandleIncomingCommand_NonPING_ReturnsNilAndWritesNothing(t *testing.T) 
 	t.Parallel()
 
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { require.NoError(t, client.Close()) }()
+	defer func() { require.NoError(t, server.Close()) }()
 
 	c := &zmtpConn{tcp: client, r: bufio.NewReaderSize(client, zmtpReadBuf)}
 
@@ -585,7 +588,7 @@ func TestHandleIncomingCommand_NonPING_ReturnsNilAndWritesNothing(t *testing.T) 
 	require.NoError(t, err)
 
 	// Verify nothing was written to the wire.
-	server.SetDeadline(time.Now().Add(30 * time.Millisecond))
+	require.NoError(t, server.SetDeadline(time.Now().Add(30*time.Millisecond)))
 	buf := make([]byte, 1)
 	_, readErr := server.Read(buf)
 	// Expected: deadline exceeded (nothing written), not a real read.

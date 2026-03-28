@@ -99,24 +99,16 @@ func rpcErrNotFound(msg string) error {
 
 // ── zmq event helpers ─────────────────────────────────────────────────────────
 
-// makeRawTxEvent builds a zmq.RawTxEvent with the given txid, inputs, and outputs.
-// TxIDBytes is in ZMQ little-endian order.
+// makeRawTxEvent builds a zmq.RawTxEvent with the given txid, inputs, and
+// outputs. TxIDBytes uses the same byte order as RPC and block explorers.
 func makeRawTxEvent(txidHex string, inputs []zmq.RawTxInput, outputs []zmq.RawTxOutput) zmq.RawTxEvent {
 	b := mustDecodeHex32(txidHex)
-	var rev [32]byte
-	for i, x := range b {
-		rev[31-i] = x
-	}
-	return zmq.RawTxEvent{TxIDBytes: rev, Sequence: 0, Inputs: inputs, Outputs: outputs}
+	return zmq.RawTxEvent{TxIDBytes: b, Sequence: 0, Inputs: inputs, Outputs: outputs}
 }
 
 func makeBlockEvent(hashHex string) zmq.BlockEvent {
 	b := mustDecodeHex32(hashHex)
-	var rev [32]byte
-	for i, x := range b {
-		rev[31-i] = x
-	}
-	return zmq.BlockEvent{Hash: rev}
+	return zmq.BlockEvent{Hash: b}
 }
 
 func mustDecodeHex32(h string) [32]byte {
@@ -484,6 +476,53 @@ func TestMempoolTracker_HandleBlockEvent_ZMQRPCTimingRace_SucceedsOnRetry(t *tes
 
 	assert.GreaterOrEqual(t, atomic.LoadInt32(&callCount), int32(2),
 		"GetBlockHeader must have been called at least twice (first fails, second succeeds)")
+}
+
+func TestMempoolTracker_HandleBlockEvent_UsesCanonicalHashEverywhere(t *testing.T) {
+	t.Parallel()
+	broker := NewBroker(10, nil)
+	ch, _ := broker.Subscribe("user-1")
+
+	const blockHash = "000000000b2ac1f75ad909ca14329139a7767e8bea15e65c908e8bad6249c945"
+	event := zmq.BlockEvent{Hash: mustDecodeHex32(blockHash)}
+
+	st := &localFakeStorer{
+		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+			return []string{testAddr1}, nil
+		},
+	}
+	rpcClient := &fakeRPCClient{
+		GetBlockHeaderFn: func(_ context.Context, hash string) (rpc.BlockHeader, error) {
+			require.Equal(t, blockHash, hash)
+			return rpc.BlockHeader{Height: 127724, Hash: blockHash, Time: 1700000000}, nil
+		},
+		GetBlockFn: func(_ context.Context, hash string, _ int) (json.RawMessage, error) {
+			require.Equal(t, blockHash, hash)
+			return json.RawMessage(`{"tx":["` + testTxID1 + `"]}`), nil
+		},
+	}
+
+	tracker := newTestTracker(t, st, broker, rpcClient)
+	tracker.HandleRawTxEvent(context.Background(), makeRawTxEvent(testTxID1, nil, []zmq.RawTxOutput{{ValueSat: 0, N: 0, Address: testAddr1}}))
+	_ = drainEvents(ch, 1, time.Second)
+
+	tracker.HandleBlockEvent(context.Background(), event)
+
+	events := drainEvents(ch, 2, 2*time.Second)
+	require.Len(t, events, 2)
+
+	var confirmed Event
+	for _, evt := range events {
+		if evt.Type == "confirmed_tx" {
+			confirmed = evt
+			break
+		}
+	}
+	require.Equal(t, "confirmed_tx", confirmed.Type)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(confirmed.Payload, &payload))
+	assert.Equal(t, blockHash, payload["block"])
 }
 
 // TestMempoolTracker_HandleBlockEvent_NonTransientRPCError_EmitsDegradedNewBlock

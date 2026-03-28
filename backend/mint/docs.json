@@ -259,6 +259,12 @@
             "icon": "currency-bitcoin",
             "pages": [
               {
+                "group": "Block",
+                "icon": "square-stack",
+                "expanded": false,
+                "pages": ["api-reference/bitcoin/block/get-block"]
+              },
+              {
                 "group": "Watch",
                 "icon": "eye",
                 "expanded": false,

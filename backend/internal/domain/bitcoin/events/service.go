@@ -64,11 +64,16 @@ type Storer interface {
 // directly, so the domain layer stays decoupled from the platform layer and
 // tests can inject a simple fake.
 type ZMQSubscriber interface {
+	// IsReady reports whether the required ZMQ subscriptions are currently
+	// dialled and ready to deliver events. Unlike IsConnected, this excludes
+	// age-based liveness so SSE admission is not blocked by a quiet chain.
+	IsReady() bool
 	// IsConnected reports whether the ZMQ subscriber is currently healthy
 	// (both sockets dialled and last block within the configured idle timeout).
 	IsConnected() bool
 	// LastSeenHash returns the most recently observed block hash in
-	// RPC-compatible big-endian hex. Returns "" before the first block.
+	// Block hash in the same hex form used by RPC and block explorers. Returns
+	// "" before the first block.
 	LastSeenHash() string
 	// LastHashTime returns the Unix nanosecond timestamp of the last
 	// received block. Returns 0 before the first block is received.
@@ -395,7 +400,7 @@ func (s *Service) ReleaseSlot(userID string, ch <-chan Event) {
 // IsZMQRunning reports whether the ZMQ subscriber is currently connected.
 // Returns nil when healthy; ErrSSEZMQUnhealthy when disconnected.
 func (s *Service) IsZMQRunning() error {
-	if !s.subscriber.IsConnected() {
+	if !s.subscriber.IsReady() {
 		return ErrSSEZMQUnhealthy
 	}
 	return nil

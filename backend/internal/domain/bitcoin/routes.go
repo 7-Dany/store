@@ -8,6 +8,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/7-Dany/store/backend/internal/app"
+	"github.com/7-Dany/store/backend/internal/domain/bitcoin/block"
 	"github.com/7-Dany/store/backend/internal/domain/bitcoin/events"
 	"github.com/7-Dany/store/backend/internal/domain/bitcoin/txstatus"
 	"github.com/7-Dany/store/backend/internal/domain/bitcoin/watch"
@@ -34,6 +35,7 @@ func Routes(ctx context.Context, deps *app.Deps) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(chimiddleware.AllowContentType("application/json"))
 
+	block.Routes(ctx, r, deps)
 	watch.Routes(ctx, r, deps)
 	events.Routes(ctx, r, deps)
 	txstatus.Routes(ctx, r, deps)

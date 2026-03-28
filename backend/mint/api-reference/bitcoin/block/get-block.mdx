@@ -1,0 +1,220 @@
+---
+title: "Block Details"
+description: "Look up compact metadata for a Bitcoin block by block hash."
+api: "GET /bitcoin/block/{hash}"
+---
+
+<ParamField path="hash" type="string" required>
+  The block hash to look up. Must be a 64-character hex string. Upper and
+  lower case are both accepted — the value is normalised to lowercase before lookup.
+</ParamField>
+
+## Behaviour
+
+Returns compact metadata for a single block. This response is suitable for a
+frontend details panel opened from a `new_block` event or a block-history view.
+
+Fields returned:
+
+| Field | Type | Notes |
+|---|---|---|
+| `hash` | string | Canonical block hash |
+| `confirmations` | integer | `-1` if the block is not on the active chain |
+| `height` | integer | Block height |
+| `version` | integer | Block version |
+| `merkle_root` | string | Merkle root hash |
+| `time` | integer | Block timestamp (Unix seconds) |
+| `median_time` | integer | Median time past (Unix seconds) |
+| `nonce` | integer | Mining nonce |
+| `bits` | string | Encoded target threshold |
+| `difficulty` | number | Difficulty at this block |
+| `chainwork` | string | Chainwork hex |
+| `tx_count` | integer | Number of transactions in the block |
+| `previous_block_hash` | string | Omitted for genesis |
+| `next_block_hash` | string | Omitted for current tip |
+
+## Rate Limiting
+
+**20 requests per 1 minute per IP address**.
+
+The rate limiter runs **before** JWT authentication. Requests that exceed the
+limit are rejected with `429` before token validation occurs.
+
+Clients that exceed this limit will receive a `429 Too Many Requests` response
+with a `Retry-After` header indicating when they may retry.
+
+<ResponseExample>
+```json 200
+{
+  "hash": "000000000000000abc...",
+  "confirmations": 6,
+  "height": 3521042,
+  "version": 536870912,
+  "merkle_root": "4a5b6c...",
+  "time": 1700000000,
+  "median_time": 1699999975,
+  "nonce": 123456789,
+  "bits": "1d00ffff",
+  "difficulty": 12345.5,
+  "chainwork": "0000000000000000000000000000000000000000000000000000000001234567",
+  "tx_count": 12,
+  "previous_block_hash": "000000000000000def...",
+  "next_block_hash": "000000000000000fed..."
+}
+```
+
+```json 400
+{
+  "code": "invalid_block_hash",
+  "message": "block hash must be a 64-character hex string"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "authentication required"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+
+```json 404
+{
+  "code": "block_not_found",
+  "message": "block not found"
+}
+```
+
+```json 500
+{
+  "code": "internal_error",
+  "message": "internal server error"
+}
+```
+
+```json 502
+{
+  "code": "service_unavailable",
+  "message": "bitcoin node is temporarily unreachable"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The block was resolved successfully.
+
+    ```json
+    {
+      "hash": "000000000000000abc...",
+      "confirmations": 6,
+      "height": 3521042,
+      "version": 536870912,
+      "merkle_root": "4a5b6c...",
+      "time": 1700000000,
+      "median_time": 1699999975,
+      "nonce": 123456789,
+      "bits": "1d00ffff",
+      "difficulty": 12345.5,
+      "chainwork": "0000000000000000000000000000000000000000000000000000000001234567",
+      "tx_count": 12,
+      "previous_block_hash": "000000000000000def...",
+      "next_block_hash": "000000000000000fed..."
+    }
+    ```
+
+    | Field | Type | Notes |
+    |---|---|---|
+    | `hash` | string | Canonical block hash |
+    | `confirmations` | integer | `-1` if the block is not on the active chain |
+    | `height` | integer | Block height |
+    | `version` | integer | Block version |
+    | `merkle_root` | string | Merkle root hash |
+    | `time` | integer | Block timestamp (Unix seconds) |
+    | `median_time` | integer | Median time past (Unix seconds) |
+    | `nonce` | integer | Mining nonce |
+    | `bits` | string | Encoded target threshold |
+    | `difficulty` | number | Difficulty at this block |
+    | `chainwork` | string | Chainwork hex |
+    | `tx_count` | integer | Number of transactions in the block |
+    | `previous_block_hash` | string | Present when the block has a parent |
+    | `next_block_hash` | string | Present when the next block is known |
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    The `hash` path parameter is not a valid 64-character hex string.
+
+    ```json
+    {
+      "code": "invalid_block_hash",
+      "message": "block hash must be a 64-character hex string"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    No valid JWT was provided or the user ID could not be extracted from the token.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    The requested block hash is well-formed, but the block is not known to the node.
+
+    ```json
+    {
+      "code": "block_not_found",
+      "message": "block not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 20 requests per 1 minute. Check the `Retry-After`
+    response header for the number of seconds to wait before retrying.
+
+    Note: this limit is enforced **before** JWT authentication.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="502 — Bad Gateway">
+    The Bitcoin node is temporarily unreachable. Retry after a short delay.
+
+    ```json
+    {
+      "code": "service_unavailable",
+      "message": "bitcoin node is temporarily unreachable"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

@@ -9,6 +9,9 @@ const BREADCRUMBS: Record<string, { parent: string; child?: string }> = {
   "/dashboard":          { parent: "Dashboard" },
   "/dashboard/profile":  { parent: "Dashboard", child: "Profile" },
   "/dashboard/settings": { parent: "Settings" },
+  "/dashboard/security": { parent: "System", child: "System Health" },
+  "/dashboard/bitcoin":  { parent: "System", child: "Transaction Lifecycle" },
+  "/dashboard/transaction-lifecycle": { parent: "System", child: "Transaction Lifecycle" },
 };
 
 export function DashboardHeader() {

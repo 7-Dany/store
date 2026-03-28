@@ -53,6 +53,7 @@ import {
   IconCheck,
   IconPalette,
   IconShieldCheck,
+  IconCurrencyBitcoin,
 } from "@tabler/icons-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -76,7 +77,8 @@ const NAV_ITEMS = [
 ];
 
 const NAV_SYSTEM = [
-  { href: "/dashboard/security", icon: IconShieldCheck, label: "System Health" },
+  { href: "/dashboard/security", icon: IconShieldCheck,     label: "System Health" },
+  { href: "/dashboard/transaction-lifecycle", icon: IconCurrencyBitcoin, label: "Transaction Lifecycle" },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

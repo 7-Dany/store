@@ -34,7 +34,7 @@
 ## Profile
 
 - [x] View profile (`GET /profile/me`) — dashboard layout fetches and passes to sidebar
-- [x] Connected accounts — link/unlink Google & Telegram (settings/connections)
+- [x] Connected accounts — link/unlink Google & Telegram (`GET /profile/me/identities` + provider link/unlink endpoints) — settings/connections
 - [x] Edit profile — display name, avatar URL (`PATCH /profile/me`) — settings/profile
 - [x] Update username + live availability typeahead (`PATCH /profile/me/username` + `GET /profile/me/username/available`) — settings/profile
 - [x] Set password for OAuth-only accounts (`POST /profile/me/password`) — settings/password
@@ -76,6 +76,7 @@
 ## RBAC
 
 - [ ] List roles (`GET /rbac/roles`)
+- [ ] Get single role (`GET /rbac/roles/{id}`)
 - [ ] Create role (`POST /rbac/roles`)
 - [ ] Edit role — name / description (`PATCH /rbac/roles/{id}`)
 - [ ] Delete role (`DELETE /rbac/roles/{id}`)
@@ -88,6 +89,13 @@
 - [ ] Initiate ownership transfer (`POST /rbac/owner/transfer`)
 - [ ] Accept ownership transfer — token link (`PUT /rbac/owner/transfer`)
 - [ ] Cancel ownership transfer (`DELETE /rbac/owner/transfer`)
+
+---
+
+## Bitcoin
+
+- [ ] Register watch addresses (`POST /bitcoin/watch`) — up to 20 addresses per call, max 100 per user; idempotent; resets 30-min inactivity timer
+- [ ] Real-time transaction event stream (`GET /bitcoin/events`) — SSE; emits `mempool_tx`, `confirmed_tx`, `mempool_tx_replaced`, and `stream_requires_reregistration` events; client must re-call `POST /bitcoin/watch` on `stream_requires_reregistration`
 
 ---
 

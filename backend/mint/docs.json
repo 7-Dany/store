@@ -260,7 +260,7 @@
             "pages": [
               {
                 "group": "Block",
-                "icon": "square-stack",
+                "icon": "blocks",
                 "expanded": false,
                 "pages": ["api-reference/bitcoin/block/get-block"]
               },

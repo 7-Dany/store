@@ -1,36 +1,113 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Store Frontend
 
-## Getting Started
+This is the Next.js frontend for the Store platform. It provides the customer/admin-facing auth flows, account management surfaces, operational dashboards, and Bitcoin transaction monitoring UI that sit in front of the Go backend.
 
-First, run the development server:
+## Stack
+
+- Next.js 16 App Router
+- React 19
+- TypeScript
+- Tailwind CSS 4
+- shadcn/ui-style component primitives
+- Sonner for toast notifications
+- Recharts for telemetry visualizations
+
+## What the frontend includes
+
+### Authentication
+
+- Login
+- Registration
+- Email verification
+- Forgot password
+- Password reset
+- Unlock flow
+- Google OAuth sign-in
+- Telegram sign-in
+
+### Dashboard surfaces
+
+- Overview dashboard
+- Profile page
+- Settings page
+- Sessions management
+- Linked accounts management
+- Security / system health dashboard
+- Transaction lifecycle / Bitcoin dashboard
+
+### Backend proxy routes
+
+The frontend includes App Router API routes that proxy authenticated requests to the backend. These routes read the `session` cookie server-side and forward requests to backend services without exposing private backend configuration to the browser.
+
+Examples include:
+
+- `/api/auth/*`
+- `/api/oauth/*`
+- `/api/profile/*`
+- `/api/bitcoin/*`
+- `/api/telemetry`
+
+## Project structure
+
+```text
+frontend/
+  app/                App Router pages, layouts, and API proxy routes
+  components/         Shared UI primitives
+  features/           Feature-oriented UI modules
+  lib/                API clients, utilities, telemetry helpers
+  docs/               Frontend-specific documentation
+  public/             Static assets
+```
+
+Feature folders are organized by domain, including:
+
+- `features/auth`
+- `features/dashboard`
+- `features/profile`
+- `features/settings`
+- `features/security`
+- `features/bitcoin`
+- `features/shared`
+
+## Local development
+
+Install dependencies and start the app:
+
+```bash
+npm install
+npm run dev
+```
+
+The app runs at [http://localhost:3000](http://localhost:3000) by default.
+
+## Available scripts
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run build
+npm run start
+npm run lint
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Environment notes
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The frontend expects backend/API configuration through environment variables and local `.env` files. The codebase also references provider-specific public variables such as the Telegram bot username for the Telegram sign-in widget.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Keep secrets on the backend or server-only environment variables. Browser code should only use `NEXT_PUBLIC_*` values when they are safe to expose.
 
-## Learn More
+## Key implementation notes
 
-To learn more about Next.js, take a look at the following resources:
+- Authenticated server components and API routes rely on the `session` cookie.
+- Telemetry data is fetched through the frontend's gated `/api/telemetry` route.
+- Bitcoin monitoring UI consumes frontend API routes that proxy backend Bitcoin and event endpoints.
+- The dashboard layout includes session-aware behavior and authenticated profile loading.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Build verification
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Production build:
 
-## Deploy on Vercel
+```bash
+npm run build
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+This was recently verified successfully against the current codebase.

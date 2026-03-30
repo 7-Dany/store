@@ -1,4 +1,4 @@
-import type { TimePoint } from "@/lib/api/telemetry/security";
+import type { TimePoint } from "@/lib/api/telemetry/prometheus";
 
 interface SparklineProps {
   data: TimePoint[];

@@ -723,6 +723,7 @@ function deriveServices(p: {
   zmqConnected: number | null;
   zmqLastMessageAgeSec: number | null;
   rpcConnected: number | null;
+  keypoolSize: number | null;
   reconciliationLagBlocks: number | null;
   balanceDriftSatoshis: number | null;
   reconciliationHoldActive: boolean;

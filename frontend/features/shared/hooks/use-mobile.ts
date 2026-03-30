@@ -1,27 +1,19 @@
-"use client";
+import * as React from "react"
 
-import { useState, useEffect } from "react";
+const MOBILE_BREAKPOINT = 768
 
-const MOBILE_QUERY = "(max-width: 767px)";
+export function useIsMobile() {
+  const [isMobile, setIsMobile] = React.useState<boolean | undefined>(undefined)
 
-/**
- * Returns true when the viewport matches the mobile breakpoint.
- * Subscribes only to the matchMedia change event (a boolean flip) rather than
- * raw window.innerWidth, avoiding re-renders on every pixel change.
- * Returns false during SSR to avoid hydration mismatches.
- */
-export function useIsMobile(): boolean {
-  const [isMobile, setIsMobile] = useState(false);
+  React.useEffect(() => {
+    const mql = window.matchMedia(`(max-width: ${MOBILE_BREAKPOINT - 1}px)`)
+    const onChange = () => {
+      setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
+    }
+    mql.addEventListener("change", onChange)
+    setIsMobile(window.innerWidth < MOBILE_BREAKPOINT)
+    return () => mql.removeEventListener("change", onChange)
+  }, [])
 
-  useEffect(() => {
-    const mql = window.matchMedia(MOBILE_QUERY);
-    // Set initial value after mount (client-only)
-    setIsMobile(mql.matches);
-
-    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches);
-    mql.addEventListener("change", onChange);
-    return () => mql.removeEventListener("change", onChange);
-  }, []);
-
-  return isMobile;
+  return !!isMobile
 }

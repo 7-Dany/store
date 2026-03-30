@@ -3,7 +3,7 @@
 import { useCallback, useTransition } from "react";
 import { toast } from "sonner";
 import * as authApi from "@/lib/api/auth";
-import { useCountdown } from "@/hooks/shared/use-countdown";
+import { useCountdown } from "@/features/shared/hooks/use-countdown";
 
 const RESEND_COOLDOWN_SECONDS = 120;
 

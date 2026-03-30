@@ -23,7 +23,7 @@ import {
   IconCircleCheck,
 } from "@tabler/icons-react";
 import { useDeleteAccount } from "@/features/profile/hooks/use-delete-account";
-import { useCountdown } from "@/hooks/shared/use-countdown";
+import { useCountdown } from "@/features/shared/hooks/use-countdown";
 
 export function DangerZone() {
   const [open, setOpen] = useState(false);

@@ -14,7 +14,7 @@ export const metadata: Metadata = {
 export default async function LoginPage({
   searchParams,
 }: {
-  searchParams: Promise<{ verified?: string; email?: string; reset?: string }>;
+  searchParams: Promise<{ verified?: string; email?: string; reset?: string; error?: string }>;
 }) {
   const { verified, email = "", reset, error } = await searchParams;
 

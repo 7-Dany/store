@@ -4,7 +4,7 @@ import { useCallback, useReducer, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import * as authApi from "@/lib/api/auth";
 import { parseApiError, authErrorMessage } from "@/lib/auth/errors";
-import { useCountdown } from "@/hooks/shared/use-countdown";
+import { useCountdown } from "@/features/shared/hooks/use-countdown";
 
 // ─── State machine ────────────────────────────────────────────────────────────
 

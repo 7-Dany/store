@@ -187,7 +187,7 @@ function OtpCurrentStep({
 }: {
   isPending: boolean;
   error: string | null;
-  countdown: ReturnType<typeof import("@/hooks/shared/use-countdown").useCountdown>;
+  countdown: ReturnType<typeof import("@/features/shared/hooks/use-countdown").useCountdown>;
   onClearError: () => void;
   onSubmit: (code: string) => void;
   onResend: () => void;
@@ -260,7 +260,7 @@ function OtpNewStep({
   newEmail: string;
   isPending: boolean;
   error: string | null;
-  countdown: ReturnType<typeof import("@/hooks/shared/use-countdown").useCountdown>;
+  countdown: ReturnType<typeof import("@/features/shared/hooks/use-countdown").useCountdown>;
   onClearError: () => void;
   onSubmit: (code: string) => void;
   onCancel: () => void;

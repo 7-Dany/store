@@ -3,7 +3,7 @@
 import { useCallback, useReducer, useTransition } from "react";
 import * as profileApi from "@/lib/api/profile";
 import { parseApiError, errorMessage } from "@/lib/auth/errors";
-import { useCountdown } from "@/hooks/shared/use-countdown";
+import { useCountdown } from "@/features/shared/hooks/use-countdown";
 
 // ─── State machine ────────────────────────────────────────────────────────────
 // Step 1: User enters new email → POST /profile/me/email → OTP to CURRENT email

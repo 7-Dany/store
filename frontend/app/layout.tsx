@@ -1,12 +1,14 @@
 import type { Metadata } from "next";
-import { Geist_Mono, Outfit } from "next/font/google";
+import { Geist_Mono, Outfit, Roboto } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
 import { ThemeProvider } from "@/lib/providers/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 
-const outfit = Outfit({ subsets: ["latin"], variable: "--font-sans" });
+const robotoHeading = Roboto({subsets:['latin'],variable:'--font-heading'});
+
+const outfit = Outfit({subsets:['latin'],variable:'--font-sans'});
 
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
@@ -27,7 +29,7 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={cn(outfit.variable, geistMono.variable)}
+      className={cn( geistMono.variable, "font-sans", outfit.variable, robotoHeading.variable)}
     >
       <body className="font-sans antialiased" suppressHydrationWarning>
         <ThemeProvider

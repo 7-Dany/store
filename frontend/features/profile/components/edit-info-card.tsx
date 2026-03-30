@@ -30,7 +30,7 @@ import { useUpdateProfile } from "@/features/profile/hooks/use-update-profile";
 import { useUpdateUsername } from "@/features/profile/hooks/use-update-username";
 import { EmailChangeDialog } from "@/features/settings/components/email-change-dialog";
 import { FieldRow } from "@/features/shared/components/form-components";
-import { useDebounce } from "@/hooks/shared/use-debounce";
+import { useDebounce } from "@/features/shared/hooks/use-debounce";
 import type { UserProfile } from "@/lib/api/types";
 
 function AvatarBanner({ profile }: { profile: UserProfile | null }) {

@@ -111,11 +111,14 @@ export function RequestErrorChart({
                 fontSize: "12px",
                 color: "var(--popover-foreground)",
               }}
-              formatter={(value: number, name: string) =>
-                name === "req"
-                  ? [`${Math.round(value)} req/min`, "Requests"]
-                  : [`${value.toFixed(2)}%`, "Error rate"]
-              }
+              formatter={(value, name) => {
+                const numericValue =
+                  typeof value === "number" ? value : Number(value ?? 0);
+
+                return name === "req"
+                  ? [`${Math.round(numericValue)} req/min`, "Requests"]
+                  : [`${numericValue.toFixed(2)}%`, "Error rate"];
+              }}
               cursor={{ stroke: "var(--border)", strokeWidth: 1 }}
             />
             <Legend

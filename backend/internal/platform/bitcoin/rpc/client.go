@@ -10,8 +10,10 @@
 //     Stringer returns "[redacted]", making accidental logging impossible.
 //   - BTC-to-satoshi precision: all BTC amounts are typed as the unexported
 //     btcRawAmount; callers must use BtcToSat() for conversion.
-//   - No txindex required: all queries use wallet-native RPCs (gettransaction,
-//     getaddressinfo, etc.) which work on pruned nodes without txindex=1.
+//   - No txindex dependency on wallet/mempool paths: wallet-native RPCs
+//     (gettransaction, getaddressinfo, getrawtransaction for mempool, etc.)
+//     work without txindex=1. Block-hash readers still depend on the node
+//     retaining the referenced block data.
 //   - Full observability: every call is metered via RPCRecorder (recorder.go).
 //     Pass deps.Metrics directly — *telemetry.Registry satisfies the interface.
 //   - Host safety: New() panics if the host is not a loopback address. RPC
@@ -192,6 +194,7 @@ type Client interface {
 	GetBlockchainInfo(ctx context.Context) (BlockchainInfo, error)
 	GetBlockHeader(ctx context.Context, hash string) (BlockHeader, error)
 	GetBlock(ctx context.Context, hash string, verbosity int) (json.RawMessage, error)
+	GetBlockVerbose(ctx context.Context, hash string) (VerboseBlock, error)
 	GetBlockHash(ctx context.Context, height int) (string, error)
 	GetBlockCount(ctx context.Context) (int, error)
 	GetTransaction(ctx context.Context, txid string, verbose bool) (WalletTx, error)
@@ -205,14 +208,7 @@ type Client interface {
 	WalletProcessPSBT(ctx context.Context, psbt string) (ProcessedPSBT, error)
 	FinalizePSBT(ctx context.Context, psbt string) (FinalizedPSBT, error)
 	SendRawTransaction(ctx context.Context, hexTx string, maxFeeRate float64) (string, error)
-
-	// GetRawTransaction fetches a raw transaction by txid.
-	// verbosity=1 returns a decoded RawTx object (required for mempool address matching).
-	// Works on MEMPOOL transactions without txindex; confirmed transactions require txindex.
 	GetRawTransaction(ctx context.Context, txid string, verbosity int) (RawTx, error)
-
-	// Close releases idle keep-alive connections back to the OS.
-	// Call during graceful shutdown after all in-flight requests have completed.
 	Close()
 }
 
@@ -688,6 +684,13 @@ func (c *client) GetBlockHeader(ctx context.Context, hash string) (BlockHeader, 
 func (c *client) GetBlock(ctx context.Context, hash string, verbosity int) (json.RawMessage, error) {
 	var result json.RawMessage
 	err := c.retryCall(ctx, rpcMethodGetBlock, []any{hash, verbosity}, &result)
+	return result, err
+}
+
+// GetBlockVerbose returns a block with decoded transactions.
+func (c *client) GetBlockVerbose(ctx context.Context, hash string) (VerboseBlock, error) {
+	var result VerboseBlock
+	err := c.retryCall(ctx, rpcMethodGetBlock, []any{hash, 2}, &result)
 	return result, err
 }
 

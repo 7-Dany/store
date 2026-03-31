@@ -12,4 +12,14 @@ var (
 	// must be loaded via loadwallet or createwallet before transaction queries
 	// can be served.
 	ErrWalletNotLoaded = errors.New("bitcoin wallet not loaded")
+
+	// ErrTrackedTxStatusNotFound is returned when a durable txstatus row does not exist.
+	ErrTrackedTxStatusNotFound = errors.New("tracked tx status not found")
+
+	// ErrTrackedTxStatusExists is returned when a duplicate explicit txid tracking row exists.
+	ErrTrackedTxStatusExists = errors.New("tracked tx status already exists")
+
+	// ErrWatchManagedTrackedTxStatus is returned when a caller attempts to update a
+	// watch-managed row through the explicit txstatus CRUD update path.
+	ErrWatchManagedTrackedTxStatus = errors.New("tracked tx status is managed by watch events")
 )

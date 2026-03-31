@@ -2,7 +2,7 @@
 -- +goose StatementBegin
 
 /*
- * 022_btc_disputes.sql — Buyer/vendor payment dispute records.
+ * 023_btc_disputes.sql — Buyer/vendor payment dispute records.
  *
  * Tables defined here:
  *   dispute_records — dispute lifecycle table
@@ -31,7 +31,7 @@
  *
  * Depends on: 015_btc_payouts.sql (payout_records), 012_btc_invoices.sql (invoices)
  *             010_btc_core.sql (vendor_wallet_config), 001_core.sql (users)
- * Continued in: 023_btc_history.sql
+ * Continued in: 024_btc_history.sql
  */
 
 /* ═════════════════════════════════════════════════════════════
@@ -204,7 +204,7 @@ ALTER TABLE payout_records
         FOREIGN KEY (dispute_id) REFERENCES dispute_records(id) ON DELETE SET NULL;
 
 COMMENT ON COLUMN payout_records.dispute_id IS
-    'FK to dispute_records added in 022_btc_disputes.sql (was plain UUID in 015). '
+    'FK to dispute_records added in 023_btc_disputes.sql (was plain UUID in 015). '
     'SET NULL on dispute deletion (forensics path only). '
     'NULL unless hold_reason = ''dispute_hold''. Sweep job checks IS NOT NULL at broadcast '
     'boundary to abort sweep for dispute-frozen records.';

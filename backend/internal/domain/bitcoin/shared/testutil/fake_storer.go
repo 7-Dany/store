@@ -8,73 +8,7 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/domain/bitcoin/events"
-	"github.com/7-Dany/store/backend/internal/domain/bitcoin/watch"
 )
-
-// ── WatchFakeStorer ───────────────────────────────────────────────────────────
-
-// WatchFakeStorer is a hand-written implementation of watch.Storer for service
-// unit tests. Each method delegates to its Fn field if non-nil; otherwise it
-// returns the zero value and nil error so tests only configure the fields they need.
-type WatchFakeStorer struct {
-	RunWatchCapFn              func(ctx context.Context, userID string, limit int, addresses []string) (success, newCount, addedCount int64, err error)
-	IncrGlobalWatchCountFn     func(ctx context.Context) error
-	PublishCacheInvalidationFn func(ctx context.Context, userID string) error
-	ListWatchAddressKeysFn     func(ctx context.Context, cursor uint64, count int64) (keys []string, nextCursor uint64, err error)
-	GetWatchSetSizeFn          func(ctx context.Context, key string) (int64, error)
-	WriteAuditLogFn            func(ctx context.Context, event audit.EventType, userID, sourceIP string, metadata map[string]string) error
-}
-
-// compile-time check that *WatchFakeStorer satisfies watch.Storer.
-var _ watch.Storer = (*WatchFakeStorer)(nil)
-
-// RunWatchCap delegates to RunWatchCapFn if set.
-func (f *WatchFakeStorer) RunWatchCap(ctx context.Context, userID string, limit int, addresses []string) (int64, int64, int64, error) {
-	if f.RunWatchCapFn != nil {
-		return f.RunWatchCapFn(ctx, userID, limit, addresses)
-	}
-	return 1, int64(len(addresses)), int64(len(addresses)), nil
-}
-
-// IncrGlobalWatchCount delegates to IncrGlobalWatchCountFn if set.
-func (f *WatchFakeStorer) IncrGlobalWatchCount(ctx context.Context) error {
-	if f.IncrGlobalWatchCountFn != nil {
-		return f.IncrGlobalWatchCountFn(ctx)
-	}
-	return nil
-}
-
-// PublishCacheInvalidation delegates to PublishCacheInvalidationFn if set.
-func (f *WatchFakeStorer) PublishCacheInvalidation(ctx context.Context, userID string) error {
-	if f.PublishCacheInvalidationFn != nil {
-		return f.PublishCacheInvalidationFn(ctx, userID)
-	}
-	return nil
-}
-
-// ListWatchAddressKeys delegates to ListWatchAddressKeysFn if set.
-func (f *WatchFakeStorer) ListWatchAddressKeys(ctx context.Context, cursor uint64, count int64) ([]string, uint64, error) {
-	if f.ListWatchAddressKeysFn != nil {
-		return f.ListWatchAddressKeysFn(ctx, cursor, count)
-	}
-	return nil, 0, nil
-}
-
-// GetWatchSetSize delegates to GetWatchSetSizeFn if set.
-func (f *WatchFakeStorer) GetWatchSetSize(ctx context.Context, key string) (int64, error) {
-	if f.GetWatchSetSizeFn != nil {
-		return f.GetWatchSetSizeFn(ctx, key)
-	}
-	return 0, nil
-}
-
-// WriteAuditLog delegates to WriteAuditLogFn if set.
-func (f *WatchFakeStorer) WriteAuditLog(ctx context.Context, event audit.EventType, userID, sourceIP string, metadata map[string]string) error {
-	if f.WriteAuditLogFn != nil {
-		return f.WriteAuditLogFn(ctx, event, userID, sourceIP, metadata)
-	}
-	return nil
-}
 
 // ── EventsFakeStorer ──────────────────────────────────────────────────────────
 
@@ -82,12 +16,18 @@ func (f *WatchFakeStorer) WriteAuditLog(ctx context.Context, event audit.EventTy
 // unit tests. Each method delegates to its Fn field if non-nil; otherwise it
 // returns a safe zero value and nil error.
 type EventsFakeStorer struct {
-	StoreSessionSIDFn       func(ctx context.Context, jti, sessionID string, ttl time.Duration) error
-	GetDelSessionSIDFn      func(ctx context.Context, jti string) (string, error)
-	ConsumeJTIFn            func(ctx context.Context, jti string, ttl time.Duration) (bool, error)
-	RecordTokenIssuanceFn   func(ctx context.Context, vendorID [16]byte, network, jtiHash string, sourceIPHash *string, expiresAt time.Time) error
-	WriteAuditLogFn         func(ctx context.Context, event audit.EventType, userID string, metadata map[string]any) error
-	GetUserWatchAddressesFn func(ctx context.Context, userID string) ([]string, error)
+	StoreSessionSIDFn             func(ctx context.Context, jti, sessionID string, ttl time.Duration) error
+	GetDelSessionSIDFn            func(ctx context.Context, jti string) (string, error)
+	ConsumeJTIFn                  func(ctx context.Context, jti string, ttl time.Duration) (bool, error)
+	RecordTokenIssuanceFn         func(ctx context.Context, vendorID [16]byte, network, jtiHash string, sourceIPHash *string, expiresAt time.Time) error
+	WriteAuditLogFn               func(ctx context.Context, event audit.EventType, userID string, metadata map[string]any) error
+	GetUserWatchAddressesFn       func(ctx context.Context, userID, network string) ([]string, error)
+	UpsertWatchBitcoinTxStatusFn  func(ctx context.Context, in events.TrackedStatusUpsertInput) error
+	TouchBitcoinTxStatusMempoolFn func(ctx context.Context, userID, network, txid string, feeRateSatVByte float64, lastSeenAt time.Time) error
+	ConfirmBitcoinTxStatusFn      func(ctx context.Context, userID, network, txid, blockHash string, confirmations int, blockHeight int64, confirmedAt time.Time) error
+	MarkBitcoinTxStatusReplacedFn func(ctx context.Context, userID, network, replacedTxID, replacementTxID string, replacedAt time.Time) error
+	ListBitcoinTxStatusUsersFn    func(ctx context.Context, network, txid string) ([]string, error)
+	ListActiveTxWatchUsersFn      func(ctx context.Context, network, txid string) ([]string, error)
 }
 
 // compile-time check that *EventsFakeStorer satisfies events.Storer.
@@ -129,9 +69,51 @@ func (f *EventsFakeStorer) WriteAuditLog(ctx context.Context, event audit.EventT
 	return nil
 }
 
-func (f *EventsFakeStorer) GetUserWatchAddresses(ctx context.Context, userID string) ([]string, error) {
+func (f *EventsFakeStorer) GetUserWatchAddresses(ctx context.Context, userID, network string) ([]string, error) {
 	if f.GetUserWatchAddressesFn != nil {
-		return f.GetUserWatchAddresses(ctx, userID)
+		return f.GetUserWatchAddressesFn(ctx, userID, network)
 	}
 	return []string{}, nil
+}
+
+func (f *EventsFakeStorer) UpsertWatchBitcoinTxStatus(ctx context.Context, in events.TrackedStatusUpsertInput) error {
+	if f.UpsertWatchBitcoinTxStatusFn != nil {
+		return f.UpsertWatchBitcoinTxStatusFn(ctx, in)
+	}
+	return nil
+}
+
+func (f *EventsFakeStorer) TouchBitcoinTxStatusMempool(ctx context.Context, userID, network, txid string, feeRateSatVByte float64, lastSeenAt time.Time) error {
+	if f.TouchBitcoinTxStatusMempoolFn != nil {
+		return f.TouchBitcoinTxStatusMempoolFn(ctx, userID, network, txid, feeRateSatVByte, lastSeenAt)
+	}
+	return nil
+}
+
+func (f *EventsFakeStorer) ConfirmBitcoinTxStatus(ctx context.Context, userID, network, txid, blockHash string, confirmations int, blockHeight int64, confirmedAt time.Time) error {
+	if f.ConfirmBitcoinTxStatusFn != nil {
+		return f.ConfirmBitcoinTxStatusFn(ctx, userID, network, txid, blockHash, confirmations, blockHeight, confirmedAt)
+	}
+	return nil
+}
+
+func (f *EventsFakeStorer) MarkBitcoinTxStatusReplaced(ctx context.Context, userID, network, replacedTxID, replacementTxID string, replacedAt time.Time) error {
+	if f.MarkBitcoinTxStatusReplacedFn != nil {
+		return f.MarkBitcoinTxStatusReplacedFn(ctx, userID, network, replacedTxID, replacementTxID, replacedAt)
+	}
+	return nil
+}
+
+func (f *EventsFakeStorer) ListBitcoinTxStatusUsersByTxID(ctx context.Context, network, txid string) ([]string, error) {
+	if f.ListBitcoinTxStatusUsersFn != nil {
+		return f.ListBitcoinTxStatusUsersFn(ctx, network, txid)
+	}
+	return nil, nil
+}
+
+func (f *EventsFakeStorer) ListActiveBitcoinTransactionWatchUsersByTxID(ctx context.Context, network, txid string) ([]string, error) {
+	if f.ListActiveTxWatchUsersFn != nil {
+		return f.ListActiveTxWatchUsersFn(ctx, network, txid)
+	}
+	return nil, nil
 }

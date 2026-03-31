@@ -2,7 +2,7 @@
 -- +goose StatementBegin
 
 /*
- * 023_btc_history.sql — Audit support and infrastructure history tables.
+ * 024_btc_history.sql — Audit support and infrastructure history tables.
  *
  * Tables defined here:
  *   btc_tier_config_history        — immutable log of every btc_tier_config row change
@@ -25,7 +25,7 @@
  *
  * Depends on: 010_btc_core.sql (btc_tier_config FK, vendor_wallet_config FK)
  *             015_btc_payouts.sql (payout_records FK in reconciliation_run_history)
- * Continued in: 024_btc_history_functions.sql
+ * Continued in: 025_btc_history_functions.sql
  */
 
 /* ═════════════════════════════════════════════════════════════

@@ -2,17 +2,17 @@
 -- +goose StatementBegin
 
 /*
- * 024_btc_history_functions.sql — History capture triggers.
+ * 025_btc_history_functions.sql — History capture triggers.
  *
  * Functions defined here:
  *   fn_tier_config_history() — captures btc_tier_config changes into btc_tier_config_history
  *   fn_vwc_history()         — captures vendor_wallet_config changes into vendor_wallet_config_history
  *
- * These functions are defined after 023_btc_history.sql because they INSERT into the
+ * These functions are defined after 024_btc_history.sql because they INSERT into the
  * history tables defined there. The triggers are created ON tables from 010_btc_core.sql —
  * cross-file trigger creation is valid in PostgreSQL.
  *
- * Depends on: 023_btc_history.sql (history tables)
+ * Depends on: 024_btc_history.sql (history tables)
  *             010_btc_core.sql (btc_tier_config, vendor_wallet_config)
  * Continued in: 025_btc_grants.sql
  */

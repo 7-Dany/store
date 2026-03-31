@@ -304,12 +304,13 @@ func (s *InMemoryStore) RefreshTTL(_ context.Context, key string, ttl time.Durat
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
 	it, ok := s.items[key]
-	if !ok || it.expired(time.Now()) {
+	if !ok || it.expired(now) {
 		delete(s.items, key)
 		return false, nil
 	}
-	it.expiresAt = time.Now().Add(ttl)
+	it.expiresAt = now.Add(ttl)
 	return true, nil
 }
 

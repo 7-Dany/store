@@ -16,8 +16,8 @@ api: "GET /bitcoin/events"
 
 1. Call [`POST /bitcoin/events/token`](/api-reference/bitcoin/events/issue-token)
    to obtain the `btc_sse_jti` HttpOnly cookie.
-2. Call [`POST /bitcoin/watch`](/api-reference/bitcoin/watch/watch) to register
-   the Bitcoin addresses to monitor.
+2. Call [`POST /bitcoin/watch`](/api-reference/bitcoin/watch/create-watch) once
+   per address or transaction txid you want to monitor.
 
 **Origin enforcement** — The request `Origin` header must match a server-configured
 allowlist. Requests with a missing or unlisted `Origin` are rejected with `403`

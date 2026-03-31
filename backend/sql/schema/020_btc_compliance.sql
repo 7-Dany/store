@@ -2,7 +2,7 @@
 -- +goose StatementBegin
 
 /*
- * 019_btc_compliance.sql — KYC, FATF Travel Rule, and GDPR compliance tables.
+ * 020_btc_compliance.sql — KYC, FATF Travel Rule, and GDPR compliance tables.
  *
  * Tables defined here:
  *   kyc_submissions          — per-submission KYC/AML workflow lifecycle
@@ -12,7 +12,7 @@
  *     transition). Without it, vendorHasApprovedKYC() returns true indefinitely after expiry.
  *
  * Depends on: 009_btc_types.sql, 012_btc_invoices.sql, 010_btc_core.sql, 001_core.sql
- * Continued in: 020_btc_compliance_functions.sql
+ * Continued in: 021_btc_compliance_functions.sql
  */
 
 /* ═════════════════════════════════════════════════════════════

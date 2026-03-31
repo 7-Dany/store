@@ -17,10 +17,11 @@ export default async function DashboardLayout({
   const profile = await fetchProfile(token);
 
   if (!profile) {
-    if (cookieStore.get("refresh_token")?.value) {
-      redirect("/api/auth/refresh?from=/dashboard");
-    }
-    redirect("/api/auth/logout");
+    // Google OAuth initially lands with the backend-issued refresh cookie scoped
+    // to /api/v1/auth, so /dashboard cannot read it directly. Always recover
+    // through the /api/v1/auth alias so both the backend-scoped cookie and the
+    // frontend root-scoped cookie can refresh the session.
+    redirect("/api/v1/auth/refresh?from=/dashboard");
   }
 
   const sidebarOpen = cookieStore.get("sidebar_state")?.value !== "false";

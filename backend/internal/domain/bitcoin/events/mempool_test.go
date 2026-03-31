@@ -24,6 +24,7 @@ type fakeRPCClient struct {
 	GetMempoolEntryFn func(ctx context.Context, txid string) (rpc.MempoolEntry, error)
 	GetBlockHeaderFn  func(ctx context.Context, hash string) (rpc.BlockHeader, error)
 	GetBlockFn        func(ctx context.Context, hash string, verbosity int) (json.RawMessage, error)
+	GetBlockVerboseFn func(ctx context.Context, hash string) (rpc.VerboseBlock, error)
 }
 
 var _ rpc.Client = (*fakeRPCClient)(nil)
@@ -48,6 +49,12 @@ func (f *fakeRPCClient) GetBlock(ctx context.Context, hash string, verbosity int
 		return f.GetBlockFn(ctx, hash, verbosity)
 	}
 	return json.RawMessage(`{"tx":[]}`), nil
+}
+func (f *fakeRPCClient) GetBlockVerbose(ctx context.Context, hash string) (rpc.VerboseBlock, error) {
+	if f.GetBlockVerboseFn != nil {
+		return f.GetBlockVerboseFn(ctx, hash)
+	}
+	return rpc.VerboseBlock{}, nil
 }
 
 // Unimplemented stubs — panic if called to surface accidental usage.
@@ -186,7 +193,7 @@ func TestMempoolTracker_HandleTxEvent_MatchedAddress_EmitsPendingMempool(t *test
 	ch, _ := broker.Subscribe("user-1")
 
 	st := &localFakeStorer{
-		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+		GetUserWatchAddressesFn: func(_ context.Context, _, _ string) ([]string, error) {
 			return []string{testAddr1}, nil
 		},
 	}
@@ -212,7 +219,7 @@ func TestMempoolTracker_HandleTxEvent_NoAddressMatch_NoEvent(t *testing.T) {
 	ch, _ := broker.Subscribe("user-1")
 
 	st := &localFakeStorer{
-		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+		GetUserWatchAddressesFn: func(_ context.Context, _, _ string) ([]string, error) {
 			return []string{"tb1qwatchedaddr_not_in_tx"}, nil
 		},
 	}
@@ -242,7 +249,7 @@ func TestMempoolTracker_HandleRawTxEvent_NoAddresses_NoEvent(t *testing.T) {
 	ch, _ := broker.Subscribe("user-1")
 
 	st := &localFakeStorer{
-		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+		GetUserWatchAddressesFn: func(_ context.Context, _, _ string) ([]string, error) {
 			return []string{testAddr1}, nil
 		},
 	}
@@ -261,7 +268,7 @@ func TestMempoolTracker_HandleTxEvent_AddedToPendingMempool(t *testing.T) {
 	_, _ = broker.Subscribe("user-1")
 
 	st := &localFakeStorer{
-		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+		GetUserWatchAddressesFn: func(_ context.Context, _, _ string) ([]string, error) {
 			return []string{testAddr1}, nil
 		},
 	}
@@ -283,7 +290,7 @@ func TestMempoolTracker_HandleTxEvent_SpentOutpointRecorded(t *testing.T) {
 
 	prevTxid := testTxID2
 	st := &localFakeStorer{
-		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+		GetUserWatchAddressesFn: func(_ context.Context, _, _ string) ([]string, error) {
 			return []string{testAddr1}, nil
 		},
 	}
@@ -305,7 +312,7 @@ func TestMempoolTracker_HandleTxEvent_PendingMempoolCapReached_DropsEntry(t *tes
 	_, _ = broker.Subscribe("user-1")
 
 	st := &localFakeStorer{
-		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+		GetUserWatchAddressesFn: func(_ context.Context, _, _ string) ([]string, error) {
 			return []string{testAddr1}, nil
 		},
 	}
@@ -337,7 +344,7 @@ func TestMempoolTracker_HandleTxEvent_RBF_EmitsReplacedBeforePending(t *testing.
 	ch, _ := broker.Subscribe("user-1")
 
 	st := &localFakeStorer{
-		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+		GetUserWatchAddressesFn: func(_ context.Context, _, _ string) ([]string, error) {
 			return []string{testAddr1}, nil
 		},
 	}
@@ -487,7 +494,7 @@ func TestMempoolTracker_HandleBlockEvent_UsesCanonicalHashEverywhere(t *testing.
 	event := zmq.BlockEvent{Hash: mustDecodeHex32(blockHash)}
 
 	st := &localFakeStorer{
-		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+		GetUserWatchAddressesFn: func(_ context.Context, _, _ string) ([]string, error) {
 			return []string{testAddr1}, nil
 		},
 	}
@@ -566,7 +573,7 @@ func TestMempoolTracker_HandleBlockEvent_ConfirmedTx_EmitsConfirmedTxAndRemovesF
 
 	// Pre-seed pendingMempool with testTxID1 watching testAddr1.
 	st := &localFakeStorer{
-		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+		GetUserWatchAddressesFn: func(_ context.Context, _, _ string) ([]string, error) {
 			return []string{testAddr1}, nil
 		},
 	}
@@ -734,7 +741,7 @@ func TestMempoolTracker_ConcurrentTxAndBlockEvent_NoRace(t *testing.T) {
 	_, _ = broker.Subscribe("user-race")
 
 	st := &localFakeStorer{
-		GetUserWatchAddressesFn: func(_ context.Context, _ string) ([]string, error) {
+		GetUserWatchAddressesFn: func(_ context.Context, _, _ string) ([]string, error) {
 			return []string{testAddr1}, nil
 		},
 	}

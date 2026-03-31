@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { isAxiosError } from "axios";
-import { serverApi } from "@/lib/api/http/server";
+import { extractCookieValue, readSetCookieHeaders } from "@/lib/api/http/cookies";
 
 interface LoginResponse {
   access_token: string;
@@ -11,30 +10,32 @@ interface LoginResponse {
   scheduled_deletion_at?: string;
 }
 
-/**
- * Extracts the refresh_token value from a Set-Cookie header array.
- * The Go backend sets: refresh_token=<value>; Path=/api/v1/auth; HttpOnly; ...
- * We pull out just the value so we can re-set it on the Next.js domain.
- */
-function extractRefreshToken(
-  setCookieHeaders: string | string[] | undefined,
-): string | null {
-  const headers = Array.isArray(setCookieHeaders)
-    ? setCookieHeaders
-    : setCookieHeaders
-      ? [setCookieHeaders]
-      : [];
-  for (const header of headers) {
-    const match = header.match(/^refresh_token=([^;]+)/);
-    if (match) return match[1];
-  }
-  return null;
+interface ErrorResponse {
+  code?: string;
+  message?: string;
 }
+
+const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8080/api/v1";
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { data, headers } = await serverApi.post<LoginResponse>("/auth/login", body);
+    const upstream = await fetch(`${API_BASE}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      cache: "no-store",
+    });
+
+    const payload = (await upstream.json()) as LoginResponse | ErrorResponse;
+    if (!upstream.ok) {
+      const res = NextResponse.json(payload, { status: upstream.status });
+      const retryAfter = upstream.headers.get("retry-after");
+      if (retryAfter) res.headers.set("Retry-After", retryAfter);
+      return res;
+    }
+
+    const data = payload as LoginResponse;
 
     const res = NextResponse.json({ ok: true }, { status: 200 });
 
@@ -47,11 +48,11 @@ export async function POST(request: Request) {
     });
 
     // The refresh token is no longer in the JSON body — read it from the
-    // Set-Cookie header that the Go backend placed on the Axios response.
-    // In Node.js, Axios exposes Set-Cookie as string[] on response.headers.
-    const refreshToken = extractRefreshToken(
-      headers["set-cookie"] as string | string[] | undefined,
-    );
+    // Set-Cookie header on the upstream response and re-issue it on the
+    // frontend origin.
+    const upstreamSetCookie = readSetCookieHeaders(upstream.headers);
+    const refreshToken = extractCookieValue(upstreamSetCookie, "refresh_token");
+    
     if (refreshToken) {
       // Compute MaxAge from refresh_expiry so the cookie lifetime matches the
       // server-side TTL exactly, rather than using a hardcoded 30-day constant.
@@ -63,21 +64,35 @@ export async function POST(request: Request) {
         maxAge: maxAge || 60 * 60 * 24 * 30, // fallback to 30d if expiry parse fails
         sameSite: "lax",
       });
+      return res;
     }
 
-    return res;
+    // If we get here, the refresh token was not found in the upstream Set-Cookie headers
+    // Log this for debugging (in development only)
+    if (process.env.NODE_ENV === "development") {
+      console.error("[Login] Refresh token missing from upstream response", {
+        setcookieCount: upstreamSetCookie.length,
+        setCookieHeaders: upstreamSetCookie,
+      });
+    }
+
+    const failure = NextResponse.json(
+      { code: "refresh_cookie_missing", message: "Upstream login did not provide a refresh cookie." },
+      { status: 502 },
+    );
+    failure.cookies.set("session", "", {
+      path: "/",
+      maxAge: 0,
+      httpOnly: true,
+      sameSite: "lax",
+    });
+    return failure;
   } catch (e) {
     return proxyError(e);
   }
 }
 
 function proxyError(e: unknown): NextResponse {
-  if (isAxiosError(e) && e.response) {
-    const res = NextResponse.json(e.response.data, { status: e.response.status });
-    const retryAfter = e.response.headers["retry-after"] as string | undefined;
-    if (retryAfter) res.headers.set("Retry-After", retryAfter);
-    return res;
-  }
   return NextResponse.json(
     { code: "upstream_unavailable", message: "Service temporarily unavailable." },
     { status: 502 },

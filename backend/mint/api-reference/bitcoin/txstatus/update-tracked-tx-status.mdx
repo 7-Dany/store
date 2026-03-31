@@ -1,0 +1,175 @@
+---
+title: "Update Tracked Tx"
+description: "Refresh one explicit Bitcoin txid-tracking row and optionally replace its associated address."
+api: "PUT http://localhost:8080/api/v1/bitcoin/tx/{id}"
+---
+
+<ParamField path="id" type="integer" required>
+  The durable row ID to update.
+</ParamField>
+
+<ParamField body="address" type="string">
+  Optional replacement Bitcoin address. Must be valid for the configured network.
+  Omit this field to clear the associated address.
+</ParamField>
+
+## Behaviour
+
+Refreshes one explicit `tracking_mode = "txid"` row using its existing txid and
+optionally replaces its associated address.
+
+Watch-managed rows (`tracking_mode = "watch"`) are immutable here because they
+are updated automatically when watched addresses match transactions.
+
+<RequestExample>
+```json Example
+{
+  "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 200
+{
+  "id": 7,
+  "network": "testnet4",
+  "tracking_mode": "txid",
+  "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq",
+  "txid": "59a32e91550ce5e1fd33cdd4f2ad8ac33efa3fb9cfac061893d5b73a210a463b",
+  "status": "mempool",
+  "confirmations": 0,
+  "amount_sat": 0,
+  "fee_rate_sat_vbyte": 0,
+  "first_seen_at": "2026-03-30T16:10:00Z",
+  "last_seen_at": "2026-03-30T16:20:00Z",
+  "created_at": "2026-03-30T16:10:00Z",
+  "updated_at": "2026-03-30T16:20:00Z"
+}
+```
+
+```json 409
+{
+  "code": "watch_managed_record",
+  "message": "watch-managed transaction status records cannot be updated here"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    The row was updated and the refreshed live status was returned.
+
+    ```json
+    {
+      "id": 7,
+      "network": "testnet4",
+      "tracking_mode": "txid",
+      "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq",
+      "txid": "59a32e91550ce5e1fd33cdd4f2ad8ac33efa3fb9cfac061893d5b73a210a463b",
+      "status": "mempool",
+      "confirmations": 0,
+      "amount_sat": 0,
+      "fee_rate_sat_vbyte": 0,
+      "first_seen_at": "2026-03-30T16:10:00Z",
+      "last_seen_at": "2026-03-30T16:20:00Z",
+      "created_at": "2026-03-30T16:10:00Z",
+      "updated_at": "2026-03-30T16:20:00Z"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    One of the request fields failed validation, or the JSON body could not be parsed.
+
+    ```json
+    {
+      "code": "invalid_id",
+      "message": "id must be a positive integer"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_address",
+      "message": "one or more addresses failed validation"
+    }
+    ```
+
+    ```json
+    {
+      "code": "bad_request",
+      "message": "invalid request body"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    A valid JWT is required.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    No durable row with this ID belongs to the caller.
+
+    ```json
+    {
+      "code": "tx_status_not_found",
+      "message": "transaction status record was not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    The row is watch-managed and cannot be edited here.
+
+    ```json
+    {
+      "code": "watch_managed_record",
+      "message": "watch-managed transaction status records cannot be updated here"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="502 — Bad Gateway">
+    The Bitcoin RPC endpoint is temporarily unreachable.
+
+    ```json
+    {
+      "code": "service_unavailable",
+      "message": "bitcoin node is temporarily unreachable"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="503 — Service Unavailable">
+    Transaction status updates are temporarily unavailable. Contact support if
+    this persists.
+
+    ```json
+    {
+      "code": "wallet_not_loaded",
+      "message": "bitcoin node has no wallet loaded — contact support"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

@@ -543,6 +543,6 @@ DROP FUNCTION IF EXISTS fn_check_identity_not_last();
 DROP FUNCTION IF EXISTS fn_require_auth_method();
 DROP FUNCTION IF EXISTS fn_end_session_on_token_purge();
 DROP FUNCTION IF EXISTS fn_revoke_token_family();
-DROP FUNCTION IF EXISTS fn_set_updated_at();
+DROP FUNCTION IF EXISTS fn_set_updated_at() CASCADE;
 
 -- +goose StatementEnd

@@ -26,6 +26,24 @@ func (q *Queries) TestCountActiveMonitoringRecords(ctx context.Context, network 
 	return count, err
 }
 
+const TestDeleteBitcoinTxStatusesByUser = `-- name: TestDeleteBitcoinTxStatusesByUser :exec
+DELETE FROM btc_tracked_transactions WHERE user_id = $1::uuid
+`
+
+func (q *Queries) TestDeleteBitcoinTxStatusesByUser(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, TestDeleteBitcoinTxStatusesByUser, userID)
+	return err
+}
+
+const TestDeleteBitcoinWatchesByUser = `-- name: TestDeleteBitcoinWatchesByUser :exec
+DELETE FROM btc_watches WHERE user_id = $1::uuid
+`
+
+func (q *Queries) TestDeleteBitcoinWatchesByUser(ctx context.Context, userID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, TestDeleteBitcoinWatchesByUser, userID)
+	return err
+}
+
 const TestDeleteBlockHistory = `-- name: TestDeleteBlockHistory :exec
 DELETE FROM bitcoin_block_history WHERE network = $1
 `
@@ -181,6 +199,59 @@ func (q *Queries) TestGetBitcoinSyncState(ctx context.Context, network string) (
 	row := q.db.QueryRow(ctx, TestGetBitcoinSyncState, network)
 	var i BitcoinSyncState
 	err := row.Scan(&i.Network, &i.LastProcessedHeight, &i.UpdatedAt)
+	return i, err
+}
+
+const TestGetBitcoinTxStatusByID = `-- name: TestGetBitcoinTxStatusByID :one
+SELECT id, user_id, network, tracking_mode, address, txid, status, confirmations, amount_sat, fee_rate_sat_vbyte, first_seen_at, last_seen_at, confirmed_at, block_hash, block_height, replacement_txid, created_at, updated_at FROM btc_tracked_transactions WHERE id = $1::bigint
+`
+
+// Fetch one raw btc_tracked_transactions row for assertion.
+func (q *Queries) TestGetBitcoinTxStatusByID(ctx context.Context, id int64) (BtcTrackedTransaction, error) {
+	row := q.db.QueryRow(ctx, TestGetBitcoinTxStatusByID, id)
+	var i BtcTrackedTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Network,
+		&i.TrackingMode,
+		&i.Address,
+		&i.Txid,
+		&i.Status,
+		&i.Confirmations,
+		&i.AmountSat,
+		&i.FeeRateSatVbyte,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
+		&i.ConfirmedAt,
+		&i.BlockHash,
+		&i.BlockHeight,
+		&i.ReplacementTxid,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const TestGetBitcoinWatchByID = `-- name: TestGetBitcoinWatchByID :one
+SELECT id, user_id, network, watch_type, address, txid, status, created_at, updated_at FROM btc_watches WHERE id = $1::bigint
+`
+
+// Fetch one raw btc_watches row for assertion.
+func (q *Queries) TestGetBitcoinWatchByID(ctx context.Context, id int64) (BtcWatch, error) {
+	row := q.db.QueryRow(ctx, TestGetBitcoinWatchByID, id)
+	var i BtcWatch
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Network,
+		&i.WatchType,
+		&i.Address,
+		&i.Txid,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
 	return i, err
 }
 
@@ -809,6 +880,123 @@ type TestInsertVendorBalanceParams struct {
 func (q *Queries) TestInsertVendorBalance(ctx context.Context, arg TestInsertVendorBalanceParams) error {
 	_, err := q.db.Exec(ctx, TestInsertVendorBalance, arg.VendorID, arg.Network, arg.BalanceSatoshis)
 	return err
+}
+
+const TestListBitcoinTxStatusRelatedAddresses = `-- name: TestListBitcoinTxStatusRelatedAddresses :many
+SELECT tracked_transaction_id, address, amount_sat, created_at, updated_at FROM btc_tracked_transaction_addresses
+WHERE tracked_transaction_id = $1::bigint
+ORDER BY address ASC
+`
+
+// Return all related addresses for one tracked tx row.
+func (q *Queries) TestListBitcoinTxStatusRelatedAddresses(ctx context.Context, txStatusID int64) ([]BtcTrackedTransactionAddress, error) {
+	rows, err := q.db.Query(ctx, TestListBitcoinTxStatusRelatedAddresses, txStatusID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BtcTrackedTransactionAddress{}
+	for rows.Next() {
+		var i BtcTrackedTransactionAddress
+		if err := rows.Scan(
+			&i.TrackedTransactionID,
+			&i.Address,
+			&i.AmountSat,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const TestListBitcoinTxStatusesByUser = `-- name: TestListBitcoinTxStatusesByUser :many
+SELECT id, user_id, network, tracking_mode, address, txid, status, confirmations, amount_sat, fee_rate_sat_vbyte, first_seen_at, last_seen_at, confirmed_at, block_hash, block_height, replacement_txid, created_at, updated_at FROM btc_tracked_transactions
+WHERE user_id = $1::uuid
+ORDER BY COALESCE(confirmed_at, first_seen_at) DESC, id DESC
+`
+
+// Return all txstatus rows for one user, newest first.
+func (q *Queries) TestListBitcoinTxStatusesByUser(ctx context.Context, userID pgtype.UUID) ([]BtcTrackedTransaction, error) {
+	rows, err := q.db.Query(ctx, TestListBitcoinTxStatusesByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BtcTrackedTransaction{}
+	for rows.Next() {
+		var i BtcTrackedTransaction
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Network,
+			&i.TrackingMode,
+			&i.Address,
+			&i.Txid,
+			&i.Status,
+			&i.Confirmations,
+			&i.AmountSat,
+			&i.FeeRateSatVbyte,
+			&i.FirstSeenAt,
+			&i.LastSeenAt,
+			&i.ConfirmedAt,
+			&i.BlockHash,
+			&i.BlockHeight,
+			&i.ReplacementTxid,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const TestListBitcoinWatchesByUser = `-- name: TestListBitcoinWatchesByUser :many
+SELECT id, user_id, network, watch_type, address, txid, status, created_at, updated_at FROM btc_watches
+WHERE user_id = $1::uuid
+  AND status  = 'active'
+ORDER BY created_at DESC, id DESC
+`
+
+// Return active watch resources for one user.
+func (q *Queries) TestListBitcoinWatchesByUser(ctx context.Context, userID pgtype.UUID) ([]BtcWatch, error) {
+	rows, err := q.db.Query(ctx, TestListBitcoinWatchesByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BtcWatch{}
+	for rows.Next() {
+		var i BtcWatch
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Network,
+			&i.WatchType,
+			&i.Address,
+			&i.Txid,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const TestResetBitcoinSyncState = `-- name: TestResetBitcoinSyncState :exec

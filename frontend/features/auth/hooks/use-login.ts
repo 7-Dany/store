@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import * as authApi from "@/lib/api/auth";
 import { parseApiError, authErrorMessage } from "@/lib/auth/errors";
+import { markSessionFresh } from "@/lib/api/http/refresh";
+import { sanitizeRelativePath } from "@/lib/auth/redirect";
 
 /** sessionStorage key used to hand credentials to the verify-email page. */
 export const PENDING_LOGIN_KEY = "__pending_login__";
@@ -14,6 +16,7 @@ interface Options {
 
 export function useLogin({ onError }: Options = {}) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [isPending, startTransition] = useTransition();
 
   const execute = useCallback(
@@ -21,7 +24,9 @@ export function useLogin({ onError }: Options = {}) {
       startTransition(async () => {
         try {
           await authApi.login({ identifier: identifier.trim(), password });
-          router.push("/dashboard");
+          markSessionFresh();
+          const nextPath = sanitizeRelativePath(searchParams.get("from"));
+          router.replace(nextPath);
         } catch (e) {
           const err = parseApiError(e);
 
@@ -52,7 +57,7 @@ export function useLogin({ onError }: Options = {}) {
         }
       });
     },
-    [router, onError],
+    [router, searchParams, onError],
   );
 
   return { execute, isPending };

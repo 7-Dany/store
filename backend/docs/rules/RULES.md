@@ -1,7 +1,7 @@
 # Project Rules
 
 **Stack:** Go · PostgreSQL 18 · chi · pgx v5 · sqlc · goose  
-**Last updated:** 2026-03-11
+**Last updated:** 2026-03-31
 
 > **This file contains only conventions that apply globally across all packages.**  
 > Auth-specific patterns, code flow traces, and auth ADRs live in [`docs/rules/auth.md`](rules/auth.md).  
@@ -86,6 +86,8 @@ decision that future contributors will find surprising.
    - [ADR-010 — Domain packages never import each other](#adr-010--domain-packages-never-import-each-other)
    - [ADR-011 — Token family revocation on reuse detection](#adr-011--token-family-revocation-on-reuse-detection)
    - [ADR-012 — models.go contains only service-layer I/O types](#adr-012--modelsgo-contains-only-service-layer-io-types)
+   - [ADR-013 — NUMERIC not DOUBLE PRECISION for fee rates and financial values](#adr-013--numeric-not-double-precision-for-fee-rates-and-financial-values)
+   - [ADR-014 — Denormalized aggregates are trigger-owned, not application-owned](#adr-014--denormalized-aggregates-are-trigger-owned-not-application-owned)
 
 ---
 
@@ -1142,6 +1144,42 @@ All SQL lives in two flat files per domain. Production queries go in `sql/querie
 ```
 
 Token consumption queries use `FOR UPDATE` to prevent concurrent double-consumption. RBAC entities are soft-deleted via `is_active = FALSE`. Auth tokens are hard-deleted only by cleanup jobs, never in request paths.
+
+#### SQL schema conventions
+
+These rules apply to every schema migration file under `sql/schema/`.
+
+**File header comment.** Every migration file begins with a block comment that matches the filename exactly (e.g. the header in `027_btc_watch_transactions.sql` reads `027_btc_watch_transactions.sql — …`). A mismatch between the filename and the header comment is a build-review error — it breaks `grep`-based navigation and indicates a copy-paste from an adjacent file.
+
+**Section separators.** Use `/* ═════ TABLE NAME ═════ */` to separate logically distinct table groups within a file. Each section contains a block comment explaining WHY the table exists, its lifecycle, and any non-obvious design decisions. Do not put design rationale only in Go comments or docs.
+
+**Inline column comments.** Every column definition carries an inline `--` comment explaining what it stores, any constraint it participates in by name, and what a NULL value means. A column with an obvious name (`created_at`) still needs a comment if it has a non-obvious default or constraint interaction.
+
+**Inline constraint comments.** Every `CONSTRAINT` block has an inline `--` comment above it explaining what invariant it enforces and what breaks at runtime if it is removed. The comment must be more specific than "prevent invalid data".
+
+**Index comments.** Each `CREATE INDEX` is preceded by a single-line comment naming the query pattern it serves, written as: `-- Purpose: example query pattern.` Every index that is a duplicate of an existing unique index must be removed — PostgreSQL can use unique indexes for all regular scans, and duplicate indexes double write amplification for zero benefit.
+
+**NUMERIC not DOUBLE PRECISION for financial values.** Any column that stores a fee rate, price, rate, or any value that is displayed to users or used in arithmetic must use `NUMERIC(p,s)`, not `DOUBLE PRECISION`. `DOUBLE PRECISION` is an IEEE 754 binary float that cannot represent most decimal fractions exactly, producing rounding artefacts in display and calculation. The canonical type for fee rates is `NUMERIC(18,8)`. This rule applies uniformly: `fee_rate_sat_vbyte`, `processing_fee_rate`, `btc_rate_at_creation`, and all equivalent columns must be `NUMERIC`.
+
+**Soft-delete consistency within a feature.** When any table in a feature group uses soft-delete (`deleted_at`, `status='deleted'`, `is_active=FALSE`), all related tables in the same feature must use the same pattern. Mixing hard-delete on a child table with soft-delete on the parent silently destroys audit data when the parent is "deleted" but the child rows are gone. Cascade hard-deletes are permitted only during administrative cleanup or test teardown, never in request paths.
+
+**Denormalized aggregate columns require a trigger.** Any column that stores a computed aggregate of a child table (e.g. `amount_sat` on `btc_tracked_transactions` aggregating `btc_tracked_transaction_addresses.amount_sat`) must be kept in sync by a trigger, not by application-layer updates. The trigger fires `AFTER INSERT OR UPDATE OF {column} OR DELETE` on the child table and recalculates the parent value with a single aggregate query. Without the trigger, concurrent writes to the child table produce a silent race where the parent value drifts. Document the trigger on the column with `COMMENT ON COLUMN`.
+
+**Status-transition history for user-visible state machines.** Any table whose `status` column drives user-visible behaviour (and is updated by asynchronous background events) must have a companion `*_status_log` table populated by an `AFTER UPDATE` trigger. The log records `old_status`, `new_status`, and `changed_at`. Without it, diagnosing concurrent event races (e.g. a stale confirmation event overwriting a terminal 'replaced' state) is impossible post-facto. The log table cascades-delete with the parent.
+
+**UPSERT ON CONFLICT DO UPDATE status guards.** Every `ON CONFLICT DO UPDATE SET status = …` expression must explicitly guard against overwriting terminal states. The canonical pattern is a `CASE` expression:
+
+```sql
+status = CASE
+    WHEN btc_tracked_transactions.status IN ('confirmed', 'replaced', 'conflicting', 'abandoned')
+    THEN btc_tracked_transactions.status
+    ELSE EXCLUDED.status
+END
+```
+
+A UPSERT that sets `status = EXCLUDED.status` unconditionally will overwrite a terminal row when a late or replayed event arrives. The application must assert `RowsAffected() >= 1` and treat 0 as a no-op.
+
+**Down migration drop order.** The `-- +goose Down` block must drop tables in reverse FK dependency order: children before parents. Using `CASCADE` without explicit ordering is permitted as a safety net but the explicit order must still be written — it documents the dependency graph for the next reader.
 
 #### No raw SQL in Go
 
@@ -2311,6 +2349,30 @@ is added that references the old one and explains what changed and why.
 **Why revoke the whole family:** If an attacker obtained token generation N and the legitimate client has rotated to N+1, revoking only generation N accomplishes nothing. Revoking the family forces re-authentication regardless of which generation the attacker holds.
 
 **Consequence:** Legitimate clients that retry a rotation request after a network timeout will find their entire family revoked. They must re-login. This is acceptable — the alternative (allowing retry within a window) requires tracking rotation timestamps and introduces race conditions.
+
+---
+
+### ADR-013 — NUMERIC not DOUBLE PRECISION for fee rates and financial values
+
+**Context:** Early versions of `btc_tracked_transactions` defined `fee_rate_sat_vbyte` as `DOUBLE PRECISION` to match Go's `float64`. All other financial columns in the BTC payment schema use `NUMERIC`.
+
+**Decision:** `fee_rate_sat_vbyte` and all analogous rate/price columns are `NUMERIC(18,8)`. No financial or financial-adjacent column may use `DOUBLE PRECISION` or `FLOAT`.
+
+**Why:** IEEE 754 binary floating-point cannot represent most decimal fractions exactly. A fee rate of `1.5 sat/vbyte` stored as `DOUBLE PRECISION` may round-trip as `1.4999999999999998`. This artefact is invisible in Go but surfaces in SQL arithmetic and in any JSON serialisation that does not apply explicit rounding. Using `NUMERIC` eliminates the class of bug entirely at zero runtime cost.
+
+**Consequence:** sqlc maps `NUMERIC` to `pgtype.Numeric` in Go. Callers that previously passed `float64` must convert. The authoritative Go type for fee rates is `decimal.Decimal` (via `shopspring/decimal`) or `pgtype.Numeric` at the store boundary. The `NUMERIC(18,8)` scale allows sub-satoshi precision for future rate changes without migration.
+
+---
+
+### ADR-014 — Denormalized aggregates are trigger-owned, not application-owned
+
+**Context:** `btc_tracked_transactions.amount_sat` is defined as the sum of `btc_tracked_transaction_addresses.amount_sat`. The original design expected the application to update both columns in the same call.
+
+**Decision:** The aggregate column is maintained exclusively by a database trigger (`fn_btta_sync_parent_amount_sat`) that fires `AFTER INSERT OR UPDATE OF amount_sat OR DELETE` on the child table. Application code never writes to `btc_tracked_transactions.amount_sat` directly.
+
+**Why:** Two concurrent event handlers writing to the child table and then recalculating the parent aggregate in application code produce a classic read-modify-write race. Trigger A reads SUM=100, Trigger B reads SUM=100, both add their own address amount, both write different totals, and the last writer wins — silently discarding the other's contribution. A per-row `AFTER` trigger runs inside the child row's transaction and holds the row lock, serialising the aggregate recalculation automatically.
+
+**Consequence:** `make sqlc` must be re-run whenever the trigger function changes (it is DDL, not a query). Integration tests that insert child rows directly must allow time for the trigger to execute within the same transaction before asserting the parent aggregate.
 
 ---
 

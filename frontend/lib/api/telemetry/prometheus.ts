@@ -256,6 +256,19 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+function normalizeAgeSeconds(raw: number, nowMs = Date.now()): number {
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+
+  // Some environments intermittently expose the poller's raw
+  // `*_timestamp_seconds` gauge instead of the already-subtracted age.
+  // Normalize that here so downstream UI always receives elapsed seconds.
+  if (raw > 1_000_000_000) {
+    return round2(Math.max(0, nowMs / 1000 - raw));
+  }
+
+  return round2(raw);
+}
+
 /**
  * Ensures a time series covers the full window with no gaps.
  * When Prometheus has never seen a metric, range queries return an empty result
@@ -1311,7 +1324,10 @@ export async function fetchSecuritySnapshot(
     const redisPoolIdlePct = round2((redisIdleRaw / redisTotal) * 100);
 
     const processMemAllocMB = round2(scalarOf(processMemRaw) / 1024 / 1024);
-    const infraPollerAgeSeconds = round2(scalarOf(infraPollerAgeRaw));
+    const infraPollerAgeSeconds = normalizeAgeSeconds(
+      scalarOf(infraPollerAgeRaw),
+      now * 1000,
+    );
 
     const loginFailPerMin = round2(scalarOf(loginFailRate));
     const totalLoginPerMin = Math.max(scalarOf(loginTotalRate), 0.01);

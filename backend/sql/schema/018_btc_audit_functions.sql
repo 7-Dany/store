@@ -18,7 +18,7 @@
  *
  * Depends on: 017_btc_audit.sql (financial_audit_events, ops_audit_log)
  *             010_btc_core.sql (platform_config, vendor_tier_overrides)
- * Continued in: 019_btc_compliance.sql
+ * Continued in: 019_btc_financial_mutations.sql
  */
 
 /* ═════════════════════════════════════════════════════════════

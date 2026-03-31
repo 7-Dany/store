@@ -16,7 +16,8 @@ import (
 
 // fakeRPC is a minimal implementation of block.Querier for service unit tests.
 type fakeRPC struct {
-	getBlockHeaderFn func(ctx context.Context, hash string) (rpc.BlockHeader, error)
+	getBlockHeaderFn     func(ctx context.Context, hash string) (rpc.BlockHeader, error)
+	getBlockchainInfoFn  func(ctx context.Context) (rpc.BlockchainInfo, error)
 }
 
 // compile-time check that *fakeRPC satisfies block.Querier.
@@ -28,6 +29,15 @@ func (f *fakeRPC) GetBlockHeader(ctx context.Context, hash string) (rpc.BlockHea
 	}
 	panic("fakeRPC.GetBlockHeader: getBlockHeaderFn not set — configure it for this test")
 }
+
+func (f *fakeRPC) GetBlockchainInfo(ctx context.Context) (rpc.BlockchainInfo, error) {
+	if f.getBlockchainInfoFn != nil {
+		return f.getBlockchainInfoFn(ctx)
+	}
+	panic("fakeRPC.GetBlockchainInfo: getBlockchainInfoFn not set — configure it for this test")
+}
+
+// ── GetBlock tests ────────────────────────────────────────────────────────────
 
 func TestGetBlock_Success(t *testing.T) {
 	t.Parallel()
@@ -95,4 +105,96 @@ func TestGetBlock_RPCDown(t *testing.T) {
 
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, blockdomain.ErrRPCUnavailable))
+}
+
+// ── GetLatestBlock tests ──────────────────────────────────────────────────────
+
+func TestGetLatestBlock_Success(t *testing.T) {
+	t.Parallel()
+
+	const tipHash = "000000000b2ac1f75ad909ca14329139a7767e8bea15e65c908e8bad6249c945"
+	svc := blockdomain.NewService(&fakeRPC{
+		getBlockchainInfoFn: func(_ context.Context) (rpc.BlockchainInfo, error) {
+			return rpc.BlockchainInfo{
+				Chain:         "testnet4",
+				Blocks:        127724,
+				BestBlockHash: tipHash,
+			}, nil
+		},
+		getBlockHeaderFn: func(_ context.Context, hash string) (rpc.BlockHeader, error) {
+			require.Equal(t, tipHash, hash, "GetBlockHeader must be called with BestBlockHash from GetBlockchainInfo")
+			return rpc.BlockHeader{
+				Hash:          tipHash,
+				Height:        127724,
+				Confirmations: 1,
+				NTx:           5,
+			}, nil
+		},
+	})
+
+	result, err := svc.GetLatestBlock(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, tipHash, result.Hash)
+	assert.Equal(t, 127724, result.Height)
+	assert.Equal(t, 1, result.Confirmations)
+	assert.Equal(t, 5, result.TxCount)
+}
+
+func TestGetLatestBlock_BlockchainInfoRPCDown_ReturnsRPCUnavailable(t *testing.T) {
+	t.Parallel()
+
+	svc := blockdomain.NewService(&fakeRPC{
+		getBlockchainInfoFn: func(_ context.Context) (rpc.BlockchainInfo, error) {
+			return rpc.BlockchainInfo{}, errors.New("connection refused")
+		},
+	})
+
+	_, err := svc.GetLatestBlock(context.Background())
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, blockdomain.ErrRPCUnavailable), "expected ErrRPCUnavailable, got %v", err)
+}
+
+func TestGetLatestBlock_GetBlockHeaderRPCDown_ReturnsRPCUnavailable(t *testing.T) {
+	t.Parallel()
+
+	svc := blockdomain.NewService(&fakeRPC{
+		getBlockchainInfoFn: func(_ context.Context) (rpc.BlockchainInfo, error) {
+			return rpc.BlockchainInfo{BestBlockHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nil
+		},
+		getBlockHeaderFn: func(_ context.Context, _ string) (rpc.BlockHeader, error) {
+			return rpc.BlockHeader{}, &rpc.RPCError{Code: -8, Message: "node error"}
+		},
+	})
+
+	_, err := svc.GetLatestBlock(context.Background())
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, blockdomain.ErrRPCUnavailable), "expected ErrRPCUnavailable, got %v", err)
+}
+
+// TestGetLatestBlock_TipNotFound_ReturnsRPCUnavailable verifies that a -5
+// (block not found) for the chain tip is remapped to ErrRPCUnavailable rather
+// than ErrBlockNotFound, because the best block hash supplied by
+// GetBlockchainInfo must always exist.
+func TestGetLatestBlock_TipNotFound_ReturnsRPCUnavailable(t *testing.T) {
+	t.Parallel()
+
+	svc := blockdomain.NewService(&fakeRPC{
+		getBlockchainInfoFn: func(_ context.Context) (rpc.BlockchainInfo, error) {
+			return rpc.BlockchainInfo{BestBlockHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}, nil
+		},
+		getBlockHeaderFn: func(_ context.Context, _ string) (rpc.BlockHeader, error) {
+			return rpc.BlockHeader{}, &rpc.RPCError{Code: -5, Message: "Block not found"}
+		},
+	})
+
+	_, err := svc.GetLatestBlock(context.Background())
+
+	require.Error(t, err)
+	// ErrBlockNotFound from GetBlock is remapped to ErrRPCUnavailable for the
+	// chain tip, because a missing best block hash indicates a node consistency
+	// error rather than a legitimate absence.
+	assert.True(t, errors.Is(err, blockdomain.ErrRPCUnavailable), "expected ErrRPCUnavailable, got %v", err)
 }

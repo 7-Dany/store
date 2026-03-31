@@ -1,0 +1,133 @@
+---
+title: "List Watches"
+description: "List Bitcoin watch resources owned by the authenticated user."
+api: "GET http://localhost:8080/api/v1/bitcoin/watch"
+---
+
+<ParamField query="watch_type" type="string">
+  Optional type filter. Allowed values: `address`, `transaction`.
+</ParamField>
+
+<ParamField query="address" type="string">
+  Optional exact address filter. Must be valid for the configured network.
+</ParamField>
+
+<ParamField query="txid" type="string">
+  Optional exact txid filter. Must be a 64-character hex string.
+</ParamField>
+
+<ParamField query="limit" type="integer">
+  Optional page size. Must be between `1` and `100`. Default: `100`.
+</ParamField>
+
+<ParamField query="cursor" type="string">
+  Optional opaque keyset cursor returned by a previous page in `next_cursor`.
+</ParamField>
+
+## Behaviour
+
+Returns watch resources for the authenticated user on the server's Bitcoin
+network.
+
+Results are returned newest first. Pagination is keyset-based:
+
+- omit `cursor` for the first page
+- pass the previous response's `next_cursor` to continue
+- stop when `next_cursor` is omitted
+
+The `cursor` value is opaque. Clients must store and replay it exactly as returned.
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "id": 11,
+      "network": "testnet4",
+      "watch_type": "address",
+      "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq",
+      "status": "active",
+      "created_at": "2026-03-31T00:30:00Z",
+      "updated_at": "2026-03-31T00:30:00Z"
+    }
+  ],
+  "next_cursor": "MjAyNi0wMy0zMVQwMDozMDowMFoPfDEx"
+}
+```
+
+```json 400
+{
+  "code": "invalid_cursor",
+  "message": "cursor must be a valid watch pagination cursor"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    Returns an `items` array. `next_cursor` is present only when another page exists.
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    One of the supplied filters is invalid.
+
+    ```json
+    {
+      "code": "invalid_watch_type",
+      "message": "watch_type must be address or transaction"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_address",
+      "message": "address failed validation"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_txid",
+      "message": "txid must be a 64-character hex string"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_limit",
+      "message": "limit must be an integer between 1 and 100"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_cursor",
+      "message": "cursor must be a valid watch pagination cursor"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    A valid JWT is required.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

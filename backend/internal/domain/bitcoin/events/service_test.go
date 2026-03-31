@@ -34,12 +34,18 @@ import (
 // localFakeStorer is a hand-written Storer for service unit tests.
 // Each method delegates to its Fn field if non-nil; otherwise returns safe defaults.
 type localFakeStorer struct {
-	StoreSessionSIDFn       func(ctx context.Context, jti, sessionID string, ttl time.Duration) error
-	GetDelSessionSIDFn      func(ctx context.Context, jti string) (string, error)
-	ConsumeJTIFn            func(ctx context.Context, jti string, ttl time.Duration) (bool, error)
-	RecordTokenIssuanceFn   func(ctx context.Context, vendorID [16]byte, network, jtiHash string, sourceIPHash *string, expiresAt time.Time) error
-	WriteAuditLogFn         func(ctx context.Context, event audit.EventType, userID string, metadata map[string]any) error
-	GetUserWatchAddressesFn func(ctx context.Context, userID string) ([]string, error)
+	StoreSessionSIDFn             func(ctx context.Context, jti, sessionID string, ttl time.Duration) error
+	GetDelSessionSIDFn            func(ctx context.Context, jti string) (string, error)
+	ConsumeJTIFn                  func(ctx context.Context, jti string, ttl time.Duration) (bool, error)
+	RecordTokenIssuanceFn         func(ctx context.Context, vendorID [16]byte, network, jtiHash string, sourceIPHash *string, expiresAt time.Time) error
+	WriteAuditLogFn               func(ctx context.Context, event audit.EventType, userID string, metadata map[string]any) error
+	GetUserWatchAddressesFn       func(ctx context.Context, userID, network string) ([]string, error)
+	UpsertWatchBitcoinTxStatusFn  func(ctx context.Context, in TrackedStatusUpsertInput) error
+	TouchBitcoinTxStatusMempoolFn func(ctx context.Context, userID, network, txid string, feeRateSatVByte float64, lastSeenAt time.Time) error
+	ConfirmBitcoinTxStatusFn      func(ctx context.Context, userID, network, txid, blockHash string, confirmations int, blockHeight int64, confirmedAt time.Time) error
+	MarkBitcoinTxStatusReplacedFn func(ctx context.Context, userID, network, replacedTxID, replacementTxID string, replacedAt time.Time) error
+	ListBitcoinTxStatusUsersFn    func(ctx context.Context, network, txid string) ([]string, error)
+	ListActiveTxWatchUsersFn      func(ctx context.Context, network, txid string) ([]string, error)
 }
 
 var _ Storer = (*localFakeStorer)(nil)
@@ -74,9 +80,45 @@ func (f *localFakeStorer) WriteAuditLog(ctx context.Context, event audit.EventTy
 	}
 	return nil
 }
-func (f *localFakeStorer) GetUserWatchAddresses(ctx context.Context, userID string) ([]string, error) {
+func (f *localFakeStorer) GetUserWatchAddresses(ctx context.Context, userID, network string) ([]string, error) {
 	if f.GetUserWatchAddressesFn != nil {
-		return f.GetUserWatchAddressesFn(ctx, userID)
+		return f.GetUserWatchAddressesFn(ctx, userID, network)
+	}
+	return nil, nil
+}
+func (f *localFakeStorer) UpsertWatchBitcoinTxStatus(ctx context.Context, in TrackedStatusUpsertInput) error {
+	if f.UpsertWatchBitcoinTxStatusFn != nil {
+		return f.UpsertWatchBitcoinTxStatusFn(ctx, in)
+	}
+	return nil
+}
+func (f *localFakeStorer) TouchBitcoinTxStatusMempool(ctx context.Context, userID, network, txid string, feeRateSatVByte float64, lastSeenAt time.Time) error {
+	if f.TouchBitcoinTxStatusMempoolFn != nil {
+		return f.TouchBitcoinTxStatusMempoolFn(ctx, userID, network, txid, feeRateSatVByte, lastSeenAt)
+	}
+	return nil
+}
+func (f *localFakeStorer) ConfirmBitcoinTxStatus(ctx context.Context, userID, network, txid, blockHash string, confirmations int, blockHeight int64, confirmedAt time.Time) error {
+	if f.ConfirmBitcoinTxStatusFn != nil {
+		return f.ConfirmBitcoinTxStatusFn(ctx, userID, network, txid, blockHash, confirmations, blockHeight, confirmedAt)
+	}
+	return nil
+}
+func (f *localFakeStorer) MarkBitcoinTxStatusReplaced(ctx context.Context, userID, network, replacedTxID, replacementTxID string, replacedAt time.Time) error {
+	if f.MarkBitcoinTxStatusReplacedFn != nil {
+		return f.MarkBitcoinTxStatusReplacedFn(ctx, userID, network, replacedTxID, replacementTxID, replacedAt)
+	}
+	return nil
+}
+func (f *localFakeStorer) ListBitcoinTxStatusUsersByTxID(ctx context.Context, network, txid string) ([]string, error) {
+	if f.ListBitcoinTxStatusUsersFn != nil {
+		return f.ListBitcoinTxStatusUsersFn(ctx, network, txid)
+	}
+	return nil, nil
+}
+func (f *localFakeStorer) ListActiveBitcoinTransactionWatchUsersByTxID(ctx context.Context, network, txid string) ([]string, error) {
+	if f.ListActiveTxWatchUsersFn != nil {
+		return f.ListActiveTxWatchUsersFn(ctx, network, txid)
 	}
 	return nil, nil
 }

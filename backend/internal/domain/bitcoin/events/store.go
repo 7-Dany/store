@@ -26,14 +26,10 @@ var _ Storer = (*Store)(nil)
 // covers Set/Get/Delete for session-SID operations. At runtime this is the
 // same *kvstore.RedisStore used by all other bitcoin sub-packages.
 //
-// sets is the same Redis client cast to kvstore.SetStore, used by
-// GetUserWatchAddresses to SScan the watch address set for a user.
-//
 // pool is used for non-fatal DB writes (InsertSSETokenIssuance). Pass nil in
 // unit tests that do not exercise RecordTokenIssuance.
 type Store struct {
 	kv   kvstore.OnceStore
-	sets kvstore.SetStore
 	pool *pgxpool.Pool
 	q    *db.Queries // pre-allocated from pool; nil when pool is nil
 }
@@ -44,11 +40,8 @@ type Store struct {
 // In routes.go: deps.KVStore.(kvstore.OnceStore) — panics at startup if Redis
 // is not configured, same pattern as bitcoin/watch.
 //
-// sets must satisfy kvstore.SetStore (also implemented by *kvstore.RedisStore);
-// at runtime it is the same underlying value as kv — dual type-asserted in routes.go.
-//
 // pool is the shared connection pool. Pass nil in unit tests.
-func NewStore(kv kvstore.OnceStore, sets kvstore.SetStore, pool *pgxpool.Pool) *Store {
+func NewStore(kv kvstore.OnceStore, pool *pgxpool.Pool) *Store {
 	var q *db.Queries
 	if pool != nil {
 		q = db.New(pool)
@@ -58,7 +51,7 @@ func NewStore(kv kvstore.OnceStore, sets kvstore.SetStore, pool *pgxpool.Pool) *
 		// in production deployments.
 		slog.Warn("events.NewStore: no DB pool provided — audit and token-issuance writes are disabled")
 	}
-	return &Store{kv: kv, sets: sets, pool: pool, q: q}
+	return &Store{kv: kv, pool: pool, q: q}
 }
 
 // ── Redis key helpers (file-private) ─────────────────────────────────────────
@@ -72,15 +65,6 @@ func sidKey(jti string) string { return "btc:token:sid:" + jti }
 // Key format: "btc:token:jti:{jti}"
 // Created atomically by ConsumeJTI (OnceStore.ConsumeOnce SET NX PX).
 func jtiKey(jti string) string { return "btc:token:jti:" + jti }
-
-// ── Redis key helpers (watch set) ────────────────────────────────────────────
-
-// userAddressSetKey returns the Redis set key for a user's registered watch addresses.
-// Key format: "{btc:user:{userID}}:addresses"
-// This is the same key written by the bitcoin/watch domain.
-func userAddressSetKey(userID string) string {
-	return "{btc:user:" + userID + "}:addresses"
-}
 
 // ── Storer methods ────────────────────────────────────────────────────────────
 
@@ -175,26 +159,187 @@ func (s *Store) WriteAuditLog(ctx context.Context, event audit.EventType, userID
 	})
 }
 
-// GetUserWatchAddresses returns all watch addresses registered by userID.
-// It SScan-iterates the Redis set at {btc:user:{userID}}:addresses.
-// Returns an empty slice (not an error) when the set is absent.
-func (s *Store) GetUserWatchAddresses(ctx context.Context, userID string) ([]string, error) {
-	key := userAddressSetKey(userID)
-	var all []string
-	var cursor uint64
-	for {
-		// count=500: larger hint reduces round-trips for merchants with large watch sets.
-		members, next, err := s.sets.SScan(ctx, key, cursor, "", 500)
-		if err != nil {
-			return nil, telemetry.KVStore("GetUserWatchAddresses.sscan", err)
-		}
-		all = append(all, members...)
-		cursor = next
-		if cursor == 0 {
-			break
+// GetUserWatchAddresses returns all active address-watch targets registered by userID.
+func (s *Store) GetUserWatchAddresses(ctx context.Context, userID, network string) ([]string, error) {
+	if s.q == nil {
+		return nil, fmt.Errorf("events.GetUserWatchAddresses: no database pool configured")
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, fmt.Errorf("events.GetUserWatchAddresses: invalid user id: %w", err)
+	}
+	rows, err := s.q.ListActiveBitcoinWatchAddressesByUser(ctx, db.ListActiveBitcoinWatchAddressesByUserParams{
+		UserID:  pgtype.UUID{Bytes: [16]byte(uid), Valid: true},
+		Network: network,
+	})
+	if err != nil {
+		return nil, telemetry.Store("GetUserWatchAddresses.list", err)
+	}
+	addrs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.Valid {
+			addrs = append(addrs, row.String)
 		}
 	}
-	return all, nil
+	return addrs, nil
+}
+
+// UpsertWatchBitcoinTxStatus persists one watch-discovered txstatus row per matched address.
+func (s *Store) UpsertWatchBitcoinTxStatus(ctx context.Context, in TrackedStatusUpsertInput) error {
+	if s.q == nil {
+		return fmt.Errorf("events.UpsertWatchBitcoinTxStatus: no database pool configured")
+	}
+	uid, err := uuid.Parse(in.UserID)
+	if err != nil {
+		return fmt.Errorf("events.UpsertWatchBitcoinTxStatus: invalid user id: %w", err)
+	}
+	var totalAmountSat int64
+	for _, out := range in.Outputs {
+		totalAmountSat += out.AmountSat
+	}
+
+	feeRateSatVByte, err := toPgNumeric(in.FeeRateSatVByte)
+	if err != nil {
+		return fmt.Errorf("events.UpsertWatchBitcoinTxStatus: invalid fee rate: %w", err)
+	}
+
+	row, err := s.q.UpsertWatchBitcoinTxStatus(ctx, db.UpsertWatchBitcoinTxStatusParams{
+		UserID:          pgtype.UUID{Bytes: [16]byte(uid), Valid: true},
+		Network:         in.Network,
+		Txid:            in.TxID,
+		AmountSat:       totalAmountSat,
+		FeeRateSatVbyte: feeRateSatVByte,
+		FirstSeenAt:     pgtype.Timestamptz{Time: in.FirstSeenAt, Valid: true},
+		LastSeenAt:      pgtype.Timestamptz{Time: in.LastSeenAt, Valid: true},
+	})
+	if err != nil {
+		return telemetry.Store("UpsertWatchBitcoinTxStatus.exec", err)
+	}
+
+	for _, out := range in.Outputs {
+		if err := s.q.UpsertBitcoinTxStatusRelatedAddress(ctx, db.UpsertBitcoinTxStatusRelatedAddressParams{
+			TxStatusID: row.ID,
+			Address:    out.Address,
+			AmountSat:  out.AmountSat,
+		}); err != nil {
+			return telemetry.Store("UpsertBitcoinTxStatusRelatedAddress.exec", err)
+		}
+	}
+	return nil
+}
+
+// TouchBitcoinTxStatusMempool marks all rows for (user_id, txid) as mempool.
+func (s *Store) TouchBitcoinTxStatusMempool(ctx context.Context, userID, network, txid string, feeRateSatVByte float64, lastSeenAt time.Time) error {
+	if s.q == nil {
+		return fmt.Errorf("events.TouchBitcoinTxStatusMempool: no database pool configured")
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return fmt.Errorf("events.TouchBitcoinTxStatusMempool: invalid user id: %w", err)
+	}
+	feeRate, err := toPgNumeric(feeRateSatVByte)
+	if err != nil {
+		return fmt.Errorf("events.TouchBitcoinTxStatusMempool: invalid fee rate: %w", err)
+	}
+
+	if _, err := s.q.TouchBitcoinTxStatusMempool(ctx, db.TouchBitcoinTxStatusMempoolParams{
+		FeeRateSatVbyte: feeRate,
+		LastSeenAt:      pgtype.Timestamptz{Time: lastSeenAt, Valid: true},
+		UserID:          pgtype.UUID{Bytes: [16]byte(uid), Valid: true},
+		Network:         network,
+		Txid:            txid,
+	}); err != nil {
+		return telemetry.Store("TouchBitcoinTxStatusMempool.exec", err)
+	}
+	return nil
+}
+
+// ConfirmBitcoinTxStatus marks tracked rows as confirmed.
+func (s *Store) ConfirmBitcoinTxStatus(ctx context.Context, userID, network, txid, blockHash string, confirmations int, blockHeight int64, confirmedAt time.Time) error {
+	if s.q == nil {
+		return fmt.Errorf("events.ConfirmBitcoinTxStatus: no database pool configured")
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return fmt.Errorf("events.ConfirmBitcoinTxStatus: invalid user id: %w", err)
+	}
+	if _, err := s.q.ConfirmBitcoinTxStatus(ctx, db.ConfirmBitcoinTxStatusParams{
+		Confirmations: int32(confirmations),
+		ConfirmedAt:   pgtype.Timestamptz{Time: confirmedAt, Valid: true},
+		BlockHash:     pgtype.Text{String: blockHash, Valid: true},
+		BlockHeight:   blockHeight,
+		UserID:        pgtype.UUID{Bytes: [16]byte(uid), Valid: true},
+		Network:       network,
+		Txid:          txid,
+	}); err != nil {
+		return telemetry.Store("ConfirmBitcoinTxStatus.exec", err)
+	}
+	return nil
+}
+
+// MarkBitcoinTxStatusReplaced marks tracked rows as replaced.
+func (s *Store) MarkBitcoinTxStatusReplaced(ctx context.Context, userID, network, replacedTxID, replacementTxID string, replacedAt time.Time) error {
+	if s.q == nil {
+		return fmt.Errorf("events.MarkBitcoinTxStatusReplaced: no database pool configured")
+	}
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return fmt.Errorf("events.MarkBitcoinTxStatusReplaced: invalid user id: %w", err)
+	}
+	if _, err := s.q.MarkBitcoinTxStatusReplaced(ctx, db.MarkBitcoinTxStatusReplacedParams{
+		ReplacementTxid: pgtype.Text{String: replacementTxID, Valid: true},
+		ReplacedAt:      pgtype.Timestamptz{Time: replacedAt, Valid: true},
+		UserID:          pgtype.UUID{Bytes: [16]byte(uid), Valid: true},
+		Network:         network,
+		ReplacedTxid:    replacedTxID,
+	}); err != nil {
+		return telemetry.Store("MarkBitcoinTxStatusReplaced.exec", err)
+	}
+	return nil
+}
+
+// ListBitcoinTxStatusUsersByTxID returns the users that currently track txid.
+func (s *Store) ListBitcoinTxStatusUsersByTxID(ctx context.Context, network, txid string) ([]string, error) {
+	if s.q == nil {
+		return nil, fmt.Errorf("events.ListBitcoinTxStatusUsersByTxID: no database pool configured")
+	}
+	rows, err := s.q.ListBitcoinTxStatusUsersByTxID(ctx, db.ListBitcoinTxStatusUsersByTxIDParams{
+		Network: network,
+		Txid:    txid,
+	})
+	if err != nil {
+		return nil, telemetry.Store("ListBitcoinTxStatusUsersByTxID.list", err)
+	}
+	users := make([]string, 0, len(rows))
+	for _, row := range rows {
+		users = append(users, uuid.UUID(row.Bytes).String())
+	}
+	return users, nil
+}
+
+// ListActiveBitcoinTransactionWatchUsersByTxID returns the users that actively watch txid.
+func (s *Store) ListActiveBitcoinTransactionWatchUsersByTxID(ctx context.Context, network, txid string) ([]string, error) {
+	if s.q == nil {
+		return nil, fmt.Errorf("events.ListActiveBitcoinTransactionWatchUsersByTxID: no database pool configured")
+	}
+	rows, err := s.q.ListActiveBitcoinTransactionWatchUsersByTxID(ctx, db.ListActiveBitcoinTransactionWatchUsersByTxIDParams{
+		Network: network,
+		Txid:    pgtype.Text{String: txid, Valid: true},
+	})
+	if err != nil {
+		return nil, telemetry.Store("ListActiveBitcoinTransactionWatchUsersByTxID.list", err)
+	}
+	users := make([]string, 0, len(rows))
+	for _, row := range rows {
+		users = append(users, uuid.UUID(row.Bytes).String())
+	}
+	return users, nil
+}
+
+func toPgNumeric(v float64) (pgtype.Numeric, error) {
+	var n pgtype.Numeric
+	err := n.Scan(v)
+	return n, err
 }
 
 // RecordTokenIssuance inserts one row into sse_token_issuances for GDPR IP audit.

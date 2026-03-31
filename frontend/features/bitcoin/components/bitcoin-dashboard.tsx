@@ -1,19 +1,21 @@
 "use client";
 
 /**
- * TransactionLifecycleDashboard — three-tab workspace for transaction flow ops.
+ * TransactionLifecycleDashboard — two-tab workspace for transaction flow ops.
  *
  * Tabs:
- *  1. Live Events — automatic SSE ownership + real-time event feed
- *  2. Addresses   — register / manage watched Bitcoin addresses
- *  3. Tx Lookup   — single and batch on-chain transaction status
+ *  1. Addresses   — register / manage watched Bitcoin addresses
+ *  2. Tx Lookup   — single and batch on-chain transaction status
+ *
+ * Live events stay mounted in the background and open from the feed trigger
+ * button in the header, rather than occupying a full tab.
  *
  * React 19.2 patterns:
- *  - Activity           — keeps inactive tab panels mounted but hidden; the
- *                         React scheduler deprioritises their updates, so the
- *                         SSE feed (Tab 1) never tears down when the user
- *                         switches to Tab 2 or 3.
- *  - useEffectEvent     — stable cross-tab callback for re-registration alerts
+  *  - Activity           — keeps inactive tab panels mounted but hidden; the
+ *                         React scheduler deprioritises their updates while the
+ *                         event stream itself stays mounted separately.
+ *  - useEffectEvent     — stable stream callbacks for reconnect and
+ *                         re-registration handling
  *  - No forwardRef      — removed per React 19 guidance (ref as plain prop)
  *  - No useMemo/useCallback — React Compiler handles memoisation
  *
@@ -26,7 +28,6 @@ import { useState, Activity } from "react";
 import dynamic from "next/dynamic";
 import {
   IconCurrencyBitcoin,
-  IconActivity,
   IconEye,
   IconReceipt,
 } from "@tabler/icons-react";
@@ -65,10 +66,9 @@ function PanelSkeleton() {
 
 // ── Tab config ────────────────────────────────────────────────────────────────
 
-type TabId = "stream" | "addresses" | "txlookup";
+type TabId = "addresses" | "txlookup";
 
 const TABS: { id: TabId; label: string; Icon: React.ElementType }[] = [
-  { id: "stream",    label: "Live Events", Icon: IconActivity  },
   { id: "addresses", label: "Addresses",   Icon: IconEye       },
   { id: "txlookup",  label: "Tx Lookup",   Icon: IconReceipt   },
 ];
@@ -76,7 +76,7 @@ const TABS: { id: TabId; label: string; Icon: React.ElementType }[] = [
 // ── TransactionLifecycleDashboard ────────────────────────────────────────────
 
 export function TransactionLifecycleDashboard() {
-  const [activeTab, setActiveTab] = useState<TabId>("stream");
+  const [activeTab, setActiveTab] = useState<TabId>("addresses");
   // Raised by the SSE stream when a stream_requires_reregistration event arrives;
   // prompts the user to switch to the Addresses tab to re-register.
   const [needsReregistration, setNeedsReregistration] = useState(false);
@@ -87,7 +87,7 @@ export function TransactionLifecycleDashboard() {
   return (
     <div className="flex flex-col gap-6">
       {/* ── Page header ── */}
-      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
         <div className="flex items-center gap-3">
           <div className="relative flex size-10 shrink-0 items-center justify-center rounded-xl bg-amber-500/10 ring-1 ring-amber-500/30">
             <IconCurrencyBitcoin
@@ -105,6 +105,17 @@ export function TransactionLifecycleDashboard() {
             </p>
           </div>
         </div>
+
+        <EventStreamPanel
+          connState={stream.connState}
+          events={stream.events}
+          error={stream.error}
+          retryCount={stream.retryCount}
+          lastHeartbeatAt={stream.lastHeartbeatAt}
+          onRetryNow={stream.retryNow}
+          onClearEvents={stream.clearEvents}
+          needsReregistration={needsReregistration}
+        />
       </div>
 
       {/* ── Tab bar ── */}
@@ -143,28 +154,11 @@ export function TransactionLifecycleDashboard() {
       </div>
 
       {/* ── Tab panels ──
-          Activity (React 19.2) keeps all panels mounted so the SSE connection
-          in the Stream tab is never torn down when the user switches tabs.
-          The scheduler treats hidden panels as low-priority work.         ── */}
+          Activity (React 19.2) keeps non-active tab panels mounted so each
+          workflow preserves its local state while hidden work stays lower
+          priority.                                                     ── */}
 
       <div className="relative">
-        {/* Live Stream */}
-        <div hidden={activeTab !== "stream"}>
-          <Activity mode={activeTab === "stream" ? "visible" : "hidden"}>
-            <EventStreamPanel
-              connState={stream.connState}
-              events={stream.events}
-              error={stream.error}
-              retryCount={stream.retryCount}
-              lastHeartbeatAt={stream.lastHeartbeatAt}
-              working={stream.working}
-              onRetryNow={stream.retryNow}
-              onClearEvents={stream.clearEvents}
-              needsReregistration={needsReregistration}
-            />
-          </Activity>
-        </div>
-
         {/* Addresses */}
         <div hidden={activeTab !== "addresses"}>
           <Activity mode={activeTab === "addresses" ? "visible" : "hidden"}>

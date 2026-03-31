@@ -72,6 +72,12 @@ type Querier interface {
 	// Maintenance job (runs every 6 hours): close outage records older than 48 hours.
 	// Caps ended_at at started_at + 48h so the formula does not overcount.
 	CloseStaleOutages(ctx context.Context) error
+	// Mark all live rows for (user_id, network, txid) as confirmed.
+	// @confirmations MUST be >= 1. GREATEST() coerces 0 to 1 as a safety net,
+	// but callers should treat 0 as a bug in the confirmation source.
+	// confirmed_at / block_hash / block_height capture first confirmation metadata
+	// and are therefore preserved once set.
+	ConfirmBitcoinTxStatus(ctx context.Context, arg ConfirmBitcoinTxStatusParams) (int64, error)
 	// Marks the token as used. Returns rows-affected: 0 means already consumed.
 	ConsumeAccountDeletionToken(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Marks an email_change_verify or email_change_confirm token as used.
@@ -90,6 +96,10 @@ type Querier interface {
 	// Marks an account_unlock token as used. AND used_at IS NULL ensures idempotency:
 	// a race between two concurrent correct submissions cannot consume the same token twice.
 	ConsumeUnlockToken(ctx context.Context, id pgtype.UUID) (int64, error)
+	// Return the active address-watch count for one user/network.
+	// Backed by idx_bw_user_network_address_count so quota checks stay cheap even
+	// when transaction watches greatly outnumber address watches.
+	CountActiveBitcoinAddressWatchesByUser(ctx context.Context, arg CountActiveBitcoinAddressWatchesByUserParams) (int64, error)
 	// ── Bootstrap ───────────────────────────────────────────────────────────────
 	// Used by /owner/bootstrap to gate on whether an active owner already exists.
 	CountActiveOwners(ctx context.Context) (int64, error)
@@ -100,6 +110,13 @@ type Querier interface {
 	// Store layer maps pgErr.ConstraintName == "idx_ott_account_deletion_active"
 	// → ErrDeletionTokenCooldown → handler returns 429.
 	CreateAccountDeletionToken(ctx context.Context, arg CreateAccountDeletionTokenParams) (CreateAccountDeletionTokenRow, error)
+	// Create one explicit txstatus tracking row. Used by POST /bitcoin/tx.
+	// tracking_mode must be 'txid'; watch-discovered related addresses are created by events.
+	CreateBitcoinTxStatus(ctx context.Context, arg CreateBitcoinTxStatusParams) (BtcTrackedTransaction, error)
+	// Create one active watch resource.
+	// On 23505 (uq_bw_active_address / uq_bw_active_transaction): the user already
+	// has an active watch for this target. Return ErrWatchExists; do NOT retry.
+	CreateBitcoinWatch(ctx context.Context, arg CreateBitcoinWatchParams) (BtcWatch, error)
 	// Issues a new email_change_confirm OTP token for step 2.
 	// @new_email is stored in the email column so step 3 can retrieve the destination
 	// address directly from the token row without a separate query.
@@ -187,17 +204,26 @@ type Querier interface {
 	// stored on the refresh_token row so tokens can be tied back to a specific device session.
 	CreateUserSession(ctx context.Context, arg CreateUserSessionParams) (CreateUserSessionRow, error)
 	// Credit the vendor's internal balance atomically via btc_credit_balance.
-	// Returns the new balance for use in financial_audit_events.balance_after_sat.
-	// The caller MUST write the audit event in the same transaction.
+	// The stored procedure writes the immutable financial_audit_events row itself in
+	// the same transaction, so there is no unaudited mutation path.
 	// Raises an exception if no vendor_balances row exists for (vendor_id, network).
 	CreditVendorBalance(ctx context.Context, arg CreditVendorBalanceParams) (int64, error)
 	// Soft-deletes a non-system role. Zero rows → ErrSystemRoleImmutable → 409.
 	DeactivateRole(ctx context.Context, id pgtype.UUID) (int64, error)
 	// Debit the vendor's internal balance atomically via btc_debit_balance.
-	// Returns the new balance for use in financial_audit_events.balance_after_sat.
+	// The stored procedure writes the immutable financial_audit_events row itself in
+	// the same transaction, so there is no unaudited mutation path.
 	// Raises SQLSTATE 23514 (ErrInsufficientBalance) when balance < amount.
 	// Never retry on 23514 — it is a deterministic error.
 	DebitVendorBalance(ctx context.Context, arg DebitVendorBalanceParams) (int64, error)
+	// Decrement the platform treasury reserve through the same audited stored
+	// procedure path used for increments. Intended for admin treasury withdrawals
+	// or UTXO consolidation expenses.
+	DecrementTreasuryReserve(ctx context.Context, arg DecrementTreasuryReserveParams) (int64, error)
+	// Hard-delete one explicit txstatus row owned by the given user.
+	DeleteBitcoinTxStatusByID(ctx context.Context, arg DeleteBitcoinTxStatusByIDParams) (int64, error)
+	// Hard-delete one watch resource owned by the given user.
+	DeleteBitcoinWatchByID(ctx context.Context, arg DeleteBitcoinWatchByIDParams) (int64, error)
 	// Deletes the pending transfer token initiated by @initiated_by.
 	// Scoped by metadata->>'initiated_by' so only the initiating owner's transfer is removed.
 	// Returns rows-affected: 0 means no pending transfer found → ErrNoPendingTransfer.
@@ -259,6 +285,10 @@ type Querier interface {
 	//        WHERE payout_record_id IS NOT NULL
 	GetAuditEventsForPayout(ctx context.Context, payoutRecordID pgtype.UUID) ([]GetAuditEventsForPayoutRow, error)
 	GetBitcoinSyncState(ctx context.Context, network string) (BitcoinSyncState, error)
+	// Return one explicit-txid txstatus row owned by the given user.
+	GetBitcoinTxStatusByID(ctx context.Context, arg GetBitcoinTxStatusByIDParams) (BtcTrackedTransaction, error)
+	// Return one active watch owned by the given user.
+	GetBitcoinWatchByID(ctx context.Context, arg GetBitcoinWatchByIDParams) (BtcWatch, error)
 	// Fetch processed blocks in a height range for reconciliation gap detection.
 	// Index: idx_bbh_network_height ON bitcoin_block_history(network, height DESC)
 	GetBlockHistoryRange(ctx context.Context, arg GetBlockHistoryRangeParams) ([]BitcoinBlockHistory, error)
@@ -594,10 +624,11 @@ type Querier interface {
 	// caller can decide whether to emit a login_lockout audit row.
 	IncrementLoginFailures(ctx context.Context, userID pgtype.UUID) (IncrementLoginFailuresRow, error)
 	// Increment the platform treasury reserve by the miner fees retained from a
-	// confirmed sweep batch. MUST be called in the SAME transaction as
-	// SetPayoutConfirmed so the reconciliation formula remains balanced.
-	// Omitting this causes a permanent negative discrepancy on every reconciliation run.
-	IncrementTreasuryReserve(ctx context.Context, arg IncrementTreasuryReserveParams) error
+	// confirmed sweep batch. The stored procedure writes the immutable
+	// financial_audit_events row itself in the same transaction.
+	// MUST be called in the SAME transaction as SetPayoutConfirmed so the
+	// reconciliation formula remains balanced.
+	IncrementTreasuryReserve(ctx context.Context, arg IncrementTreasuryReserveParams) (int64, error)
 	// AND attempts < max_attempts prevents incrementing past the brute-force ceiling.
 	// Returns the post-increment attempts value so the caller can compare it to
 	// max_attempts without relying on the stale caller-supplied count (TOCTOU fix).
@@ -673,6 +704,35 @@ type Querier interface {
 	// Voids all unused email_change_verify tokens for this user before issuing a new one.
 	// Called inside the same transaction as CreateEmailChangeVerifyToken.
 	InvalidateUserEmailChangeVerifyTokens(ctx context.Context, userID pgtype.UUID) error
+	// Return users with an active transaction watch on txid.
+	// uq_bw_active_transaction guarantees one row per (user_id, network, txid), so
+	// DISTINCT would only add an unnecessary hash/sort step on this fanout path.
+	ListActiveBitcoinTransactionWatchUsersByTxID(ctx context.Context, arg ListActiveBitcoinTransactionWatchUsersByTxIDParams) ([]pgtype.UUID, error)
+	// Return active address-watch targets for one user/network.
+	ListActiveBitcoinWatchAddressesByUser(ctx context.Context, arg ListActiveBitcoinWatchAddressesByUserParams) ([]pgtype.Text, error)
+	// Return related watched addresses for the given txstatus row IDs.
+	ListBitcoinTxStatusRelatedAddressesByStatusIDs(ctx context.Context, txStatusIds []int64) ([]ListBitcoinTxStatusRelatedAddressesByStatusIDsRow, error)
+	// Return user_ids that currently track the given txid.
+	// uq_btt_user_network_txid guarantees one row per (user_id, network, txid), so
+	// DISTINCT would only add planner work with no deduplication benefit.
+	ListBitcoinTxStatusUsersByTxID(ctx context.Context, arg ListBitcoinTxStatusUsersByTxIDParams) ([]pgtype.UUID, error)
+	// List txstatus rows for one user/network with optional address, txid, and mode filters.
+	// High-load shape:
+	//   * @address = ''  → one ordered scan over btc_tracked_transactions
+	//   * @address != '' → UNION ALL of:
+	//       1. explicit parent-address matches (idx_btt_user_address_time)
+	//       2. child-address matches from btc_tracked_transaction_addresses (idx_btta_address)
+	//          excluding rows already returned by the explicit-address branch
+	// Keyset pagination uses (COALESCE(confirmed_at, first_seen_at), id) DESC via
+	// (@before_sort_time, @before_id) so deep pages do not degrade into OFFSET scans.
+	// This avoids a broad OR + correlated EXISTS over the full parent row set.
+	ListBitcoinTxStatuses(ctx context.Context, arg ListBitcoinTxStatusesParams) ([]ListBitcoinTxStatusesRow, error)
+	// List active watch resources for one user/network with optional type/address/txid filters.
+	// The base scan follows created_at DESC ordering. Exact address/txid filters are
+	// backed by the partial unique indexes; watch_type-filtered lists use idx_bw_user_type_time.
+	// Keyset pagination uses (created_at, id) DESC. Pass the previous page's final
+	// row as (@before_created_at, @before_id) to continue without OFFSET scans.
+	ListBitcoinWatches(ctx context.Context, arg ListBitcoinWatchesParams) ([]BtcWatch, error)
 	// ZMQ startup / reconnect: rebuild the in-memory watch set for a network.
 	// Called on every startup and after every reconnect so the subscriber
 	// knows which addresses to watch before it starts dispatching events.
@@ -693,6 +753,10 @@ type Querier interface {
 	// chk_us_admin_lock_coherent: reason + at required when locked = TRUE.
 	// chk_us_no_self_lock: admin_locked_by must differ from user_id.
 	LockUser(ctx context.Context, arg LockUserParams) error
+	// Mark all rows for (user_id, network, replaced_txid) as replaced.
+	// An already-replaced row is terminal here so a late duplicate event cannot
+	// overwrite the first replacement_txid that established the chain.
+	MarkBitcoinTxStatusReplaced(ctx context.Context, arg MarkBitcoinTxStatusReplacedParams) (int64, error)
 	// Activates the account and marks email_verified = TRUE in one statement.
 	// Guards:
 	//   email_verified = FALSE  → prevents double-activation (idempotency guard)
@@ -848,6 +912,8 @@ type Querier interface {
 	// accumulators only, not value-bearing. Their value is fully captured in
 	// held/queued payout_records. Including both would double-count hybrid funds.
 	SumPlatformVendorBalances(ctx context.Context, network string) (int64, error)
+	// Mark all rows for (user_id, network, txid) as present in mempool.
+	TouchBitcoinTxStatusMempool(ctx context.Context, arg TouchBitcoinTxStatusMempoolParams) (int64, error)
 	// detected → confirming: first block confirmation received.
 	// Sets first_confirmed_block_height ATOMICALLY — this is required by the reorg
 	// rollback query which filters on this column.
@@ -889,6 +955,16 @@ type Querier interface {
 	// Updated every BTC_RECONCILIATION_CHECKPOINT_INTERVAL blocks so a crash
 	// mid-backfill resumes from the checkpoint rather than the beginning.
 	UpdateBitcoinSyncState(ctx context.Context, arg UpdateBitcoinSyncStateParams) error
+	// Update one explicit txid tracking row. Watch-managed rows are immutable here.
+	// txid is intentionally excluded from SET because it is immutable after creation.
+	// The query also normalizes status-dependent fields so callers cannot persist
+	// mempool/not_found/conflicting/abandoned rows with stale confirmation metadata.
+	UpdateBitcoinTxStatusByID(ctx context.Context, arg UpdateBitcoinTxStatusByIDParams) (BtcTrackedTransaction, error)
+	// Update one active watch resource owned by the given user.
+	// watch_type is immutable after creation. The WHERE clause enforces that the
+	// caller may update the target within the same type, but may not switch an
+	// address watch into a transaction watch (or the reverse) mid-lifecycle.
+	UpdateBitcoinWatchByID(ctx context.Context, arg UpdateBitcoinWatchByIDParams) (BtcWatch, error)
 	// Stamps last_login_at after a successful authentication.
 	// updated_at is omitted: trg_users_updated_at (BEFORE UPDATE trigger) already
 	// sets updated_at = NOW() on every UPDATE, making an explicit assignment a dead no-op.
@@ -915,6 +991,8 @@ type Querier interface {
 	// parameter leaves the current column value unchanged (partial-update pattern).
 	// Called by UpdateProfileTx after input validation confirms at least one field is non-nil.
 	UpdateUserProfile(ctx context.Context, arg UpdateUserProfileParams) error
+	// Create or refresh one watched address linked to a tracked tx row.
+	UpsertBitcoinTxStatusRelatedAddress(ctx context.Context, arg UpsertBitcoinTxStatusRelatedAddressParams) error
 	// Record a processed block. Pruned blocks use block_hash = NULL, pruned = TRUE.
 	// ON CONFLICT DO NOTHING: the PK is (height, network) — duplicate processing
 	// attempts are silently ignored for idempotency.
@@ -929,6 +1007,8 @@ type Querier interface {
 	// Pass last_successful_run_at = NULL on failure — the COALESCE preserves
 	// the previous successful timestamp so the staleness alert fires correctly.
 	UpsertReconciliationJobState(ctx context.Context, arg UpsertReconciliationJobStateParams) error
+	// Create or refresh one explicit txid-tracking row keyed by (user, network, txid).
+	UpsertTrackedBitcoinTxStatus(ctx context.Context, arg UpsertTrackedBitcoinTxStatusParams) (BtcTrackedTransaction, error)
 	// Inserts or updates the identity metadata row for an OAuth account.
 	// Token columns (access_token, access_token_expires_at, refresh_token_provider)
 	// are NOT handled here — call UpsertUserIdentityTokens immediately after in the
@@ -946,6 +1026,10 @@ type Querier interface {
 	// chk_uit_access_token_encrypted and chk_uit_refresh_token_encrypted enforce this at the DB layer.
 	// Must be called in the same transaction as UpsertUserIdentity, using the returned identity_id.
 	UpsertUserIdentityTokens(ctx context.Context, arg UpsertUserIdentityTokensParams) error
+	// Create or refresh one watch-discovered txstatus row.
+	// One durable row exists per (user_id, network, txid); matched addresses are
+	// linked separately through btc_tx_status_related_addresses.
+	UpsertWatchBitcoinTxStatus(ctx context.Context, arg UpsertWatchBitcoinTxStatusParams) (BtcTrackedTransaction, error)
 }
 
 var _ Querier = (*Queries)(nil)

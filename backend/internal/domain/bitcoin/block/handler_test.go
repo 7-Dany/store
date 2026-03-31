@@ -21,7 +21,8 @@ import (
 
 // fakeSvc is a minimal implementation of block.Servicer for handler tests.
 type fakeSvc struct {
-	getBlockFn func(ctx context.Context, in blockdomain.GetBlockInput) (blockdomain.Result, error)
+	getBlockFn       func(ctx context.Context, in blockdomain.GetBlockInput) (blockdomain.Result, error)
+	getLatestBlockFn func(ctx context.Context) (blockdomain.Result, error)
 }
 
 // compile-time check that *fakeSvc satisfies block.Servicer.
@@ -32,6 +33,13 @@ func (f *fakeSvc) GetBlock(ctx context.Context, in blockdomain.GetBlockInput) (b
 		return f.getBlockFn(ctx, in)
 	}
 	panic("fakeSvc.GetBlock: getBlockFn not set — configure it for this test")
+}
+
+func (f *fakeSvc) GetLatestBlock(ctx context.Context) (blockdomain.Result, error) {
+	if f.getLatestBlockFn != nil {
+		return f.getLatestBlockFn(ctx)
+	}
+	panic("fakeSvc.GetLatestBlock: getLatestBlockFn not set — configure it for this test")
 }
 
 // ── test helpers ──────────────────────────────────────────────────────────────

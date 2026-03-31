@@ -120,6 +120,256 @@ func (q *Queries) CloseStaleOutages(ctx context.Context) error {
 	return err
 }
 
+const ConfirmBitcoinTxStatus = `-- name: ConfirmBitcoinTxStatus :execrows
+UPDATE btc_tracked_transactions
+SET
+    status           = 'confirmed',
+    confirmations    = GREATEST($1::integer, 1),
+    confirmed_at     = COALESCE(btc_tracked_transactions.confirmed_at, $2::timestamptz),
+    block_hash       = COALESCE(btc_tracked_transactions.block_hash, $3),
+    block_height     = COALESCE(btc_tracked_transactions.block_height, $4::bigint),
+    last_seen_at     = $2::timestamptz,
+    replacement_txid = NULL
+WHERE user_id = $5::uuid
+  AND network = $6
+  AND txid    = $7
+  AND status NOT IN ('replaced', 'conflicting', 'abandoned')
+`
+
+type ConfirmBitcoinTxStatusParams struct {
+	Confirmations int32              `db:"confirmations" json:"confirmations"`
+	ConfirmedAt   pgtype.Timestamptz `db:"confirmed_at" json:"confirmed_at"`
+	BlockHash     pgtype.Text        `db:"block_hash" json:"block_hash"`
+	BlockHeight   int64              `db:"block_height" json:"block_height"`
+	UserID        pgtype.UUID        `db:"user_id" json:"user_id"`
+	Network       string             `db:"network" json:"network"`
+	Txid          string             `db:"txid" json:"txid"`
+}
+
+// Mark all live rows for (user_id, network, txid) as confirmed.
+// @confirmations MUST be >= 1. GREATEST() coerces 0 to 1 as a safety net,
+// but callers should treat 0 as a bug in the confirmation source.
+// confirmed_at / block_hash / block_height capture first confirmation metadata
+// and are therefore preserved once set.
+func (q *Queries) ConfirmBitcoinTxStatus(ctx context.Context, arg ConfirmBitcoinTxStatusParams) (int64, error) {
+	result, err := q.db.Exec(ctx, ConfirmBitcoinTxStatus,
+		arg.Confirmations,
+		arg.ConfirmedAt,
+		arg.BlockHash,
+		arg.BlockHeight,
+		arg.UserID,
+		arg.Network,
+		arg.Txid,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const CountActiveBitcoinAddressWatchesByUser = `-- name: CountActiveBitcoinAddressWatchesByUser :one
+SELECT COUNT(*) AS count
+FROM btc_watches
+WHERE user_id    = $1::uuid
+  AND network    = $2
+  AND watch_type = 'address'
+`
+
+type CountActiveBitcoinAddressWatchesByUserParams struct {
+	UserID  pgtype.UUID `db:"user_id" json:"user_id"`
+	Network string      `db:"network" json:"network"`
+}
+
+// Return the active address-watch count for one user/network.
+// Backed by idx_bw_user_network_address_count so quota checks stay cheap even
+// when transaction watches greatly outnumber address watches.
+func (q *Queries) CountActiveBitcoinAddressWatchesByUser(ctx context.Context, arg CountActiveBitcoinAddressWatchesByUserParams) (int64, error) {
+	row := q.db.QueryRow(ctx, CountActiveBitcoinAddressWatchesByUser, arg.UserID, arg.Network)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const CreateBitcoinTxStatus = `-- name: CreateBitcoinTxStatus :one
+/* ════════════════════════════════════════════════════════════
+   TRACKED TRANSACTIONS
+   Durable read model owned by the txstatus package and updated by events.
+   ════════════════════════════════════════════════════════════ */
+
+INSERT INTO btc_tracked_transactions (
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid
+)
+VALUES (
+    $1::uuid,
+    $2,
+    'txid',
+    $3,
+    $4,
+    $5,
+    $6::integer,
+    $7::bigint,
+    $8,
+    $9::timestamptz,
+    $10::timestamptz,
+    $11::timestamptz,
+    $12,
+    $13::bigint,
+    $14
+)
+RETURNING
+    id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at
+`
+
+type CreateBitcoinTxStatusParams struct {
+	UserID          pgtype.UUID        `db:"user_id" json:"user_id"`
+	Network         string             `db:"network" json:"network"`
+	Address         pgtype.Text        `db:"address" json:"address"`
+	Txid            string             `db:"txid" json:"txid"`
+	Status          string             `db:"status" json:"status"`
+	Confirmations   int32              `db:"confirmations" json:"confirmations"`
+	AmountSat       int64              `db:"amount_sat" json:"amount_sat"`
+	FeeRateSatVbyte pgtype.Numeric     `db:"fee_rate_sat_vbyte" json:"fee_rate_sat_vbyte"`
+	FirstSeenAt     pgtype.Timestamptz `db:"first_seen_at" json:"first_seen_at"`
+	LastSeenAt      pgtype.Timestamptz `db:"last_seen_at" json:"last_seen_at"`
+	ConfirmedAt     pgtype.Timestamptz `db:"confirmed_at" json:"confirmed_at"`
+	BlockHash       pgtype.Text        `db:"block_hash" json:"block_hash"`
+	BlockHeight     pgtype.Int8        `db:"block_height" json:"block_height"`
+	ReplacementTxid pgtype.Text        `db:"replacement_txid" json:"replacement_txid"`
+}
+
+// Create one explicit txstatus tracking row. Used by POST /bitcoin/tx.
+// tracking_mode must be 'txid'; watch-discovered related addresses are created by events.
+func (q *Queries) CreateBitcoinTxStatus(ctx context.Context, arg CreateBitcoinTxStatusParams) (BtcTrackedTransaction, error) {
+	row := q.db.QueryRow(ctx, CreateBitcoinTxStatus,
+		arg.UserID,
+		arg.Network,
+		arg.Address,
+		arg.Txid,
+		arg.Status,
+		arg.Confirmations,
+		arg.AmountSat,
+		arg.FeeRateSatVbyte,
+		arg.FirstSeenAt,
+		arg.LastSeenAt,
+		arg.ConfirmedAt,
+		arg.BlockHash,
+		arg.BlockHeight,
+		arg.ReplacementTxid,
+	)
+	var i BtcTrackedTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Network,
+		&i.TrackingMode,
+		&i.Address,
+		&i.Txid,
+		&i.Status,
+		&i.Confirmations,
+		&i.AmountSat,
+		&i.FeeRateSatVbyte,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
+		&i.ConfirmedAt,
+		&i.BlockHash,
+		&i.BlockHeight,
+		&i.ReplacementTxid,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const CreateBitcoinWatch = `-- name: CreateBitcoinWatch :one
+/* ════════════════════════════════════════════════════════════
+   WATCH RESOURCES
+   Address and transaction watches owned by users.
+   ════════════════════════════════════════════════════════════ */
+
+INSERT INTO btc_watches (
+    user_id,
+    network,
+    watch_type,
+    address,
+    txid,
+    status
+)
+VALUES (
+    $1::uuid,
+    $2,
+    $3,
+    $4,
+    $5,
+    'active'
+)
+RETURNING id, user_id, network, watch_type, address, txid, status, created_at, updated_at
+`
+
+type CreateBitcoinWatchParams struct {
+	UserID    pgtype.UUID `db:"user_id" json:"user_id"`
+	Network   string      `db:"network" json:"network"`
+	WatchType string      `db:"watch_type" json:"watch_type"`
+	Address   pgtype.Text `db:"address" json:"address"`
+	Txid      pgtype.Text `db:"txid" json:"txid"`
+}
+
+// Create one active watch resource.
+// On 23505 (uq_bw_active_address / uq_bw_active_transaction): the user already
+// has an active watch for this target. Return ErrWatchExists; do NOT retry.
+func (q *Queries) CreateBitcoinWatch(ctx context.Context, arg CreateBitcoinWatchParams) (BtcWatch, error) {
+	row := q.db.QueryRow(ctx, CreateBitcoinWatch,
+		arg.UserID,
+		arg.Network,
+		arg.WatchType,
+		arg.Address,
+		arg.Txid,
+	)
+	var i BtcWatch
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Network,
+		&i.WatchType,
+		&i.Address,
+		&i.Txid,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const CreateInvoice = `-- name: CreateInvoice :one
 /* ════════════════════════════════════════════════════════════
    INVOICE LIFECYCLE
@@ -499,22 +749,59 @@ const CreditVendorBalance = `-- name: CreditVendorBalance :one
 SELECT btc_credit_balance(
     $1::uuid,
     $2,
-    $3::bigint
+    $3::bigint,
+    $4,
+    $5::uuid,
+    $6,
+    $7::uuid,
+    $8::uuid,
+    $9::bigint,
+    $10::bigint,
+    $11,
+    $12::boolean,
+    $13::jsonb,
+    $14
 ) AS new_balance_sat
 `
 
 type CreditVendorBalanceParams struct {
-	VendorID  pgtype.UUID `db:"vendor_id" json:"vendor_id"`
-	Network   string      `db:"network" json:"network"`
-	AmountSat int64       `db:"amount_sat" json:"amount_sat"`
+	VendorID          pgtype.UUID `db:"vendor_id" json:"vendor_id"`
+	Network           string      `db:"network" json:"network"`
+	AmountSat         int64       `db:"amount_sat" json:"amount_sat"`
+	ActorType         string      `db:"actor_type" json:"actor_type"`
+	ActorID           pgtype.UUID `db:"actor_id" json:"actor_id"`
+	ActorLabel        string      `db:"actor_label" json:"actor_label"`
+	InvoiceID         pgtype.UUID `db:"invoice_id" json:"invoice_id"`
+	PayoutRecordID    pgtype.UUID `db:"payout_record_id" json:"payout_record_id"`
+	ReferencesEventID pgtype.Int8 `db:"references_event_id" json:"references_event_id"`
+	FiatEquivalent    pgtype.Int8 `db:"fiat_equivalent" json:"fiat_equivalent"`
+	FiatCurrencyCode  pgtype.Text `db:"fiat_currency_code" json:"fiat_currency_code"`
+	RateStale         bool        `db:"rate_stale" json:"rate_stale"`
+	Metadata          []byte      `db:"metadata" json:"metadata"`
+	EventType         string      `db:"event_type" json:"event_type"`
 }
 
 // Credit the vendor's internal balance atomically via btc_credit_balance.
-// Returns the new balance for use in financial_audit_events.balance_after_sat.
-// The caller MUST write the audit event in the same transaction.
+// The stored procedure writes the immutable financial_audit_events row itself in
+// the same transaction, so there is no unaudited mutation path.
 // Raises an exception if no vendor_balances row exists for (vendor_id, network).
 func (q *Queries) CreditVendorBalance(ctx context.Context, arg CreditVendorBalanceParams) (int64, error) {
-	row := q.db.QueryRow(ctx, CreditVendorBalance, arg.VendorID, arg.Network, arg.AmountSat)
+	row := q.db.QueryRow(ctx, CreditVendorBalance,
+		arg.VendorID,
+		arg.Network,
+		arg.AmountSat,
+		arg.ActorType,
+		arg.ActorID,
+		arg.ActorLabel,
+		arg.InvoiceID,
+		arg.PayoutRecordID,
+		arg.ReferencesEventID,
+		arg.FiatEquivalent,
+		arg.FiatCurrencyCode,
+		arg.RateStale,
+		arg.Metadata,
+		arg.EventType,
+	)
 	var new_balance_sat int64
 	err := row.Scan(&new_balance_sat)
 	return new_balance_sat, err
@@ -524,25 +811,159 @@ const DebitVendorBalance = `-- name: DebitVendorBalance :one
 SELECT btc_debit_balance(
     $1::uuid,
     $2,
-    $3::bigint
+    $3::bigint,
+    $4,
+    $5::uuid,
+    $6,
+    $7::uuid,
+    $8::uuid,
+    $9::bigint,
+    $10::bigint,
+    $11,
+    $12::boolean,
+    $13::jsonb,
+    $14
 ) AS new_balance_sat
 `
 
 type DebitVendorBalanceParams struct {
-	VendorID  pgtype.UUID `db:"vendor_id" json:"vendor_id"`
-	Network   string      `db:"network" json:"network"`
-	AmountSat int64       `db:"amount_sat" json:"amount_sat"`
+	VendorID          pgtype.UUID `db:"vendor_id" json:"vendor_id"`
+	Network           string      `db:"network" json:"network"`
+	AmountSat         int64       `db:"amount_sat" json:"amount_sat"`
+	ActorType         string      `db:"actor_type" json:"actor_type"`
+	ActorID           pgtype.UUID `db:"actor_id" json:"actor_id"`
+	ActorLabel        string      `db:"actor_label" json:"actor_label"`
+	InvoiceID         pgtype.UUID `db:"invoice_id" json:"invoice_id"`
+	PayoutRecordID    pgtype.UUID `db:"payout_record_id" json:"payout_record_id"`
+	ReferencesEventID pgtype.Int8 `db:"references_event_id" json:"references_event_id"`
+	FiatEquivalent    pgtype.Int8 `db:"fiat_equivalent" json:"fiat_equivalent"`
+	FiatCurrencyCode  pgtype.Text `db:"fiat_currency_code" json:"fiat_currency_code"`
+	RateStale         bool        `db:"rate_stale" json:"rate_stale"`
+	Metadata          []byte      `db:"metadata" json:"metadata"`
+	EventType         string      `db:"event_type" json:"event_type"`
 }
 
 // Debit the vendor's internal balance atomically via btc_debit_balance.
-// Returns the new balance for use in financial_audit_events.balance_after_sat.
+// The stored procedure writes the immutable financial_audit_events row itself in
+// the same transaction, so there is no unaudited mutation path.
 // Raises SQLSTATE 23514 (ErrInsufficientBalance) when balance < amount.
 // Never retry on 23514 — it is a deterministic error.
 func (q *Queries) DebitVendorBalance(ctx context.Context, arg DebitVendorBalanceParams) (int64, error) {
-	row := q.db.QueryRow(ctx, DebitVendorBalance, arg.VendorID, arg.Network, arg.AmountSat)
+	row := q.db.QueryRow(ctx, DebitVendorBalance,
+		arg.VendorID,
+		arg.Network,
+		arg.AmountSat,
+		arg.ActorType,
+		arg.ActorID,
+		arg.ActorLabel,
+		arg.InvoiceID,
+		arg.PayoutRecordID,
+		arg.ReferencesEventID,
+		arg.FiatEquivalent,
+		arg.FiatCurrencyCode,
+		arg.RateStale,
+		arg.Metadata,
+		arg.EventType,
+	)
 	var new_balance_sat int64
 	err := row.Scan(&new_balance_sat)
 	return new_balance_sat, err
+}
+
+const DecrementTreasuryReserve = `-- name: DecrementTreasuryReserve :one
+SELECT btc_debit_treasury_reserve(
+    $1,
+    $2::bigint,
+    $3,
+    $4::uuid,
+    $5,
+    $6::uuid,
+    $7::bigint,
+    $8::bigint,
+    $9,
+    $10::boolean,
+    $11::jsonb,
+    $12
+) AS new_treasury_reserve_sat
+`
+
+type DecrementTreasuryReserveParams struct {
+	Network           string      `db:"network" json:"network"`
+	AmountSat         int64       `db:"amount_sat" json:"amount_sat"`
+	ActorType         string      `db:"actor_type" json:"actor_type"`
+	ActorID           pgtype.UUID `db:"actor_id" json:"actor_id"`
+	ActorLabel        string      `db:"actor_label" json:"actor_label"`
+	PayoutRecordID    pgtype.UUID `db:"payout_record_id" json:"payout_record_id"`
+	ReferencesEventID pgtype.Int8 `db:"references_event_id" json:"references_event_id"`
+	FiatEquivalent    pgtype.Int8 `db:"fiat_equivalent" json:"fiat_equivalent"`
+	FiatCurrencyCode  pgtype.Text `db:"fiat_currency_code" json:"fiat_currency_code"`
+	RateStale         bool        `db:"rate_stale" json:"rate_stale"`
+	Metadata          []byte      `db:"metadata" json:"metadata"`
+	EventType         string      `db:"event_type" json:"event_type"`
+}
+
+// Decrement the platform treasury reserve through the same audited stored
+// procedure path used for increments. Intended for admin treasury withdrawals
+// or UTXO consolidation expenses.
+func (q *Queries) DecrementTreasuryReserve(ctx context.Context, arg DecrementTreasuryReserveParams) (int64, error) {
+	row := q.db.QueryRow(ctx, DecrementTreasuryReserve,
+		arg.Network,
+		arg.AmountSat,
+		arg.ActorType,
+		arg.ActorID,
+		arg.ActorLabel,
+		arg.PayoutRecordID,
+		arg.ReferencesEventID,
+		arg.FiatEquivalent,
+		arg.FiatCurrencyCode,
+		arg.RateStale,
+		arg.Metadata,
+		arg.EventType,
+	)
+	var new_treasury_reserve_sat int64
+	err := row.Scan(&new_treasury_reserve_sat)
+	return new_treasury_reserve_sat, err
+}
+
+const DeleteBitcoinTxStatusByID = `-- name: DeleteBitcoinTxStatusByID :execrows
+DELETE FROM btc_tracked_transactions
+WHERE id      = $1::bigint
+  AND user_id = $2::uuid
+  AND tracking_mode = 'txid'
+`
+
+type DeleteBitcoinTxStatusByIDParams struct {
+	ID     int64       `db:"id" json:"id"`
+	UserID pgtype.UUID `db:"user_id" json:"user_id"`
+}
+
+// Hard-delete one explicit txstatus row owned by the given user.
+func (q *Queries) DeleteBitcoinTxStatusByID(ctx context.Context, arg DeleteBitcoinTxStatusByIDParams) (int64, error) {
+	result, err := q.db.Exec(ctx, DeleteBitcoinTxStatusByID, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const DeleteBitcoinWatchByID = `-- name: DeleteBitcoinWatchByID :execrows
+DELETE FROM btc_watches
+WHERE id      = $1::bigint
+  AND user_id = $2::uuid
+`
+
+type DeleteBitcoinWatchByIDParams struct {
+	ID     int64       `db:"id" json:"id"`
+	UserID pgtype.UUID `db:"user_id" json:"user_id"`
+}
+
+// Hard-delete one watch resource owned by the given user.
+func (q *Queries) DeleteBitcoinWatchByID(ctx context.Context, arg DeleteBitcoinWatchByIDParams) (int64, error) {
+	result, err := q.db.Exec(ctx, DeleteBitcoinWatchByID, arg.ID, arg.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const EraseSSETokenIssuances = `-- name: EraseSSETokenIssuances :execrows
@@ -810,6 +1231,93 @@ func (q *Queries) GetBitcoinSyncState(ctx context.Context, network string) (Bitc
 	row := q.db.QueryRow(ctx, GetBitcoinSyncState, network)
 	var i BitcoinSyncState
 	err := row.Scan(&i.Network, &i.LastProcessedHeight, &i.UpdatedAt)
+	return i, err
+}
+
+const GetBitcoinTxStatusByID = `-- name: GetBitcoinTxStatusByID :one
+SELECT
+    id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at
+FROM btc_tracked_transactions
+WHERE id      = $1::bigint
+  AND user_id = $2::uuid
+  AND tracking_mode = 'txid'
+`
+
+type GetBitcoinTxStatusByIDParams struct {
+	ID     int64       `db:"id" json:"id"`
+	UserID pgtype.UUID `db:"user_id" json:"user_id"`
+}
+
+// Return one explicit-txid txstatus row owned by the given user.
+func (q *Queries) GetBitcoinTxStatusByID(ctx context.Context, arg GetBitcoinTxStatusByIDParams) (BtcTrackedTransaction, error) {
+	row := q.db.QueryRow(ctx, GetBitcoinTxStatusByID, arg.ID, arg.UserID)
+	var i BtcTrackedTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Network,
+		&i.TrackingMode,
+		&i.Address,
+		&i.Txid,
+		&i.Status,
+		&i.Confirmations,
+		&i.AmountSat,
+		&i.FeeRateSatVbyte,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
+		&i.ConfirmedAt,
+		&i.BlockHash,
+		&i.BlockHeight,
+		&i.ReplacementTxid,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const GetBitcoinWatchByID = `-- name: GetBitcoinWatchByID :one
+SELECT id, user_id, network, watch_type, address, txid, status, created_at, updated_at FROM btc_watches
+WHERE id      = $1::bigint
+  AND user_id = $2::uuid
+`
+
+type GetBitcoinWatchByIDParams struct {
+	ID     int64       `db:"id" json:"id"`
+	UserID pgtype.UUID `db:"user_id" json:"user_id"`
+}
+
+// Return one active watch owned by the given user.
+func (q *Queries) GetBitcoinWatchByID(ctx context.Context, arg GetBitcoinWatchByIDParams) (BtcWatch, error) {
+	row := q.db.QueryRow(ctx, GetBitcoinWatchByID, arg.ID, arg.UserID)
+	var i BtcWatch
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Network,
+		&i.WatchType,
+		&i.Address,
+		&i.Txid,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
 	return i, err
 }
 
@@ -1977,26 +2485,61 @@ func (q *Queries) GetVendorWalletConfig(ctx context.Context, arg GetVendorWallet
 	return i, err
 }
 
-const IncrementTreasuryReserve = `-- name: IncrementTreasuryReserve :exec
-UPDATE platform_config
-SET
-    treasury_reserve_satoshis = treasury_reserve_satoshis + $1::bigint,
-    updated_at                = NOW()
-WHERE network = $2
+const IncrementTreasuryReserve = `-- name: IncrementTreasuryReserve :one
+SELECT btc_credit_treasury_reserve(
+    $1,
+    $2::bigint,
+    $3,
+    $4::uuid,
+    $5,
+    $6::uuid,
+    $7::bigint,
+    $8::bigint,
+    $9,
+    $10::boolean,
+    $11::jsonb,
+    $12
+) AS new_treasury_reserve_sat
 `
 
 type IncrementTreasuryReserveParams struct {
-	FeeAmountSat int64  `db:"fee_amount_sat" json:"fee_amount_sat"`
-	Network      string `db:"network" json:"network"`
+	Network           string      `db:"network" json:"network"`
+	FeeAmountSat      int64       `db:"fee_amount_sat" json:"fee_amount_sat"`
+	ActorType         string      `db:"actor_type" json:"actor_type"`
+	ActorID           pgtype.UUID `db:"actor_id" json:"actor_id"`
+	ActorLabel        string      `db:"actor_label" json:"actor_label"`
+	PayoutRecordID    pgtype.UUID `db:"payout_record_id" json:"payout_record_id"`
+	ReferencesEventID pgtype.Int8 `db:"references_event_id" json:"references_event_id"`
+	FiatEquivalent    pgtype.Int8 `db:"fiat_equivalent" json:"fiat_equivalent"`
+	FiatCurrencyCode  pgtype.Text `db:"fiat_currency_code" json:"fiat_currency_code"`
+	RateStale         bool        `db:"rate_stale" json:"rate_stale"`
+	Metadata          []byte      `db:"metadata" json:"metadata"`
+	EventType         string      `db:"event_type" json:"event_type"`
 }
 
 // Increment the platform treasury reserve by the miner fees retained from a
-// confirmed sweep batch. MUST be called in the SAME transaction as
-// SetPayoutConfirmed so the reconciliation formula remains balanced.
-// Omitting this causes a permanent negative discrepancy on every reconciliation run.
-func (q *Queries) IncrementTreasuryReserve(ctx context.Context, arg IncrementTreasuryReserveParams) error {
-	_, err := q.db.Exec(ctx, IncrementTreasuryReserve, arg.FeeAmountSat, arg.Network)
-	return err
+// confirmed sweep batch. The stored procedure writes the immutable
+// financial_audit_events row itself in the same transaction.
+// MUST be called in the SAME transaction as SetPayoutConfirmed so the
+// reconciliation formula remains balanced.
+func (q *Queries) IncrementTreasuryReserve(ctx context.Context, arg IncrementTreasuryReserveParams) (int64, error) {
+	row := q.db.QueryRow(ctx, IncrementTreasuryReserve,
+		arg.Network,
+		arg.FeeAmountSat,
+		arg.ActorType,
+		arg.ActorID,
+		arg.ActorLabel,
+		arg.PayoutRecordID,
+		arg.ReferencesEventID,
+		arg.FiatEquivalent,
+		arg.FiatCurrencyCode,
+		arg.RateStale,
+		arg.Metadata,
+		arg.EventType,
+	)
+	var new_treasury_reserve_sat int64
+	err := row.Scan(&new_treasury_reserve_sat)
+	return new_treasury_reserve_sat, err
 }
 
 const InsertExchangeRate = `-- name: InsertExchangeRate :one
@@ -2432,6 +2975,437 @@ func (q *Queries) InsertZMQDeadLetter(ctx context.Context, arg InsertZMQDeadLett
 	return i, err
 }
 
+const ListActiveBitcoinTransactionWatchUsersByTxID = `-- name: ListActiveBitcoinTransactionWatchUsersByTxID :many
+SELECT user_id
+FROM btc_watches
+WHERE network    = $1
+  AND txid       = $2
+  AND watch_type = 'transaction'
+`
+
+type ListActiveBitcoinTransactionWatchUsersByTxIDParams struct {
+	Network string      `db:"network" json:"network"`
+	Txid    pgtype.Text `db:"txid" json:"txid"`
+}
+
+// Return users with an active transaction watch on txid.
+// uq_bw_active_transaction guarantees one row per (user_id, network, txid), so
+// DISTINCT would only add an unnecessary hash/sort step on this fanout path.
+func (q *Queries) ListActiveBitcoinTransactionWatchUsersByTxID(ctx context.Context, arg ListActiveBitcoinTransactionWatchUsersByTxIDParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, ListActiveBitcoinTransactionWatchUsersByTxID, arg.Network, arg.Txid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var user_id pgtype.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListActiveBitcoinWatchAddressesByUser = `-- name: ListActiveBitcoinWatchAddressesByUser :many
+SELECT address
+FROM btc_watches
+WHERE user_id    = $1::uuid
+  AND network    = $2
+  AND watch_type = 'address'
+ORDER BY address ASC
+`
+
+type ListActiveBitcoinWatchAddressesByUserParams struct {
+	UserID  pgtype.UUID `db:"user_id" json:"user_id"`
+	Network string      `db:"network" json:"network"`
+}
+
+// Return active address-watch targets for one user/network.
+func (q *Queries) ListActiveBitcoinWatchAddressesByUser(ctx context.Context, arg ListActiveBitcoinWatchAddressesByUserParams) ([]pgtype.Text, error) {
+	rows, err := q.db.Query(ctx, ListActiveBitcoinWatchAddressesByUser, arg.UserID, arg.Network)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.Text{}
+	for rows.Next() {
+		var address pgtype.Text
+		if err := rows.Scan(&address); err != nil {
+			return nil, err
+		}
+		items = append(items, address)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListBitcoinTxStatusRelatedAddressesByStatusIDs = `-- name: ListBitcoinTxStatusRelatedAddressesByStatusIDs :many
+SELECT
+    tracked_transaction_id AS tx_status_id,
+    address,
+    amount_sat,
+    created_at,
+    updated_at
+FROM btc_tracked_transaction_addresses
+WHERE tracked_transaction_id = ANY($1::bigint[])
+ORDER BY tracked_transaction_id, address
+`
+
+type ListBitcoinTxStatusRelatedAddressesByStatusIDsRow struct {
+	TxStatusID int64     `db:"tx_status_id" json:"tx_status_id"`
+	Address    string    `db:"address" json:"address"`
+	AmountSat  int64     `db:"amount_sat" json:"amount_sat"`
+	CreatedAt  time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt  time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// Return related watched addresses for the given txstatus row IDs.
+func (q *Queries) ListBitcoinTxStatusRelatedAddressesByStatusIDs(ctx context.Context, txStatusIds []int64) ([]ListBitcoinTxStatusRelatedAddressesByStatusIDsRow, error) {
+	rows, err := q.db.Query(ctx, ListBitcoinTxStatusRelatedAddressesByStatusIDs, txStatusIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBitcoinTxStatusRelatedAddressesByStatusIDsRow{}
+	for rows.Next() {
+		var i ListBitcoinTxStatusRelatedAddressesByStatusIDsRow
+		if err := rows.Scan(
+			&i.TxStatusID,
+			&i.Address,
+			&i.AmountSat,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListBitcoinTxStatusUsersByTxID = `-- name: ListBitcoinTxStatusUsersByTxID :many
+SELECT user_id
+FROM btc_tracked_transactions
+WHERE network = $1
+  AND txid    = $2
+`
+
+type ListBitcoinTxStatusUsersByTxIDParams struct {
+	Network string `db:"network" json:"network"`
+	Txid    string `db:"txid" json:"txid"`
+}
+
+// Return user_ids that currently track the given txid.
+// uq_btt_user_network_txid guarantees one row per (user_id, network, txid), so
+// DISTINCT would only add planner work with no deduplication benefit.
+func (q *Queries) ListBitcoinTxStatusUsersByTxID(ctx context.Context, arg ListBitcoinTxStatusUsersByTxIDParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, ListBitcoinTxStatusUsersByTxID, arg.Network, arg.Txid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var user_id pgtype.UUID
+		if err := rows.Scan(&user_id); err != nil {
+			return nil, err
+		}
+		items = append(items, user_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListBitcoinTxStatuses = `-- name: ListBitcoinTxStatuses :many
+WITH filtered_tx_statuses AS (
+    SELECT
+        btt.id,
+        btt.user_id,
+        btt.network,
+        btt.tracking_mode,
+        btt.address,
+        btt.txid,
+        btt.status,
+        btt.confirmations,
+        btt.amount_sat,
+        btt.fee_rate_sat_vbyte,
+        btt.first_seen_at,
+        btt.last_seen_at,
+        btt.confirmed_at,
+        btt.block_hash,
+        btt.block_height,
+        btt.replacement_txid,
+        btt.created_at,
+        btt.updated_at
+    FROM btc_tracked_transactions btt
+    WHERE btt.user_id       = $4::uuid
+      AND btt.network       = $5
+      AND $6::text = ''
+      AND ($7::text = '' OR btt.txid = $7::text)
+      AND ($8::text = '' OR btt.tracking_mode = $8::text)
+
+    UNION ALL
+
+    SELECT
+        btt.id,
+        btt.user_id,
+        btt.network,
+        btt.tracking_mode,
+        btt.address,
+        btt.txid,
+        btt.status,
+        btt.confirmations,
+        btt.amount_sat,
+        btt.fee_rate_sat_vbyte,
+        btt.first_seen_at,
+        btt.last_seen_at,
+        btt.confirmed_at,
+        btt.block_hash,
+        btt.block_height,
+        btt.replacement_txid,
+        btt.created_at,
+        btt.updated_at
+    FROM btc_tracked_transactions btt
+    WHERE btt.user_id       = $4::uuid
+      AND btt.network       = $5
+      AND $6::text    <> ''
+      AND btt.address       = $6::text
+      AND ($7::text = '' OR btt.txid = $7::text)
+      AND ($8::text = '' OR btt.tracking_mode = $8::text)
+
+    UNION ALL
+
+    SELECT
+        btt.id,
+        btt.user_id,
+        btt.network,
+        btt.tracking_mode,
+        btt.address,
+        btt.txid,
+        btt.status,
+        btt.confirmations,
+        btt.amount_sat,
+        btt.fee_rate_sat_vbyte,
+        btt.first_seen_at,
+        btt.last_seen_at,
+        btt.confirmed_at,
+        btt.block_hash,
+        btt.block_height,
+        btt.replacement_txid,
+        btt.created_at,
+        btt.updated_at
+    FROM btc_tracked_transactions btt
+    JOIN btc_tracked_transaction_addresses ra
+      ON ra.tracked_transaction_id = btt.id
+    WHERE btt.user_id       = $4::uuid
+      AND btt.network       = $5
+      AND $6::text    <> ''
+      AND ra.address        = $6::text
+      AND ($7::text = '' OR btt.txid = $7::text)
+      AND ($8::text = '' OR btt.tracking_mode = $8::text)
+      AND btt.address IS DISTINCT FROM $6::text
+)
+SELECT
+    id::bigint AS id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at
+FROM filtered_tx_statuses
+WHERE (
+    $1::timestamptz IS NULL
+    OR (COALESCE(confirmed_at, first_seen_at), id) < ($1::timestamptz, $2::bigint)
+)
+ORDER BY COALESCE(confirmed_at, first_seen_at) DESC, id DESC
+LIMIT $3::integer
+`
+
+type ListBitcoinTxStatusesParams struct {
+	BeforeSortTime pgtype.Timestamptz `db:"before_sort_time" json:"before_sort_time"`
+	BeforeID       int64              `db:"before_id" json:"before_id"`
+	LimitRows      int32              `db:"limit_rows" json:"limit_rows"`
+	UserID         pgtype.UUID        `db:"user_id" json:"user_id"`
+	Network        string             `db:"network" json:"network"`
+	Address        string             `db:"address" json:"address"`
+	Txid           string             `db:"txid" json:"txid"`
+	TrackingMode   string             `db:"tracking_mode" json:"tracking_mode"`
+}
+
+type ListBitcoinTxStatusesRow struct {
+	ID              int64              `db:"id" json:"id"`
+	UserID          pgtype.UUID        `db:"user_id" json:"user_id"`
+	Network         string             `db:"network" json:"network"`
+	TrackingMode    string             `db:"tracking_mode" json:"tracking_mode"`
+	Address         pgtype.Text        `db:"address" json:"address"`
+	Txid            string             `db:"txid" json:"txid"`
+	Status          string             `db:"status" json:"status"`
+	Confirmations   int32              `db:"confirmations" json:"confirmations"`
+	AmountSat       int64              `db:"amount_sat" json:"amount_sat"`
+	FeeRateSatVbyte pgtype.Numeric     `db:"fee_rate_sat_vbyte" json:"fee_rate_sat_vbyte"`
+	FirstSeenAt     pgtype.Timestamptz `db:"first_seen_at" json:"first_seen_at"`
+	LastSeenAt      pgtype.Timestamptz `db:"last_seen_at" json:"last_seen_at"`
+	ConfirmedAt     pgtype.Timestamptz `db:"confirmed_at" json:"confirmed_at"`
+	BlockHash       pgtype.Text        `db:"block_hash" json:"block_hash"`
+	BlockHeight     pgtype.Int8        `db:"block_height" json:"block_height"`
+	ReplacementTxid pgtype.Text        `db:"replacement_txid" json:"replacement_txid"`
+	CreatedAt       time.Time          `db:"created_at" json:"created_at"`
+	UpdatedAt       time.Time          `db:"updated_at" json:"updated_at"`
+}
+
+// List txstatus rows for one user/network with optional address, txid, and mode filters.
+// High-load shape:
+//   - @address = ”  → one ordered scan over btc_tracked_transactions
+//   - @address != ” → UNION ALL of:
+//     1. explicit parent-address matches (idx_btt_user_address_time)
+//     2. child-address matches from btc_tracked_transaction_addresses (idx_btta_address)
+//     excluding rows already returned by the explicit-address branch
+//
+// Keyset pagination uses (COALESCE(confirmed_at, first_seen_at), id) DESC via
+// (@before_sort_time, @before_id) so deep pages do not degrade into OFFSET scans.
+// This avoids a broad OR + correlated EXISTS over the full parent row set.
+func (q *Queries) ListBitcoinTxStatuses(ctx context.Context, arg ListBitcoinTxStatusesParams) ([]ListBitcoinTxStatusesRow, error) {
+	rows, err := q.db.Query(ctx, ListBitcoinTxStatuses,
+		arg.BeforeSortTime,
+		arg.BeforeID,
+		arg.LimitRows,
+		arg.UserID,
+		arg.Network,
+		arg.Address,
+		arg.Txid,
+		arg.TrackingMode,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListBitcoinTxStatusesRow{}
+	for rows.Next() {
+		var i ListBitcoinTxStatusesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Network,
+			&i.TrackingMode,
+			&i.Address,
+			&i.Txid,
+			&i.Status,
+			&i.Confirmations,
+			&i.AmountSat,
+			&i.FeeRateSatVbyte,
+			&i.FirstSeenAt,
+			&i.LastSeenAt,
+			&i.ConfirmedAt,
+			&i.BlockHash,
+			&i.BlockHeight,
+			&i.ReplacementTxid,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const ListBitcoinWatches = `-- name: ListBitcoinWatches :many
+SELECT id, user_id, network, watch_type, address, txid, status, created_at, updated_at FROM btc_watches
+WHERE user_id = $1::uuid
+  AND network = $2
+  AND ($3 = '' OR watch_type = $3)
+  AND ($4 = '' OR address = $4)
+  AND ($5 = '' OR txid = $5)
+  AND (
+      $6::timestamptz IS NULL
+      OR (created_at, id) < ($6::timestamptz, $7::bigint)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $8::integer
+`
+
+type ListBitcoinWatchesParams struct {
+	UserID          pgtype.UUID        `db:"user_id" json:"user_id"`
+	Network         string             `db:"network" json:"network"`
+	WatchType       interface{}        `db:"watch_type" json:"watch_type"`
+	Address         interface{}        `db:"address" json:"address"`
+	Txid            interface{}        `db:"txid" json:"txid"`
+	BeforeCreatedAt pgtype.Timestamptz `db:"before_created_at" json:"before_created_at"`
+	BeforeID        int64              `db:"before_id" json:"before_id"`
+	LimitRows       int32              `db:"limit_rows" json:"limit_rows"`
+}
+
+// List active watch resources for one user/network with optional type/address/txid filters.
+// The base scan follows created_at DESC ordering. Exact address/txid filters are
+// backed by the partial unique indexes; watch_type-filtered lists use idx_bw_user_type_time.
+// Keyset pagination uses (created_at, id) DESC. Pass the previous page's final
+// row as (@before_created_at, @before_id) to continue without OFFSET scans.
+func (q *Queries) ListBitcoinWatches(ctx context.Context, arg ListBitcoinWatchesParams) ([]BtcWatch, error) {
+	rows, err := q.db.Query(ctx, ListBitcoinWatches,
+		arg.UserID,
+		arg.Network,
+		arg.WatchType,
+		arg.Address,
+		arg.Txid,
+		arg.BeforeCreatedAt,
+		arg.BeforeID,
+		arg.LimitRows,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BtcWatch{}
+	for rows.Next() {
+		var i BtcWatch
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Network,
+			&i.WatchType,
+			&i.Address,
+			&i.Txid,
+			&i.Status,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const LoadActiveMonitoringByNetwork = `-- name: LoadActiveMonitoringByNetwork :many
 SELECT
     iam.invoice_id,
@@ -2480,6 +3454,47 @@ func (q *Queries) LoadActiveMonitoringByNetwork(ctx context.Context, network str
 		return nil, err
 	}
 	return items, nil
+}
+
+const MarkBitcoinTxStatusReplaced = `-- name: MarkBitcoinTxStatusReplaced :execrows
+UPDATE btc_tracked_transactions
+SET
+    status           = 'replaced',
+    confirmations    = 0,
+    replacement_txid = $1,
+    last_seen_at     = $2::timestamptz,
+    confirmed_at     = NULL,
+    block_hash       = NULL,
+    block_height     = NULL
+WHERE user_id = $3::uuid
+  AND network = $4
+  AND txid    = $5
+  AND status NOT IN ('confirmed', 'replaced', 'conflicting', 'abandoned')
+`
+
+type MarkBitcoinTxStatusReplacedParams struct {
+	ReplacementTxid pgtype.Text        `db:"replacement_txid" json:"replacement_txid"`
+	ReplacedAt      pgtype.Timestamptz `db:"replaced_at" json:"replaced_at"`
+	UserID          pgtype.UUID        `db:"user_id" json:"user_id"`
+	Network         string             `db:"network" json:"network"`
+	ReplacedTxid    string             `db:"replaced_txid" json:"replaced_txid"`
+}
+
+// Mark all rows for (user_id, network, replaced_txid) as replaced.
+// An already-replaced row is terminal here so a late duplicate event cannot
+// overwrite the first replacement_txid that established the chain.
+func (q *Queries) MarkBitcoinTxStatusReplaced(ctx context.Context, arg MarkBitcoinTxStatusReplacedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, MarkBitcoinTxStatusReplaced,
+		arg.ReplacementTxid,
+		arg.ReplacedAt,
+		arg.UserID,
+		arg.Network,
+		arg.ReplacedTxid,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const MarkInvoiceSweepCompleted = `-- name: MarkInvoiceSweepCompleted :execrows
@@ -2934,6 +3949,46 @@ func (q *Queries) SumPlatformVendorBalances(ctx context.Context, network string)
 	return total_platform_balance_sat, err
 }
 
+const TouchBitcoinTxStatusMempool = `-- name: TouchBitcoinTxStatusMempool :execrows
+UPDATE btc_tracked_transactions
+SET
+    status             = 'mempool',
+    confirmations      = 0,
+    fee_rate_sat_vbyte = $1,
+    last_seen_at       = $2::timestamptz,
+    confirmed_at       = NULL,
+    block_hash         = NULL,
+    block_height       = NULL,
+    replacement_txid   = NULL
+WHERE user_id = $3::uuid
+  AND network = $4
+  AND txid    = $5
+  AND status NOT IN ('confirmed', 'replaced', 'conflicting', 'abandoned')
+`
+
+type TouchBitcoinTxStatusMempoolParams struct {
+	FeeRateSatVbyte pgtype.Numeric     `db:"fee_rate_sat_vbyte" json:"fee_rate_sat_vbyte"`
+	LastSeenAt      pgtype.Timestamptz `db:"last_seen_at" json:"last_seen_at"`
+	UserID          pgtype.UUID        `db:"user_id" json:"user_id"`
+	Network         string             `db:"network" json:"network"`
+	Txid            string             `db:"txid" json:"txid"`
+}
+
+// Mark all rows for (user_id, network, txid) as present in mempool.
+func (q *Queries) TouchBitcoinTxStatusMempool(ctx context.Context, arg TouchBitcoinTxStatusMempoolParams) (int64, error) {
+	result, err := q.db.Exec(ctx, TouchBitcoinTxStatusMempool,
+		arg.FeeRateSatVbyte,
+		arg.LastSeenAt,
+		arg.UserID,
+		arg.Network,
+		arg.Txid,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const TransitionInvoiceToConfirming = `-- name: TransitionInvoiceToConfirming :execrows
 UPDATE invoices
 SET
@@ -3153,6 +4208,195 @@ func (q *Queries) UpdateBitcoinSyncState(ctx context.Context, arg UpdateBitcoinS
 	return err
 }
 
+const UpdateBitcoinTxStatusByID = `-- name: UpdateBitcoinTxStatusByID :one
+UPDATE btc_tracked_transactions
+SET
+    address             = $1,
+    status              = $2,
+    confirmations       = CASE
+        WHEN $2 = 'confirmed' THEN GREATEST($3::integer, 1)
+        ELSE 0
+    END,
+    amount_sat          = $4::bigint,
+    fee_rate_sat_vbyte  = $5,
+    first_seen_at       = $6::timestamptz,
+    last_seen_at        = $7::timestamptz,
+    confirmed_at        = CASE
+        WHEN $2 = 'confirmed' THEN $8::timestamptz
+        ELSE NULL
+    END,
+    block_hash          = CASE
+        WHEN $2 = 'confirmed' THEN $9
+        ELSE NULL
+    END,
+    block_height        = CASE
+        WHEN $2 = 'confirmed' THEN $10::bigint
+        ELSE NULL
+    END,
+    replacement_txid    = CASE
+        WHEN $2 = 'replaced' THEN $11
+        ELSE NULL
+    END
+WHERE id            = $12::bigint
+  AND user_id       = $13::uuid
+  AND tracking_mode = 'txid'
+RETURNING
+    id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at
+`
+
+type UpdateBitcoinTxStatusByIDParams struct {
+	Address         pgtype.Text        `db:"address" json:"address"`
+	Status          string             `db:"status" json:"status"`
+	Confirmations   int32              `db:"confirmations" json:"confirmations"`
+	AmountSat       int64              `db:"amount_sat" json:"amount_sat"`
+	FeeRateSatVbyte pgtype.Numeric     `db:"fee_rate_sat_vbyte" json:"fee_rate_sat_vbyte"`
+	FirstSeenAt     pgtype.Timestamptz `db:"first_seen_at" json:"first_seen_at"`
+	LastSeenAt      pgtype.Timestamptz `db:"last_seen_at" json:"last_seen_at"`
+	ConfirmedAt     pgtype.Timestamptz `db:"confirmed_at" json:"confirmed_at"`
+	BlockHash       pgtype.Text        `db:"block_hash" json:"block_hash"`
+	BlockHeight     pgtype.Int8        `db:"block_height" json:"block_height"`
+	ReplacementTxid pgtype.Text        `db:"replacement_txid" json:"replacement_txid"`
+	ID              int64              `db:"id" json:"id"`
+	UserID          pgtype.UUID        `db:"user_id" json:"user_id"`
+}
+
+// Update one explicit txid tracking row. Watch-managed rows are immutable here.
+// txid is intentionally excluded from SET because it is immutable after creation.
+// The query also normalizes status-dependent fields so callers cannot persist
+// mempool/not_found/conflicting/abandoned rows with stale confirmation metadata.
+func (q *Queries) UpdateBitcoinTxStatusByID(ctx context.Context, arg UpdateBitcoinTxStatusByIDParams) (BtcTrackedTransaction, error) {
+	row := q.db.QueryRow(ctx, UpdateBitcoinTxStatusByID,
+		arg.Address,
+		arg.Status,
+		arg.Confirmations,
+		arg.AmountSat,
+		arg.FeeRateSatVbyte,
+		arg.FirstSeenAt,
+		arg.LastSeenAt,
+		arg.ConfirmedAt,
+		arg.BlockHash,
+		arg.BlockHeight,
+		arg.ReplacementTxid,
+		arg.ID,
+		arg.UserID,
+	)
+	var i BtcTrackedTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Network,
+		&i.TrackingMode,
+		&i.Address,
+		&i.Txid,
+		&i.Status,
+		&i.Confirmations,
+		&i.AmountSat,
+		&i.FeeRateSatVbyte,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
+		&i.ConfirmedAt,
+		&i.BlockHash,
+		&i.BlockHeight,
+		&i.ReplacementTxid,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const UpdateBitcoinWatchByID = `-- name: UpdateBitcoinWatchByID :one
+UPDATE btc_watches
+SET
+    address    = $1,
+    txid       = $2,
+    updated_at = NOW()
+WHERE id      = $3::bigint
+  AND user_id = $4::uuid
+  AND watch_type = $5
+RETURNING id, user_id, network, watch_type, address, txid, status, created_at, updated_at
+`
+
+type UpdateBitcoinWatchByIDParams struct {
+	Address   pgtype.Text `db:"address" json:"address"`
+	Txid      pgtype.Text `db:"txid" json:"txid"`
+	ID        int64       `db:"id" json:"id"`
+	UserID    pgtype.UUID `db:"user_id" json:"user_id"`
+	WatchType string      `db:"watch_type" json:"watch_type"`
+}
+
+// Update one active watch resource owned by the given user.
+// watch_type is immutable after creation. The WHERE clause enforces that the
+// caller may update the target within the same type, but may not switch an
+// address watch into a transaction watch (or the reverse) mid-lifecycle.
+func (q *Queries) UpdateBitcoinWatchByID(ctx context.Context, arg UpdateBitcoinWatchByIDParams) (BtcWatch, error) {
+	row := q.db.QueryRow(ctx, UpdateBitcoinWatchByID,
+		arg.Address,
+		arg.Txid,
+		arg.ID,
+		arg.UserID,
+		arg.WatchType,
+	)
+	var i BtcWatch
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Network,
+		&i.WatchType,
+		&i.Address,
+		&i.Txid,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const UpsertBitcoinTxStatusRelatedAddress = `-- name: UpsertBitcoinTxStatusRelatedAddress :exec
+INSERT INTO btc_tracked_transaction_addresses (
+    tracked_transaction_id,
+    address,
+    amount_sat
+)
+VALUES (
+    $1::bigint,
+    $2,
+    $3::bigint
+)
+ON CONFLICT (tracked_transaction_id, address) DO UPDATE
+SET
+    amount_sat = EXCLUDED.amount_sat
+WHERE btc_tracked_transaction_addresses.amount_sat IS DISTINCT FROM EXCLUDED.amount_sat
+`
+
+type UpsertBitcoinTxStatusRelatedAddressParams struct {
+	TxStatusID int64  `db:"tx_status_id" json:"tx_status_id"`
+	Address    string `db:"address" json:"address"`
+	AmountSat  int64  `db:"amount_sat" json:"amount_sat"`
+}
+
+// Create or refresh one watched address linked to a tracked tx row.
+func (q *Queries) UpsertBitcoinTxStatusRelatedAddress(ctx context.Context, arg UpsertBitcoinTxStatusRelatedAddressParams) error {
+	_, err := q.db.Exec(ctx, UpsertBitcoinTxStatusRelatedAddress, arg.TxStatusID, arg.Address, arg.AmountSat)
+	return err
+}
+
 const UpsertBlockHistory = `-- name: UpsertBlockHistory :exec
 /* ════════════════════════════════════════════════════════════
    BITCOIN BLOCK HISTORY
@@ -3294,4 +4538,329 @@ func (q *Queries) UpsertReconciliationJobState(ctx context.Context, arg UpsertRe
 		arg.LastSuccessfulRunAt,
 	)
 	return err
+}
+
+const UpsertTrackedBitcoinTxStatus = `-- name: UpsertTrackedBitcoinTxStatus :one
+INSERT INTO btc_tracked_transactions (
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid
+)
+VALUES (
+    $1::uuid,
+    $2,
+    'txid',
+    $3,
+    $4,
+    $5,
+    $6::integer,
+    $7::bigint,
+    $8,
+    $9::timestamptz,
+    $10::timestamptz,
+    $11::timestamptz,
+    $12,
+    $13::bigint,
+    $14
+)
+ON CONFLICT (user_id, network, txid) DO UPDATE
+SET
+    tracking_mode      = CASE
+        WHEN btc_tracked_transactions.tracking_mode = 'watch' THEN 'txid'
+        ELSE btc_tracked_transactions.tracking_mode
+    END,
+    address            = COALESCE(EXCLUDED.address, btc_tracked_transactions.address),
+    status             = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.status
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.status
+        ELSE EXCLUDED.status
+    END,
+    confirmations      = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.confirmations
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.confirmations
+        WHEN EXCLUDED.status = 'confirmed'
+            THEN GREATEST(EXCLUDED.confirmations, 1)
+        ELSE EXCLUDED.confirmations
+    END,
+    amount_sat         = CASE
+        WHEN EXCLUDED.amount_sat > 0 THEN EXCLUDED.amount_sat
+        ELSE btc_tracked_transactions.amount_sat
+    END,
+    fee_rate_sat_vbyte = CASE
+        WHEN EXCLUDED.fee_rate_sat_vbyte > 0 THEN EXCLUDED.fee_rate_sat_vbyte
+        ELSE btc_tracked_transactions.fee_rate_sat_vbyte
+    END,
+    first_seen_at      = LEAST(btc_tracked_transactions.first_seen_at, EXCLUDED.first_seen_at),
+    last_seen_at       = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.last_seen_at
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.last_seen_at
+        ELSE EXCLUDED.last_seen_at
+    END,
+    confirmed_at       = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.confirmed_at
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.confirmed_at
+        ELSE COALESCE(btc_tracked_transactions.confirmed_at, EXCLUDED.confirmed_at)
+    END,
+    block_hash         = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.block_hash
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.block_hash
+        ELSE COALESCE(btc_tracked_transactions.block_hash, EXCLUDED.block_hash)
+    END,
+    block_height       = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.block_height
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.block_height
+        ELSE COALESCE(btc_tracked_transactions.block_height, EXCLUDED.block_height)
+    END,
+    replacement_txid   = CASE
+        WHEN btc_tracked_transactions.status = 'replaced'
+            THEN btc_tracked_transactions.replacement_txid
+        WHEN btc_tracked_transactions.status IN ('conflicting', 'abandoned')
+            THEN btc_tracked_transactions.replacement_txid
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.replacement_txid
+        ELSE COALESCE(EXCLUDED.replacement_txid, btc_tracked_transactions.replacement_txid)
+    END
+RETURNING
+    id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at
+`
+
+type UpsertTrackedBitcoinTxStatusParams struct {
+	UserID          pgtype.UUID        `db:"user_id" json:"user_id"`
+	Network         string             `db:"network" json:"network"`
+	Address         pgtype.Text        `db:"address" json:"address"`
+	Txid            string             `db:"txid" json:"txid"`
+	Status          string             `db:"status" json:"status"`
+	Confirmations   int32              `db:"confirmations" json:"confirmations"`
+	AmountSat       int64              `db:"amount_sat" json:"amount_sat"`
+	FeeRateSatVbyte pgtype.Numeric     `db:"fee_rate_sat_vbyte" json:"fee_rate_sat_vbyte"`
+	FirstSeenAt     pgtype.Timestamptz `db:"first_seen_at" json:"first_seen_at"`
+	LastSeenAt      pgtype.Timestamptz `db:"last_seen_at" json:"last_seen_at"`
+	ConfirmedAt     pgtype.Timestamptz `db:"confirmed_at" json:"confirmed_at"`
+	BlockHash       pgtype.Text        `db:"block_hash" json:"block_hash"`
+	BlockHeight     pgtype.Int8        `db:"block_height" json:"block_height"`
+	ReplacementTxid pgtype.Text        `db:"replacement_txid" json:"replacement_txid"`
+}
+
+// Create or refresh one explicit txid-tracking row keyed by (user, network, txid).
+func (q *Queries) UpsertTrackedBitcoinTxStatus(ctx context.Context, arg UpsertTrackedBitcoinTxStatusParams) (BtcTrackedTransaction, error) {
+	row := q.db.QueryRow(ctx, UpsertTrackedBitcoinTxStatus,
+		arg.UserID,
+		arg.Network,
+		arg.Address,
+		arg.Txid,
+		arg.Status,
+		arg.Confirmations,
+		arg.AmountSat,
+		arg.FeeRateSatVbyte,
+		arg.FirstSeenAt,
+		arg.LastSeenAt,
+		arg.ConfirmedAt,
+		arg.BlockHash,
+		arg.BlockHeight,
+		arg.ReplacementTxid,
+	)
+	var i BtcTrackedTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Network,
+		&i.TrackingMode,
+		&i.Address,
+		&i.Txid,
+		&i.Status,
+		&i.Confirmations,
+		&i.AmountSat,
+		&i.FeeRateSatVbyte,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
+		&i.ConfirmedAt,
+		&i.BlockHash,
+		&i.BlockHeight,
+		&i.ReplacementTxid,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const UpsertWatchBitcoinTxStatus = `-- name: UpsertWatchBitcoinTxStatus :one
+INSERT INTO btc_tracked_transactions (
+    user_id,
+    network,
+    tracking_mode,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at
+)
+VALUES (
+    $1::uuid,
+    $2,
+    'watch',
+    $3,
+    'mempool',
+    0,
+    $4::bigint,
+    $5,
+    $6::timestamptz,
+    $7::timestamptz
+)
+ON CONFLICT (user_id, network, txid) DO UPDATE
+SET
+    amount_sat         = CASE
+        WHEN EXCLUDED.amount_sat > 0 THEN EXCLUDED.amount_sat
+        ELSE btc_tracked_transactions.amount_sat
+    END,
+    fee_rate_sat_vbyte = CASE
+        WHEN EXCLUDED.fee_rate_sat_vbyte > 0 THEN EXCLUDED.fee_rate_sat_vbyte
+        ELSE btc_tracked_transactions.fee_rate_sat_vbyte
+    END,
+    first_seen_at      = LEAST(btc_tracked_transactions.first_seen_at, EXCLUDED.first_seen_at),
+    last_seen_at       = CASE
+        WHEN btc_tracked_transactions.status IN ('confirmed', 'replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.last_seen_at
+        ELSE EXCLUDED.last_seen_at
+    END,
+    status             = CASE
+        WHEN btc_tracked_transactions.status IN ('confirmed', 'replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.status
+        ELSE 'mempool'
+    END,
+    confirmations      = CASE
+        WHEN btc_tracked_transactions.status = 'confirmed' THEN btc_tracked_transactions.confirmations
+        ELSE 0
+    END,
+    confirmed_at       = CASE
+        WHEN btc_tracked_transactions.status = 'confirmed' THEN btc_tracked_transactions.confirmed_at
+        ELSE NULL
+    END,
+    block_hash         = CASE
+        WHEN btc_tracked_transactions.status = 'confirmed' THEN btc_tracked_transactions.block_hash
+        ELSE NULL
+    END,
+    block_height       = CASE
+        WHEN btc_tracked_transactions.status = 'confirmed' THEN btc_tracked_transactions.block_height
+        ELSE NULL
+    END,
+    replacement_txid   = CASE
+        WHEN btc_tracked_transactions.status = 'replaced' THEN btc_tracked_transactions.replacement_txid
+        ELSE NULL
+    END
+RETURNING
+    id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at
+`
+
+type UpsertWatchBitcoinTxStatusParams struct {
+	UserID          pgtype.UUID        `db:"user_id" json:"user_id"`
+	Network         string             `db:"network" json:"network"`
+	Txid            string             `db:"txid" json:"txid"`
+	AmountSat       int64              `db:"amount_sat" json:"amount_sat"`
+	FeeRateSatVbyte pgtype.Numeric     `db:"fee_rate_sat_vbyte" json:"fee_rate_sat_vbyte"`
+	FirstSeenAt     pgtype.Timestamptz `db:"first_seen_at" json:"first_seen_at"`
+	LastSeenAt      pgtype.Timestamptz `db:"last_seen_at" json:"last_seen_at"`
+}
+
+// Create or refresh one watch-discovered txstatus row.
+// One durable row exists per (user_id, network, txid); matched addresses are
+// linked separately through btc_tx_status_related_addresses.
+func (q *Queries) UpsertWatchBitcoinTxStatus(ctx context.Context, arg UpsertWatchBitcoinTxStatusParams) (BtcTrackedTransaction, error) {
+	row := q.db.QueryRow(ctx, UpsertWatchBitcoinTxStatus,
+		arg.UserID,
+		arg.Network,
+		arg.Txid,
+		arg.AmountSat,
+		arg.FeeRateSatVbyte,
+		arg.FirstSeenAt,
+		arg.LastSeenAt,
+	)
+	var i BtcTrackedTransaction
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Network,
+		&i.TrackingMode,
+		&i.Address,
+		&i.Txid,
+		&i.Status,
+		&i.Confirmations,
+		&i.AmountSat,
+		&i.FeeRateSatVbyte,
+		&i.FirstSeenAt,
+		&i.LastSeenAt,
+		&i.ConfirmedAt,
+		&i.BlockHash,
+		&i.BlockHeight,
+		&i.ReplacementTxid,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

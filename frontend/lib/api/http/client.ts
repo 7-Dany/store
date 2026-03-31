@@ -1,5 +1,6 @@
 import axios from "axios";
-import { doRefresh } from "./refresh"; // shared mutex — see refresh.ts
+import { doRefresh, getLastRefreshError } from "./refresh"; // shared mutex — see refresh.ts
+import { loginUrlForCurrentPage } from "@/lib/auth/redirect";
 
 /**
  * Browser-side Axios client — proxied.
@@ -62,8 +63,11 @@ apiClient.interceptors.response.use(
     const ok = await doRefresh();
     if (ok) return apiClient(original);
 
-    if (typeof window !== "undefined") {
-      window.location.href = "/login";
+    // Only force-logout on a genuine auth rejection (expired/revoked token).
+    // A transient network error should not clear the session — the request
+    // will fail naturally and the caller can surface an error state instead.
+    if (getLastRefreshError() !== "network" && typeof window !== "undefined") {
+      window.location.href = loginUrlForCurrentPage();
     }
     return Promise.reject(error);
   },

@@ -51,10 +51,28 @@ type Storer interface {
 	// Errors are non-fatal — audit write failures never fail the primary operation.
 	WriteAuditLog(ctx context.Context, event audit.EventType, userID string, metadata map[string]any) error
 
-	// GetUserWatchAddresses returns the set of registered watch addresses for userID.
+	// GetUserWatchAddresses returns the active address-watch targets for userID and network.
 	// Returns an empty slice (not an error) when the set is absent (user has no watches).
 	// Used by MempoolTracker to check whether a transaction's outputs overlap a user's set.
-	GetUserWatchAddresses(ctx context.Context, userID string) ([]string, error)
+	GetUserWatchAddresses(ctx context.Context, userID, network string) ([]string, error)
+
+	// UpsertWatchBitcoinTxStatus persists one watch-discovered txstatus row per matched address.
+	UpsertWatchBitcoinTxStatus(ctx context.Context, in TrackedStatusUpsertInput) error
+
+	// TouchBitcoinTxStatusMempool marks all rows for (user_id, txid) as mempool.
+	TouchBitcoinTxStatusMempool(ctx context.Context, userID, network, txid string, feeRateSatVByte float64, lastSeenAt time.Time) error
+
+	// ConfirmBitcoinTxStatus marks all rows for (user_id, txid) as confirmed.
+	ConfirmBitcoinTxStatus(ctx context.Context, userID, network, txid, blockHash string, confirmations int, blockHeight int64, confirmedAt time.Time) error
+
+	// MarkBitcoinTxStatusReplaced marks all rows for (user_id, replaced_txid) as replaced.
+	MarkBitcoinTxStatusReplaced(ctx context.Context, userID, network, replacedTxID, replacementTxID string, replacedAt time.Time) error
+
+	// ListBitcoinTxStatusUsersByTxID returns the users that currently track txid.
+	ListBitcoinTxStatusUsersByTxID(ctx context.Context, network, txid string) ([]string, error)
+
+	// ListActiveBitcoinTransactionWatchUsersByTxID returns the users that actively watch txid.
+	ListActiveBitcoinTransactionWatchUsersByTxID(ctx context.Context, network, txid string) ([]string, error)
 }
 
 // ── ZMQSubscriber interface ───────────────────────────────────────────────────

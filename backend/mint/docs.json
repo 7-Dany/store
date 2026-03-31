@@ -268,7 +268,13 @@
                 "group": "Watch",
                 "icon": "eye",
                 "expanded": false,
-                "pages": ["api-reference/bitcoin/watch/watch"]
+                "pages": [
+                  "api-reference/bitcoin/watch/create-watch",
+                  "api-reference/bitcoin/watch/list-watches",
+                  "api-reference/bitcoin/watch/get-watch",
+                  "api-reference/bitcoin/watch/update-watch",
+                  "api-reference/bitcoin/watch/delete-watch"
+                ]
               },
               {
                 "group": "Events",
@@ -285,8 +291,11 @@
                 "icon": "receipt",
                 "expanded": false,
                 "pages": [
-                  "api-reference/bitcoin/txstatus/get-tx-status",
-                  "api-reference/bitcoin/txstatus/get-tx-status-batch"
+                  "api-reference/bitcoin/txstatus/create-tracked-tx-status",
+                  "api-reference/bitcoin/txstatus/list-tracked-tx-statuses",
+                  "api-reference/bitcoin/txstatus/get-tracked-tx-status",
+                  "api-reference/bitcoin/txstatus/update-tracked-tx-status",
+                  "api-reference/bitcoin/txstatus/delete-tracked-tx-status"
                 ]
               }
             ]

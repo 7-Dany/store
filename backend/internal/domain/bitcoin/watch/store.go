@@ -9,199 +9,183 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/7-Dany/store/backend/internal/audit"
 	"github.com/7-Dany/store/backend/internal/db"
-	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
 // compile-time check that *Store satisfies Storer.
 var _ Storer = (*Store)(nil)
 
-// watchSetTTL is the Redis SET TTL for the watch address set.
-// Set atomically inside the Lua script when at least one new address is added.
-// Both watchSetTTL and lastActiveTTL are intentionally equal — they represent
-// the same inactivity window: a user's data is eligible for eviction after
-// 30 minutes of no watch activity.
-const watchSetTTL = 30 * time.Minute
-
-// lastActiveTTL is the Redis TTL for the last_active key.
-// Refreshed on every POST /watch call (even re-registration of existing
-// addresses). See watchSetTTL comment — both share the same duration by design.
-const lastActiveTTL = 30 * time.Minute
-
-// Store is the data layer for the watch feature.
-//
-// Redis operations use the WatchCapStore and related interfaces.
-// Audit writes use pool to call InsertAuditLog directly — the bitcoin domain
-// has no SQL queries of its own, so audit rows go through the shared audit table.
+// Store is the SQL-backed data layer for watch CRUD operations.
 type Store struct {
-	kv      kvstore.WatchCapStore
-	sets    kvstore.SetStore // for GetWatchSetSize in the reconciliation goroutine
-	counter kvstore.AtomicCounterStore
-	pubsub  kvstore.PubSubStore
-	pool    *pgxpool.Pool
-	q       *db.Queries // pre-allocated; nil when pool is nil (unit-test stores)
-	network string      // "testnet4" or "mainnet"; used as a metric label
+	pool      *pgxpool.Pool
+	q         *db.Queries
+	conflicts watchConflictInspector
 }
 
-// NewStore constructs a Store.
-//
-// kv must implement kvstore.WatchCapStore (satisfied by *kvstore.RedisStore).
-// sets must implement kvstore.SetStore (same RedisStore instance) — used by
-// GetWatchSetSize in the reconciliation goroutine.
-// counter must implement kvstore.AtomicCounterStore (same RedisStore instance).
-// pubsub must implement kvstore.PubSubStore (same RedisStore instance).
-// pool is the shared connection pool used for audit-log writes. Pass nil in
-// unit tests that do not exercise WriteAuditLog.
-//
-// In routes.go all four kvstore interfaces are satisfied by separate type
-// assertions on the single deps.KVStore value, which is a *kvstore.RedisStore
-// at runtime.
-func NewStore(kv kvstore.WatchCapStore, sets kvstore.SetStore, counter kvstore.AtomicCounterStore, pubsub kvstore.PubSubStore, pool *pgxpool.Pool, network string) *Store {
+// NewStore constructs a Store backed by pool.
+func NewStore(pool *pgxpool.Pool) *Store {
 	var q *db.Queries
 	if pool != nil {
 		q = db.New(pool)
 	}
 	return &Store{
-		kv:      kv,
-		sets:    sets,
-		counter: counter,
-		pubsub:  pubsub,
-		pool:    pool,
-		q:       q,
-		network: network,
+		pool:      pool,
+		q:         q,
+		conflicts: watchConflictInspector{},
 	}
 }
 
-// ── Redis key helpers ─────────────────────────────────────────────────────────
+// CreateWatch inserts one active watch resource.
+func (s *Store) CreateWatch(ctx context.Context, in watchWriteInput) (Watch, error) {
+	if s.q == nil {
+		return Watch{}, fmt.Errorf("watch.CreateWatch: no database pool configured")
+	}
 
-// setKey returns the Redis key for the user's watch address SET.
-// Uses the hash tag {btc:user:{userID}} so all three user-scoped keys land
-// on the same Redis Cluster slot.
-func setKey(userID string) string {
-	return fmt.Sprintf("{btc:user:%s}:addresses", userID)
-}
-
-// regAtKey returns the Redis key for the user's first-registration timestamp.
-// Set once (NX) and never refreshed — anchors the 7-day registration window.
-func regAtKey(userID string) string {
-	return fmt.Sprintf("{btc:user:%s}:registered_at", userID)
-}
-
-// lastActiveKey returns the Redis key for the user's last-activity timestamp.
-// Refreshed on every POST /watch call, including re-registration of existing addresses.
-func lastActiveKey(userID string) string {
-	return fmt.Sprintf("{btc:user:%s}:last_active", userID)
-}
-
-// globalCountKey is the cross-instance advisory watch address counter.
-// Incremented when at least one new address is added; reconciled every
-// reconciliationInterval. TTL is permanent (0) — see note below.
-//
-// Advisory counter note: this key has TTL=0 (no expiry). If a FLUSHDB,
-// keyspace eviction, or Redis restart removes it, subsequent INCR calls
-// restart from zero. Any upstream logic reading this counter will see a
-// falsely low value for up to reconciliationInterval (15 min) until the
-// reconciliation goroutine rewrites the correct total. The counter is
-// intentionally advisory — callers must tolerate transient undercount.
-const globalCountKey = "btc:global:watch_count"
-
-// invalidationChannel returns the pub/sub channel name for cache invalidation.
-func invalidationChannel(userID string) string {
-	return fmt.Sprintf("btc:watch:invalidate:%s", userID)
-}
-
-// ── Storer methods ────────────────────────────────────────────────────────────
-
-// RunWatchCap atomically enforces the per-user cap and 7-day window.
-// Returns (success, newCount, addedCount) directly from the Lua script.
-func (s *Store) RunWatchCap(ctx context.Context, userID string, limit int, addresses []string) (success, newCount, addedCount int64, err error) {
-	success, newCount, addedCount, err = s.kv.RunWatchCapScript(
-		ctx,
-		setKey(userID),
-		regAtKey(userID),
-		lastActiveKey(userID),
-		limit,
-		watchSetTTL,
-		lastActiveTTL,
-		addresses,
-	)
+	row, err := s.q.CreateBitcoinWatch(ctx, db.CreateBitcoinWatchParams{
+		UserID:    toPgUUID(in.UserID),
+		Network:   in.Network,
+		WatchType: string(in.WatchType),
+		Address:   toPgText(in.Address),
+		Txid:      toPgText(in.TxID),
+	})
 	if err != nil {
-		return 0, 0, 0, telemetry.KVStore("RunWatchCap.lua_eval", err)
+		if s.conflicts.IsUniqueViolation(err, "uq_bw_active_address") || s.conflicts.IsUniqueViolation(err, "uq_bw_active_transaction") {
+			return Watch{}, ErrWatchExists
+		}
+		return Watch{}, telemetry.Store("CreateWatch.create", err)
 	}
-	return success, newCount, addedCount, nil
+	return watchFromDB(row), nil
 }
 
-// IncrGlobalWatchCount increments the cross-instance advisory counter by 1.
-// Errors are non-fatal — counter drift is corrected by the reconciliation goroutine.
-func (s *Store) IncrGlobalWatchCount(ctx context.Context) error {
-	// TTL=0 → permanent key (never expires — the reconciler resets it periodically).
-	if _, err := s.counter.AtomicIncrement(ctx, globalCountKey, 0); err != nil {
-		return telemetry.KVStore("IncrGlobalWatchCount.incr", err)
+// GetWatch returns one active watch resource by ID and owner.
+func (s *Store) GetWatch(ctx context.Context, in GetWatchInput) (Watch, error) {
+	if s.q == nil {
+		return Watch{}, fmt.Errorf("watch.GetWatch: no database pool configured")
+	}
+
+	userID, err := parseUUID(in.UserID)
+	if err != nil {
+		return Watch{}, err
+	}
+	row, err := s.q.GetBitcoinWatchByID(ctx, db.GetBitcoinWatchByIDParams{
+		ID:     in.ID,
+		UserID: toPgUUID(userID),
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Watch{}, ErrWatchNotFound
+		}
+		return Watch{}, telemetry.Store("GetWatch.get", err)
+	}
+	return watchFromDB(row), nil
+}
+
+// ListWatches returns active watch resources for one user.
+func (s *Store) ListWatches(ctx context.Context, in ListWatchesInput) ([]Watch, error) {
+	if s.q == nil {
+		return nil, fmt.Errorf("watch.ListWatches: no database pool configured")
+	}
+
+	userID, err := parseUUID(in.UserID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.q.ListBitcoinWatches(ctx, db.ListBitcoinWatchesParams{
+		UserID:          toPgUUID(userID),
+		Network:         in.Network,
+		WatchType:       in.WatchType,
+		Address:         in.Address,
+		Txid:            in.TxID,
+		BeforeCreatedAt: toPgTimePtr(in.BeforeCreatedAt),
+		BeforeID:        in.BeforeID,
+		LimitRows:       int32(in.Limit),
+	})
+	if err != nil {
+		return nil, telemetry.Store("ListWatches.list", err)
+	}
+
+	items := make([]Watch, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, watchFromDB(row))
+	}
+	return items, nil
+}
+
+// UpdateWatch updates one active watch resource.
+func (s *Store) UpdateWatch(ctx context.Context, in watchUpdateInput) (Watch, error) {
+	if s.q == nil {
+		return Watch{}, fmt.Errorf("watch.UpdateWatch: no database pool configured")
+	}
+
+	row, err := s.q.UpdateBitcoinWatchByID(ctx, db.UpdateBitcoinWatchByIDParams{
+		WatchType: string(in.WatchType),
+		Address:   toPgText(in.Address),
+		Txid:      toPgText(in.TxID),
+		ID:        in.ID,
+		UserID:    toPgUUID(in.UserID),
+	})
+	if err != nil {
+		if s.conflicts.IsUniqueViolation(err, "uq_bw_active_address") || s.conflicts.IsUniqueViolation(err, "uq_bw_active_transaction") {
+			return Watch{}, ErrWatchExists
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Watch{}, ErrWatchNotFound
+		}
+		return Watch{}, telemetry.Store("UpdateWatch.update", err)
+	}
+	return watchFromDB(row), nil
+}
+
+// DeleteWatch deletes one watch resource.
+func (s *Store) DeleteWatch(ctx context.Context, in DeleteWatchInput) error {
+	if s.q == nil {
+		return fmt.Errorf("watch.DeleteWatch: no database pool configured")
+	}
+
+	userID, err := parseUUID(in.UserID)
+	if err != nil {
+		return err
+	}
+	rows, err := s.q.DeleteBitcoinWatchByID(ctx, db.DeleteBitcoinWatchByIDParams{
+		ID:     in.ID,
+		UserID: toPgUUID(userID),
+	})
+	if err != nil {
+		return telemetry.Store("DeleteWatch.delete", err)
+	}
+	if rows == 0 {
+		return ErrWatchNotFound
 	}
 	return nil
 }
 
-// PublishCacheInvalidation publishes a cache invalidation event so all instances
-// evict their local in-memory watch cache for this user on the next event.
-// Errors are non-fatal — subscribers will reload from Redis at next cache miss.
-func (s *Store) PublishCacheInvalidation(ctx context.Context, userID string) error {
-	if _, err := s.pubsub.Publish(ctx, invalidationChannel(userID), "1"); err != nil {
-		return telemetry.KVStore("PublishCacheInvalidation.publish", err)
+// CountActiveAddressWatches returns the active address-watch count for one user.
+func (s *Store) CountActiveAddressWatches(ctx context.Context, userID, network string) (int, error) {
+	if s.q == nil {
+		return 0, fmt.Errorf("watch.CountActiveAddressWatches: no database pool configured")
 	}
-	return nil
-}
-
-// ListWatchAddressKeys returns one page of watch-address SET keys for the
-// reconciliation goroutine. Pass cursor=0 to start; iteration is complete
-// when nextCursor returns 0.
-//
-// Named List* per RULES.md §2.3 (paginated read). The underlying Redis
-// operation is SCAN TYPE set.
-func (s *Store) ListWatchAddressKeys(ctx context.Context, cursor uint64, count int64) (keys []string, nextCursor uint64, err error) {
-	keys, nextCursor, err = s.kv.ScanWatchAddressKeys(ctx, cursor, count)
+	uid, err := parseUUID(userID)
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return nil, 0, err
-		}
-		return nil, 0, telemetry.KVStore("ListWatchAddressKeys.scan_type", err)
+		return 0, err
 	}
-	return keys, nextCursor, nil
-}
-
-// GetWatchSetSize returns the number of members in the given watch SET key.
-// Used by the reconciliation goroutine to sum up the global count.
-//
-// Named Get* per RULES.md §2.3 (single-value read). The underlying Redis
-// operation is SCARD.
-func (s *Store) GetWatchSetSize(ctx context.Context, key string) (int64, error) {
-	n, err := s.sets.SCard(ctx, key)
+	count, err := s.q.CountActiveBitcoinAddressWatchesByUser(ctx, db.CountActiveBitcoinAddressWatchesByUserParams{
+		UserID:  toPgUUID(uid),
+		Network: network,
+	})
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return 0, err
-		}
-		return 0, telemetry.KVStore("GetWatchSetSize.scard", err)
+		return 0, telemetry.Store("CountActiveAddressWatches.count", err)
 	}
-	return n, nil
+	return int(count), nil
 }
 
 // WriteAuditLog inserts one row into auth_audit_log.
-// The bitcoin domain has no SQL store of its own; audit rows go through the
-// shared auth_audit_log table via the existing InsertAuditLog query.
-// Errors are non-fatal — audit write failures never fail the primary operation.
-//
-// userID may be empty (anonymous path, e.g. rate-limit hit before JWT auth).
-// When empty, pgUserID is set to {Valid: false} which inserts NULL into the
-// user_id column. The auth_audit_log.user_id column must therefore be nullable.
-//
-// Provider is set to db.AuthProviderEmail as a neutral sentinel value — the
-// bitcoin domain has no auth-provider concept. Audit queries that filter on
-// provider='email' will erroneously include these rows; if that becomes
-// problematic, introduce a db.AuthProviderSystem constant.
 func (s *Store) WriteAuditLog(ctx context.Context, event audit.EventType, userID, sourceIP string, metadata map[string]string) error {
 	if s.q == nil {
 		return fmt.Errorf("watch.WriteAuditLog: no database pool configured")
@@ -226,20 +210,82 @@ func (s *Store) WriteAuditLog(ctx context.Context, event audit.EventType, userID
 	if len(metadata) > 0 {
 		if b, err := json.Marshal(metadata); err == nil {
 			metaBytes = b
-		} else {
-			// json.Marshal on map[string]string should never fail in practice,
-			// but log a warning if it does so the silent fall-back is observable.
-			log.Warn(ctx, "watch.WriteAuditLog: failed to marshal metadata; using {}",
-				"error", err)
 		}
 	}
 
 	return s.q.InsertAuditLog(ctx, db.InsertAuditLogParams{
 		UserID:    pgUserID,
 		EventType: string(event),
-		Provider:  db.AuthProviderEmail, // neutral value; bitcoin has no auth_provider concept
+		Provider:  db.AuthProviderEmail,
 		IpAddress: ipAddr,
-		UserAgent: pgtype.Text{}, // no user-agent in bitcoin domain audit events
+		UserAgent: pgtype.Text{},
 		Metadata:  metaBytes,
 	})
+}
+
+func parseUUID(raw string) (uuid.UUID, error) {
+	uid, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.UUID{}, telemetry.Store("parseUUID.parse", err)
+	}
+	return uid, nil
+}
+
+func toPgUUID(id uuid.UUID) pgtype.UUID {
+	return pgtype.UUID{Bytes: [16]byte(id), Valid: true}
+}
+
+func toPgText(v *string) pgtype.Text {
+	if v == nil {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: *v, Valid: true}
+}
+
+func toPgTimePtr(t *time.Time) pgtype.Timestamptz {
+	if t == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
+}
+
+func watchFromDB(row db.BtcWatch) Watch {
+	var address *string
+	if row.Address.Valid {
+		address = &row.Address.String
+	}
+	var txid *string
+	if row.Txid.Valid {
+		txid = &row.Txid.String
+	}
+	return Watch{
+		ID:        row.ID,
+		Network:   row.Network,
+		WatchType: WatchType(row.WatchType),
+		Address:   address,
+		TxID:      txid,
+		Status:    WatchStatus(row.Status),
+		CreatedAt: row.CreatedAt,
+		UpdatedAt: row.UpdatedAt,
+	}
+}
+
+type watchConflictInspector struct{}
+
+func (watchConflictInspector) IsUniqueViolation(err error, constraint string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == constraint
+}
+
+type watchWriteInput struct {
+	UserID    uuid.UUID
+	Network   string
+	WatchType WatchType
+	Address   *string
+	TxID      *string
+}
+
+type watchUpdateInput struct {
+	ID int64
+	watchWriteInput
 }

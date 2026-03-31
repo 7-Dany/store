@@ -1,0 +1,182 @@
+---
+title: "List Tracked Tx"
+description: "List durable Bitcoin transaction-tracking rows for the authenticated user."
+api: "GET http://localhost:8080/api/v1/bitcoin/tx"
+---
+
+<ParamField query="address" type="string">
+  Optional Bitcoin address filter. Must be valid for the configured network.
+</ParamField>
+
+<ParamField query="txid" type="string">
+  Optional 64-character hex txid filter.
+</ParamField>
+
+<ParamField query="tracking_mode" type="string">
+  Optional tracking-mode filter. Allowed values: `txid`, `watch`.
+</ParamField>
+
+<ParamField query="limit" type="integer">
+  Optional page size. Must be between `1` and `100`. Default: `100`.
+</ParamField>
+
+<ParamField query="cursor" type="string">
+  Optional opaque keyset cursor returned by a previous page in `next_cursor`.
+</ParamField>
+
+## Behaviour
+
+Returns saved tracked-transaction records owned by the authenticated user.
+
+- `tracking_mode = "txid"` rows were created explicitly through [`POST /bitcoin/tx`](/api-reference/bitcoin/txstatus/create-tracked-tx-status).
+- `tracking_mode = "watch"` rows were created automatically when one of the
+  user's watched addresses matched a transaction.
+
+Rows are returned with the most recently confirmed transactions first. For rows
+that are not yet confirmed, the first-seen time is used instead.
+
+Pagination is keyset-based:
+
+- omit `cursor` for the first page
+- pass the previous response's `next_cursor` to continue
+- stop when `next_cursor` is omitted
+
+The `cursor` value is opaque. Clients must store and replay it exactly as returned.
+
+<ResponseExample>
+```json 200
+{
+  "items": [
+    {
+      "id": 7,
+      "network": "testnet4",
+      "tracking_mode": "watch",
+      "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq",
+      "txid": "59a32e91550ce5e1fd33cdd4f2ad8ac33efa3fb9cfac061893d5b73a210a463b",
+      "status": "confirmed",
+      "confirmations": 1,
+      "amount_sat": 2594855,
+      "fee_rate_sat_vbyte": 4.2,
+      "first_seen_at": "2026-03-30T16:07:42Z",
+      "last_seen_at": "2026-03-30T16:15:10Z",
+      "confirmed_at": "2026-03-30T16:15:10Z",
+      "block_hash": "000000000000000000000000000000000000000000000000000000000000abcd",
+      "block_height": 123456,
+      "created_at": "2026-03-30T16:07:42Z",
+      "updated_at": "2026-03-30T16:15:10Z"
+    }
+  ],
+  "next_cursor": "MjAyNi0wMy0zMFQxNjoxNToxMFp8Nw"
+}
+```
+
+```json 400
+{
+  "code": "invalid_tracking_mode",
+  "message": "tracking_mode must be txid or watch"
+}
+```
+
+```json 401
+{
+  "code": "unauthorized",
+  "message": "authentication required"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="200 — OK">
+    Returns an `items` array. The array may be empty when no rows match the filters.
+    `next_cursor` is present only when another page exists.
+
+    ```json
+    {
+      "items": [
+        {
+          "id": 7,
+          "network": "testnet4",
+          "tracking_mode": "watch",
+          "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq",
+          "txid": "59a32e91550ce5e1fd33cdd4f2ad8ac33efa3fb9cfac061893d5b73a210a463b",
+          "status": "confirmed",
+          "confirmations": 1,
+          "amount_sat": 2594855,
+          "fee_rate_sat_vbyte": 4.2,
+          "first_seen_at": "2026-03-30T16:07:42Z",
+          "last_seen_at": "2026-03-30T16:15:10Z",
+          "confirmed_at": "2026-03-30T16:15:10Z",
+          "block_hash": "000000000000000000000000000000000000000000000000000000000000abcd",
+          "block_height": 123456,
+          "created_at": "2026-03-30T16:07:42Z",
+          "updated_at": "2026-03-30T16:15:10Z"
+        }
+      ],
+      "next_cursor": "MjAyNi0wMy0zMFQxNjoxNToxMFp8Nw"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    One of the supplied filters was invalid.
+
+    ```json
+    {
+      "code": "invalid_address",
+      "message": "one or more addresses failed validation"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_txid",
+      "message": "txid must be a 64-character hex string"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_tracking_mode",
+      "message": "tracking_mode must be txid or watch"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_limit",
+      "message": "limit must be an integer between 1 and 100"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_cursor",
+      "message": "cursor must be a valid txstatus pagination cursor"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    A valid JWT is required.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

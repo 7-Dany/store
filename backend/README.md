@@ -49,6 +49,13 @@ A full role/permission system with fine-grained access control:
 - **Owner bypass** — the owner role has implicit access to all permissions, bypassing all checks.
 - **Explicit deny** — a role grant can carry an explicit deny that overrides any allow.
 
+### Bitcoin Monitoring
+
+- **Address watch registration** — `POST /bitcoin/watch` stores the authenticated user's active watch set in Redis with a 30-minute inactivity window. Re-registering an existing address is idempotent and refreshes the TTL.
+- **Live events** — `POST /bitcoin/events/token` + `GET /bitcoin/events` open an SSE stream for `new_block`, `pending_mempool`, `confirmed_tx`, and `mempool_replaced` events.
+- **Durable tx-status read model** — `txstatus` owns `btc_tracked_transactions`, a SQL-backed read model for Bitcoin transaction tracking. Users create explicit tx watches through `/bitcoin/tx`, read them through `/bitcoin/tx/{id}`, and `events` upserts watch-discovered rows automatically when watched addresses receive transactions.
+- **Durable confirmed fallback** — once a tracked transaction is confirmed, `events` saves its block hash and block height. Later `txstatus` lookups can reuse that saved block anchor to keep returning confirmed status even after the node no longer exposes the transaction through wallet RPC.
+
 ### Security Model
 
 Security is treated as a first-class concern throughout:
@@ -166,6 +173,11 @@ internal/
       roles/          # CRUD + permission assignment on /admin/rbac/roles
       userroles/      # GET/PUT/DELETE /admin/rbac/users/{id}/role
       shared/         # RBAC error sentinels, store, test utilities
+    bitcoin/
+      block/          # GET /bitcoin/block/{hash}
+      watch/          # POST /bitcoin/watch
+      events/         # POST /bitcoin/events/token, GET /bitcoin/events, GET /bitcoin/status
+      txstatus/       # GET /bitcoin/tx/*/status + CRUD on /bitcoin/tx and /bitcoin/tx/{id}
   platform/
     crypto/           # AES-256-GCM encrypt/decrypt for OAuth tokens
     kvstore/          # Redis + in-memory KV store; AtomicBucketStore interface
@@ -279,6 +291,21 @@ Base path: `/api/v1`. All request bodies require `Content-Type: application/json
 | `GET` | `/admin/rbac/users/{user_id}/role` | 🔒🛡️ `rbac:read` | Get a user's assigned role |
 | `PUT` | `/admin/rbac/users/{user_id}/role` | 🔒🛡️ `rbac:manage` | Assign a role to a user |
 | `DELETE` | `/admin/rbac/users/{user_id}/role` | 🔒🛡️ `rbac:manage` | Remove a user's role |
+
+### Bitcoin — `/api/v1/bitcoin`
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| `POST` | `/bitcoin/watch` | 🔒 | Register addresses for watch/event tracking |
+| `POST` | `/bitcoin/events/token` | 🔒 | Mint a short-lived SSE token for the current session |
+| `GET` | `/bitcoin/events` | 🔒 | Open the Bitcoin SSE stream |
+| `GET` | `/bitcoin/status` | 🔒 | Read Bitcoin event-stream health |
+| `GET` | `/bitcoin/block/{hash}` | 🔒 | Fetch one block by hash |
+| `POST` | `/bitcoin/tx` | 🔒 | Create a durable tx-status tracking row |
+| `GET` | `/bitcoin/tx` | 🔒 | List durable tx-status rows for the caller |
+| `GET` | `/bitcoin/tx/{id}` | 🔒 | Get one durable tx-status row |
+| `PUT` | `/bitcoin/tx/{id}` | 🔒 | Update one explicit txid-tracking row |
+| `DELETE` | `/bitcoin/tx/{id}` | 🔒 | Delete one durable tx-status row |
 
 ---
 

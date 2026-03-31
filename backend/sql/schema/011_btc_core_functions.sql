@@ -6,11 +6,9 @@
  *
  * Functions defined here:
  *   fn_btc_wallet_mode_guard()       — prevents invalid wallet mode transitions on vendor_wallet_config
- *   btc_credit_balance()             — safe balance credit (atomic, with audit event)
- *   btc_debit_balance()             — safe balance debit with under-balance guard (atomic)
- *   fn_sync_vendor_tier_role()      — keeps user_roles in sync when a vendor's tier changes
- *   fn_vendor_effective_kyc_status()— canonical KYC gate; call instead of reading
- *                                      vendor_wallet_config.kyc_status for payout decisions
+ *   fn_sync_vendor_tier_role()       — keeps user_roles in sync when a vendor's tier changes
+ *   fn_vendor_effective_kyc_status() — canonical KYC gate; call instead of reading
+ *                                       vendor_wallet_config.kyc_status for payout decisions
  *
  * COMPLIANCE NOTE:
  *   fn_vendor_effective_kyc_status() is the authoritative KYC gate. It queries
@@ -18,6 +16,10 @@
  *   propagation job has not yet run. The payout promotion path (held → queued) MUST
  *   call this function rather than reading vendor_wallet_config.kyc_status directly,
  *   because kyc_status is a denormalized cache that can lag behind reality.
+ *
+ * NOTE ON MIGRATION ORDER:
+ *   Audited financial mutation procedures are defined later in
+ *   019_btc_financial_mutations.sql, after financial_audit_events exists.
  *
  * Depends on: 010_btc_core.sql (tables), 009_btc_types.sql (ENUMs)
  * Continued in: 012_btc_invoices.sql
@@ -69,148 +71,6 @@ COMMENT ON FUNCTION fn_btc_wallet_mode_guard() IS
 CREATE TRIGGER trg_vendor_wallet_config_mode_guard
     BEFORE UPDATE OF wallet_mode ON vendor_wallet_config
     FOR EACH ROW EXECUTE FUNCTION fn_btc_wallet_mode_guard();
-
-
-/* ═════════════════════════════════════════════════════════════
-   BALANCE STORED PROCEDURES (SEC-08)
-   ═════════════════════════════════════════════════════════════ */
-
-/*
- * btc_credit_balance / btc_debit_balance
- * ────────────────────────────────────────
- * All vendor balance mutations MUST go through these procedures.
- * They perform SELECT FOR UPDATE internally, making it impossible for the caller
- * to accidentally skip the lock (the TOCTOU race that was previously only documented
- * in comments).
- *
- * Direct UPDATE on vendor_balances is revoked from btc_app_role (see GRANTS below).
- * These procedures are the only permitted write path.
- *
- * The caller is still responsible for writing the corresponding financial_audit_events
- * row in the same transaction, as the application layer has the full event context.
- * btc_credit_balance returns the new balance for the audit event's balance_after_sat.
- *
- * Raises ErrInsufficientBalance (SQLSTATE 23514 via CHECK) on debit below zero.
- * Raises an exception if no vendor_balances row exists for (p_vendor_id, p_network).
- *
- * ══════════════════════════════════════════════════════════════════════════════
- * ⚠️  F-01 — DOUBLE-CREDIT RISK ON SETTLEMENT CRASH-AND-RETRY
- * ══════════════════════════════════════════════════════════════════════════════
- * btc_credit_balance() is NOT idempotent. If the settlement transaction commits
- * btc_credit_balance() but then crashes before INSERT INTO payout_records commits,
- * the watchdog resets the invoice to 'confirming' and a second worker re-runs
- * Phase 2. The second call to btc_credit_balance() credits the balance again —
- * creating phantom satoshis with no corresponding payout_record.
- *
- * The reconciliation formula diverges by exactly net_satoshis per occurrence:
- *   vendor_balances.balance_satoshis > SUM(held/queued payout_records)
- *
- * APPLICATION LAYER REQUIREMENT:
- *   Settlement Phase 2 MUST execute btc_credit_balance() and INSERT INTO payout_records
- *   in the SAME database transaction. There must be no commit boundary between them.
- *
- *   Before calling btc_credit_balance(), check whether a payout_record already
- *   exists for this invoice_id (the UNIQUE constraint will 23505 on the second
- *   INSERT, but the balance is already double-credited by then):
- *
- *     SELECT id FROM payout_records WHERE invoice_id = $invoice_id FOR SHARE;
- *     -- If found: payout_record exists from a previous (possibly partial) run.
- *     --   Do NOT call btc_credit_balance() again.
- *     --   The prior credit is still in the balance; proceed to audit event only.
- *     -- If not found: safe to call btc_credit_balance() and insert payout_record.
- *
- *   This pre-check MUST run inside the same transaction as the credit, with
- *   FOR SHARE on the payout_records row to prevent a concurrent worker from
- *   inserting between the check and the credit.
- * ══════════════════════════════════════════════════════════════════════════════
- */
-CREATE OR REPLACE FUNCTION btc_credit_balance(
-    p_vendor_id UUID,
-    p_network   TEXT,
-    p_amount    BIGINT
-) RETURNS BIGINT LANGUAGE plpgsql AS $fn$
-DECLARE
-    v_new_balance BIGINT;
-BEGIN
-    IF p_amount <= 0 THEN
-        RAISE EXCEPTION
-            'btc_credit_balance: amount must be positive, got %', p_amount;
-    END IF;
-
-    UPDATE vendor_balances
-    SET balance_satoshis = balance_satoshis + p_amount
-    WHERE vendor_id = p_vendor_id AND network = p_network
-    RETURNING balance_satoshis INTO v_new_balance;
-
-    IF NOT FOUND THEN
-        RAISE EXCEPTION
-            'btc_credit_balance: no vendor_balances row for vendor % on %.',
-            p_vendor_id, p_network;
-    END IF;
-
-    RETURN v_new_balance;
-END;
-$fn$;
-
-COMMENT ON FUNCTION btc_credit_balance(UUID, TEXT, BIGINT) IS
-    'Credits vendor_balances.balance_satoshis atomically with row-level lock. '
-    'Returns new balance for use in financial_audit_events.balance_after_sat. '
-    'Caller must write the audit event in the same transaction. '
-    'Direct UPDATE on vendor_balances is revoked from btc_app_role. '
-    'F-01 WARNING: NOT idempotent. btc_credit_balance() and INSERT INTO payout_records '
-    'MUST execute in the same DB transaction with no commit boundary between them. '
-    'Before calling, check SELECT id FROM payout_records WHERE invoice_id=$id FOR SHARE '
-    'inside the same transaction. If a payout_record exists, skip the credit — '
-    'the prior credit is already in the balance. See F-01 in settlement-technical.md §1.';
-
-
-CREATE OR REPLACE FUNCTION btc_debit_balance(
-    p_vendor_id UUID,
-    p_network   TEXT,
-    p_amount    BIGINT
-) RETURNS BIGINT LANGUAGE plpgsql AS $fn$
-DECLARE
-    v_current   BIGINT;
-    v_new_balance BIGINT;
-BEGIN
-    IF p_amount <= 0 THEN
-        RAISE EXCEPTION
-            'btc_debit_balance: amount must be positive, got %', p_amount;
-    END IF;
-
-    SELECT balance_satoshis INTO v_current
-    FROM vendor_balances
-    WHERE vendor_id = p_vendor_id AND network = p_network
-    FOR UPDATE;
-
-    IF NOT FOUND THEN
-        RAISE EXCEPTION
-            'btc_debit_balance: no vendor_balances row for vendor % on %.',
-            p_vendor_id, p_network;
-    END IF;
-
-    IF v_current < p_amount THEN
-        RAISE EXCEPTION
-            'btc_debit_balance: insufficient balance for vendor % on %. '
-            'Available: %, requested: %.',
-            p_vendor_id, p_network, v_current, p_amount
-            USING ERRCODE = '23514';  -- same as CHECK violation: ErrInsufficientBalance
-    END IF;
-
-    UPDATE vendor_balances
-    SET balance_satoshis = balance_satoshis - p_amount
-    WHERE vendor_id = p_vendor_id AND network = p_network
-    RETURNING balance_satoshis INTO v_new_balance;
-
-    RETURN v_new_balance;
-END;
-$fn$;
-
-COMMENT ON FUNCTION btc_debit_balance(UUID, TEXT, BIGINT) IS
-    'Debits vendor_balances.balance_satoshis atomically with row-level lock. '
-    'Returns new balance for use in financial_audit_events.balance_after_sat. '
-    'Raises SQLSTATE 23514 (ErrInsufficientBalance) when balance < amount. '
-    'Caller must write the audit event in the same transaction.';
 
 
 /* ═════════════════════════════════════════════════════════════
@@ -421,8 +281,6 @@ DROP TRIGGER IF EXISTS trg_vendor_wallet_config_mode_guard ON vendor_wallet_conf
 
 DROP FUNCTION IF EXISTS fn_vendor_effective_kyc_status(UUID, TEXT);
 DROP FUNCTION IF EXISTS fn_sync_vendor_tier_role();
-DROP FUNCTION IF EXISTS btc_debit_balance(UUID, TEXT, BIGINT);
-DROP FUNCTION IF EXISTS btc_credit_balance(UUID, TEXT, BIGINT);
 DROP FUNCTION IF EXISTS fn_btc_wallet_mode_guard();
 
 -- +goose StatementEnd

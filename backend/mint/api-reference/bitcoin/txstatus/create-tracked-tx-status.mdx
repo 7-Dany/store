@@ -1,0 +1,201 @@
+---
+title: "Create Tracked Tx"
+description: "Create one durable Bitcoin transaction-tracking row for an explicit txid."
+api: "POST http://localhost:8080/api/v1/bitcoin/tx"
+---
+
+<ParamField body="network" type="string" required>
+  Must match the server's configured Bitcoin network.
+</ParamField>
+
+<ParamField body="txid" type="string" required>
+  A 64-character hex transaction ID. Uppercase input is normalised to lowercase.
+</ParamField>
+
+<ParamField body="address" type="string">
+  Optional Bitcoin address to associate with the tracked row. Must be valid for
+  the configured network when supplied.
+</ParamField>
+
+## Behaviour
+
+Creates one saved tracked-transaction record for an explicit txid. Before the
+record is created, the API resolves the current status of the transaction so the
+saved row starts in `confirmed`, `mempool`, `not_found`, `conflicting`, or
+`abandoned` immediately.
+
+This endpoint is for explicit txid tracking. Watch-discovered rows are created
+automatically when watched addresses match transactions and cannot be created
+manually here.
+
+<RequestExample>
+```json Example
+{
+  "network": "testnet4",
+  "txid": "59a32e91550ce5e1fd33cdd4f2ad8ac33efa3fb9cfac061893d5b73a210a463b",
+  "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": 7,
+  "network": "testnet4",
+  "tracking_mode": "txid",
+  "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq",
+  "txid": "59a32e91550ce5e1fd33cdd4f2ad8ac33efa3fb9cfac061893d5b73a210a463b",
+  "status": "mempool",
+  "confirmations": 0,
+  "amount_sat": 0,
+  "fee_rate_sat_vbyte": 0,
+  "first_seen_at": "2026-03-30T16:10:00Z",
+  "last_seen_at": "2026-03-30T16:10:00Z",
+  "created_at": "2026-03-30T16:10:00Z",
+  "updated_at": "2026-03-30T16:10:00Z"
+}
+```
+
+```json 400
+{
+  "code": "network_mismatch",
+  "message": "request network does not match server network"
+}
+```
+
+```json 409
+{
+  "code": "tx_status_exists",
+  "message": "transaction status record already exists"
+}
+```
+
+```json 502
+{
+  "code": "service_unavailable",
+  "message": "bitcoin node is temporarily unreachable"
+}
+```
+
+```json 503
+{
+  "code": "wallet_not_loaded",
+  "message": "bitcoin node has no wallet loaded — contact support"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="201 — Created">
+    The durable tracking row was created and its initial live status was resolved.
+
+    ```json
+    {
+      "id": 7,
+      "network": "testnet4",
+      "tracking_mode": "txid",
+      "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq",
+      "txid": "59a32e91550ce5e1fd33cdd4f2ad8ac33efa3fb9cfac061893d5b73a210a463b",
+      "status": "mempool",
+      "confirmations": 0,
+      "amount_sat": 0,
+      "fee_rate_sat_vbyte": 0,
+      "first_seen_at": "2026-03-30T16:10:00Z",
+      "last_seen_at": "2026-03-30T16:10:00Z",
+      "created_at": "2026-03-30T16:10:00Z",
+      "updated_at": "2026-03-30T16:10:00Z"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    One of the request fields failed validation, or the JSON body could not be parsed.
+
+    ```json
+    {
+      "code": "network_mismatch",
+      "message": "request network does not match server network"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_txid",
+      "message": "txid must be a 64-character hex string"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_address",
+      "message": "one or more addresses failed validation"
+    }
+    ```
+
+    ```json
+    {
+      "code": "bad_request",
+      "message": "invalid request body"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    A valid JWT is required.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    A row for the same explicit txid already exists for this user and network.
+
+    ```json
+    {
+      "code": "tx_status_exists",
+      "message": "transaction status record already exists"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="502 — Bad Gateway">
+    The Bitcoin RPC endpoint is temporarily unreachable.
+
+    ```json
+    {
+      "code": "service_unavailable",
+      "message": "bitcoin node is temporarily unreachable"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="503 — Service Unavailable">
+    Transaction tracking is temporarily unavailable. Contact support if this
+    persists.
+
+    ```json
+    {
+      "code": "wallet_not_loaded",
+      "message": "bitcoin node has no wallet loaded — contact support"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

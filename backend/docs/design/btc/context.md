@@ -14,7 +14,7 @@
 - Feature packages (to build): `watch/`, `events/`, `txstatus/`, `invoice/`, `payment/`, `settlement/`, `sweep/`, `rate/`, `resilience/`, `vendor/`, `audit/`, `reconciliation/`, `webhook/`, `compliance/`, `kyc/`, `dispute/`, `wallet-backup/`
 - Config:        `internal/config/config.go`
 - Deps:          `internal/app/deps.go` (`BitcoinZMQ`, `BitcoinRPC`, `BitcoinNetwork`, `KVStore`)
-- Schema:        `sql/schema/009_btc.sql`, `sql/schema/010_btc_payouts.sql`, `sql/schema/011_btc_functions.sql`
+- Schema:        `sql/schema/009_btc.sql`, `sql/schema/010_btc_payouts.sql`, `sql/schema/011_btc_functions.sql`, `sql/schema/028_btc_watch_transactions.sql`
 - Queries:       `sql/queries/btc.sql` (production), `sql/queries_test/btc_test.sql` (test-only)
 - bitcoin.conf:  `D:\bitcoin\data\bitcoin.conf` (zmqpubhashblock, zmqpubhashtx)
 
@@ -34,6 +34,8 @@
 | D-10 | `internal/domain/bitcoin/` domain — never imports other domains | |
 | D-12 | Feature opt-in via `BTC_ENABLED=false` default | |
 | D-24 | All invoice addresses are P2WPKH bech32 (`getnewaddress "invoice" "bech32"`) | Label "invoice" mandatory for Scenario D wallet recovery |
+| D-25 | `txstatus` owns the durable Bitcoin transaction read model in SQL | `watch` manages persisted watches, `events` updates `btc_tracked_transactions`, and clients query tracked rows via `/bitcoin/tx` and `/bitcoin/tx/{id}` |
+| D-26 | Confirmed tracked transactions use saved block anchors for fallback reads | `events` persists `block_hash` + `block_height` on confirmation; later `txstatus` lookups can refresh confirmed status from block RPC even when wallet RPC no longer knows the txid |
 
 ---
 
@@ -178,6 +180,14 @@ Display-layer packages (Stage 0 HTTP features):
 | `watch/` | watch-feature.md | watch-technical.md |
 | `events/` | events-feature.md | events-technical.md |
 | `txstatus/` | txstatus-feature.md | txstatus-technical.md |
+
+`watch` remains the ephemeral address-registration layer backed by Redis.
+`events` remains the live push layer backed by SSE and Redis. `txstatus` is the
+durable SQL-backed read model: explicit txid tracking rows are created through
+the CRUD API, and watch-discovered rows are upserted by `events` into
+`btc_tracked_transactions`. When a tracked transaction is confirmed, `events`
+also saves its block anchor (`block_hash`, `block_height`), allowing `txstatus`
+to answer future confirmed reads without depending on wallet visibility.
 
 ---
 

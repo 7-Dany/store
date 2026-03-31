@@ -70,6 +70,40 @@ func (h *Handler) GetBlock(w http.ResponseWriter, r *http.Request) {
 	respond.JSON(w, http.StatusOK, buildBlockResponse(&result))
 }
 
+// GetLatestBlock handles GET /bitcoin/block/latest.
+//
+// Guard order:
+//  1. JWT user-ID extraction — 401 if absent
+//  2. Service call — 502 if ErrRPCUnavailable
+//  3. 200 with blockResponse
+func (h *Handler) GetLatestBlock(w http.ResponseWriter, r *http.Request) {
+	// 1. Authentication guard.
+	_, ok := token.UserIDFromContext(r.Context())
+	if !ok {
+		//nolint:contextcheck // respond helpers write directly to the ResponseWriter and do not accept a context.
+		respond.Error(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+		return
+	}
+
+	// 2. Service call.
+	result, err := h.svc.GetLatestBlock(r.Context())
+	if err != nil {
+		if errors.Is(err, ErrRPCUnavailable) {
+			//nolint:contextcheck // respond helpers write directly to the ResponseWriter and do not accept a context.
+			respond.Error(w, http.StatusBadGateway, "service_unavailable", "bitcoin node is temporarily unreachable")
+			return
+		}
+		log.Error(r.Context(), "block.GetLatestBlock: unexpected service error", "error", err)
+		//nolint:contextcheck // respond helpers write directly to the ResponseWriter and do not accept a context.
+		respond.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+
+	// 3. Success response.
+	//nolint:contextcheck // respond helpers write directly to the ResponseWriter and do not accept a context.
+	respond.JSON(w, http.StatusOK, buildBlockResponse(&result))
+}
+
 // buildBlockResponse converts a Result to its JSON response shape.
 func buildBlockResponse(r *Result) blockResponse {
 	return blockResponse(*r)

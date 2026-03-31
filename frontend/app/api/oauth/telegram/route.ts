@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { isAxiosError } from "axios";
 import { serverApi } from "@/lib/api/http/server";
+import { extractCookieValue, readSetCookieHeaders } from "@/lib/api/http/cookies";
 
 const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8080/api/v1";
 
@@ -38,7 +39,10 @@ export async function POST(request: Request) {
     return NextResponse.json(err, { status: goRes.status });
   }
 
-  const data = (await goRes.json()) as { access_token: string; expires_in: number };
+  const data = (await goRes.json()) as {
+    access_token: string;
+    expires_in: number;
+  };
 
   const response = NextResponse.json(
     { redirectUrl: "/dashboard?provider=telegram&action=login" },
@@ -51,6 +55,19 @@ export async function POST(request: Request) {
     maxAge: data.expires_in,
     sameSite: "lax",
   });
+
+  const refreshToken = extractCookieValue(
+    readSetCookieHeaders(goRes.headers),
+    "refresh_token",
+  );
+  if (refreshToken) {
+    response.cookies.set("refresh_token", refreshToken, {
+      httpOnly: true,
+      path: "/",
+      maxAge: 60 * 60 * 24 * 30,
+      sameSite: "lax",
+    });
+  }
 
   return response;
 }

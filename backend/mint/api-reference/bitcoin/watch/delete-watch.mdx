@@ -1,0 +1,105 @@
+---
+title: "Delete Watch"
+description: "Hard-delete one Bitcoin watch resource."
+api: "DELETE http://localhost:8080/api/v1/bitcoin/watch/{id}"
+---
+
+<ParamField path="id" type="integer" required>
+  The durable watch resource ID.
+</ParamField>
+
+## Behaviour
+
+Deletes one watch resource owned by the authenticated user.
+
+This is a hard delete. The deleted watch will no longer appear in future list
+results.
+
+## Rate Limiting
+
+**10 requests per 1 minute per IP address**.
+
+<RequestExample>
+```json Example
+// No request body — the resource ID is passed as a path parameter.
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+// 204 No Content — empty body
+```
+
+```json 404
+{
+  "code": "watch_not_found",
+  "message": "watch resource was not found"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The watch resource was deleted successfully. No response body is returned.
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    ```json
+    {
+      "code": "invalid_id",
+      "message": "id must be a positive integer"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    A valid JWT is required.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    ```json
+    {
+      "code": "watch_not_found",
+      "message": "watch resource was not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 10 write requests per 1 minute.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

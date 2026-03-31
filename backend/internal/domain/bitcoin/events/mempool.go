@@ -24,8 +24,12 @@ type mempoolRecorder interface {
 
 // pendingEntry is one in-mempool transaction tracked for SSE display.
 type pendingEntry struct {
+	// users is the set of connected users who should receive lifecycle updates for this tx.
+	users map[string]struct{}
 	// addrs is the set of output addresses matched to at least one watch set.
 	addrs map[string]struct{}
+	// outputs stores the matched output sum for each watched address in the tx.
+	outputs map[string]int64
 	// addedAt is when this entry entered pendingMempool (for age pruning).
 	addedAt time.Time
 	// feeRate is the fee rate in sat/vB at the time first seen.
@@ -80,7 +84,7 @@ type MempoolTracker struct {
 	// pruned, avoiding the previous O(n) full-map scan.
 	txidToOutpoints map[string][]spentOutpoint
 
-	// store provides GetUserWatchAddresses lookups via Redis SScan.
+	// store provides address-watch and transaction-watch lookups.
 	store Storer
 	// broker receives EmitToUser calls for fan-out delivery.
 	broker *Broker
@@ -165,9 +169,11 @@ func (t *MempoolTracker) HandleRawTxEvent(ctx context.Context, e zmq.RawTxEvent)
 	// No RPC call needed — addresses were extracted from scriptPubKey bytes
 	// during ParseRawTx in the zmq reader goroutine.
 	txAddrs := make(map[string]struct{}, len(e.Outputs))
+	outputTotals := make(map[string]int64, len(e.Outputs))
 	for _, out := range e.Outputs {
 		if out.Address != "" {
 			txAddrs[out.Address] = struct{}{}
+			outputTotals[out.Address] += out.ValueSat
 		}
 	}
 	if len(txAddrs) == 0 {
@@ -198,8 +204,9 @@ func (t *MempoolTracker) HandleRawTxEvent(ctx context.Context, e zmq.RawTxEvent)
 	type userMatch struct {
 		userID  string
 		matched []string
+		outputs []matchedOutput
 	}
-	var matches []userMatch
+	matchesByUser := make(map[string]userMatch)
 
 	for _, userID := range t.broker.ConnectedUserIDs() {
 		// Apply a per-call timeout so a Redis latency spike cannot stall this
@@ -215,16 +222,44 @@ func (t *MempoolTracker) HandleRawTxEvent(ctx context.Context, e zmq.RawTxEvent)
 		}
 
 		var matched []string
+		var outputs []matchedOutput
 		for _, a := range addrs {
 			if _, ok := txAddrs[a]; ok {
 				matched = append(matched, a)
+				outputs = append(outputs, matchedOutput{
+					Address:   a,
+					AmountSat: outputTotals[a],
+				})
 			}
 		}
 		if len(matched) > 0 {
-			matches = append(matches, userMatch{userID: userID, matched: matched})
+			matchesByUser[userID] = userMatch{userID: userID, matched: matched, outputs: outputs}
 		}
 	}
 
+	trackedUsers, terr := t.store.ListBitcoinTxStatusUsersByTxID(context.WithoutCancel(ctx), t.cfg.Network, txid)
+	if terr != nil {
+		log.Warn(ctx, "events.HandleRawTxEvent: failed to load tracked txstatus users", "txid", txid, "error", terr)
+	}
+	for _, userID := range trackedUsers {
+		if _, exists := matchesByUser[userID]; !exists {
+			matchesByUser[userID] = userMatch{userID: userID}
+		}
+	}
+	txWatchUsers, twerr := t.store.ListActiveBitcoinTransactionWatchUsersByTxID(context.WithoutCancel(ctx), t.cfg.Network, txid)
+	if twerr != nil {
+		log.Warn(ctx, "events.HandleRawTxEvent: failed to load transaction watch users", "txid", txid, "error", twerr)
+	}
+	for _, userID := range txWatchUsers {
+		if _, exists := matchesByUser[userID]; !exists {
+			matchesByUser[userID] = userMatch{userID: userID}
+		}
+	}
+
+	matches := make([]userMatch, 0, len(matchesByUser))
+	for _, match := range matchesByUser {
+		matches = append(matches, match)
+	}
 	if len(matches) == 0 {
 		return
 	}
@@ -243,17 +278,23 @@ func (t *MempoolTracker) HandleRawTxEvent(ctx context.Context, e zmq.RawTxEvent)
 
 	// RBF detection: find replaced txids, deduplicate, emit to all matched users.
 	replacedTxids := make(map[string]struct{})
+	replacedUsers := make(map[string]map[string]struct{})
 	for _, sp := range spents {
 		if origTxid, exists := t.spentOutpoints[sp]; exists && origTxid != txid {
 			replacedTxids[origTxid] = struct{}{}
+			if replacedUsers[origTxid] == nil {
+				replacedUsers[origTxid] = make(map[string]struct{})
+			}
+			if origEntry := t.pendingMempool[origTxid]; origEntry != nil {
+				for userID := range origEntry.users {
+					replacedUsers[origTxid][userID] = struct{}{}
+				}
+			}
 		}
 	}
-	for origTxid := range replacedTxids {
+	for range replacedTxids {
 		if t.rec != nil {
 			t.rec.OnRBFDetected()
-		}
-		for _, m := range matches {
-			t.emitReplacedLocked(m.userID, origTxid)
 		}
 	}
 
@@ -266,7 +307,8 @@ func (t *MempoolTracker) HandleRawTxEvent(ctx context.Context, e zmq.RawTxEvent)
 		// Still emit pending_mempool events even when we didn't store the entry,
 		// because users should see the event regardless of our internal cap.
 		for _, m := range matches {
-			t.emitPendingMempool(m.userID, txid, m.matched, feeRate)
+			_ = t.store.TouchBitcoinTxStatusMempool(context.WithoutCancel(ctx), m.userID, t.cfg.Network, txid, feeRate, time.Now())
+			t.emitPendingMempool(m.userID, txid, m.matched, m.outputs, feeRate)
 		}
 		return
 	}
@@ -274,7 +316,9 @@ func (t *MempoolTracker) HandleRawTxEvent(ctx context.Context, e zmq.RawTxEvent)
 	entry := t.pendingMempool[txid]
 	if entry == nil {
 		entry = &pendingEntry{
+			users:   make(map[string]struct{}),
 			addrs:   make(map[string]struct{}),
+			outputs: make(map[string]int64),
 			addedAt: time.Now(),
 			feeRate: feeRate,
 		}
@@ -292,8 +336,12 @@ func (t *MempoolTracker) HandleRawTxEvent(ctx context.Context, e zmq.RawTxEvent)
 	}
 	// Merge all matched addresses from all users into the entry.
 	for _, m := range matches {
+		entry.users[m.userID] = struct{}{}
 		for _, a := range m.matched {
 			entry.addrs[a] = struct{}{}
+		}
+		for _, out := range m.outputs {
+			entry.outputs[out.Address] = out.AmountSat
 		}
 	}
 
@@ -306,8 +354,44 @@ func (t *MempoolTracker) HandleRawTxEvent(ctx context.Context, e zmq.RawTxEvent)
 
 	// ── Phase 3: emit events (no lock) ────────────────────────────────────────
 
+	for origTxid := range replacedTxids {
+		dbUsers, err := t.store.ListBitcoinTxStatusUsersByTxID(context.WithoutCancel(ctx), t.cfg.Network, origTxid)
+		if err == nil {
+			for _, userID := range dbUsers {
+				replacedUsers[origTxid][userID] = struct{}{}
+			}
+		}
+		txWatchUsers, err := t.store.ListActiveBitcoinTransactionWatchUsersByTxID(context.WithoutCancel(ctx), t.cfg.Network, origTxid)
+		if err == nil {
+			for _, userID := range txWatchUsers {
+				replacedUsers[origTxid][userID] = struct{}{}
+			}
+		}
+		for userID := range replacedUsers[origTxid] {
+			_ = t.store.MarkBitcoinTxStatusReplaced(context.WithoutCancel(ctx), userID, t.cfg.Network, origTxid, txid, time.Now())
+			t.emitReplaced(userID, origTxid, txid)
+		}
+	}
+
 	for _, m := range matches {
-		t.emitPendingMempool(m.userID, txid, m.matched, feeRate)
+		now := time.Now()
+		_ = t.store.TouchBitcoinTxStatusMempool(context.WithoutCancel(ctx), m.userID, t.cfg.Network, txid, feeRate, now)
+		_ = t.store.UpsertWatchBitcoinTxStatus(context.WithoutCancel(ctx), TrackedStatusUpsertInput{
+			UserID:          m.userID,
+			Network:         t.cfg.Network,
+			TxID:            txid,
+			FeeRateSatVByte: feeRate,
+			FirstSeenAt:     now,
+			LastSeenAt:      now,
+			Outputs:         m.outputs,
+		})
+		t.emitPendingMempool(m.userID, txid, m.matched, m.outputs, feeRate)
+	}
+}
+
+func appendUniqueUserIDs(dst map[string]struct{}, userIDs []string) {
+	for _, userID := range userIDs {
+		dst[userID] = struct{}{}
 	}
 }
 
@@ -432,51 +516,100 @@ func (t *MempoolTracker) HandleBlockEvent(ctx context.Context, e zmq.BlockEvent)
 		entry, ok := t.pendingMempool[txid]
 		if !ok {
 			t.mu.Unlock()
+		} else {
+
+			// Collect tracked addresses and remove entry under write lock.
+			watchedAddrs := make([]string, 0, len(entry.addrs))
+			watchedOutputs := make([]matchedOutput, 0, len(entry.outputs))
+			trackedUsers := make(map[string]struct{}, len(entry.users))
+			for a := range entry.addrs {
+				watchedAddrs = append(watchedAddrs, a)
+			}
+			for addr, amountSat := range entry.outputs {
+				watchedOutputs = append(watchedOutputs, matchedOutput{
+					Address:   addr,
+					AmountSat: amountSat,
+				})
+			}
+			for userID := range entry.users {
+				trackedUsers[userID] = struct{}{}
+			}
+			delete(t.pendingMempool, txid)
+			for _, sp := range t.txidToOutpoints[txid] {
+				delete(t.spentOutpoints, sp)
+			}
+			delete(t.txidToOutpoints, txid)
+
+			pendingSize := len(t.pendingMempool)
+			t.mu.Unlock()
+
+			if t.rec != nil {
+				t.rec.SetPendingMempoolSize(pendingSize)
+			}
+
+			cfPayload, _ := json.Marshal(map[string]any{
+				"txid":             txid,
+				"status":           "confirmed",
+				"confirmations":    1,
+				"block":            hashHex,
+				"height":           header.Height,
+				"addresses":        watchedAddrs,
+				"received_outputs": watchedOutputs,
+			})
+			cfEvent := Event{Type: "confirmed_tx", Payload: cfPayload}
+
+			watchedSet := make(map[string]struct{}, len(watchedAddrs))
+			for _, a := range watchedAddrs {
+				watchedSet[a] = struct{}{}
+			}
+			for uid, addrs := range userAddrs {
+				for _, a := range addrs {
+					if _, hit := watchedSet[a]; hit {
+						trackedUsers[uid] = struct{}{}
+						break
+					}
+				}
+			}
+			dbUsers, err := t.store.ListBitcoinTxStatusUsersByTxID(context.WithoutCancel(ctx), t.cfg.Network, txid)
+			if err == nil {
+				appendUniqueUserIDs(trackedUsers, dbUsers)
+			}
+			txWatchUsers, err := t.store.ListActiveBitcoinTransactionWatchUsersByTxID(context.WithoutCancel(ctx), t.cfg.Network, txid)
+			if err == nil {
+				appendUniqueUserIDs(trackedUsers, txWatchUsers)
+			}
+			for uid := range trackedUsers {
+				_ = t.store.ConfirmBitcoinTxStatus(context.WithoutCancel(ctx), uid, t.cfg.Network, txid, hashHex, 1, int64(header.Height), time.Now())
+				t.broker.EmitToUser(uid, cfEvent)
+			}
 			continue
 		}
 
-		// Collect tracked addresses and remove entry under write lock.
-		watchedAddrs := make([]string, 0, len(entry.addrs))
-		for a := range entry.addrs {
-			watchedAddrs = append(watchedAddrs, a)
+		trackedUsers := make(map[string]struct{})
+		dbUsers, err := t.store.ListBitcoinTxStatusUsersByTxID(context.WithoutCancel(ctx), t.cfg.Network, txid)
+		if err == nil {
+			appendUniqueUserIDs(trackedUsers, dbUsers)
 		}
-		delete(t.pendingMempool, txid)
-		// Use reverse index for O(1) spentOutpoints cleanup.
-		for _, sp := range t.txidToOutpoints[txid] {
-			delete(t.spentOutpoints, sp)
+		txWatchUsers, err := t.store.ListActiveBitcoinTransactionWatchUsersByTxID(context.WithoutCancel(ctx), t.cfg.Network, txid)
+		if err == nil {
+			appendUniqueUserIDs(trackedUsers, txWatchUsers)
 		}
-		delete(t.txidToOutpoints, txid)
-
-		pendingSize := len(t.pendingMempool)
-		t.mu.Unlock()
-
-		if t.rec != nil {
-			t.rec.SetPendingMempoolSize(pendingSize)
+		if len(trackedUsers) == 0 {
+			continue
 		}
-
-		// Build confirmed_tx payload once; fan-out per user using the pre-built map.
 		cfPayload, _ := json.Marshal(map[string]any{
-			"txid":      txid,
-			"block":     hashHex,
-			"height":    header.Height,
-			"addresses": watchedAddrs,
+			"txid":             txid,
+			"status":           "confirmed",
+			"confirmations":    1,
+			"block":            hashHex,
+			"height":           header.Height,
+			"addresses":        []string{},
+			"received_outputs": []matchedOutput{},
 		})
 		cfEvent := Event{Type: "confirmed_tx", Payload: cfPayload}
-
-		// Build a lookup set for O(1) address membership checks.
-		watchedSet := make(map[string]struct{}, len(watchedAddrs))
-		for _, a := range watchedAddrs {
-			watchedSet[a] = struct{}{}
-		}
-
-		// Fan-out using pre-built map — no Redis calls inside this loop.
-		for uid, addrs := range userAddrs {
-			for _, a := range addrs {
-				if _, hit := watchedSet[a]; hit {
-					t.broker.EmitToUser(uid, cfEvent)
-					break // only emit once per user per confirmed tx
-				}
-			}
+		for uid := range trackedUsers {
+			_ = t.store.ConfirmBitcoinTxStatus(context.WithoutCancel(ctx), uid, t.cfg.Network, txid, hashHex, 1, int64(header.Height), time.Now())
+			t.broker.EmitToUser(uid, cfEvent)
 		}
 	}
 }
@@ -484,21 +617,24 @@ func (t *MempoolTracker) HandleBlockEvent(ctx context.Context, e zmq.BlockEvent)
 // ── Emit helpers ──────────────────────────────────────────────────────────────
 
 // emitPendingMempool sends a pending_mempool event to a single user.
-func (t *MempoolTracker) emitPendingMempool(userID, txid string, addrs []string, feeRate float64) {
+func (t *MempoolTracker) emitPendingMempool(userID, txid string, addrs []string, outputs []matchedOutput, feeRate float64) {
 	payload, _ := json.Marshal(map[string]any{
-		"txid":      txid,
-		"addresses": addrs,
-		"fee_rate":  feeRate,
+		"txid":             txid,
+		"status":           "mempool",
+		"confirmations":    0,
+		"addresses":        addrs,
+		"fee_rate":         feeRate,
+		"received_outputs": outputs,
 	})
 	t.broker.EmitToUser(userID, Event{Type: "pending_mempool", Payload: payload})
 }
 
-// emitReplacedLocked sends a mempool_replaced event to a single user for a
-// displaced (RBF-evicted) transaction.
-// Must be called with t.mu held (write lock).
-func (t *MempoolTracker) emitReplacedLocked(userID, origTxid string) {
+// emitReplaced sends a mempool_replaced event to a single user for a displaced tx.
+func (t *MempoolTracker) emitReplaced(userID, origTxid, replacementTxID string) {
 	payload, _ := json.Marshal(map[string]any{
-		"replaced_txid": origTxid,
+		"status":           "replaced",
+		"replaced_txid":    origTxid,
+		"replacement_txid": replacementTxID,
 	})
 	t.broker.EmitToUser(userID, Event{Type: "mempool_replaced", Payload: payload})
 }
@@ -556,7 +692,7 @@ func (t *MempoolTracker) cachedWatchAddresses(ctx context.Context, userID string
 	}
 
 	// Cache miss or caching disabled — fetch from Redis.
-	addrs, err := t.store.GetUserWatchAddresses(ctx, userID)
+	addrs, err := t.store.GetUserWatchAddresses(ctx, userID, t.cfg.Network)
 	if err != nil {
 		return nil, err
 	}

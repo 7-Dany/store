@@ -49,3 +49,25 @@ func (s *Service) GetBlock(ctx context.Context, in GetBlockInput) (Result, error
 		NextBlockHash:     header.NextBlock,
 	}, nil
 }
+
+// GetLatestBlock returns the details of the current chain tip by calling
+// GetBlockchainInfo to discover the best block hash, then GetBlockHeader for
+// the full header details.
+//
+// Returns ErrRPCUnavailable on any RPC error — the chain tip is always expected
+// to exist, so ErrBlockNotFound is remapped to ErrRPCUnavailable as a safety net.
+func (s *Service) GetLatestBlock(ctx context.Context) (Result, error) {
+	info, err := s.rpc.GetBlockchainInfo(ctx)
+	if err != nil {
+		log.Error(ctx, "block: GetBlockchainInfo RPC error", "error", err)
+		return Result{}, ErrRPCUnavailable
+	}
+	result, err := s.GetBlock(ctx, GetBlockInput{Hash: info.BestBlockHash})
+	if err != nil {
+		// ErrBlockNotFound for the chain tip is a node consistency error;
+		// surface it as ErrRPCUnavailable so callers see a consistent sentinel.
+		log.Error(ctx, "block: GetBlock failed for chain tip", "hash", info.BestBlockHash, "error", err)
+		return Result{}, ErrRPCUnavailable
+	}
+	return result, nil
+}

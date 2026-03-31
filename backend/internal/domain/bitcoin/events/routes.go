@@ -81,13 +81,10 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	onceKV := deps.KVStore.(kvstore.OnceStore)
 	counterKV := deps.KVStore.(kvstore.AtomicCounterStore)
 
-	// Dual-assert the same *RedisStore as SetStore for watch-address lookups.
-	setKV := deps.KVStore.(kvstore.SetStore)
-
 	// Single shared Store instance for both Service and MempoolTracker.
 	// Both components need the same Redis client and DB pool; a single Store
 	// avoids the duplicate db.Queries allocation that two NewStore calls create.
-	eventsStore := NewStore(onceKV, setKV, deps.Pool)
+	eventsStore := NewStore(onceKV, deps.Pool)
 
 	cfg := EventsConfig{
 		TokenTTL:                 deps.BitcoinSSETokenTTL,

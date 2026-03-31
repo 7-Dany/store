@@ -1,0 +1,87 @@
+---
+title: "Delete Tracked Tx"
+description: "Delete one durable Bitcoin transaction-tracking row."
+api: "DELETE http://localhost:8080/api/v1/bitcoin/tx/{id}"
+---
+
+<ParamField path="id" type="integer" required>
+  The durable row ID to delete.
+</ParamField>
+
+## Behaviour
+
+Deletes one saved tracked-transaction record owned by the authenticated user.
+
+This only deletes the saved tracked transaction record. It does not remove a
+watched address or affect the live lookup endpoints.
+
+<RequestExample>
+```json Example
+// No request body — the resource ID is passed as a path parameter.
+```
+</RequestExample>
+
+<ResponseExample>
+```json 204
+// 204 No Content — empty body
+```
+
+```json 404
+{
+  "code": "tx_status_not_found",
+  "message": "transaction status record was not found"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="204 — No Content">
+    The resource was deleted successfully. No response body is returned.
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    The route parameter is not a positive integer.
+
+    ```json
+    {
+      "code": "invalid_id",
+      "message": "id must be a positive integer"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    A valid JWT is required.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="404 — Not Found">
+    No durable row with this ID belongs to the caller.
+
+    ```json
+    {
+      "code": "tx_status_not_found",
+      "message": "transaction status record was not found"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

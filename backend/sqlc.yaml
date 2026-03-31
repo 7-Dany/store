@@ -104,6 +104,10 @@ sql:
             go_type: "int64"
           - column: "sse_token_issuances.id"
             go_type: "int64"
+          - column: "btc_tracked_transactions.id"
+            go_type: "int64"
+          - column: "btc_watches.id"
+            go_type: "int64"
           - column: "btc_zmq_dead_letter.id"
             go_type: "int64"
 
@@ -182,6 +186,10 @@ sql:
         overrides:
           # BIGSERIAL id columns — same pattern as the main block above
           - column: "sse_token_issuances.id"
+            go_type: "int64"
+          - column: "btc_tracked_transactions.id"
+            go_type: "int64"
+          - column: "btc_watches.id"
             go_type: "int64"
           - column: "reconciliation_run_history.id"
             go_type: "int64"

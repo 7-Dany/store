@@ -77,7 +77,7 @@ func txStore(t *testing.T) (*events.Store, *kvstore.RedisStore) {
 	t.Helper()
 	rs := bitcoinsharedtest.MustNewTestRedis(t)
 	bitcoinsharedtest.FlushTestRedis(t, rs)
-	store := events.NewStore(rs, rs, nil)
+	store := events.NewStore(rs, nil)
 	return store, rs
 }
 
@@ -159,7 +159,7 @@ func TestStore_StoreSessionSID_RedisDown_ReturnsError(t *testing.T) {
 	// address here because NewRedisStore pings eagerly and would fail at
 	// construction time rather than at the first command.
 	fkv := &failingKVStore{}
-	store := events.NewStore(fkv, fkv, nil)
+	store := events.NewStore(fkv, nil)
 
 	err := store.StoreSessionSID(context.Background(), "jti", "sid", 5*time.Minute)
 	require.Error(t, err)

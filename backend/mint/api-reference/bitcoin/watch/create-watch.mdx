@@ -1,0 +1,184 @@
+---
+title: "Create Watch"
+description: "Create one Bitcoin watch resource for an address or transaction txid."
+api: "POST http://localhost:8080/api/v1/bitcoin/watch"
+---
+
+<ParamField body="network" type="string" required>
+  Must match the server's configured Bitcoin network.
+</ParamField>
+
+<ParamField body="watch_type" type="string" required>
+  The watch target type. Allowed values: `address`, `transaction`.
+</ParamField>
+
+<ParamField body="address" type="string">
+  Required when `watch_type = "address"`. Must be a valid Bitcoin address for the
+  configured network. Must be omitted when `watch_type = "transaction"`.
+</ParamField>
+
+<ParamField body="txid" type="string">
+  Required when `watch_type = "transaction"`. Must be a 64-character hex txid.
+  Uppercase input is normalised to lowercase. Must be omitted when
+  `watch_type = "address"`.
+</ParamField>
+
+## Behaviour
+
+Creates one watch resource owned by the authenticated user.
+
+- `watch_type = "address"` watches all discovered chain activity related to one address.
+- `watch_type = "transaction"` watches the lifecycle of one txid.
+
+The created resource is returned immediately. Duplicate active targets are
+rejected with `409 watch_exists`.
+
+Address-watch capacity is server-configured. If the user has reached that cap,
+creation fails with `400 watch_limit_exceeded`.
+
+## Rate Limiting
+
+**10 requests per 1 minute per IP address**.
+
+<RequestExample>
+```json Example
+{
+  "network": "testnet4",
+  "watch_type": "address",
+  "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq"
+}
+```
+</RequestExample>
+
+<ResponseExample>
+```json 201
+{
+  "id": 11,
+  "network": "testnet4",
+  "watch_type": "address",
+  "address": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq",
+  "status": "active",
+  "created_at": "2026-03-31T00:30:00Z",
+  "updated_at": "2026-03-31T00:30:00Z"
+}
+```
+
+```json 400
+{
+  "code": "network_mismatch",
+  "message": "request network does not match server network"
+}
+```
+
+```json 409
+{
+  "code": "watch_exists",
+  "message": "watch already exists"
+}
+```
+
+```json 429
+{
+  "code": "too_many_requests",
+  "message": "too many requests — please slow down"
+}
+```
+</ResponseExample>
+
+## Responses
+
+<AccordionGroup>
+  <Accordion title="201 — Created">
+    The watch resource was created successfully.
+  </Accordion>
+
+  <Accordion title="400 — Bad Request">
+    One of the input fields is invalid.
+
+    ```json
+    {
+      "code": "network_mismatch",
+      "message": "request network does not match server network"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_watch_type",
+      "message": "watch_type must be address or transaction"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_address",
+      "message": "address failed validation"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_txid",
+      "message": "txid must be a 64-character hex string"
+    }
+    ```
+
+    ```json
+    {
+      "code": "invalid_watch_target",
+      "message": "address watches require address only and transaction watches require txid only"
+    }
+    ```
+
+    ```json
+    {
+      "code": "watch_limit_exceeded",
+      "message": "watch address limit exceeded"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="401 — Unauthorized">
+    A valid JWT is required.
+
+    ```json
+    {
+      "code": "unauthorized",
+      "message": "authentication required"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="409 — Conflict">
+    A live watch already exists for the same `(user, network, target)`.
+
+    ```json
+    {
+      "code": "watch_exists",
+      "message": "watch already exists"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="429 — Rate Limited">
+    The IP address has exceeded 10 write requests per 1 minute.
+
+    ```json
+    {
+      "code": "too_many_requests",
+      "message": "too many requests — please slow down"
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="500 — Internal Server Error">
+    An unexpected error occurred.
+
+    ```json
+    {
+      "code": "internal_error",
+      "message": "internal server error"
+    }
+    ```
+  </Accordion>
+</AccordionGroup>

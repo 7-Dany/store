@@ -912,6 +912,60 @@ func TestGetTransaction_Verbose_PopulatesDecoded(t *testing.T) {
 	assert.Equal(t, int64(100_000), sat)
 }
 
+func TestGetBlockVerbose_ReturnsDecodedBlockAndUsesVerbosityTwo(t *testing.T) {
+	t.Parallel()
+
+	var gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		gotBody = string(raw)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"result":{"confirmations":9,"height":777001,"hash":"blockhash","tx":[{"txid":"abc","vin":[{"txid":"prev","vout":1}],"vout":[{"value":0.001,"n":0,"scriptPubKey":{"address":"tb1qdest","type":"witness_v0_keyhash"}}]}]},"error":null,"id":"btc"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	parts := strings.SplitN(strings.TrimPrefix(srv.URL, "http://"), ":", 2)
+	iface, err := New(parts[0], parts[1], "user", "pass", nil)
+	require.NoError(t, err)
+	c := iface.(*client)
+	c.retryBase = 0
+	c.retryCeiling = 0
+
+	block, err := c.GetBlockVerbose(context.Background(), "blockhash")
+	require.NoError(t, err)
+	assert.Equal(t, "blockhash", block.Hash)
+	assert.Equal(t, 777001, block.Height)
+	assert.Equal(t, 9, block.Confirmations)
+	require.Len(t, block.Tx, 1)
+	assert.Equal(t, "abc", block.Tx[0].TxID)
+	require.Len(t, block.Tx[0].Vout, 1)
+	assert.Equal(t, "tb1qdest", block.Tx[0].Vout[0].ScriptPubKey.Address)
+
+	assert.Contains(t, gotBody, `"method":"getblock"`)
+	assert.Contains(t, gotBody, `"params":["blockhash",2]`)
+}
+
+func TestGetBlockVerbose_PrunedBlockError_ReturnsStructuredError(t *testing.T) {
+	t.Parallel()
+
+	rec := &captureRecorder{}
+	body := `{"result":null,"error":{"code":-1,"message":"Block not found on disk: pruned data"},"id":"btc"}`
+	c, _ := newTestServer(t, http.StatusInternalServerError, body, rec)
+
+	_, err := c.GetBlockVerbose(context.Background(), "deadbeef")
+	require.Error(t, err)
+	assert.True(t, IsPrunedBlockError(err))
+
+	require.Equal(t, 1, rec.callCount(), "pruned block errors are deterministic and must not retry")
+	rec.mu.Lock()
+	require.Len(t, rec.errors, 1)
+	assert.Equal(t, RPCErrPruned, rec.errors[0].errorType)
+	rec.mu.Unlock()
+}
+
 // ── SendRawTransaction validation ──────────────────────────────────────────────────────────────────────────
 
 // TestSendRawTransaction_ZeroMaxFeeRate_ReturnsError is the critical regression

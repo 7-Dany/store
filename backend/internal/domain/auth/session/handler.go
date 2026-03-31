@@ -82,12 +82,23 @@ func (h *Handler) Refresh(w http.ResponseWriter, r *http.Request) {
 
 	cookie, err := r.Cookie(token.RefreshTokenCookie)
 	if err != nil {
+		// Log detailed cookie info for debugging
+		cookieHeader := r.Header.Get("Cookie")
+		log.Warn(r.Context(), "Refresh: token cookie missing",
+			"has_cookie_header", cookieHeader != "",
+			"cookie_header_length", len(cookieHeader),
+			"error", err.Error(),
+		)
 		respond.Error(w, http.StatusUnauthorized, "missing_token", "refresh token cookie is missing")
 		return
 	}
 
 	claims, err := h.parseRefreshToken(cookie.Value)
 	if err != nil {
+		log.Warn(r.Context(), "Refresh: token parse failed",
+			"error", err.Error(),
+			"token_length", len(cookie.Value),
+		)
 		respond.Error(w, http.StatusUnauthorized, "invalid_token", "refresh token is invalid or expired")
 		return
 	}

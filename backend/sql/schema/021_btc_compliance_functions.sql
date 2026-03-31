@@ -2,15 +2,15 @@
 -- +goose StatementBegin
 
 /*
- * 020_btc_compliance_functions.sql — Triggers and functions for compliance tables.
+ * 021_btc_compliance_functions.sql — Triggers and functions for compliance tables.
  *
  * Functions defined here:
  *   fn_fatf_address_consistency() — enforces that fatf_travel_rule_records.counterparty_address
  *                                   matches the address on the referenced invoice
  *
- * Depends on: 019_btc_compliance.sql (fatf_travel_rule_records)
+ * Depends on: 020_btc_compliance.sql (fatf_travel_rule_records)
  *             012_btc_invoices.sql (invoice_addresses)
- * Continued in: 021_btc_webhooks.sql
+ * Continued in: 022_btc_webhooks.sql
  */
 
 /* ═════════════════════════════════════════════════════════════

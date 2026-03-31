@@ -7,7 +7,7 @@
  * Tables defined here:
  *   payout_records — payout lifecycle from settlement credit to on-chain confirmation
  *           records to 'queued'. dispute_id is the link to the freezing dispute record.
- *           Stored as UUID (no FK) because dispute_records is defined in 022_btc_disputes.sql;
+ *           Stored as UUID (no FK) because dispute_records is defined in 023_btc_disputes.sql;
  *           the FK relationship goes dispute_records.payout_record_id → payout_records.id.
  *
  * Depends on: 012_btc_invoices.sql (invoices FK), 010_btc_core.sql (vendor_wallet_config FK)
@@ -202,7 +202,7 @@ CREATE TABLE payout_records (
     hold_reason      TEXT,
 
     -- The dispute that froze this payout. Stored as UUID text (no FK) because
-    -- dispute_records is defined in a later migration (022_btc_disputes.sql).
+    -- dispute_records is defined in a later migration (023_btc_disputes.sql).
     -- The real FK relationship goes dispute_records.payout_record_id → payout_records.id.
     -- NULL unless hold_reason = 'dispute_hold'.
     -- The sweep job checks dispute_id IS NOT NULL at the broadcast boundary to abort.

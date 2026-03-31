@@ -114,9 +114,24 @@ prose only:
 
 ## No Internal Details
 
+Write documentation from the API consumer's point of view. Describe only what
+the caller can observe, rely on, or must do next.
+
 Error messages in `<ResponseExample>` and `## Responses` must reflect the exact
 JSON the API sends to the client. Never expose internal variable names, Go error
 strings, database messages, or implementation-specific text.
+
+Do not document internal storage, pipeline, or wiring details unless the client
+must act on them. Avoid:
+
+| ✗ Avoid | ✓ Use instead |
+|---|---|
+| `stored in btc_tx_statuses` | `saved as a tracked transaction record` |
+| `kept in Redis for 30 minutes` | `expires after 30 minutes of inactivity` |
+| `the events pipeline upserts rows` | `matching transactions are tracked automatically` |
+| `the SQL row ID` | `the tracked transaction ID returned by this API` |
+| `rate limiter runs before JWT auth` | `429 Too Many Requests` with `Retry-After` |
+| `BTC_NETWORK must match` | `must match the network served by this API` |
 
 | ✗ Avoid | ✓ Use instead |
 |---|---|
@@ -127,6 +142,9 @@ strings, database messages, or implementation-specific text.
 
 If you are unsure what message the route returns, check the handler source —
 never guess or copy internal log output.
+
+Before you mention a detail in `## Behaviour`, ask: "Does the caller need this
+to use the API correctly?" If not, omit it.
 
 ---
 

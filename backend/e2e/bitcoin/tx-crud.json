@@ -1,0 +1,178 @@
+{
+  "info": {
+    "_postman_id": "bitcoin-tx-crud-e2e",
+    "name": "Bitcoin – Tx CRUD (POST/GET/PUT/DELETE /api/v1/bitcoin/tx)",
+    "description": "Focused e2e collection for the durable tx tracking resource.\n\nRoutes under test:\n  POST   /api/v1/bitcoin/tx\n  GET    /api/v1/bitcoin/tx\n  GET    /api/v1/bitcoin/tx/{id}\n  PUT    /api/v1/bitcoin/tx/{id}\n  DELETE /api/v1/bitcoin/tx/{id}\n\nPrerequisites:\n  - txstatus_access_token must be set in the active Postman environment, or run the setup folder from e2e/bitcoin/txstatus.json first.\n  - txstatus_known_txid must be set to a txid visible to the configured node.\n  - BTC_NETWORK must match btc_network (default testnet4).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "POST /bitcoin/tx → 201",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 201', () => pm.response.to.have.status(201));",
+              "const body = pm.response.json();",
+              "pm.test('id is present', () => pm.expect(body.id).to.be.a('number'));",
+              "pm.collectionVariables.set('tracked_tx_id', String(body.id));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"network\":\"{{btc_network}}\",\"txid\":\"{{txstatus_known_txid}}\",\"address\":\"{{watch_test_address}}\"}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/bitcoin/tx",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "bitcoin", "tx"]
+        }
+      }
+    },
+    {
+      "name": "GET /bitcoin/tx → 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.test('items is an array', () => pm.expect(body.items).to.be.an('array'));",
+              "pm.test('created row is listed', () => {",
+              "  const id = Number(pm.collectionVariables.get('tracked_tx_id'));",
+              "  pm.expect(body.items.some(item => item.id === id)).to.eql(true);",
+              "});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/bitcoin/tx?tracking_mode=txid&limit=10",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "bitcoin", "tx"],
+          "query": [
+            { "key": "tracking_mode", "value": "txid" },
+            { "key": "limit", "value": "10" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "GET /bitcoin/tx/{id} → 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.test('id matches', () => pm.expect(String(body.id)).to.eql(pm.collectionVariables.get('tracked_tx_id')));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/bitcoin/tx/{{tracked_tx_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "bitcoin", "tx", "{{tracked_tx_id}}"]
+        }
+      }
+    },
+    {
+      "name": "PUT /bitcoin/tx/{id} → 200",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "const body = pm.response.json();",
+              "pm.test('txid updated', () => pm.expect(body.txid).to.eql(pm.environment.get('txstatus_known_txid_alt') || pm.environment.get('txstatus_known_txid')));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PUT",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"txid\":\"{{txstatus_known_txid_alt}}\",\"address\":\"{{watch_test_address}}\"}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/bitcoin/tx/{{tracked_tx_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "bitcoin", "tx", "{{tracked_tx_id}}"]
+        }
+      }
+    },
+    {
+      "name": "DELETE /bitcoin/tx/{id} → 204",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('status is 204', () => pm.response.to.have.status(204));"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "DELETE",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{txstatus_access_token}}" }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/v1/bitcoin/tx/{{tracked_tx_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "bitcoin", "tx", "{{tracked_tx_id}}"]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "btc_network",
+      "value": "testnet4"
+    },
+    {
+      "key": "tracked_tx_id",
+      "value": ""
+    },
+    {
+      "key": "watch_test_address",
+      "value": "tb1qfc74wvs6wnz3p2twgza26vukqct4emt2v47xwq"
+    }
+  ]
+}

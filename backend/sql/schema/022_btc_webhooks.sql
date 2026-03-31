@@ -2,7 +2,7 @@
 -- +goose StatementBegin
 
 /*
- * 021_btc_webhooks.sql — Vendor webhook configuration and delivery tables.
+ * 022_btc_webhooks.sql — Vendor webhook configuration and delivery tables.
  *
  * Tables defined here:
  *   vendor_webhook_config — per-vendor webhook endpoint configuration
@@ -10,7 +10,7 @@
  *
  * Depends on: 010_btc_core.sql (vendor FK), 009_btc_types.sql, 001_core.sql
  *             012_btc_invoices.sql (invoices FK)
- * Continued in: 022_btc_disputes.sql
+ * Continued in: 023_btc_disputes.sql
  */
 
 /* ═════════════════════════════════════════════════════════════

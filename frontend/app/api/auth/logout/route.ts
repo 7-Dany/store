@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
+import { extractRequestCookie } from "@/lib/api/http/cookies";
 
 const API_BASE = process.env.API_BASE_URL ?? "http://localhost:8080/api/v1";
 
@@ -12,6 +13,8 @@ export async function GET(request: Request) {
   const res = NextResponse.redirect(`${origin}/login`);
   res.cookies.set("session", "", { path: "/", maxAge: 0, httpOnly: true, sameSite: "strict" });
   res.cookies.set("refresh_token", "", { path: "/", maxAge: 0, httpOnly: true, sameSite: "strict" });
+  res.cookies.set("refresh_token", "", { path: "/api/v1/auth", maxAge: 0, httpOnly: true, sameSite: "strict" });
+  res.cookies.set("oauth_access_token", "", { path: "/", maxAge: 0 });
   return res;
 }
 
@@ -22,7 +25,10 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const cookieStore = await cookies();
   const session = cookieStore.get("session")?.value;
-  const refreshToken = cookieStore.get("refresh_token")?.value;
+  const refreshToken = extractRequestCookie(
+    request.headers.get("cookie"),
+    "refresh_token",
+  );
 
   try {
     await fetch(`${API_BASE}/auth/logout`, {
@@ -53,6 +59,16 @@ export async function POST(request: Request) {
     maxAge: 0,
     httpOnly: true,
     sameSite: "strict",
+  });
+  res.cookies.set("refresh_token", "", {
+    path: "/api/v1/auth",
+    maxAge: 0,
+    httpOnly: true,
+    sameSite: "strict",
+  });
+  res.cookies.set("oauth_access_token", "", {
+    path: "/",
+    maxAge: 0,
   });
 
   return res;

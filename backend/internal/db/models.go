@@ -1851,6 +1851,71 @@ type BtcTierConfigHistory struct {
 	NewValues      []byte `db:"new_values" json:"new_values"`
 }
 
+// Durable Bitcoin transaction status rows for the txstatus feature. One row per user/network/txid. Two sources: 'txid' rows from POST /bitcoin/tx; 'watch' rows from watch/events pipeline. tracking_mode='watch': amount_sat is reconciled from btc_tracked_transaction_addresses. tracking_mode='txid': amount_sat may be set directly by the explicit txstatus API. Hard-deleted on user removal request; child addresses and status-log rows cascade away.
+type BtcTrackedTransaction struct {
+	ID      int64       `db:"id" json:"id"`
+	UserID  pgtype.UUID `db:"user_id" json:"user_id"`
+	Network string      `db:"network" json:"network"`
+	// "txid" rows originate from the explicit txstatus CRUD API. "watch" rows originate from watch/event discovery. UpsertTrackedBitcoinTxStatus may promote 'watch' → 'txid' but never the reverse.
+	TrackingMode string `db:"tracking_mode" json:"tracking_mode"`
+	// Optional explicit address supplied through the txstatus CRUD API. Watch-discovered related addresses live in btc_tracked_transaction_addresses. NULL on watch-discovered rows until the user supplies one via the API.
+	Address       pgtype.Text `db:"address" json:"address"`
+	Txid          string      `db:"txid" json:"txid"`
+	Status        string      `db:"status" json:"status"`
+	Confirmations int32       `db:"confirmations" json:"confirmations"`
+	// Aggregate amount in satoshis. tracking_mode='watch': maintained automatically from btc_tracked_transaction_addresses by fn_btta_sync_parent_amount_sat. tracking_mode='txid': may be written directly by the explicit txstatus CRUD API. 0 when unknown.
+	AmountSat int64 `db:"amount_sat" json:"amount_sat"`
+	// Fee rate in sat/vbyte when last seen in mempool. 0 when unavailable. NUMERIC(18,8) — not DOUBLE PRECISION — to prevent IEEE 754 rounding artefacts. Matches the type used by payout_records.fee_rate_sat_vbyte for consistency.
+	FeeRateSatVbyte pgtype.Numeric `db:"fee_rate_sat_vbyte" json:"fee_rate_sat_vbyte"`
+	// When this tx was first observed (mempool or block). Preserved using LEAST() on updates — out-of-order events cannot advance it.
+	FirstSeenAt pgtype.Timestamptz `db:"first_seen_at" json:"first_seen_at"`
+	LastSeenAt  pgtype.Timestamptz `db:"last_seen_at" json:"last_seen_at"`
+	ConfirmedAt pgtype.Timestamptz `db:"confirmed_at" json:"confirmed_at"`
+	BlockHash   pgtype.Text        `db:"block_hash" json:"block_hash"`
+	BlockHeight pgtype.Int8        `db:"block_height" json:"block_height"`
+	// Replacement txid when the original mempool transaction was displaced by RBF. NULL unless status = 'replaced'. Follow the chain with: JOIN ON (user_id, network, txid = replacement_txid).
+	ReplacementTxid pgtype.Text `db:"replacement_txid" json:"replacement_txid"`
+	CreatedAt       time.Time   `db:"created_at" json:"created_at"`
+	UpdatedAt       time.Time   `db:"updated_at" json:"updated_at"`
+}
+
+// Addresses related to one tracked Bitcoin transaction row, with per-address received totals. amount_sat changes here automatically propagate to btc_tracked_transactions.amount_sat via fn_btta_sync_parent_amount_sat. Never update the parent column directly.
+type BtcTrackedTransactionAddress struct {
+	TrackedTransactionID int64  `db:"tracked_transaction_id" json:"tracked_transaction_id"`
+	Address              string `db:"address" json:"address"`
+	// Amount received by this specific address within the tracked transaction. Writing to this column triggers fn_btta_sync_parent_amount_sat to recalculate the parent btc_tracked_transactions.amount_sat aggregate.
+	AmountSat int64     `db:"amount_sat" json:"amount_sat"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+}
+
+// Immutable status-transition log for btc_tracked_transactions. Populated by fn_btt_log_status_change AFTER UPDATE trigger. Required for incident investigation: concurrent event races can produce unexpected status regressions that are invisible without this history.
+type BtcTrackedTransactionStatusLog struct {
+	ID                   uuid.UUID          `db:"id" json:"id"`
+	TrackedTransactionID int64              `db:"tracked_transaction_id" json:"tracked_transaction_id"`
+	OldStatus            pgtype.Text        `db:"old_status" json:"old_status"`
+	NewStatus            string             `db:"new_status" json:"new_status"`
+	ChangedAt            pgtype.Timestamptz `db:"changed_at" json:"changed_at"`
+}
+
+// Bitcoin watch resources owned by users. Address watches track all chain activity related to the address; transaction watches track one txid lifecycle. Hard-deleted when removed by the user. watch_type is immutable after creation to prevent races with in-flight events.
+type BtcWatch struct {
+	ID     int64       `db:"id" json:"id"`
+	UserID pgtype.UUID `db:"user_id" json:"user_id"`
+	// Bitcoin network for the watched resource. Valid values are enforced by chk_bw_network.
+	Network string `db:"network" json:"network"`
+	// "address" watches observe all discovered transaction activity related to the address. "transaction" watches observe one txid lifecycle. Immutable: UpdateBitcoinWatchByID enforces AND watch_type = @watch_type in WHERE.
+	WatchType string `db:"watch_type" json:"watch_type"`
+	// Bitcoin address being watched when watch_type = 'address'. NULL when watch_type = 'transaction'. chk_bw_target_shape enforces mutual exclusivity with txid.
+	Address pgtype.Text `db:"address" json:"address"`
+	// Bitcoin txid being watched when watch_type = 'transaction'. NULL when watch_type = 'address'. chk_bw_target_shape enforces mutual exclusivity with address and validates 64-char lowercase hex.
+	Txid pgtype.Text `db:"txid" json:"txid"`
+	// Persisted live-row marker. Only "active" rows exist because deleted watches are hard-deleted.
+	Status    string    `db:"status" json:"status"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
+}
+
 // Platform-mode vendor withdrawal requests. below approval threshold → auto_approved + payout_record immediately. above threshold → pending_approval → admin review → approved/rejected. destination_address: validated (network-aware + RPC ismine) before row inserted. payout_record_id: linked when request is approved; tracks the full sweep lifecycle.
 type BtcWithdrawalRequest struct {
 	ID        uuid.UUID   `db:"id" json:"id"`
@@ -2212,7 +2277,7 @@ type PayoutRecord struct {
 	CreatedAt    time.Time   `db:"created_at" json:"created_at"`
 	UpdatedAt    time.Time   `db:"updated_at" json:"updated_at"`
 	HoldReason   pgtype.Text `db:"hold_reason" json:"hold_reason"`
-	// FK to dispute_records added in 022_btc_disputes.sql (was plain UUID in 015). SET NULL on dispute deletion (forensics path only). NULL unless hold_reason = 'dispute_hold'. Sweep job checks IS NOT NULL at broadcast boundary to abort sweep for dispute-frozen records.
+	// FK to dispute_records added in 023_btc_disputes.sql (was plain UUID in 015). SET NULL on dispute deletion (forensics path only). NULL unless hold_reason = 'dispute_hold'. Sweep job checks IS NOT NULL at broadcast boundary to abort sweep for dispute-frozen records.
 	DisputeID pgtype.UUID `db:"dispute_id" json:"dispute_id"`
 }
 
@@ -2304,7 +2369,7 @@ type PermissionRequestApproversAudit struct {
 // Per-network operational singletons. One row per network inserted at deployment. treasury_reserve_satoshis is a required reconciliation term — keep it accurate. sweep_hold_mode is the emergency brake; only admin can clear it. All UPDATEs are captured in ops_audit_log by fn_ops_audit_platform_config (011).
 type PlatformConfig struct {
 	Network string `db:"network" json:"network"`
-	// Accumulated platform miner fees. Must be incremented in the same TX as payout_records → confirmed. Required for the reconciliation formula to balance.
+	// Accumulated platform miner fees. Mutate only via btc_credit_treasury_reserve / btc_debit_treasury_reserve in the same transaction as the corresponding financial event. Direct app-role UPDATE is revoked.
 	TreasuryReserveSatoshis int64 `db:"treasury_reserve_satoshis" json:"treasury_reserve_satoshis"`
 	// TRUE = all sweeps blocked. Set by reconciliation job on discrepancy; cleared by admin after investigation. Requires reason + timestamp (chk_pconfig_hold_coherent).
 	SweepHoldMode        bool               `db:"sweep_hold_mode" json:"sweep_hold_mode"`
@@ -2744,11 +2809,11 @@ type UserSession struct {
 	UpdatedAt    time.Time          `db:"updated_at" json:"updated_at"`
 }
 
-// Internal BTC balance per vendor per network. CRITICAL: all mutations via btc_credit_balance / btc_debit_balance (011) only. Direct UPDATE is revoked from btc_app_role to enforce the stored procedure path. platform mode: value-bearing, included in reconciliation. hybrid mode: threshold accumulator only, excluded from reconciliation (value is in payout_records). CHECK (>= 0) = ErrInsufficientBalance (SQLSTATE 23514). Never retry on this error.
+// Internal BTC balance per vendor per network. CRITICAL: all mutations via audited btc_credit_balance / btc_debit_balance only. Direct UPDATE is revoked from btc_app_role to enforce the stored procedure path. platform mode: value-bearing, included in reconciliation. hybrid mode: threshold accumulator only, excluded from reconciliation (value is in payout_records). CHECK (>= 0) = ErrInsufficientBalance (SQLSTATE 23514). Never retry on this error.
 type VendorBalance struct {
 	VendorID pgtype.UUID `db:"vendor_id" json:"vendor_id"`
 	Network  string      `db:"network" json:"network"`
-	// Platform mode: value-bearing balance. Hybrid mode: accumulator — NOT in reconciliation formula. Mutate only via btc_credit_balance / btc_debit_balance stored procedures (011).
+	// Platform mode: value-bearing balance. Hybrid mode: accumulator — NOT in reconciliation formula. Mutate only via audited btc_credit_balance / btc_debit_balance stored procedures.
 	BalanceSatoshis int64     `db:"balance_satoshis" json:"balance_satoshis"`
 	UpdatedAt       time.Time `db:"updated_at" json:"updated_at"`
 }

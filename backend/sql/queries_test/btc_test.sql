@@ -136,6 +136,38 @@ WHERE network = @network
 ORDER BY height ASC;
 
 
+-- name: TestGetBitcoinTxStatusByID :one
+-- Fetch one raw btc_tracked_transactions row for assertion.
+SELECT * FROM btc_tracked_transactions WHERE id = @id::bigint;
+
+
+-- name: TestGetBitcoinWatchByID :one
+-- Fetch one raw btc_watches row for assertion.
+SELECT * FROM btc_watches WHERE id = @id::bigint;
+
+
+-- name: TestListBitcoinWatchesByUser :many
+-- Return active watch resources for one user.
+SELECT * FROM btc_watches
+WHERE user_id = @user_id::uuid
+  AND status  = 'active'
+ORDER BY created_at DESC, id DESC;
+
+
+-- name: TestListBitcoinTxStatusesByUser :many
+-- Return all txstatus rows for one user, newest first.
+SELECT * FROM btc_tracked_transactions
+WHERE user_id = @user_id::uuid
+ORDER BY COALESCE(confirmed_at, first_seen_at) DESC, id DESC;
+
+
+-- name: TestListBitcoinTxStatusRelatedAddresses :many
+-- Return all related addresses for one tracked tx row.
+SELECT * FROM btc_tracked_transaction_addresses
+WHERE tracked_transaction_id = @tx_status_id::bigint
+ORDER BY address ASC;
+
+
 /* ════════════════════════════════════════════════════════════
    FIXTURE INSERTS — for setting up test state directly
    Use these to create pre-existing state that would normally
@@ -243,6 +275,14 @@ DELETE FROM btc_zmq_dead_letter WHERE network = @network;
 -- name: TestDeleteBlockHistory :exec
 -- Clear block history for a network between tests.
 DELETE FROM bitcoin_block_history WHERE network = @network;
+
+
+-- name: TestDeleteBitcoinTxStatusesByUser :exec
+DELETE FROM btc_tracked_transactions WHERE user_id = @user_id::uuid;
+
+
+-- name: TestDeleteBitcoinWatchesByUser :exec
+DELETE FROM btc_watches WHERE user_id = @user_id::uuid;
 
 
 -- name: TestDeleteExchangeRateLog :exec

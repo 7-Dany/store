@@ -56,6 +56,14 @@ type BlockHeader struct {
 	NextBlock     string  `json:"nextblockhash"`
 }
 
+// VerboseBlock is returned by getblock with verbosity=2.
+type VerboseBlock struct {
+	Confirmations int     `json:"confirmations"`
+	Height        int     `json:"height"`
+	Hash          string  `json:"hash"`
+	Tx            []RawTx `json:"tx"`
+}
+
 // BlockchainInfo is returned by getblockchaininfo.
 type BlockchainInfo struct {
 	Chain         string `json:"chain"`

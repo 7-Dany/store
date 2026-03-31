@@ -28,7 +28,6 @@
 #   e2e/admin/userlock.json             → POST/DELETE /admin/users/{user_id}/lock (requires rbac:manage)
 #   e2e/bitcoin/watch.json              → POST /api/v1/bitcoin/watch (requires JWT)
 #   e2e/bitcoin/events.json             → POST /api/v1/bitcoin/events/token · GET /api/v1/bitcoin/events · GET /api/v1/bitcoin/events/status
-#   e2e/bitcoin/txstatus.json            → GET /api/v1/bitcoin/tx/{txid}/status · GET /api/v1/bitcoin/tx/status
 #
 # Individual targets   — run a single collection:
 # Individual targets   — run a single collection:
@@ -40,7 +39,7 @@
 #   e2e-delete-account, e2e-identities, e2e-oauth-google, e2e-oauth-telegram,
 #   e2e-rbac-owner, e2e-rbac-permissions, e2e-rbac-roles,
 #   e2e-admin-userroles, e2e-admin-userpermissions, e2e-admin-userlock,
-#   e2e-btc, e2e-btc-events, e2e-btc-txstatus
+#   e2e-btc, e2e-btc-events
 #
 # Group targets        — run a folder of collections in order:
 #   e2e-auth           — register + verify-email + login + session + unlock + password
@@ -49,10 +48,10 @@
 #                        set-password + username + email + delete-account + identities
 #   e2e-rbac           — rbac-owner + rbac-permissions + rbac-roles
 #   e2e-admin          — admin-userroles + admin-userpermissions + admin-userlock
-#   e2e-btc            — watch + events + txstatus
+#   e2e-btc            — watch + events
 #
 # Suite target         — run everything at once:
-#   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile + e2e-rbac + e2e-admin + e2e-btc + e2e-btc-txstatus
+#   e2e                — e2e-health + e2e-auth + e2e-oauth + e2e-profile + e2e-rbac + e2e-admin + e2e-btc
 #
 # Rate-limiting notes:
 #   Collections whose rate-limiters sit INSIDE the JWTAuth middleware group
@@ -315,7 +314,7 @@ endif
 
 # ── Suite targets ─────────────────────────────────────────────────────────────
 
-e2e: e2e-health e2e-auth e2e-oauth e2e-profile e2e-rbac e2e-admin e2e-btc e2e-btc-events e2e-btc-txstatus ## Run ALL e2e suites (health + auth + oauth + profile + rbac + admin + btc + btc-events + btc-txstatus)
+e2e: e2e-health e2e-auth e2e-oauth e2e-profile e2e-rbac e2e-admin e2e-btc e2e-btc-events ## Run ALL e2e suites (health + auth + oauth + profile + rbac + admin + btc + btc-events)
 
 e2e-auth: _e2e-check-env ## Run all auth E2E collections in order (register → verify-email → login → session → unlock → password)
 	@$(MAKE) e2e-register
@@ -359,10 +358,9 @@ e2e-admin: _e2e-check-env ## Run all admin E2E collections in order (userroles +
 	@$(MAKE) e2e-admin-userlock
 	@$(call _e2e_ok,[e2e] admin suite passed)
 
-e2e-btc: _e2e-check-env ## Run all btc E2E collections in order (watch + events + txstatus)
+e2e-btc: _e2e-check-env ## Run all btc E2E collections in order (watch + events)
 	@$(MAKE) e2e-btc-watch
 	@$(MAKE) e2e-btc-events
-	@$(MAKE) e2e-btc-txstatus
 	@$(call _e2e_ok,[e2e] btc suite passed)
 
 # ── health ────────────────────────────────────────────────────────────────────
@@ -694,21 +692,8 @@ e2e-btc-watch: _e2e-check-env ## Run POST /api/v1/bitcoin/watch E2E (all folders
 #       ensure gmail_access_token is set and valid in environment.json.
 # ── bitcoin/txstatus ─────────────────────────────────────────────────────────
 
-# NOTE: btc:txstatus:ip: rate-limiter (burst=20) runs before JWTAuth.
-#       Main folders run first (unique XFF via collection prerequest counter).
-#       Redis is flushed before the rate-limiting folder; its fixed XFF (127.0.0.6)
-#       isolates the bucket from all other bitcoin collections.
-#       txstatus_known_txid must be set in environment.json to a real testnet4 txid.
-e2e-btc-txstatus: _e2e-check-env ## Run GET /bitcoin/tx/{txid}/status + GET /bitcoin/tx/status E2E (all folders)
-	@$(call _e2e_info,[e2e] --- GET /api/v1/bitcoin/tx/{txid}/status · GET /api/v1/bitcoin/tx/status ---)
-	@$(MAKE) _e2e-clean
-	@$(call _e2e_gray,[e2e] Running: setup + unauthenticated + validation-single + happy-path-single + validation-batch + happy-path-batch)
-	$(call newman-run,$(E2E_BTC)/txstatus.json,$(_F_BTC_TXSTATUS_MAIN),$(E2E_DELAY))
-	@$(call _e2e_gray,[e2e] Flushing Redis before rate-limiting...)
-	@$(MAKE) _e2e-kv-clean
-	@$(call _e2e_gray,[e2e] Running: rate-limiting)
-	$(call newman-run,$(E2E_BTC)/txstatus.json,$(_F_BTC_TXSTATUS_RL),1)
-	@$(call _e2e_ok,[e2e] btc-txstatus suite passed)
+e2e-btc-txstatus: _e2e-check-env ## Retired: live tx lookup endpoints were removed
+	@$(call _e2e_info,[e2e] --- btc-txstatus retired: /api/v1/bitcoin/tx/{txid}/status and /api/v1/bitcoin/tx/status were removed ---)
 
 # ── bitcoin/events ────────────────────────────────────────────────────────────
 

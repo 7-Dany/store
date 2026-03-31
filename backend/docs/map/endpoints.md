@@ -130,6 +130,36 @@ All routes are prefixed with `/api/v1`. JWT = `Authorization: Bearer <token>` re
 
 ---
 
+## Bitcoin — Events *(JWT)*
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/bitcoin/events/token` | Mint a short-lived SSE one-time token bound to the current authenticated session. |
+| `GET` | `/bitcoin/events` | Open the Bitcoin SSE stream. Emits `new_block`, `pending_mempool`, `confirmed_tx`, `mempool_replaced`, and operational events. |
+| `GET` | `/bitcoin/status` | Return Bitcoin event-stream health: ZMQ/RPC status, active SSE connections, and last block age. |
+
+---
+
+## Bitcoin — Tx Status *(JWT)*
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/bitcoin/tx` | Create one durable tx-status tracking row for an explicit txid. The initial status is resolved immediately and later confirmations are anchored with saved block metadata. |
+| `GET` | `/bitcoin/tx` | List durable tx-status rows for the authenticated user, with optional `address`, `txid`, `tracking_mode`, and `limit` filters. Confirmed rows retain saved block anchors for future status fallback. |
+| `GET` | `/bitcoin/tx/{id}` | Fetch one durable tx-status row by numeric ID. |
+| `PUT` | `/bitcoin/tx/{id}` | Update one explicit txid-tracking row. Watch-managed rows are immutable here. |
+| `DELETE` | `/bitcoin/tx/{id}` | Delete one durable tx-status row. |
+
+---
+
+## Bitcoin — Block *(JWT)*
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/bitcoin/block/{hash}` | Fetch one Bitcoin block by hash from the configured node/network. |
+
+---
+
 ## OAuth — Google
 
 | Method | Path | Description |

@@ -729,25 +729,48 @@ WHERE network    = @network
 
 -- name: CreditVendorBalance :one
 -- Credit the vendor's internal balance atomically via btc_credit_balance.
--- Returns the new balance for use in financial_audit_events.balance_after_sat.
--- The caller MUST write the audit event in the same transaction.
+-- The stored procedure writes the immutable financial_audit_events row itself in
+-- the same transaction, so there is no unaudited mutation path.
 -- Raises an exception if no vendor_balances row exists for (vendor_id, network).
 SELECT btc_credit_balance(
     @vendor_id::uuid,
     @network,
-    @amount_sat::bigint
+    @amount_sat::bigint,
+    @actor_type,
+    sqlc.narg('actor_id')::uuid,
+    @actor_label,
+    @invoice_id::uuid,
+    sqlc.narg('payout_record_id')::uuid,
+    sqlc.narg('references_event_id')::bigint,
+    sqlc.narg('fiat_equivalent')::bigint,
+    sqlc.narg('fiat_currency_code'),
+    @rate_stale::boolean,
+    @metadata::jsonb,
+    @event_type
 ) AS new_balance_sat;
 
 
 -- name: DebitVendorBalance :one
 -- Debit the vendor's internal balance atomically via btc_debit_balance.
--- Returns the new balance for use in financial_audit_events.balance_after_sat.
+-- The stored procedure writes the immutable financial_audit_events row itself in
+-- the same transaction, so there is no unaudited mutation path.
 -- Raises SQLSTATE 23514 (ErrInsufficientBalance) when balance < amount.
 -- Never retry on 23514 — it is a deterministic error.
 SELECT btc_debit_balance(
     @vendor_id::uuid,
     @network,
-    @amount_sat::bigint
+    @amount_sat::bigint,
+    @actor_type,
+    sqlc.narg('actor_id')::uuid,
+    @actor_label,
+    sqlc.narg('invoice_id')::uuid,
+    sqlc.narg('payout_record_id')::uuid,
+    sqlc.narg('references_event_id')::bigint,
+    sqlc.narg('fiat_equivalent')::bigint,
+    sqlc.narg('fiat_currency_code'),
+    @rate_stale::boolean,
+    @metadata::jsonb,
+    @event_type
 ) AS new_balance_sat;
 
 
@@ -827,16 +850,46 @@ WHERE network         = @network
   AND sweep_hold_mode = TRUE;
 
 
--- name: IncrementTreasuryReserve :exec
+-- name: IncrementTreasuryReserve :one
 -- Increment the platform treasury reserve by the miner fees retained from a
--- confirmed sweep batch. MUST be called in the SAME transaction as
--- SetPayoutConfirmed so the reconciliation formula remains balanced.
--- Omitting this causes a permanent negative discrepancy on every reconciliation run.
-UPDATE platform_config
-SET
-    treasury_reserve_satoshis = treasury_reserve_satoshis + @fee_amount_sat::bigint,
-    updated_at                = NOW()
-WHERE network = @network;
+-- confirmed sweep batch. The stored procedure writes the immutable
+-- financial_audit_events row itself in the same transaction.
+-- MUST be called in the SAME transaction as SetPayoutConfirmed so the
+-- reconciliation formula remains balanced.
+SELECT btc_credit_treasury_reserve(
+    @network,
+    @fee_amount_sat::bigint,
+    @actor_type,
+    sqlc.narg('actor_id')::uuid,
+    @actor_label,
+    sqlc.narg('payout_record_id')::uuid,
+    sqlc.narg('references_event_id')::bigint,
+    sqlc.narg('fiat_equivalent')::bigint,
+    sqlc.narg('fiat_currency_code'),
+    @rate_stale::boolean,
+    @metadata::jsonb,
+    @event_type
+) AS new_treasury_reserve_sat;
+
+
+-- name: DecrementTreasuryReserve :one
+-- Decrement the platform treasury reserve through the same audited stored
+-- procedure path used for increments. Intended for admin treasury withdrawals
+-- or UTXO consolidation expenses.
+SELECT btc_debit_treasury_reserve(
+    @network,
+    @amount_sat::bigint,
+    @actor_type,
+    sqlc.narg('actor_id')::uuid,
+    @actor_label,
+    sqlc.narg('payout_record_id')::uuid,
+    sqlc.narg('references_event_id')::bigint,
+    sqlc.narg('fiat_equivalent')::bigint,
+    sqlc.narg('fiat_currency_code'),
+    @rate_stale::boolean,
+    @metadata::jsonb,
+    @event_type
+) AS new_treasury_reserve_sat;
 
 
 /* ════════════════════════════════════════════════════════════
@@ -1200,6 +1253,720 @@ SELECT id, event_type, timestamp, actor_type, actor_label, amount_sat, metadata
 FROM financial_audit_events
 WHERE payout_record_id = @payout_record_id::uuid
 ORDER BY timestamp DESC;
+
+
+/* ════════════════════════════════════════════════════════════
+   WATCH RESOURCES
+   Address and transaction watches owned by users.
+   ════════════════════════════════════════════════════════════ */
+
+-- name: CreateBitcoinWatch :one
+-- Create one active watch resource.
+-- On 23505 (uq_bw_active_address / uq_bw_active_transaction): the user already
+-- has an active watch for this target. Return ErrWatchExists; do NOT retry.
+INSERT INTO btc_watches (
+    user_id,
+    network,
+    watch_type,
+    address,
+    txid,
+    status
+)
+VALUES (
+    @user_id::uuid,
+    @network,
+    @watch_type,
+    sqlc.narg('address'),
+    sqlc.narg('txid'),
+    'active'
+)
+RETURNING *;
+
+
+-- name: GetBitcoinWatchByID :one
+-- Return one active watch owned by the given user.
+SELECT * FROM btc_watches
+WHERE id      = @id::bigint
+  AND user_id = @user_id::uuid;
+
+
+-- name: ListBitcoinWatches :many
+-- List active watch resources for one user/network with optional type/address/txid filters.
+-- The base scan follows created_at DESC ordering. Exact address/txid filters are
+-- backed by the partial unique indexes; watch_type-filtered lists use idx_bw_user_type_time.
+-- Keyset pagination uses (created_at, id) DESC. Pass the previous page's final
+-- row as (@before_created_at, @before_id) to continue without OFFSET scans.
+SELECT * FROM btc_watches
+WHERE user_id = @user_id::uuid
+  AND network = @network
+  AND (@watch_type = '' OR watch_type = @watch_type)
+  AND (@address = '' OR address = @address)
+  AND (@txid = '' OR txid = @txid)
+  AND (
+      sqlc.narg('before_created_at')::timestamptz IS NULL
+      OR (created_at, id) < (sqlc.narg('before_created_at')::timestamptz, @before_id::bigint)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT @limit_rows::integer;
+
+
+-- name: UpdateBitcoinWatchByID :one
+-- Update one active watch resource owned by the given user.
+-- watch_type is immutable after creation. The WHERE clause enforces that the
+-- caller may update the target within the same type, but may not switch an
+-- address watch into a transaction watch (or the reverse) mid-lifecycle.
+UPDATE btc_watches
+SET
+    address    = sqlc.narg('address'),
+    txid       = sqlc.narg('txid'),
+    updated_at = NOW()
+WHERE id      = @id::bigint
+  AND user_id = @user_id::uuid
+  AND watch_type = @watch_type
+RETURNING *;
+
+
+-- name: DeleteBitcoinWatchByID :execrows
+-- Hard-delete one watch resource owned by the given user.
+DELETE FROM btc_watches
+WHERE id      = @id::bigint
+  AND user_id = @user_id::uuid;
+
+
+-- name: CountActiveBitcoinAddressWatchesByUser :one
+-- Return the active address-watch count for one user/network.
+-- Backed by idx_bw_user_network_address_count so quota checks stay cheap even
+-- when transaction watches greatly outnumber address watches.
+SELECT COUNT(*) AS count
+FROM btc_watches
+WHERE user_id    = @user_id::uuid
+  AND network    = @network
+  AND watch_type = 'address';
+
+
+-- name: ListActiveBitcoinWatchAddressesByUser :many
+-- Return active address-watch targets for one user/network.
+SELECT address
+FROM btc_watches
+WHERE user_id    = @user_id::uuid
+  AND network    = @network
+  AND watch_type = 'address'
+ORDER BY address ASC;
+
+
+-- name: ListActiveBitcoinTransactionWatchUsersByTxID :many
+-- Return users with an active transaction watch on txid.
+-- uq_bw_active_transaction guarantees one row per (user_id, network, txid), so
+-- DISTINCT would only add an unnecessary hash/sort step on this fanout path.
+SELECT user_id
+FROM btc_watches
+WHERE network    = @network
+  AND txid       = @txid
+  AND watch_type = 'transaction';
+
+
+/* ════════════════════════════════════════════════════════════
+   TRACKED TRANSACTIONS
+   Durable read model owned by the txstatus package and updated by events.
+   ════════════════════════════════════════════════════════════ */
+
+-- name: CreateBitcoinTxStatus :one
+-- Create one explicit txstatus tracking row. Used by POST /bitcoin/tx.
+-- tracking_mode must be 'txid'; watch-discovered related addresses are created by events.
+INSERT INTO btc_tracked_transactions (
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid
+)
+VALUES (
+    @user_id::uuid,
+    @network,
+    'txid',
+    sqlc.narg('address'),
+    @txid,
+    @status,
+    @confirmations::integer,
+    @amount_sat::bigint,
+    @fee_rate_sat_vbyte,
+    @first_seen_at::timestamptz,
+    @last_seen_at::timestamptz,
+    sqlc.narg('confirmed_at')::timestamptz,
+    sqlc.narg('block_hash'),
+    sqlc.narg('block_height')::bigint,
+    sqlc.narg('replacement_txid')
+)
+RETURNING
+    id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at;
+
+
+-- name: UpsertTrackedBitcoinTxStatus :one
+-- Create or refresh one explicit txid-tracking row keyed by (user, network, txid).
+INSERT INTO btc_tracked_transactions (
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid
+)
+VALUES (
+    @user_id::uuid,
+    @network,
+    'txid',
+    sqlc.narg('address'),
+    @txid,
+    @status,
+    @confirmations::integer,
+    @amount_sat::bigint,
+    @fee_rate_sat_vbyte,
+    @first_seen_at::timestamptz,
+    @last_seen_at::timestamptz,
+    sqlc.narg('confirmed_at')::timestamptz,
+    sqlc.narg('block_hash'),
+    sqlc.narg('block_height')::bigint,
+    sqlc.narg('replacement_txid')
+)
+ON CONFLICT (user_id, network, txid) DO UPDATE
+SET
+    tracking_mode      = CASE
+        WHEN btc_tracked_transactions.tracking_mode = 'watch' THEN 'txid'
+        ELSE btc_tracked_transactions.tracking_mode
+    END,
+    address            = COALESCE(EXCLUDED.address, btc_tracked_transactions.address),
+    status             = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.status
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.status
+        ELSE EXCLUDED.status
+    END,
+    confirmations      = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.confirmations
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.confirmations
+        WHEN EXCLUDED.status = 'confirmed'
+            THEN GREATEST(EXCLUDED.confirmations, 1)
+        ELSE EXCLUDED.confirmations
+    END,
+    amount_sat         = CASE
+        WHEN EXCLUDED.amount_sat > 0 THEN EXCLUDED.amount_sat
+        ELSE btc_tracked_transactions.amount_sat
+    END,
+    fee_rate_sat_vbyte = CASE
+        WHEN EXCLUDED.fee_rate_sat_vbyte > 0 THEN EXCLUDED.fee_rate_sat_vbyte
+        ELSE btc_tracked_transactions.fee_rate_sat_vbyte
+    END,
+    first_seen_at      = LEAST(btc_tracked_transactions.first_seen_at, EXCLUDED.first_seen_at),
+    last_seen_at       = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.last_seen_at
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.last_seen_at
+        ELSE EXCLUDED.last_seen_at
+    END,
+    confirmed_at       = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.confirmed_at
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.confirmed_at
+        ELSE COALESCE(btc_tracked_transactions.confirmed_at, EXCLUDED.confirmed_at)
+    END,
+    block_hash         = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.block_hash
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.block_hash
+        ELSE COALESCE(btc_tracked_transactions.block_hash, EXCLUDED.block_hash)
+    END,
+    block_height       = CASE
+        WHEN btc_tracked_transactions.status IN ('replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.block_height
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.block_height
+        ELSE COALESCE(btc_tracked_transactions.block_height, EXCLUDED.block_height)
+    END,
+    replacement_txid   = CASE
+        WHEN btc_tracked_transactions.status = 'replaced'
+            THEN btc_tracked_transactions.replacement_txid
+        WHEN btc_tracked_transactions.status IN ('conflicting', 'abandoned')
+            THEN btc_tracked_transactions.replacement_txid
+        WHEN btc_tracked_transactions.status = 'confirmed'
+             AND EXCLUDED.status <> 'confirmed'
+            THEN btc_tracked_transactions.replacement_txid
+        ELSE COALESCE(EXCLUDED.replacement_txid, btc_tracked_transactions.replacement_txid)
+    END
+RETURNING
+    id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at;
+
+
+-- name: GetBitcoinTxStatusByID :one
+-- Return one explicit-txid txstatus row owned by the given user.
+SELECT
+    id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at
+FROM btc_tracked_transactions
+WHERE id      = @id::bigint
+  AND user_id = @user_id::uuid
+  AND tracking_mode = 'txid';
+
+
+-- name: ListBitcoinTxStatuses :many
+-- List txstatus rows for one user/network with optional address, txid, and mode filters.
+-- High-load shape:
+--   * @address = ''  → one ordered scan over btc_tracked_transactions
+--   * @address != '' → UNION ALL of:
+--       1. explicit parent-address matches (idx_btt_user_address_time)
+--       2. child-address matches from btc_tracked_transaction_addresses (idx_btta_address)
+--          excluding rows already returned by the explicit-address branch
+-- Keyset pagination uses (COALESCE(confirmed_at, first_seen_at), id) DESC via
+-- (@before_sort_time, @before_id) so deep pages do not degrade into OFFSET scans.
+-- This avoids a broad OR + correlated EXISTS over the full parent row set.
+WITH filtered_tx_statuses AS (
+    SELECT
+        btt.id,
+        btt.user_id,
+        btt.network,
+        btt.tracking_mode,
+        btt.address,
+        btt.txid,
+        btt.status,
+        btt.confirmations,
+        btt.amount_sat,
+        btt.fee_rate_sat_vbyte,
+        btt.first_seen_at,
+        btt.last_seen_at,
+        btt.confirmed_at,
+        btt.block_hash,
+        btt.block_height,
+        btt.replacement_txid,
+        btt.created_at,
+        btt.updated_at
+    FROM btc_tracked_transactions btt
+    WHERE btt.user_id       = @user_id::uuid
+      AND btt.network       = @network
+      AND @address::text = ''
+      AND (@txid::text = '' OR btt.txid = @txid::text)
+      AND (@tracking_mode::text = '' OR btt.tracking_mode = @tracking_mode::text)
+
+    UNION ALL
+
+    SELECT
+        btt.id,
+        btt.user_id,
+        btt.network,
+        btt.tracking_mode,
+        btt.address,
+        btt.txid,
+        btt.status,
+        btt.confirmations,
+        btt.amount_sat,
+        btt.fee_rate_sat_vbyte,
+        btt.first_seen_at,
+        btt.last_seen_at,
+        btt.confirmed_at,
+        btt.block_hash,
+        btt.block_height,
+        btt.replacement_txid,
+        btt.created_at,
+        btt.updated_at
+    FROM btc_tracked_transactions btt
+    WHERE btt.user_id       = @user_id::uuid
+      AND btt.network       = @network
+      AND @address::text    <> ''
+      AND btt.address       = @address::text
+      AND (@txid::text = '' OR btt.txid = @txid::text)
+      AND (@tracking_mode::text = '' OR btt.tracking_mode = @tracking_mode::text)
+
+    UNION ALL
+
+    SELECT
+        btt.id,
+        btt.user_id,
+        btt.network,
+        btt.tracking_mode,
+        btt.address,
+        btt.txid,
+        btt.status,
+        btt.confirmations,
+        btt.amount_sat,
+        btt.fee_rate_sat_vbyte,
+        btt.first_seen_at,
+        btt.last_seen_at,
+        btt.confirmed_at,
+        btt.block_hash,
+        btt.block_height,
+        btt.replacement_txid,
+        btt.created_at,
+        btt.updated_at
+    FROM btc_tracked_transactions btt
+    JOIN btc_tracked_transaction_addresses ra
+      ON ra.tracked_transaction_id = btt.id
+    WHERE btt.user_id       = @user_id::uuid
+      AND btt.network       = @network
+      AND @address::text    <> ''
+      AND ra.address        = @address::text
+      AND (@txid::text = '' OR btt.txid = @txid::text)
+      AND (@tracking_mode::text = '' OR btt.tracking_mode = @tracking_mode::text)
+      AND btt.address IS DISTINCT FROM @address::text
+)
+SELECT
+    id::bigint AS id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at
+FROM filtered_tx_statuses
+WHERE (
+    sqlc.narg('before_sort_time')::timestamptz IS NULL
+    OR (COALESCE(confirmed_at, first_seen_at), id) < (sqlc.narg('before_sort_time')::timestamptz, @before_id::bigint)
+)
+ORDER BY COALESCE(confirmed_at, first_seen_at) DESC, id DESC
+LIMIT @limit_rows::integer;
+
+
+-- name: UpdateBitcoinTxStatusByID :one
+-- Update one explicit txid tracking row. Watch-managed rows are immutable here.
+-- txid is intentionally excluded from SET because it is immutable after creation.
+-- The query also normalizes status-dependent fields so callers cannot persist
+-- mempool/not_found/conflicting/abandoned rows with stale confirmation metadata.
+UPDATE btc_tracked_transactions
+SET
+    address             = sqlc.narg('address'),
+    status              = @status,
+    confirmations       = CASE
+        WHEN @status = 'confirmed' THEN GREATEST(@confirmations::integer, 1)
+        ELSE 0
+    END,
+    amount_sat          = @amount_sat::bigint,
+    fee_rate_sat_vbyte  = @fee_rate_sat_vbyte,
+    first_seen_at       = @first_seen_at::timestamptz,
+    last_seen_at        = @last_seen_at::timestamptz,
+    confirmed_at        = CASE
+        WHEN @status = 'confirmed' THEN sqlc.narg('confirmed_at')::timestamptz
+        ELSE NULL
+    END,
+    block_hash          = CASE
+        WHEN @status = 'confirmed' THEN sqlc.narg('block_hash')
+        ELSE NULL
+    END,
+    block_height        = CASE
+        WHEN @status = 'confirmed' THEN sqlc.narg('block_height')::bigint
+        ELSE NULL
+    END,
+    replacement_txid    = CASE
+        WHEN @status = 'replaced' THEN sqlc.narg('replacement_txid')
+        ELSE NULL
+    END
+WHERE id            = @id::bigint
+  AND user_id       = @user_id::uuid
+  AND tracking_mode = 'txid'
+RETURNING
+    id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at;
+
+
+-- name: DeleteBitcoinTxStatusByID :execrows
+-- Hard-delete one explicit txstatus row owned by the given user.
+DELETE FROM btc_tracked_transactions
+WHERE id      = @id::bigint
+  AND user_id = @user_id::uuid
+  AND tracking_mode = 'txid';
+
+
+-- name: ListBitcoinTxStatusRelatedAddressesByStatusIDs :many
+-- Return related watched addresses for the given txstatus row IDs.
+SELECT
+    tracked_transaction_id AS tx_status_id,
+    address,
+    amount_sat,
+    created_at,
+    updated_at
+FROM btc_tracked_transaction_addresses
+WHERE tracked_transaction_id = ANY(@tx_status_ids::bigint[])
+ORDER BY tracked_transaction_id, address;
+
+
+-- name: UpsertWatchBitcoinTxStatus :one
+-- Create or refresh one watch-discovered txstatus row.
+-- One durable row exists per (user_id, network, txid); matched addresses are
+-- linked separately through btc_tx_status_related_addresses.
+INSERT INTO btc_tracked_transactions (
+    user_id,
+    network,
+    tracking_mode,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at
+)
+VALUES (
+    @user_id::uuid,
+    @network,
+    'watch',
+    @txid,
+    'mempool',
+    0,
+    @amount_sat::bigint,
+    @fee_rate_sat_vbyte,
+    @first_seen_at::timestamptz,
+    @last_seen_at::timestamptz
+)
+ON CONFLICT (user_id, network, txid) DO UPDATE
+SET
+    amount_sat         = CASE
+        WHEN EXCLUDED.amount_sat > 0 THEN EXCLUDED.amount_sat
+        ELSE btc_tracked_transactions.amount_sat
+    END,
+    fee_rate_sat_vbyte = CASE
+        WHEN EXCLUDED.fee_rate_sat_vbyte > 0 THEN EXCLUDED.fee_rate_sat_vbyte
+        ELSE btc_tracked_transactions.fee_rate_sat_vbyte
+    END,
+    first_seen_at      = LEAST(btc_tracked_transactions.first_seen_at, EXCLUDED.first_seen_at),
+    last_seen_at       = CASE
+        WHEN btc_tracked_transactions.status IN ('confirmed', 'replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.last_seen_at
+        ELSE EXCLUDED.last_seen_at
+    END,
+    status             = CASE
+        WHEN btc_tracked_transactions.status IN ('confirmed', 'replaced', 'conflicting', 'abandoned')
+            THEN btc_tracked_transactions.status
+        ELSE 'mempool'
+    END,
+    confirmations      = CASE
+        WHEN btc_tracked_transactions.status = 'confirmed' THEN btc_tracked_transactions.confirmations
+        ELSE 0
+    END,
+    confirmed_at       = CASE
+        WHEN btc_tracked_transactions.status = 'confirmed' THEN btc_tracked_transactions.confirmed_at
+        ELSE NULL
+    END,
+    block_hash         = CASE
+        WHEN btc_tracked_transactions.status = 'confirmed' THEN btc_tracked_transactions.block_hash
+        ELSE NULL
+    END,
+    block_height       = CASE
+        WHEN btc_tracked_transactions.status = 'confirmed' THEN btc_tracked_transactions.block_height
+        ELSE NULL
+    END,
+    replacement_txid   = CASE
+        WHEN btc_tracked_transactions.status = 'replaced' THEN btc_tracked_transactions.replacement_txid
+        ELSE NULL
+    END
+RETURNING
+    id,
+    user_id,
+    network,
+    tracking_mode,
+    address,
+    txid,
+    status,
+    confirmations,
+    amount_sat,
+    fee_rate_sat_vbyte,
+    first_seen_at,
+    last_seen_at,
+    confirmed_at,
+    block_hash,
+    block_height,
+    replacement_txid,
+    created_at,
+    updated_at;
+
+
+-- name: UpsertBitcoinTxStatusRelatedAddress :exec
+-- Create or refresh one watched address linked to a tracked tx row.
+INSERT INTO btc_tracked_transaction_addresses (
+    tracked_transaction_id,
+    address,
+    amount_sat
+)
+VALUES (
+    @tx_status_id::bigint,
+    @address,
+    @amount_sat::bigint
+)
+ON CONFLICT (tracked_transaction_id, address) DO UPDATE
+SET
+    amount_sat = EXCLUDED.amount_sat
+WHERE btc_tracked_transaction_addresses.amount_sat IS DISTINCT FROM EXCLUDED.amount_sat;
+
+
+-- name: TouchBitcoinTxStatusMempool :execrows
+-- Mark all rows for (user_id, network, txid) as present in mempool.
+UPDATE btc_tracked_transactions
+SET
+    status             = 'mempool',
+    confirmations      = 0,
+    fee_rate_sat_vbyte = @fee_rate_sat_vbyte,
+    last_seen_at       = @last_seen_at::timestamptz,
+    confirmed_at       = NULL,
+    block_hash         = NULL,
+    block_height       = NULL,
+    replacement_txid   = NULL
+WHERE user_id = @user_id::uuid
+  AND network = @network
+  AND txid    = @txid
+  AND status NOT IN ('confirmed', 'replaced', 'conflicting', 'abandoned');
+
+
+-- name: ConfirmBitcoinTxStatus :execrows
+-- Mark all live rows for (user_id, network, txid) as confirmed.
+-- @confirmations MUST be >= 1. GREATEST() coerces 0 to 1 as a safety net,
+-- but callers should treat 0 as a bug in the confirmation source.
+-- confirmed_at / block_hash / block_height capture first confirmation metadata
+-- and are therefore preserved once set.
+UPDATE btc_tracked_transactions
+SET
+    status           = 'confirmed',
+    confirmations    = GREATEST(@confirmations::integer, 1),
+    confirmed_at     = COALESCE(btc_tracked_transactions.confirmed_at, @confirmed_at::timestamptz),
+    block_hash       = COALESCE(btc_tracked_transactions.block_hash, @block_hash),
+    block_height     = COALESCE(btc_tracked_transactions.block_height, @block_height::bigint),
+    last_seen_at     = @confirmed_at::timestamptz,
+    replacement_txid = NULL
+WHERE user_id = @user_id::uuid
+  AND network = @network
+  AND txid    = @txid
+  AND status NOT IN ('replaced', 'conflicting', 'abandoned');
+
+
+-- name: MarkBitcoinTxStatusReplaced :execrows
+-- Mark all rows for (user_id, network, replaced_txid) as replaced.
+-- An already-replaced row is terminal here so a late duplicate event cannot
+-- overwrite the first replacement_txid that established the chain.
+UPDATE btc_tracked_transactions
+SET
+    status           = 'replaced',
+    confirmations    = 0,
+    replacement_txid = @replacement_txid,
+    last_seen_at     = @replaced_at::timestamptz,
+    confirmed_at     = NULL,
+    block_hash       = NULL,
+    block_height     = NULL
+WHERE user_id = @user_id::uuid
+  AND network = @network
+  AND txid    = @replaced_txid
+  AND status NOT IN ('confirmed', 'replaced', 'conflicting', 'abandoned');
+
+
+-- name: ListBitcoinTxStatusUsersByTxID :many
+-- Return user_ids that currently track the given txid.
+-- uq_btt_user_network_txid guarantees one row per (user_id, network, txid), so
+-- DISTINCT would only add planner work with no deduplication benefit.
+SELECT user_id
+FROM btc_tracked_transactions
+WHERE network = @network
+  AND txid    = @txid;
 
 
 /* ════════════════════════════════════════════════════════════

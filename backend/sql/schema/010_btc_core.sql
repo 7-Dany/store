@@ -378,8 +378,9 @@ COMMENT ON TABLE platform_config IS
     'sweep_hold_mode is the emergency brake; only admin can clear it. '
     'All UPDATEs are captured in ops_audit_log by fn_ops_audit_platform_config (011).';
 COMMENT ON COLUMN platform_config.treasury_reserve_satoshis IS
-    'Accumulated platform miner fees. Must be incremented in the same TX as '
-    'payout_records → confirmed. Required for the reconciliation formula to balance.';
+    'Accumulated platform miner fees. Mutate only via btc_credit_treasury_reserve / '
+    'btc_debit_treasury_reserve in the same transaction as the corresponding financial event. '
+    'Direct app-role UPDATE is revoked.';
 COMMENT ON COLUMN platform_config.sweep_hold_mode IS
     'TRUE = all sweeps blocked. Set by reconciliation job on discrepancy; '
     'cleared by admin after investigation. Requires reason + timestamp (chk_pconfig_hold_coherent).';
@@ -745,14 +746,14 @@ CREATE TRIGGER trg_vendor_balances_updated_at
 
 COMMENT ON TABLE vendor_balances IS
     'Internal BTC balance per vendor per network. '
-    'CRITICAL: all mutations via btc_credit_balance / btc_debit_balance (011) only. '
+    'CRITICAL: all mutations via audited btc_credit_balance / btc_debit_balance only. '
     'Direct UPDATE is revoked from btc_app_role to enforce the stored procedure path. '
     'platform mode: value-bearing, included in reconciliation. '
     'hybrid mode: threshold accumulator only, excluded from reconciliation (value is in payout_records). '
     'CHECK (>= 0) = ErrInsufficientBalance (SQLSTATE 23514). Never retry on this error.';
 COMMENT ON COLUMN vendor_balances.balance_satoshis IS
     'Platform mode: value-bearing balance. Hybrid mode: accumulator — NOT in reconciliation formula. '
-    'Mutate only via btc_credit_balance / btc_debit_balance stored procedures (011).';
+    'Mutate only via audited btc_credit_balance / btc_debit_balance stored procedures.';
 
 
 /* ═════════════════════════════════════════════════════════════

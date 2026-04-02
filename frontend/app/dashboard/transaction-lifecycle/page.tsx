@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
-import { TransactionLifecycleDashboard } from "@/features/bitcoin/components/bitcoin-dashboard";
-import { TransactionLifecycleDashboardSkeleton } from "@/features/bitcoin/components/skeleton";
+import { TransactionLifecycleDashboard } from "@/features/bitcoin/shared/bitcoin-dashboard";
+import { TransactionLifecycleDashboardSkeleton } from "@/features/bitcoin/shared/skeleton";
 
 export const metadata: Metadata = { title: "Transaction Lifecycle — Store" };
 

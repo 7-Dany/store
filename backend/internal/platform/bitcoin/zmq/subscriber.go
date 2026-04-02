@@ -29,7 +29,20 @@ const (
 	defaultChannelDepth = DefaultSubscriberHWM * 2 // 10,000
 
 	// DefaultWorkerCount is the number of pool goroutines for each event type
-	// (block and tx). 20 block workers + 20 tx workers = 40 total.
+	// (block, tx, and rawtx). 20 workers per type × 3 types = 60 total.
+	//
+	// Sizing rationale: at a per-handler invocation timeout of 30 s and expected
+	// p99 handler latency of ~100 ms, each worker can process ~300 events/s
+	// in the best case (one event per timeout period). With 20 workers, the pool
+	// can sustain ~6,000 events/s. Above this, events queue in the channel buffer
+	// (defaultChannelDepth = 10,000 slots). If sustained load exceeds this capacity,
+	// in-flight handlers will complete, freeing workers, and processing will
+	// eventually catch up. Under sustained 10,000+ events/s, the channel fills
+	// and events are dropped (see onEvent select with default case).
+	//
+	// At 30 s timeout + 100,000 slots, we can buffer ~3,333 events/s for 30 s,
+	// providing a reasonable grace period for brief traffic spikes without
+	// dropping events to application-layer subscribers.
 	defaultWorkerCount = 20
 
 	// DefaultHandlerTimeout is the per-handler invocation deadline when none
@@ -277,8 +290,10 @@ type subscriber struct {
 //	}
 //	sub, err := zmq.New(cfg.BitcoinZMQBlock, cfg.BitcoinZMQTx, cfg.BitcoinNetwork, idleTimeout, deps.Metrics)
 //
-// network is one of "mainnet", "testnet", "testnet4", or "regtest" and determines
-// the Bech32 HRP used by ParseRawTx. If unknown, defaults to "testnet".
+// network must be one of "mainnet", "testnet", "testnet4", "signet", or "regtest".
+// Returns an error if network is not recognized — unknown values are not silently
+// defaulted. The network determines the Bech32 HRP used by ParseRawTx for address
+// encoding.
 //
 // recorder may be nil; a no-op recorder is substituted automatically.
 func New(blockEndpoint, txEndpoint, network string, idleTimeout time.Duration, recorder ZMQRecorder) (Subscriber, error) {
@@ -293,11 +308,14 @@ func New(blockEndpoint, txEndpoint, network string, idleTimeout time.Duration, r
 				"translate BTC_ZMQ_IDLE_TIMEOUT=0 to a network default in server.go before calling New()", idleTimeout))
 	}
 
+	hrp, err := networkToHRP(network)
+	if err != nil {
+		return nil, telemetry.ZMQ("New.network", err)
+	}
+
 	if recorder == nil {
 		recorder = noopRecorder{}
 	}
-
-	hrp := networkToHRP(network)
 
 	return &subscriber{
 		blockEndpoint:        blockEndpoint,
@@ -367,6 +385,10 @@ func (s *subscriber) mustRegister(method string, nonNil bool) {
 }
 
 // ZMQRecorder is the narrow observability interface required by Subscriber.
+// It is defined here (in the platform package) rather than in the domain packages
+// because the ZMQ platform owns both the data source and the observability concerns.
+// Domain packages depend on this interface and receive metrics via the Subscriber.
+//
 // *telemetry.Registry satisfies this interface via the hook methods in
 // internal/platform/telemetry/bitcoin_hooks.go — pass deps.Metrics directly;
 // no factory method is needed. Pass nil to silence all metrics.

@@ -391,6 +391,14 @@ func TestReadAndValidateGreeting_WrongSignatureByte0_ReturnsError(t *testing.T) 
 	require.Error(t, c.readAndValidateGreeting(context.Background()))
 }
 
+func TestReadAndValidateGreeting_WrongSignatureByte8_ReturnsError(t *testing.T) {
+	t.Parallel()
+	g := buildValidGreeting64(3, 1, "NULL")
+	g[8] = 0x00 // corrupt signature byte [8]
+	c := connFromBytes(g[:])
+	require.Error(t, c.readAndValidateGreeting(context.Background()))
+}
+
 func TestReadAndValidateGreeting_WrongSignatureByte9_ReturnsError(t *testing.T) {
 	t.Parallel()
 	g := buildValidGreeting64(3, 1, "NULL")
@@ -475,6 +483,102 @@ func TestReadExpectedCommand_EmptyReader_ReturnsError(t *testing.T) {
 	t.Parallel()
 	c := connFromBytes(nil)
 	require.Error(t, c.readReadyCommand(context.Background()))
+}
+
+func TestReadReadyCommand_WrongSocketType_ReturnsError(t *testing.T) {
+	t.Parallel()
+	for _, st := range []string{"PUSH", "DEALER", "PULL", "ROUTER"} {
+		frame := buildReady(st)
+		c := connFromBytes(frame)
+		err := c.readReadyCommand(context.Background())
+		require.Error(t, err, "Socket-Type %s should be rejected", st)
+		require.Contains(t, err.Error(), "expected Socket-Type PUB")
+		require.Contains(t, err.Error(), st)
+	}
+}
+
+func TestReadReadyCommand_MissingSocketType_ReturnsError(t *testing.T) {
+	t.Parallel()
+	// Build a READY command with no Socket-Type metadata key.
+	frame := buildCommand("READY", nil) // empty metadata
+	c := connFromBytes(frame)
+	err := c.readReadyCommand(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "Socket-Type")
+	require.Contains(t, err.Error(), "missing")
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// parseReadyMetadata
+// ═════════════════════════════════════════════════════════════════════════════
+
+func TestParseReadyMetadata_Empty_ReturnsEmptyMap(t *testing.T) {
+	t.Parallel()
+	m := parseReadyMetadata(nil)
+	require.Empty(t, m)
+}
+
+func TestParseReadyMetadata_SinglePair_Succeeds(t *testing.T) {
+	t.Parallel()
+	// Build metadata: key="Socket-Type"(11) value="PUB"(3)
+	var data []byte
+	data = append(data, 11)  // key length
+	data = append(data, "Socket-Type"...)
+	data = append(data, 0, 0, 0, 3)  // value length big-endian
+	data = append(data, "PUB"...)
+	m := parseReadyMetadata(data)
+	require.Equal(t, "PUB", m["Socket-Type"])
+}
+
+func TestParseReadyMetadata_TruncatedAfterKeyLength_StopsGracefully(t *testing.T) {
+	t.Parallel()
+	// Just the key length byte, no key.
+	data := []byte{5}
+	m := parseReadyMetadata(data)
+	require.Empty(t, m)
+}
+
+func TestParseReadyMetadata_TruncatedAfterKey_StopsGracefully(t *testing.T) {
+	t.Parallel()
+	// Key length but missing value length.
+	var data []byte
+	data = append(data, 3)  // key length
+	data = append(data, "foo"...)
+	// Missing 4-byte value length
+	m := parseReadyMetadata(data)
+	require.Empty(t, m)
+}
+
+func TestParseReadyMetadata_TruncatedAfterValueLength_StopsGracefully(t *testing.T) {
+	t.Parallel()
+	// Key and value length, but missing actual value.
+	var data []byte
+	data = append(data, 3)              // key length
+	data = append(data, "foo"...)
+	data = append(data, 0, 0, 0, 5)    // value length = 5
+	// Only 2 bytes of value (need 5)
+	data = append(data, "ab"...)
+	m := parseReadyMetadata(data)
+	require.Empty(t, m)
+}
+
+func TestParseReadyMetadata_MultiplePairs_AllParsed(t *testing.T) {
+	t.Parallel()
+	// Two pairs: Socket-Type=PUB, Identity=test
+	var data []byte
+	// Pair 1: Socket-Type=PUB
+	data = append(data, 11)
+	data = append(data, "Socket-Type"...)
+	data = append(data, 0, 0, 0, 3)
+	data = append(data, "PUB"...)
+	// Pair 2: Identity=test
+	data = append(data, 8)
+	data = append(data, "Identity"...)
+	data = append(data, 0, 0, 0, 4)
+	data = append(data, "test"...)
+	m := parseReadyMetadata(data)
+	require.Equal(t, "PUB", m["Socket-Type"])
+	require.Equal(t, "test", m["Identity"])
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

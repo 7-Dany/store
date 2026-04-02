@@ -114,10 +114,12 @@ func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, er
 
 	// TCP_NODELAY: our frames are tiny (< 50 bytes each). Disabling Nagle
 	// ensures they are sent immediately rather than coalesced, keeping
-	// end-to-end latency minimal.
+	// end-to-end latency minimal. Failure to set this is logged at Warn level
+	// because it will degrade latency in production.
 	if tc, ok := tcp.(*net.TCPConn); ok {
 		if err := tc.SetNoDelay(true); err != nil {
-			logger.Debug(ctx, "zmq: failed to enable TCP_NODELAY", "endpoint", endpoint, "error", err)
+			logger.Warn(ctx, "zmq: failed to enable TCP_NODELAY — will have higher latency",
+				"endpoint", endpoint, "error", err)
 		}
 	}
 
@@ -419,13 +421,14 @@ func (c *zmtpConn) readAndValidateGreeting(ctx context.Context) error {
 		return fmt.Errorf("read: %w", err)
 	}
 
-	// Validate ZMTP signature: 0xFF ... 0x7F
-	if g[0] != 0xFF || g[9] != 0x7F {
+	// Validate ZMTP signature: 0xFF ... 0x01 ... 0x7F
+	// Per ZMTP 3.1, byte [0]=0xFF, byte [8]=0x01, byte [9]=0x7F
+	if g[0] != 0xFF || g[8] != 0x01 || g[9] != 0x7F {
 		logger.Warn(ctx, "zmq: readAndValidateGreeting: invalid ZMTP signature -- possible non-ZMTP server or corrupt stream",
-			"byte0", fmt.Sprintf("%02x", g[0]), "byte9", fmt.Sprintf("%02x", g[9]),
-			"expected_byte0", "ff", "expected_byte9", "7f")
-		return fmt.Errorf("invalid ZMTP signature (byte[0]=%02x byte[9]=%02x; expected 0xff...0x7f)",
-			g[0], g[9])
+			"byte0", fmt.Sprintf("%02x", g[0]), "byte8", fmt.Sprintf("%02x", g[8]), "byte9", fmt.Sprintf("%02x", g[9]),
+			"expected_byte0", "ff", "expected_byte8", "01", "expected_byte9", "7f")
+		return fmt.Errorf("invalid ZMTP signature (byte[0]=%02x byte[8]=%02x byte[9]=%02x; expected 0xff 0x01 0x7f)",
+			g[0], g[8], g[9])
 	}
 
 	// Require ZMTP major version 3+.
@@ -482,7 +485,12 @@ func (c *zmtpConn) readReadyCommand(ctx context.Context) error {
 	// H7: validate Socket-Type metadata so a misconfigured PUSH/DEALER endpoint
 	// is caught here rather than hanging silently until reconnect timeout.
 	meta := parseReadyMetadata(data)
-	if st, ok := meta["Socket-Type"]; !ok || st != "PUB" {
+	if st, ok := meta["Socket-Type"]; !ok {
+		logger.Warn(ctx, "zmq: readReadyCommand: Socket-Type metadata missing -- check ZMQ endpoint config",
+			"want_socket_type", "PUB")
+		return fmt.Errorf("zmtp: READY command missing Socket-Type metadata "+
+			"(check that the ZMQ endpoint is configured for PUB)")
+	} else if st != "PUB" {
 		logger.Warn(ctx, "zmq: readReadyCommand: unexpected Socket-Type -- check ZMQ endpoint config",
 			"want_socket_type", "PUB", "got_socket_type", st)
 		return fmt.Errorf("zmtp: expected Socket-Type PUB in READY command, got %q "+
@@ -522,9 +530,11 @@ func parseReadyMetadata(data []byte) map[string]string {
 		if len(data) < 4 {
 			break
 		}
-		vLen := int(binary.BigEndian.Uint32(data[:4]))
+		// vLen is kept as uint32 to avoid overflow on 32-bit platforms.
+		// Comparison: uint32(len(data)) < vLen is safe and accurate.
+		vLen := binary.BigEndian.Uint32(data[:4])
 		data = data[4:]
-		if len(data) < vLen {
+		if uint32(len(data)) < vLen {
 			break
 		}
 		m[key] = string(data[:vLen])

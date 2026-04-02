@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"math"
 	"math/rand/v2"
 	"net"
 	"strconv"
@@ -208,6 +207,13 @@ func (s *subscriber) LastHashTime() int64 {
 
 // startWorkers launches defaultWorkerCount block workers and defaultWorkerCount
 // tx workers. All workers are tracked by s.wg so Shutdown() can drain them.
+//
+// NOTE: Events buffered in the channels (blockCh, rawTxCh, txCh) at the moment
+// ctx is cancelled may be dropped. Each worker's select statement is non-deterministic,
+// so if both ctx.Done() and the channel have data, either case may be chosen.
+// This is acceptable for a streaming event system where reconnection and recovery
+// handle redelivery guarantees. Domain callers must not rely on all buffered
+// events being processed — only on the strong ordering of delivered events.
 func (s *subscriber) startWorkers(ctx context.Context) {
 	// Block workers: one goroutine per slot. Each goroutine processes one
 	// BlockEvent at a time, calling all registered block handlers sequentially.
@@ -455,7 +461,13 @@ func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *rea
 func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn) {
 	defer func() {
 		if err := conn.Close(); err != nil {
-			logger.Debug(ctx, "zmq: receiveLoop close failed", "topic", string(cfg.topic), "error", err)
+			// Only log as Warn if it's not a normal close (net.ErrClosed is expected
+			// when ctx cancels the connection). Other errors indicate a problem.
+			if err != net.ErrClosed {
+				logger.Warn(ctx, "zmq: receiveLoop close failed unexpectedly", "topic", string(cfg.topic), "error", err)
+			} else {
+				logger.Debug(ctx, "zmq: receiveLoop closed normally", "topic", string(cfg.topic))
+			}
 		}
 	}()
 	for {
@@ -486,6 +498,12 @@ func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *r
 
 // runRawTxReader connects to the rawtx topic with exponential backoff and reads
 // until ctx is cancelled. Uses the shared runReconnectLoop.
+//
+// Note: state is intentionally local (owned by this function) rather than
+// passed as a parameter. This allows state to persist across reconnects via
+// the pointer passed to runReconnectLoop, while keeping the state local to
+// avoid accidentally sharing state with runReader or other readers. This is
+// the "correct" pattern for the reconnect loop architecture.
 func (s *subscriber) runRawTxReader(ctx context.Context) {
 	cfg := s.rawTxReaderConfig()
 	var state readerState
@@ -497,7 +515,11 @@ func (s *subscriber) runRawTxReader(ctx context.Context) {
 func (s *subscriber) rawTxReceiveLoop(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn) {
 	defer func() {
 		if err := conn.Close(); err != nil {
-			logger.Debug(ctx, "zmq: rawTxReceiveLoop close failed", "topic", string(cfg.topic), "error", err)
+			if err != net.ErrClosed {
+				logger.Warn(ctx, "zmq: rawTxReceiveLoop close failed unexpectedly", "endpoint", cfg.endpoint, "error", err)
+			} else {
+				logger.Debug(ctx, "zmq: rawTxReceiveLoop closed normally", "endpoint", cfg.endpoint)
+			}
 		}
 	}()
 	for {
@@ -660,12 +682,16 @@ func (s *subscriber) processFrame(
 // fireRecovery delivers a snapshot of event to all registered handlers.
 // event is passed by value so handlers cannot mutate shared state.
 // Each handler is bounded by recoveryHandlerTimeout (H7) so a slow or hung
-// handler cannot stall the reader goroutine indefinitely. The synchronous
-// contract is preserved: no post-reconnect event for the topic is delivered
-// until all recovery handlers have returned or timed out.
+// handler cannot stall the reader goroutine indefinitely.
+//
+// Handlers are dispatched in parallel goroutines (tracked by s.wg) rather than
+// running synchronously. This prevents a slow or blocking handler from stalling
+// the reader while others complete. The function blocks the caller until ALL
+// handler goroutines have completed (either normally or via timeout), ensuring
+// that recovery is fully processed before event delivery resumes.
 //
 // With N recovery handlers each bounded at recoveryHandlerTimeout, the
-// worst-case stall is N×5 s (N is typically 1–2).
+// worst-case stall is N × recoveryHandlerTimeout (typically 1-2 handlers × 5 s).
 func (s *subscriber) fireRecovery(ctx context.Context, topic string, lastSeq uint32) {
 	if len(s.recoveryHandlers) == 0 {
 		return
@@ -677,10 +703,21 @@ func (s *subscriber) fireRecovery(ctx context.Context, topic string, lastSeq uin
 		Topic:            topic,
 		LastSeenSequence: lastSeq,
 	}
+
+	// Use a local WaitGroup to wait for all recovery handlers to complete.
+	// This differs from invokeHandler (which blocks a worker), but recovery
+	// is not on the hot path and must complete before event delivery resumes.
+	var recWg sync.WaitGroup
 	for _, h := range s.recoveryHandlers {
-		// H7: bound each handler call with a per-call timeout context.
-		rCtx, cancel := context.WithTimeout(ctx, recoveryHandlerTimeout)
-		func() {
+		// Capture h in a local variable to avoid the loop variable closure bug.
+		handler := h
+		recWg.Add(1)
+		// Dispatch each handler in its own goroutine (tracked by s.wg) so they
+		// run in parallel and don't block each other, but we wait below for all
+		// to complete before returning.
+		s.wg.Go(func() {
+			defer recWg.Done()
+			rCtx, cancel := context.WithTimeout(ctx, recoveryHandlerTimeout)
 			defer cancel()
 			defer func() {
 				if r := recover(); r != nil {
@@ -690,9 +727,11 @@ func (s *subscriber) fireRecovery(ctx context.Context, topic string, lastSeq uin
 						"panic", r)
 				}
 			}()
-			h(rCtx, event)
-		}()
+			handler(rCtx, event)
+		})
 	}
+	// Block until all handlers complete or timeout.
+	recWg.Wait()
 	logger.Debug(ctx, "zmq: fireRecovery complete")
 }
 
@@ -728,15 +767,17 @@ func invokeHandler[E any](parentCtx context.Context, s *subscriber, h func(conte
 		// goroutines running, not goroutines scheduled but not yet started.
 		n := s.inflightGoroutines.Add(1)
 		s.recorder.SetHandlerGoroutines(int(n))
+
+		// Defers run LIFO: panic recovery (innermost, registered last) runs first,
+		// then inflight decrement (registered second), then close(done) (outermost,
+		// registered first) runs last. This ensures the inflight counter is decremented
+		// BEFORE close(done) unblocks the caller — no race between the caller reading
+		// inflightGoroutines and this goroutine's final decrement.
+		defer close(done)
 		defer func() {
 			remaining := s.inflightGoroutines.Add(-1)
 			s.recorder.SetHandlerGoroutines(int(remaining))
 		}()
-
-		// Defers are LIFO: panic recovery (innermost) runs before close(done)
-		// (outer), ensuring the parent is unblocked only after recovery is
-		// complete.
-		defer close(done)
 		defer func() {
 			// recover() MUST live inside the spawned goroutine; a recover() in
 			// the calling frame cannot catch panics from a different goroutine.
@@ -832,19 +873,23 @@ var _ Subscriber = (*subscriber)(nil)
 // ── Network HRP configuration ─────────────────────────────────────────────────
 
 // networkToHRP converts a Bitcoin network name to its bech32 human-readable part.
+// The network must be one of: "mainnet", "testnet", "testnet4", "signet", "regtest".
+// Any other value is an error — unknown networks are not silently defaulted.
 //
 // Mapping:
-//   - "mainnet"  → "bc"
-//   - "regtest"  → "bcrt"
-//   - anything else (testnet4, signet, unknown) → "tb" (safe default)
-func networkToHRP(network string) string {
+//   - "mainnet"    → "bc" (mainnet)
+//   - "testnet", "testnet4", "signet"  → "tb" (all testnet variants)
+//   - "regtest"    → "bcrt" (regtest)
+func networkToHRP(network string) (string, error) {
 	switch network {
 	case "mainnet":
-		return "bc"
+		return "bc", nil
+	case "testnet", "testnet4", "signet":
+		return "tb", nil
 	case "regtest":
-		return "bcrt"
+		return "bcrt", nil
 	default:
-		return "tb"
+		return "", fmt.Errorf("zmq: unknown network %q (must be mainnet, testnet, testnet4, signet, or regtest)", network)
 	}
 }
 
@@ -858,10 +903,12 @@ func networkToHRP(network string) string {
 // P2WPKH, P2WSH, and P2TR outputs. Passing the correct hrp ensures that decoded
 // addresses match what bitcoinshared.ValidateAndNormalise expects.
 //
-// The txid is computed as double-SHA256 of the full raw bytes (Bitcoin's
-// standard txid definition, SHA256d). The result is in the same byte order
-// used by RPC and block explorers. The prevout wire-format reversal in
-// parseTxInput is separate from this.
+// The txid is computed per BIP 141:
+//   - For legacy transactions: SHA256d of the full raw bytes.
+//   - For SegWit transactions: SHA256d of the non-witness serialization
+//     (version + inputs + outputs + locktime, excluding the 0x00 0x01 marker/flag
+//     and all witness stacks). This matches RPC getrawtransaction and block
+//     explorers. The full-bytes hash (including witness) is the wtxid.
 //
 // Only the fields needed by the SSE display path are decoded:
 //   - Input prevouts (txid + vout) — for O(1) RBF detection via spentOutpoints
@@ -962,17 +1009,118 @@ func ParseRawTx(raw []byte, hrp string) (RawTxEvent, error) {
 		return RawTxEvent{}, fmt.Errorf("zmq.ParseRawTx: locktime: %w", err)
 	}
 
-	// doubleSHA256 computes SHA256(SHA256(b)), the digest used for Bitcoin
-	// transaction IDs (txid) and script hashes per BIP-141. The result is in
-	// the same byte order as RPC/explorer display — the prevout wire format
-	// reversal in parseTxInput is separate.
-	txid := doubleSHA256(raw)
+	// Compute txid: for legacy transactions, hash the full raw bytes.
+	// For SegWit transactions, hash only the non-witness serialization
+	// (version + inputs + outputs + locktime), excluding the 0x00 0x01 marker/flag
+	// and all witness stacks. This matches BIP 141 and RPC behavior.
+	var txid [32]byte
+	if isSegWit {
+		txid = txidSegWit(raw)
+	} else {
+		txid = doubleSHA256(raw)
+	}
 
 	return RawTxEvent{
 		TxIDBytes: txid,
 		Inputs:    inputs,
 		Outputs:   outputs,
 	}, nil
+}
+
+// txidSegWit computes the txid of a SegWit transaction (BIP 141) as SHA256d of
+// the non-witness serialization: version + inputs + outputs + locktime, excluding
+// the 0x00 0x01 marker/flag and all witness stacks.
+//
+// The input raw must be a valid SegWit transaction (marker=0x00, flag=0x01).
+// This is guaranteed by the caller (ParseRawTx checks isSegWit before calling).
+func txidSegWit(raw []byte) [32]byte {
+	// Non-witness serialization: version (4) + inputs + outputs + locktime (4)
+	// We reconstruct by reading from the original wire format and skipping witness data.
+	r := newPushBackReader(raw)
+
+	// Buffer for the non-witness bytes. Start with a reasonable capacity
+	// and let it grow as needed — most transactions are < 1 KB.
+	buf := bytes.NewBuffer(make([]byte, 0, len(raw)/2))
+
+	// Version: 4 bytes LE
+	var ver [4]byte
+	io.ReadFull(r, ver[:])
+	buf.Write(ver[:])
+
+	// Skip marker (0x00) and flag (0x01)
+	var skip [2]byte
+	io.ReadFull(r, skip[:])
+
+	// Input count and inputs
+	inputCount, _ := readVarInt(r)
+	writeVarInt(buf, inputCount)
+
+	for range inputCount {
+		// Prevout: 32 bytes (txid) + 4 bytes (vout)
+		var prevout [36]byte
+		io.ReadFull(r, prevout[:])
+		buf.Write(prevout[:])
+
+		// scriptSig
+		scriptLen, _ := readVarInt(r)
+		writeVarInt(buf, scriptLen)
+		scriptBytes := make([]byte, scriptLen)
+		io.ReadFull(r, scriptBytes)
+		buf.Write(scriptBytes)
+
+		// sequence: 4 bytes LE
+		var seq [4]byte
+		io.ReadFull(r, seq[:])
+		buf.Write(seq[:])
+	}
+
+	// Output count and outputs
+	outputCount, _ := readVarInt(r)
+	writeVarInt(buf, outputCount)
+
+	for range outputCount {
+		// value: 8 bytes LE
+		var val [8]byte
+		io.ReadFull(r, val[:])
+		buf.Write(val[:])
+
+		// scriptPubKey
+		scriptLen, _ := readVarInt(r)
+		writeVarInt(buf, scriptLen)
+		scriptBytes := make([]byte, scriptLen)
+		io.ReadFull(r, scriptBytes)
+		buf.Write(scriptBytes)
+	}
+
+	// Locktime: 4 bytes LE
+	var locktime [4]byte
+	io.ReadFull(r, locktime[:])
+	buf.Write(locktime[:])
+
+	// Hash the non-witness serialization
+	return doubleSHA256(buf.Bytes())
+}
+
+// writeVarInt writes a variable-length integer to buf using Bitcoin's varint encoding.
+func writeVarInt(buf *bytes.Buffer, n uint64) {
+	if n < 0xFD {
+		buf.WriteByte(byte(n))
+	} else if n <= 0xFFFF {
+		buf.WriteByte(0xFD)
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], uint16(n))
+		buf.Write(b[:])
+	} else if n <= 0xFFFFFFFF {
+		buf.WriteByte(0xFE)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(n))
+		buf.Write(b[:])
+	} else {
+		buf.WriteByte(0xFF)
+		var b [8]byte
+		binary.LittleEndian.PutUint64(b[:], n)
+		buf.Write(b[:])
+	}
 }
 
 // ── Wire-format field parsers ─────────────────────────────────────────────────
@@ -1041,8 +1189,11 @@ func parseTxOutput(r *pushBackReader, n uint32, hrp string) (RawTxOutput, error)
 		return RawTxOutput{}, fmt.Errorf("value: %w", err)
 	}
 	valueSatU64 := binary.LittleEndian.Uint64(valueBuf[:])
-	if valueSatU64 > math.MaxInt64 {
-		return RawTxOutput{}, fmt.Errorf("value overflows int64: %d", valueSatU64)
+	// Maximum valid bitcoin value: 21,000,000 BTC = 2.1e15 satoshis, well below int64 max.
+	// But check for overflow on 32-bit platforms where int64 is still 64-bit.
+	const maxValidValue uint64 = 2_100_000_000_000_000
+	if valueSatU64 > maxValidValue {
+		return RawTxOutput{}, fmt.Errorf("value overflows valid bitcoin range: %d", valueSatU64)
 	}
 	valueSat := int64(valueSatU64)
 
@@ -1335,7 +1486,17 @@ func (r *pushBackReader) pushBack(b ...byte) {
 // Skip advances the read position by n bytes without allocating a throwaway
 // buffer. This is an O(1) operation for all callers since pushBackReader is
 // an in-memory slice — all data is already in RAM.
+//
+// Skip panics if there are any pushed-back bytes (nPush > 0). The invariant
+// is that Skip is only called after all pushed-back bytes have been consumed
+// by a prior read. This is currently guaranteed: pushBack is called once
+// (to un-read the SegWit marker/flag), and the pushed bytes are fully consumed
+// by the next readVarInt before any skipN call. However, documenting and
+// enforcing this invariant protects against future regressions.
 func (r *pushBackReader) Skip(n uint64) error {
+	if r.nPush > 0 {
+		panic("pushBackReader.Skip: called with buffered pushback bytes (must consume with Read first)")
+	}
 	if n == 0 {
 		return nil
 	}

@@ -266,6 +266,10 @@ type subscriber struct {
 
 	// recorder receives all observability calls. Never nil after construction.
 	recorder ZMQRecorder
+
+	// cancelCauseFn is called by reader panic recovery handlers to signal a
+	// critical failure. Set by Run() for each invocation.
+	cancelCauseFn context.CancelCauseFunc
 }
 
 // New constructs a Subscriber backed by two ZMTP 3.1 SUB connections and

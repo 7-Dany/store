@@ -1716,6 +1716,10 @@ func TestInvokeHandler_NormalCompletion_InflightReturnsToZero(t *testing.T) {
 // FuzzProcessFrame verifies that processFrame never panics on arbitrary byte
 // input. Run with: go test -fuzz=FuzzProcessFrame ./...
 func FuzzProcessFrame(f *testing.F) {
+	// Create a single subscriber reused across all fuzz iterations.
+	var sub *subscriber
+	var once sync.Once
+
 	// Seed: valid hashblock message.
 	f.Add([]byte("hashblock"), make([]byte, 32), binary.LittleEndian.AppendUint32(nil, 1))
 	// Seed: valid hashtx message.
@@ -1734,14 +1738,19 @@ func FuzzProcessFrame(f *testing.F) {
 	f.Add([]byte("hashblock"), make([]byte, 32), binary.LittleEndian.AppendUint32(nil, ^uint32(0)))
 
 	f.Fuzz(func(t *testing.T, topicData, hashData, seqData []byte) {
-		iface, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", "testnet4", 60*time.Second, nil)
-		if err != nil {
-			return
+		once.Do(func() {
+			iface, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", "testnet4", 60*time.Second, nil)
+			if err == nil {
+				var ok bool
+				sub, ok = iface.(*subscriber)
+				if ok {
+					sub.handlerTimeout = 10 * time.Millisecond
+				}
+			}
+		})
+		if sub == nil {
+			t.Skip("subscriber creation failed")
 		}
-		// Type-assert to *subscriber to access internal fields (same package).
-		sub, ok := iface.(*subscriber)
-		require.True(t, ok)
-		sub.handlerTimeout = 10 * time.Millisecond
 
 		msg := [][]byte{topicData, hashData, seqData}
 		state := readerState{}

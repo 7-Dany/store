@@ -43,6 +43,7 @@ type receiveLoopFn func(ctx context.Context, cfg readerConfig, state *readerStat
 //
 // Launch in a goroutine and cancel the context to initiate shutdown:
 //
+//	ctx, cancel := context.WithCancel(context.Background())
 //	go func() {
 //	    if err := sub.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 //	        slog.Error("zmq: subscriber exit", "error", err)
@@ -54,6 +55,13 @@ func (s *subscriber) Run(ctx context.Context) error {
 	if !s.started.CompareAndSwap(false, true) {
 		panic("zmq: Run: must not be called more than once")
 	}
+
+	// Create a cancel context so reader panics can signal critical failures.
+	// This context is used only for panic recovery — normal shutdown still
+	// uses the caller's ctx.
+	ctx, cancel := context.WithCancelCause(ctx)
+	s.cancelCauseFn = cancel
+	defer cancel(nil)
 
 	logger.Debug(ctx, "zmq: starting worker pool",
 		"block_workers", defaultWorkerCount,
@@ -72,6 +80,8 @@ func (s *subscriber) Run(ctx context.Context) error {
 					fmt.Errorf("reader goroutine panicked: %v", r))
 				logger.Error(ctx, "zmq: block reader goroutine panicked -- subscriber will not recover without restart",
 					"error", panicErr, "panic", r)
+				// Signal critical failure: cancel the context with the panic error.
+				s.cancelCauseFn(panicErr)
 			}
 		}()
 		var state readerState
@@ -85,6 +95,8 @@ func (s *subscriber) Run(ctx context.Context) error {
 					fmt.Errorf("reader goroutine panicked: %v", r))
 				logger.Error(ctx, "zmq: settlement-tx reader goroutine panicked -- subscriber will not recover without restart",
 					"error", panicErr, "panic", r)
+				// Signal critical failure: cancel the context with the panic error.
+				s.cancelCauseFn(panicErr)
 			}
 		}()
 		var state readerState
@@ -98,11 +110,19 @@ func (s *subscriber) Run(ctx context.Context) error {
 					fmt.Errorf("reader goroutine panicked: %v", r))
 				logger.Error(ctx, "zmq: rawtx reader goroutine panicked -- subscriber will not recover without restart",
 					"error", panicErr, "panic", r)
+				// Signal critical failure: cancel the context with the panic error.
+				s.cancelCauseFn(panicErr)
 			}
 		}()
 		s.runRawTxReader(ctx)
 	})
 	readersWg.Wait()
+
+	// Check if we exited due to a reader panic (context cancelled with a cause).
+	// If so, return the panic error instead of the original ctx error.
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
 	return ctx.Err()
 }
 
@@ -717,7 +737,12 @@ func (s *subscriber) fireRecovery(ctx context.Context, topic string, lastSeq uin
 		// to complete before returning.
 		s.wg.Go(func() {
 			defer recWg.Done()
-			rCtx, cancel := context.WithTimeout(ctx, recoveryHandlerTimeout)
+			// Detach from the parent ctx (which may be cancelled at this instant),
+			// then apply the recovery timeout. This ensures handlers get
+			// recoveryHandlerTimeout seconds to complete their work, even if
+			// the application is shutting down.
+			detached := context.WithoutCancel(ctx)
+			rCtx, cancel := context.WithTimeout(detached, recoveryHandlerTimeout)
 			defer cancel()
 			defer func() {
 				if r := recover(); r != nil {
@@ -1015,7 +1040,11 @@ func ParseRawTx(raw []byte, hrp string) (RawTxEvent, error) {
 	// and all witness stacks. This matches BIP 141 and RPC behavior.
 	var txid [32]byte
 	if isSegWit {
-		txid = txidSegWit(raw)
+		var err error
+		txid, err = txidSegWit(raw)
+		if err != nil {
+			return RawTxEvent{}, fmt.Errorf("zmq.ParseRawTx: txid (segwit): %w", err)
+		}
 	} else {
 		txid = doubleSHA256(raw)
 	}
@@ -1033,7 +1062,7 @@ func ParseRawTx(raw []byte, hrp string) (RawTxEvent, error) {
 //
 // The input raw must be a valid SegWit transaction (marker=0x00, flag=0x01).
 // This is guaranteed by the caller (ParseRawTx checks isSegWit before calling).
-func txidSegWit(raw []byte) [32]byte {
+func txidSegWit(raw []byte) ([32]byte, error) {
 	// Non-witness serialization: version (4) + inputs + outputs + locktime (4)
 	// We reconstruct by reading from the original wire format and skipping witness data.
 	r := newPushBackReader(raw)
@@ -1044,61 +1073,89 @@ func txidSegWit(raw []byte) [32]byte {
 
 	// Version: 4 bytes LE
 	var ver [4]byte
-	io.ReadFull(r, ver[:])
+	if _, err := io.ReadFull(r, ver[:]); err != nil {
+		return [32]byte{}, fmt.Errorf("read version: %w", err)
+	}
 	buf.Write(ver[:])
 
 	// Skip marker (0x00) and flag (0x01)
 	var skip [2]byte
-	io.ReadFull(r, skip[:])
+	if _, err := io.ReadFull(r, skip[:]); err != nil {
+		return [32]byte{}, fmt.Errorf("read marker/flag: %w", err)
+	}
 
 	// Input count and inputs
-	inputCount, _ := readVarInt(r)
+	inputCount, err := readVarInt(r)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("read input count: %w", err)
+	}
 	writeVarInt(buf, inputCount)
 
-	for range inputCount {
+	for i := range inputCount {
 		// Prevout: 32 bytes (txid) + 4 bytes (vout)
 		var prevout [36]byte
-		io.ReadFull(r, prevout[:])
+		if _, err := io.ReadFull(r, prevout[:]); err != nil {
+			return [32]byte{}, fmt.Errorf("read input[%d] prevout: %w", i, err)
+		}
 		buf.Write(prevout[:])
 
 		// scriptSig
-		scriptLen, _ := readVarInt(r)
+		scriptLen, err := readVarInt(r)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("read input[%d] scriptSig length: %w", i, err)
+		}
 		writeVarInt(buf, scriptLen)
 		scriptBytes := make([]byte, scriptLen)
-		io.ReadFull(r, scriptBytes)
+		if _, err := io.ReadFull(r, scriptBytes); err != nil {
+			return [32]byte{}, fmt.Errorf("read input[%d] scriptSig: %w", i, err)
+		}
 		buf.Write(scriptBytes)
 
 		// sequence: 4 bytes LE
 		var seq [4]byte
-		io.ReadFull(r, seq[:])
+		if _, err := io.ReadFull(r, seq[:]); err != nil {
+			return [32]byte{}, fmt.Errorf("read input[%d] sequence: %w", i, err)
+		}
 		buf.Write(seq[:])
 	}
 
 	// Output count and outputs
-	outputCount, _ := readVarInt(r)
+	outputCount, err := readVarInt(r)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("read output count: %w", err)
+	}
 	writeVarInt(buf, outputCount)
 
-	for range outputCount {
+	for i := range outputCount {
 		// value: 8 bytes LE
 		var val [8]byte
-		io.ReadFull(r, val[:])
+		if _, err := io.ReadFull(r, val[:]); err != nil {
+			return [32]byte{}, fmt.Errorf("read output[%d] value: %w", i, err)
+		}
 		buf.Write(val[:])
 
 		// scriptPubKey
-		scriptLen, _ := readVarInt(r)
+		scriptLen, err := readVarInt(r)
+		if err != nil {
+			return [32]byte{}, fmt.Errorf("read output[%d] scriptPubKey length: %w", i, err)
+		}
 		writeVarInt(buf, scriptLen)
 		scriptBytes := make([]byte, scriptLen)
-		io.ReadFull(r, scriptBytes)
+		if _, err := io.ReadFull(r, scriptBytes); err != nil {
+			return [32]byte{}, fmt.Errorf("read output[%d] scriptPubKey: %w", i, err)
+		}
 		buf.Write(scriptBytes)
 	}
 
 	// Locktime: 4 bytes LE
 	var locktime [4]byte
-	io.ReadFull(r, locktime[:])
+	if _, err := io.ReadFull(r, locktime[:]); err != nil {
+		return [32]byte{}, fmt.Errorf("read locktime: %w", err)
+	}
 	buf.Write(locktime[:])
 
 	// Hash the non-witness serialization
-	return doubleSHA256(buf.Bytes())
+	return doubleSHA256(buf.Bytes()), nil
 }
 
 // writeVarInt writes a variable-length integer to buf using Bitcoin's varint encoding.
@@ -1328,7 +1385,6 @@ func bech32EncodeWitness(hrp string, witVersion byte, program []byte) string {
 func bech32Checksum(hrp string, data []byte, useBech32m bool) [6]byte {
 	// Build the values slice: HRP expanded + data + 6 zero bytes for checksum slot.
 	vals := make([]byte, 0, len(hrp)*2+1+len(data)+6)
-	// L2: use range loops instead of C-style index loops.
 	for _, c := range hrp {
 		vals = append(vals, byte(c>>5))
 	}

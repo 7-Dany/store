@@ -49,6 +49,7 @@ func buildValidGreeting64(major, minor byte, mech string) [64]byte {
 	g[9] = 0x7F
 	g[10] = major
 	g[11] = minor
+	g[32] = 0x01 // as-server flag: we are connecting to a server
 	copy(g[12:32], mech)
 	return g
 }
@@ -391,12 +392,14 @@ func TestReadAndValidateGreeting_WrongSignatureByte0_ReturnsError(t *testing.T) 
 	require.Error(t, c.readAndValidateGreeting(context.Background()))
 }
 
-func TestReadAndValidateGreeting_WrongSignatureByte8_ReturnsError(t *testing.T) {
+func TestReadAndValidateGreeting_WrongSignatureByte8_IgnoredPerRFC(t *testing.T) {
 	t.Parallel()
+	// Per ZMTP 3.1 RFC §3.3, bytes [1..8] are reserved padding and MUST be ignored.
+	// A corrupted byte [8] should not cause an error.
 	g := buildValidGreeting64(3, 1, "NULL")
-	g[8] = 0x00 // corrupt signature byte [8]
+	g[8] = 0x00 // corrupt signature byte [8] — should be ignored
 	c := connFromBytes(g[:])
-	require.Error(t, c.readAndValidateGreeting(context.Background()))
+	require.NoError(t, c.readAndValidateGreeting(context.Background()))
 }
 
 func TestReadAndValidateGreeting_WrongSignatureByte9_ReturnsError(t *testing.T) {

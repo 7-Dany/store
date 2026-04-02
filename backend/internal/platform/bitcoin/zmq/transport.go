@@ -64,6 +64,12 @@ const (
 	// Bitcoin Core's ZMQ frames are at most ~100 bytes; 1 MiB is generous.
 	zmtpMaxFrameBody = 1 << 20 // 1 MiB
 
+	// zmtpMaxMultipartFrames is the maximum number of frames allowed in a
+	// single multipart message. Bitcoin Core always sends exactly 3 frames
+	// (topic, hash/rawtx, sequence). A misbehaving peer or hijacked connection
+	// that sends unbounded MORE-flagged frames is rejected immediately.
+	zmtpMaxMultipartFrames = 3
+
 	// ZmtpReadBuf is the size of the bufio.Reader wrapping the TCP socket.
 	// Bitcoin Core sends all three frames of a multipart message together
 	// in a single TCP segment. A 4 KiB buffer fills on the first system
@@ -276,8 +282,12 @@ func sendErrorIgnore(c *zmtpConn, reason string) {
 // readMessage reads frames until it has assembled a complete multipart message
 // (the last frame has MORE=0). Intervening command frames are handled in-place:
 // PING is answered with PONG; ERROR closes the connection; all others are skipped.
+//
+// A misbehaving peer that sends more than zmtpMaxMultipartFrames with MORE=1
+// is rejected immediately. Bitcoin Core always sends exactly 3 frames;
+// this guards against unbounded frame accumulation.
 func (c *zmtpConn) readMessage(ctx context.Context) ([][]byte, error) {
-	var frames [][]byte
+	frames := make([][]byte, 0, zmtpMaxMultipartFrames)
 	for {
 		flags, body, err := c.readFrame(ctx)
 		if err != nil {
@@ -292,6 +302,9 @@ func (c *zmtpConn) readMessage(ctx context.Context) ([][]byte, error) {
 		}
 
 		frames = append(frames, body)
+		if len(frames) > zmtpMaxMultipartFrames {
+			return nil, fmt.Errorf("zmtp: multipart message exceeds %d frames", zmtpMaxMultipartFrames)
+		}
 		if flags&flagMore == 0 {
 			return frames, nil
 		}
@@ -421,14 +434,25 @@ func (c *zmtpConn) readAndValidateGreeting(ctx context.Context) error {
 		return fmt.Errorf("read: %w", err)
 	}
 
-	// Validate ZMTP signature: 0xFF ... 0x01 ... 0x7F
-	// Per ZMTP 3.1, byte [0]=0xFF, byte [8]=0x01, byte [9]=0x7F
-	if g[0] != 0xFF || g[8] != 0x01 || g[9] != 0x7F {
+	// Validate ZMTP signature per RFC 3.1 §3.3:
+	//   - Byte [0] = 0xFF (signature start)
+	//   - Byte [9] = 0x7F (signature end)
+	//   - Bytes [1..8] are reserved padding — MUST be ignored on receive.
+	//   - Byte [32] = as-server flag (validated separately below).
+	if g[0] != 0xFF || g[9] != 0x7F {
 		logger.Warn(ctx, "zmq: readAndValidateGreeting: invalid ZMTP signature -- possible non-ZMTP server or corrupt stream",
-			"byte0", fmt.Sprintf("%02x", g[0]), "byte8", fmt.Sprintf("%02x", g[8]), "byte9", fmt.Sprintf("%02x", g[9]),
-			"expected_byte0", "ff", "expected_byte8", "01", "expected_byte9", "7f")
-		return fmt.Errorf("invalid ZMTP signature (byte[0]=%02x byte[8]=%02x byte[9]=%02x; expected 0xff 0x01 0x7f)",
-			g[0], g[8], g[9])
+			"byte0", fmt.Sprintf("%02x", g[0]), "byte9", fmt.Sprintf("%02x", g[9]),
+			"expected_byte0", "ff", "expected_byte9", "7f")
+		return fmt.Errorf("invalid ZMTP signature (byte[0]=%02x byte[9]=%02x; expected 0xff 0x7f)",
+			g[0], g[9])
+	}
+
+	// Validate as-server byte: the peer must advertise itself as a server (0x01).
+	// We are a connecting client (as-server=0), so the peer must be a server.
+	if g[32] != 0x01 {
+		logger.Warn(ctx, "zmq: readAndValidateGreeting: peer advertises as-server=0 -- may not be a ZMQ server",
+			"as_server", fmt.Sprintf("%02x", g[32]), "expected", "01")
+		return fmt.Errorf("zmtp: server greeting as-server byte is %02x, expected 0x01 (peer may not be a ZMQ server — check endpoint config)", g[32])
 	}
 
 	// Require ZMTP major version 3+.

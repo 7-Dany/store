@@ -46,6 +46,7 @@ tmp/
 *~
 .DS_Store
 Thumbs.db
+.qwen
 
 # CPU / memory profiles
 *.prof

@@ -1,6 +1,6 @@
 package zmq
 
-// conn.go implements a minimal ZMTP 3.1 SUB connection using only Go.
+// transport.go implements a minimal ZMTP 3.1 SUB connection using only Go.
 //
 // Scope: TCP transport, NULL security, SUB socket type.
 // We deliberately support nothing else — Bitcoin Core's ZMQ publisher uses
@@ -84,13 +84,21 @@ const (
 	flagCommand byte = 0x04 // command frame, not a message frame
 )
 
+// errPartialMessageTimeout is a sentinel error used to distinguish a timeout
+// that occurred during a multipart message read (partial message) from a
+// timeout that occurred before any frames were read. This allows RecvMessage
+// to trigger a reconnect for corrupt connections instead of retrying forever.
+var errPartialMessageTimeout = errors.New("zmtp: timeout during multipart message")
+
 // ── zmtpConn ──────────────────────────────────────────────────────────────────
 
 // zmtpConn is a ZMTP 3.1 SUB connection to a single Bitcoin Core ZMQ endpoint.
 // It is not safe for concurrent use — each reader goroutine owns its own conn.
 type zmtpConn struct {
-	tcp net.Conn
-	r   *bufio.Reader
+	tcp             net.Conn
+	r               *bufio.Reader
+	negotiatedMajor byte // negotiated ZMTP major version (min of ours and peer's)
+	negotiatedMinor byte // negotiated ZMTP minor version
 }
 
 // dialZMTP establishes a TCP connection to endpoint (format "tcp://host:port"),
@@ -127,12 +135,38 @@ func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, er
 			logger.Warn(ctx, "zmq: failed to enable TCP_NODELAY — will have higher latency",
 				"endpoint", endpoint, "error", err)
 		}
+		// SO_KEEPALIVE: enable TCP keepalives to detect dead connections
+		// (network partition, peer OOM-kill without RST). Without keepalives,
+		// a silently-dead TCP connection is never detected at the socket level.
+		// RecvMessage's 250 ms read deadline would timeout and retry forever
+		// without ever triggering the reconnect path.
+		if err := tc.SetKeepAlive(true); err != nil {
+			logger.Warn(ctx, "zmq: failed to enable SO_KEEPALIVE — dead connections may not be detected",
+				"endpoint", endpoint, "error", err)
+		} else if err := tc.SetKeepAlivePeriod(30 * time.Second); err != nil {
+			logger.Warn(ctx, "zmq: failed to set SO_KEEPALIVE period",
+				"endpoint", endpoint, "error", err)
+		}
 	}
 
 	// Watchdog: close the TCP connection immediately when ctx is cancelled.
 	// This reduces the worst-case handshake stall from zmtpHandshakeTimeout
 	// (5 s) to the OS TCP teardown time, which matters for fast shutdown and
 	// tests that cancel the context quickly.
+	//
+	// The watchdog goroutine is NOT tracked by any WaitGroup and exits
+	// synchronously (within nanoseconds) via close(connClosed). It is safe
+	// to create this untracked goroutine because:
+	// 1. It only performs a channel select and either closes the tcp conn or
+	//    receives from connClosed.
+	// 2. The deferred close(connClosed) signals the goroutine to exit. The
+	//    goroutine is not joined — it performs a single tcp.Close() syscall
+	//    and exits within nanoseconds. net.Conn.Close() is concurrency-safe,
+	//    so a race between the caller's close and the watchdog's close is
+	//    benign, but tests using goleak must allow for this brief goroutine.
+	// 3. It makes only one system call (tcp.Close()) in the ctx.Done path.
+	//
+	// Tests using goleak should suppress this pattern as a known safe pattern.
 	connClosed := make(chan struct{})
 	defer close(connClosed)
 	go func() {
@@ -190,6 +224,17 @@ func (c *zmtpConn) RecvMessage(ctx context.Context) ([][]byte, error) {
 		// Distinguish a read-deadline timeout from a real error.
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
+			// Check if the timeout error came from a partial-message read.
+			// The readMessage function wraps timeout errors from mid-message
+			// with errPartialMessageTimeout so we can distinguish them here.
+			if errors.Is(err, errPartialMessageTimeout) {
+				// Timeout after frame 1 was read — connection is corrupt.
+				logger.Warn(ctx, "zmq: timeout during multipart message — closing connection",
+					"error", err)
+				return nil, err
+			}
+
+			// Timeout occurred before any frame was read — safe to retry.
 			if ctx.Err() != nil {
 				logger.Debug(ctx, "zmq: RecvMessage: context cancelled during poll")
 				return nil, ctx.Err()
@@ -206,6 +251,21 @@ func (c *zmtpConn) RecvMessage(ctx context.Context) ([][]byte, error) {
 // Close closes the underlying TCP connection.
 func (c *zmtpConn) Close() error {
 	return c.tcp.Close()
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+// writeAll writes b to w, returning an error if a partial write occurs.
+// This ensures that ZMTP frame boundaries are never corrupted by a short write.
+func writeAll(w io.Writer, b []byte) error {
+	n, err := w.Write(b)
+	if err != nil {
+		return err
+	}
+	if n != len(b) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 // ── Handshake ─────────────────────────────────────────────────────────────────
@@ -236,7 +296,7 @@ func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 	// buffering and 64-byte greetings, sending then reading is safe and avoids
 	// the complexity of concurrent goroutines during setup.
 	logger.Debug(ctx, "zmq: handshake step 1 -- sending greeting")
-	if _, err := c.tcp.Write(buildGreeting()); err != nil {
+	if err := writeAll(c.tcp, buildGreeting()); err != nil {
 		return fmt.Errorf("send greeting: %w", err)
 	}
 	if err := c.readAndValidateGreeting(ctx); err != nil {
@@ -249,7 +309,7 @@ func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 	// ── Step 2: exchange READY commands ──────────────────────────────────
 	// Post-greeting: send best-effort ERROR before any error return (M1).
 	logger.Debug(ctx, "zmq: handshake step 2 -- sending READY SUB")
-	if _, err := c.tcp.Write(buildReady("SUB")); err != nil {
+	if err := writeAll(c.tcp, buildReady("SUB")); err != nil {
 		sendErrorIgnore(c, err.Error())
 		return fmt.Errorf("send READY: %w", err)
 	}
@@ -261,7 +321,7 @@ func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 
 	// ── Step 3: subscribe ─────────────────────────────────────────────────
 	logger.Debug(ctx, "zmq: handshake step 3 -- sending SUBSCRIBE", "topic", string(topic))
-	if _, err := c.tcp.Write(buildSubscribe(topic)); err != nil {
+	if err := writeAll(c.tcp, buildSubscribe(topic)); err != nil {
 		sendErrorIgnore(c, err.Error())
 		return fmt.Errorf("send SUBSCRIBE: %w", err)
 	}
@@ -274,7 +334,7 @@ func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 // basis. The write error is silently discarded — ERROR is advisory and the
 // connection will be closed regardless.
 func sendErrorIgnore(c *zmtpConn, reason string) {
-	_, _ = c.tcp.Write(buildCommand("ERROR", []byte(reason)))
+	_ = writeAll(c.tcp, buildCommand("ERROR", []byte(reason)))
 }
 
 // ── Message and frame reading ─────────────────────────────────────────────────
@@ -286,11 +346,25 @@ func sendErrorIgnore(c *zmtpConn, reason string) {
 // A misbehaving peer that sends more than zmtpMaxMultipartFrames with MORE=1
 // is rejected immediately. Bitcoin Core always sends exactly 3 frames;
 // this guards against unbounded frame accumulation.
+//
+// PROTOCOL SAFETY: If a timeout error occurs after at least one frame has been
+// read (partial multipart message), the error is wrapped with a prefix so that
+// RecvMessage can distinguish this from a "no frames read yet" timeout and
+// trigger an immediate reconnect instead of retrying.
 func (c *zmtpConn) readMessage(ctx context.Context) ([][]byte, error) {
 	frames := make([][]byte, 0, zmtpMaxMultipartFrames)
 	for {
 		flags, body, err := c.readFrame(ctx)
 		if err != nil {
+			// If we've already read some frames and hit a timeout, wrap it with
+			// the sentinel error so RecvMessage knows this is a corrupt connection.
+			if len(frames) > 0 {
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
+					return nil, fmt.Errorf("%w (read %d/%d frames): %w", errPartialMessageTimeout,
+						len(frames), zmtpMaxMultipartFrames, err)
+				}
+			}
 			return nil, err
 		}
 
@@ -314,13 +388,12 @@ func (c *zmtpConn) readMessage(ctx context.Context) ([][]byte, error) {
 // readFrame reads exactly one ZMTP frame from the connection.
 // Returns the flags byte and the body bytes.
 //
-// C2 fix: all header bytes are read with io.ReadFull so a partial TCP read
-// never silently produces a wrong frame.
-// C1 fix: the zmtpMaxFrameBody cap is checked immediately after bodyLen is
-// resolved — before any allocation — so a malicious large-length claim cannot
-// OOM the process.
+// Per ZMTP 3.1 §2.2: reserved flag bits (all bits except 0x01 MORE, 0x02 LONG, 0x04 COMMAND)
+// MUST be ignored on receive. This implementation silently ignores reserved bits to ensure
+// compatibility with future ZMTP extensions that may set them.
 func (c *zmtpConn) readFrame(ctx context.Context) (flags byte, body []byte, err error) {
 	// Read the flags byte via io.ReadFull to handle any partial-read condition.
+	// Per ZMTP spec, reserved bits in flags are ignored (not error).
 	var flagsBuf [1]byte
 	if _, err := io.ReadFull(c.r, flagsBuf[:]); err != nil {
 		return 0, nil, fmt.Errorf("read flags byte: %w", err)
@@ -375,12 +448,16 @@ func (c *zmtpConn) readFrame(ctx context.Context) (flags byte, body []byte, err 
 // propagates through readMessage → RecvMessage → receiveLoop, where the
 // reconnect logic fires.
 //
-// All other command frames are silently skipped.
+// Per ZMTP 3.1 §2.3: "A peer that receives a command that it did not expect
+// MUST close the connection." Unexpected command frames (READY, SUBSCRIBE, etc.)
+// and unsolicited PONG (without a prior PING) close the connection with ERROR.
 func (c *zmtpConn) handleIncomingCommand(ctx context.Context, body []byte) error {
 	name, data, ok := parseCommandBody(body)
 	if !ok {
-		logger.Debug(ctx, "zmq: received malformed command frame -- skipping")
-		return nil // malformed but harmless — skip
+		logger.Debug(ctx, "zmq: received malformed command frame -- closing connection")
+		// Malformed command is unexpected per ZMTP spec — close the connection.
+		// We don't send ERROR since the body was malformed (can't parse it reliably).
+		return fmt.Errorf("zmtp: malformed command frame")
 	}
 	logger.Debug(ctx, "zmq: incoming command frame", "command", name, "data_len", len(data))
 
@@ -402,14 +479,18 @@ func (c *zmtpConn) handleIncomingCommand(ctx context.Context, body []byte) error
 		if len(data) >= 2 {
 			pongContext = data[2:] // skip TTL, echo context only
 		}
-		logger.Debug(ctx, "zmq: sending PONG", "context_len", len(pongContext))
+		ttl := uint16(0)
+		if len(data) >= 2 {
+			ttl = binary.BigEndian.Uint16(data[0:2])
+		}
+		logger.Debug(ctx, "zmq: sending PONG", "context_len", len(pongContext), "ping_ttl_ms", ttl)
 
 		// Apply a short write deadline to prevent blocking forever if the
 		// peer's receive buffer is full (H3).
 		if err := c.tcp.SetWriteDeadline(time.Now().Add(zmtpWriteDeadline)); err != nil {
 			return fmt.Errorf("set pong write deadline: %w", err)
 		}
-		_, writeErr := c.tcp.Write(buildCommand("PONG", pongContext))
+		writeErr := writeAll(c.tcp, buildCommand("PONG", pongContext))
 		// Always clear the write deadline — failure leaves a stale deadline.
 		if clearErr := c.tcp.SetWriteDeadline(time.Time{}); clearErr != nil {
 			logger.Warn(ctx, "zmq: clear PONG write deadline failed", "error", clearErr)
@@ -420,8 +501,19 @@ func (c *zmtpConn) handleIncomingCommand(ctx context.Context, body []byte) error
 		return writeErr
 	}
 
-	// All other commands are silently skipped.
-	return nil
+	if name == "PONG" {
+		// Per ZMTP 3.1 §4: "A peer MUST NOT send a PONG command unless it has
+		// received a PING command." Unsolicited PONG is a protocol violation.
+		logger.Warn(ctx, "zmq: received unsolicited PONG -- closing connection")
+		sendErrorIgnore(c, "unsolicited PONG")
+		return fmt.Errorf("zmtp: unsolicited PONG command")
+	}
+
+	// Per ZMTP 3.1 §2.3: unexpected commands (READY, SUBSCRIBE, etc.) close the connection.
+	logger.Warn(ctx, "zmq: received unexpected command during TRAFFIC -- closing connection",
+		"command", name)
+	sendErrorIgnore(c, fmt.Sprintf("unexpected command: %s", name))
+	return fmt.Errorf("zmtp: unexpected command during TRAFFIC: %s", name)
 }
 
 // readAndValidateGreeting reads the server's 64-byte greeting and validates
@@ -456,11 +548,18 @@ func (c *zmtpConn) readAndValidateGreeting(ctx context.Context) error {
 	}
 
 	// Require ZMTP major version 3+.
+	// Negotiate the version: use the minimum of our version (3.1) and the peer's.
+	// Per ZMTP spec, if peer sends major=4, both parties downgrade to major=3.
 	if g[10] < 3 {
 		logger.Warn(ctx, "zmq: readAndValidateGreeting: server ZMTP major version too old",
 			"server_major", g[10], "required_minimum", 3)
 		return fmt.Errorf("server ZMTP major version %d is too old (need ≥ 3)", g[10])
 	}
+
+	// Negotiate the version: we support 3.1, peer advertises their major/minor.
+	// Use min(3, peer_major) to ensure compatibility with future ZMTP versions.
+	c.negotiatedMajor = min(byte(3), g[10])
+	c.negotiatedMinor = min(byte(1), g[11])
 
 	// Require NULL security mechanism — the only mechanism Bitcoin Core uses.
 	mech := strings.TrimRight(string(g[12:32]), "\x00")
@@ -472,7 +571,9 @@ func (c *zmtpConn) readAndValidateGreeting(ctx context.Context) error {
 	}
 
 	logger.Debug(ctx, "zmq: readAndValidateGreeting: greeting valid",
-		"major", g[10], "minor", g[11], "mechanism", mech)
+		"peer_major", g[10], "peer_minor", g[11],
+		"negotiated_major", c.negotiatedMajor, "negotiated_minor", c.negotiatedMinor,
+		"mechanism", mech)
 	return nil
 }
 
@@ -512,7 +613,7 @@ func (c *zmtpConn) readReadyCommand(ctx context.Context) error {
 	if st, ok := meta["Socket-Type"]; !ok {
 		logger.Warn(ctx, "zmq: readReadyCommand: Socket-Type metadata missing -- check ZMQ endpoint config",
 			"want_socket_type", "PUB")
-		return fmt.Errorf("zmtp: READY command missing Socket-Type metadata "+
+		return fmt.Errorf("zmtp: READY command missing Socket-Type metadata " +
 			"(check that the ZMQ endpoint is configured for PUB)")
 	} else if st != "PUB" {
 		logger.Warn(ctx, "zmq: readReadyCommand: unexpected Socket-Type -- check ZMQ endpoint config",
@@ -541,9 +642,6 @@ func (c *zmtpConn) readReadyCommand(ctx context.Context) error {
 func parseReadyMetadata(data []byte) map[string]string {
 	m := make(map[string]string)
 	for len(data) > 0 {
-		if len(data) < 1 {
-			break
-		}
 		kLen := int(data[0])
 		data = data[1:]
 		if len(data) < kLen {
@@ -574,8 +672,7 @@ func parseReadyMetadata(data []byte) map[string]string {
 // Layout:
 //
 //	[0]     0xFF  — signature prefix
-//	[1..7]  0x00  — padding (big-endian body length of old-format frames)
-//	[8]     0x01  — padding last byte (encodes length=1 for compat)
+//	[1..7]  0x00 × 7 | [8] 0x01 — together encode big-endian value 1 for ZMTP 2.x compat
 //	[9]     0x7F  — signature suffix
 //	[10]    0x03  — ZMTP major version
 //	[11]    0x01  — ZMTP minor version (3.1)
@@ -585,7 +682,7 @@ func parseReadyMetadata(data []byte) map[string]string {
 func buildGreeting() []byte {
 	var g [64]byte
 	g[0] = 0xFF
-	g[8] = 0x01 // padding: big-endian 1 in bytes [1..8]
+	g[8] = 0x01 // padding: big-endian 1 in bytes [1..8] (0x0000000000000001 for ZMTP 2.x compat)
 	g[9] = 0x7F
 	g[10] = 3 // ZMTP major version
 	g[11] = 1 // ZMTP minor version

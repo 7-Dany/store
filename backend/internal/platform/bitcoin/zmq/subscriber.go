@@ -87,6 +87,7 @@ type readerState struct {
 type readerConfig struct {
 	endpoint   string                                  // TCP endpoint, e.g. "tcp://127.0.0.1:28332"
 	topic      []byte                                  // subscription topic, e.g. []byte("hashblock")
+	topicStr   string                                  // pre-converted topic string for logging/errors (eliminates per-frame allocations)
 	onDialOK   func()                                  // called after each successful connect + subscribe
 	onDialFail func()                                  // called after each failed connect
 	onRecvErr  func()                                  // called after each failed receive
@@ -270,6 +271,30 @@ type subscriber struct {
 	// cancelCauseFn is called by reader panic recovery handlers to signal a
 	// critical failure. Set by Run() for each invocation.
 	cancelCauseFn context.CancelCauseFunc
+
+	// clockFn is the clock function used for timestamps. Defaults to time.Now
+	// in production, but can be replaced in tests for deterministic timestamps.
+	clockFn func() time.Time
+}
+
+// Option is a functional option for configuring a Subscriber.
+type Option func(*subscriber)
+
+// WithHandlerTimeout sets the per-handler invocation deadline. Defaults to 30s.
+// Overrides the BTC_HANDLER_TIMEOUT_MS environment variable if set.
+func WithHandlerTimeout(timeout time.Duration) Option {
+	return func(s *subscriber) {
+		s.handlerTimeout = timeout
+	}
+}
+
+// WithShutdownDrainTimeout sets the maximum time Shutdown() waits for in-flight
+// handler goroutines to complete. Defaults to 30s. Primarily used for testing
+// to allow faster teardown with shorter deadlines.
+func WithShutdownDrainTimeout(timeout time.Duration) Option {
+	return func(s *subscriber) {
+		s.shutdownDrainTimeout = timeout
+	}
 }
 
 // New constructs a Subscriber backed by two ZMTP 3.1 SUB connections and
@@ -300,7 +325,9 @@ type subscriber struct {
 // encoding.
 //
 // recorder may be nil; a no-op recorder is substituted automatically.
-func New(blockEndpoint, txEndpoint, network string, idleTimeout time.Duration, recorder ZMQRecorder) (Subscriber, error) {
+//
+// opts may contain functional options to override defaults (e.g., WithHandlerTimeout).
+func New(blockEndpoint, txEndpoint, network string, idleTimeout time.Duration, recorder ZMQRecorder, opts ...Option) (Subscriber, error) {
 	// Security: panic, not error, so a misconfigured endpoint fails at startup
 	// and never silently degrades to an insecure configuration at runtime.
 	requireLoopbackTCP(blockEndpoint, "BTC_ZMQ_BLOCK")
@@ -321,7 +348,7 @@ func New(blockEndpoint, txEndpoint, network string, idleTimeout time.Duration, r
 		recorder = noopRecorder{}
 	}
 
-	return &subscriber{
+	s := &subscriber{
 		blockEndpoint:        blockEndpoint,
 		txEndpoint:           txEndpoint,
 		hrp:                  hrp,
@@ -332,7 +359,15 @@ func New(blockEndpoint, txEndpoint, network string, idleTimeout time.Duration, r
 		handlerTimeout:       defaultHandlerTimeout,
 		shutdownDrainTimeout: shutdownTimeout,
 		recorder:             recorder,
-	}, nil
+		clockFn:              time.Now,
+	}
+
+	// Apply functional options to override defaults.
+	for _, opt := range opts {
+		opt(s)
+	}
+
+	return s, nil
 }
 
 // ── Handler registration ──────────────────────────────────────────────────────
@@ -447,4 +482,3 @@ func (noopRecorder) OnMessageDropped(string) {}
 
 // SetChannelDepth implements ZMQRecorder.
 func (noopRecorder) SetChannelDepth(string, int, int) {}
-

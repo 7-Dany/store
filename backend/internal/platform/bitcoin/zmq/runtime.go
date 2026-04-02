@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -298,6 +299,7 @@ func (s *subscriber) blockReaderConfig() readerConfig {
 	return readerConfig{
 		endpoint: s.blockEndpoint,
 		topic:    []byte("hashblock"),
+		topicStr: "hashblock",
 		onDialOK: func() {
 			s.blockDialOK.Store(true)
 			s.recorder.SetZMQConnected(true)
@@ -314,7 +316,7 @@ func (s *subscriber) blockReaderConfig() readerConfig {
 			event := BlockEvent{Hash: hash, Sequence: seq}
 			// Single atomic Store: IsConnected() and LastSeenHash() always read
 			// a consistent snapshot — hash and timestamp are never torn.
-			s.live.Store(&liveness{hash: event.HashHex(), at: time.Now()})
+			s.live.Store(&liveness{hash: event.HashHex(), at: s.clockFn()})
 			s.recorder.SetChannelDepth("block", len(s.blockCh), cap(s.blockCh))
 			logger.Debug(ctx, "zmq: block event dispatched",
 				"hash", event.HashHex(), "seq", event.Sequence)
@@ -349,6 +351,7 @@ func (s *subscriber) txReaderConfig() readerConfig {
 	return readerConfig{
 		endpoint:   s.txEndpoint,
 		topic:      []byte("hashtx"),
+		topicStr:   "hashtx",
 		onDialOK:   func() { s.hashtxDialOK.Store(true) },
 		onDialFail: func() { s.hashtxDialOK.Store(false) },
 		onRecvErr:  func() { s.hashtxDialOK.Store(false) },
@@ -377,6 +380,7 @@ func (s *subscriber) rawTxReaderConfig() readerConfig {
 	return readerConfig{
 		endpoint:   s.txEndpoint,
 		topic:      []byte("rawtx"),
+		topicStr:   "rawtx",
 		onDialOK:   func() { s.rawtxDialOK.Store(true) },
 		onDialFail: func() { s.rawtxDialOK.Store(false) },
 		onRecvErr:  func() { s.rawtxDialOK.Store(false) },
@@ -413,13 +417,13 @@ func (s *subscriber) runReconnectLoop(
 	for {
 		if ctx.Err() != nil {
 			logger.Debug(ctx, "zmq: runReconnectLoop: context cancelled, exiting",
-				"topic", string(cfg.topic))
+				"topic", cfg.topicStr)
 			return
 		}
 
 		attempt++
 		logger.Debug(ctx, "zmq: runReconnectLoop: dial attempt",
-			"topic", string(cfg.topic), "endpoint", cfg.endpoint, "attempt", attempt, "backoff", backoff)
+			"topic", cfg.topicStr, "endpoint", cfg.endpoint, "attempt", attempt, "backoff", backoff)
 
 		conn, err := dialZMTP(ctx, cfg.endpoint, cfg.topic)
 		if err != nil {
@@ -427,9 +431,8 @@ func (s *subscriber) runReconnectLoop(
 				return
 			}
 			cfg.onDialFail()
-			// T5: wrap with telemetry.ZMQ at the logging call site.
 			logger.Warn(ctx, "zmq: connection failed -- retrying",
-				"topic", string(cfg.topic), "endpoint", cfg.endpoint,
+				"topic", cfg.topicStr, "endpoint", cfg.endpoint,
 				"backoff", backoff, "attempt", attempt,
 				"error", telemetry.ZMQ("runReconnectLoop.dial", err))
 			if !sleepCtx(ctx, backoff) {
@@ -441,15 +444,17 @@ func (s *subscriber) runReconnectLoop(
 
 		cfg.onDialOK()
 		logger.Debug(ctx, "zmq: runReconnectLoop: connected",
-			"topic", string(cfg.topic), "endpoint", cfg.endpoint, "attempt", attempt)
+			"topic", cfg.topicStr, "endpoint", cfg.endpoint, "attempt", attempt)
 
 		// Fire recovery before delivering the first post-reconnect event so
 		// handlers can fill any gap before new events arrive. Skip on the very
 		// first connection — no gap is possible before any message is received.
-		if everConnected {
+		// Also skip if context is already cancelled during shutdown — recovery
+		// is meaningless and handlers shouldn't be spawned as untracked goroutines.
+		if everConnected && ctx.Err() == nil {
 			logger.Debug(ctx, "zmq: runReconnectLoop: firing recovery after reconnect",
-				"topic", string(cfg.topic), "last_seq", state.lastSeq)
-			s.fireRecovery(ctx, string(cfg.topic), state.lastSeq)
+				"topic", cfg.topicStr, "last_seq", state.lastSeq)
+			s.fireRecovery(ctx, cfg.topicStr, state.lastSeq)
 		}
 		everConnected = true
 		backoff = reconnectBase // reset after a successful connection
@@ -460,7 +465,7 @@ func (s *subscriber) runReconnectLoop(
 			return
 		}
 		logger.Debug(ctx, "zmq: runReconnectLoop: session ended, will reconnect",
-			"topic", string(cfg.topic), "next_backoff", backoff)
+			"topic", cfg.topicStr, "next_backoff", backoff)
 		if !sleepCtx(ctx, backoff) {
 			return
 		}
@@ -483,10 +488,10 @@ func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *r
 		if err := conn.Close(); err != nil {
 			// Only log as Warn if it's not a normal close (net.ErrClosed is expected
 			// when ctx cancels the connection). Other errors indicate a problem.
-			if err != net.ErrClosed {
-				logger.Warn(ctx, "zmq: receiveLoop close failed unexpectedly", "topic", string(cfg.topic), "error", err)
+			if !errors.Is(err, net.ErrClosed) {
+				logger.Warn(ctx, "zmq: receiveLoop close failed unexpectedly", "topic", cfg.topicStr, "error", err)
 			} else {
-				logger.Debug(ctx, "zmq: receiveLoop closed normally", "topic", string(cfg.topic))
+				logger.Debug(ctx, "zmq: receiveLoop closed normally", "topic", cfg.topicStr)
 			}
 		}
 	}()
@@ -495,21 +500,21 @@ func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *r
 		if err != nil {
 			if ctx.Err() != nil {
 				logger.Debug(ctx, "zmq: receiveLoop: context cancelled",
-					"topic", string(cfg.topic))
+					"topic", cfg.topicStr)
 				return
 			}
 			cfg.onRecvErr()
 			// T5: wrap with telemetry.ZMQ at the logging call site.
 			logger.Warn(ctx, "zmq: receive error -- reconnecting",
-				"topic", string(cfg.topic),
+				"topic", cfg.topicStr,
 				"error", telemetry.ZMQ("receiveLoop.recv", err))
 			return
 		}
 		logger.Debug(ctx, "zmq: receiveLoop: got message",
-			"topic", string(cfg.topic), "frame_count", len(frames))
+			"topic", cfg.topicStr, "frame_count", len(frames))
 		if err := s.processFrame(ctx, frames, cfg.topic, state, cfg.onEvent); err != nil {
 			logger.Warn(ctx, "zmq: frame rejected",
-				"topic", string(cfg.topic), "error", err)
+				"topic", cfg.topicStr, "error", err)
 		}
 	}
 }
@@ -535,7 +540,7 @@ func (s *subscriber) runRawTxReader(ctx context.Context) {
 func (s *subscriber) rawTxReceiveLoop(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn) {
 	defer func() {
 		if err := conn.Close(); err != nil {
-			if err != net.ErrClosed {
+			if !errors.Is(err, net.ErrClosed) {
 				logger.Warn(ctx, "zmq: rawTxReceiveLoop close failed unexpectedly", "endpoint", cfg.endpoint, "error", err)
 			} else {
 				logger.Debug(ctx, "zmq: rawTxReceiveLoop closed normally", "endpoint", cfg.endpoint)
@@ -961,7 +966,6 @@ func ParseRawTx(raw []byte, hrp string) (RawTxEvent, error) {
 	// BIP 141: if marker=0x00 and flag=0x01 → SegWit format.
 	// Otherwise → legacy format; push both bytes back.
 	isSegWit := false
-	// L3: use stack allocation instead of heap to avoid garbage per call.
 	var peek [2]byte
 	if n, err := io.ReadFull(r, peek[:]); err != nil || n < 2 {
 		return RawTxEvent{}, fmt.Errorf("zmq.ParseRawTx: peek marker/flag: %w", err)
@@ -1104,6 +1108,11 @@ func txidSegWit(raw []byte) ([32]byte, error) {
 		if err != nil {
 			return [32]byte{}, fmt.Errorf("read input[%d] scriptSig length: %w", i, err)
 		}
+		// Cap scriptSig at the frame body limit to prevent excessive allocation
+		// from a malformed SegWit tx. This is consistent with the frame-level cap.
+		if scriptLen > zmtpMaxFrameBody {
+			return [32]byte{}, fmt.Errorf("scriptSig length %d exceeds frame cap %d", scriptLen, zmtpMaxFrameBody)
+		}
 		writeVarInt(buf, scriptLen)
 		scriptBytes := make([]byte, scriptLen)
 		if _, err := io.ReadFull(r, scriptBytes); err != nil {
@@ -1200,6 +1209,9 @@ func parseTxInput(r *pushBackReader) (RawTxInput, error) {
 	scriptLen, err := readVarInt(r)
 	if err != nil {
 		return RawTxInput{}, fmt.Errorf("scriptSig len: %w", err)
+	}
+	if scriptLen > 10_000 {
+		return RawTxInput{}, fmt.Errorf("implausible scriptSig length %d", scriptLen)
 	}
 	if err := skipN(r, scriptLen); err != nil {
 		return RawTxInput{}, fmt.Errorf("scriptSig data: %w", err)

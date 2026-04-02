@@ -13,9 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // Helpers
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 // connFromBytes wraps data in a zmtpConn for read-path tests.
 // The tcp field is nil; callers must not invoke methods that write to tcp
@@ -54,9 +54,9 @@ func buildValidGreeting64(major, minor byte, mech string) [64]byte {
 	return g
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // buildGreeting
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 func TestBuildGreeting_Length(t *testing.T) {
 	t.Parallel()
@@ -105,9 +105,9 @@ func TestBuildGreeting_AsServerAndFiller(t *testing.T) {
 	}
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // buildCommand
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 func TestBuildCommand_ShortBody_FlagAndSize(t *testing.T) {
 	t.Parallel()
@@ -167,9 +167,9 @@ func TestBuildCommand_EmptyName(t *testing.T) {
 	require.Equal(t, []byte("data"), out[3:])
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // buildReady
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 func TestBuildReady_SUB_ContainsSocketType(t *testing.T) {
 	t.Parallel()
@@ -202,9 +202,9 @@ func TestBuildReady_MetadataStructure(t *testing.T) {
 	require.Equal(t, []byte(socketType), meta[16:16+len(socketType)])
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // buildSubscribe
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 func TestBuildSubscribe_HashblockTopic(t *testing.T) {
 	t.Parallel()
@@ -223,9 +223,9 @@ func TestBuildSubscribe_EmptyTopic_SubscribesToAll(t *testing.T) {
 	require.Equal(t, buildCommand("SUBSCRIBE", nil), out)
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // parseCommandBody
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 func TestParseCommandBody_EmptyBody_ReturnsFalse(t *testing.T) {
 	t.Parallel()
@@ -272,9 +272,9 @@ func TestParseCommandBody_NameExactlyFillsBody_EmptyData(t *testing.T) {
 	require.Len(t, data, 0)
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // readFrame
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 func TestReadFrame_ShortFrame_ReturnsBodyAndFlags(t *testing.T) {
 	t.Parallel()
@@ -365,9 +365,9 @@ func TestReadFrame_EOFDuringBody_ReturnsError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // readAndValidateGreeting
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 func TestReadAndValidateGreeting_ValidNULL_Succeeds(t *testing.T) {
 	t.Parallel()
@@ -443,9 +443,9 @@ func TestReadAndValidateGreeting_EmptyReader_ReturnsError(t *testing.T) {
 	require.Error(t, c.readAndValidateGreeting(context.Background()))
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // readExpectedCommand
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 func TestReadExpectedCommand_CorrectName_Succeeds(t *testing.T) {
 	t.Parallel()
@@ -511,9 +511,9 @@ func TestReadReadyCommand_MissingSocketType_ReturnsError(t *testing.T) {
 	require.Contains(t, err.Error(), "missing")
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // parseReadyMetadata
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 func TestParseReadyMetadata_Empty_ReturnsEmptyMap(t *testing.T) {
 	t.Parallel()
@@ -584,9 +584,9 @@ func TestParseReadyMetadata_MultiplePairs_AllParsed(t *testing.T) {
 	require.Equal(t, "test", m["Identity"])
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 // handleIncomingCommand
-// ═════════════════════════════════════════════════════════════════════════════
+// ──────────────────────────────────────────────────────────────────────────────
 
 // TestHandleIncomingCommand_PING_SendsCorrectPONG verifies that the PONG
 // response echoes only the ping context — NOT the 2-byte TTL field.
@@ -696,11 +696,13 @@ func TestHandleIncomingCommand_NonPING_ReturnsNilAndWritesNothing(t *testing.T) 
 	require.Contains(t, err.Error(), "ERROR")
 }
 
-func TestHandleIncomingCommand_MalformedBody_ReturnsNil(t *testing.T) {
+func TestHandleIncomingCommand_MalformedBody_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	// No tcp needed — malformed body returns before any write.
-	c := &zmtpConn{} // tcp is nil; handleIncomingCommand must not call Write
+	// Per the fix for issue #3: malformed command frames are protocol errors
+	// that close the connection (per ZMTP 3.1 §2.3: unexpected/malformed commands
+	// must cause the connection to close).
+	c := &zmtpConn{} // tcp is nil; malformed body returns error without writing
 
 	// Empty body and body too short for declared nameLen.
 	for _, body := range [][]byte{
@@ -709,16 +711,169 @@ func TestHandleIncomingCommand_MalformedBody_ReturnsNil(t *testing.T) {
 		{5, 'P', 'I'}, // nameLen=5 but only 2 name bytes
 	} {
 		err := c.handleIncomingCommand(context.Background(), body)
-		require.NoError(t, err, "malformed body must return nil without panicking")
+		require.Error(t, err, "malformed body must return error (protocol violation)")
+		require.Contains(t, err.Error(), "malformed command frame")
 	}
 }
 
-func TestHandleIncomingCommand_SUBSCRIBE_ReturnsNil(t *testing.T) {
+func TestHandleIncomingCommand_SUBSCRIBE_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	// SUBSCRIBE received on the read path is ignored (we are the subscriber,
-	// not the publisher). No tcp write needed.
-	c := &zmtpConn{}
+	// Per ZMTP 3.1 §2.3: unexpected commands (like SUBSCRIBE received by a
+	// SUB peer) MUST cause the connection to close. SUBSCRIBE is only sent by
+	// clients to servers; a server sending SUBSCRIBE to a client is an unexpected
+	// command that violates the protocol.
+	client, server := net.Pipe()
+	defer func() { require.NoError(t, client.Close()) }()
+	defer func() { require.NoError(t, server.Close()) }()
+
+	// Drain any ERROR response from the server side so client write doesn't block.
+	errCh := make(chan error, 1)
+	go func() {
+		_ = server.SetDeadline(time.Now().Add(time.Second))
+		_, err := io.ReadAll(server)
+		errCh <- err
+	}()
+
+	c := &zmtpConn{tcp: client, r: bufio.NewReaderSize(client, zmtpReadBuf)}
 	body := []byte{9, 'S', 'U', 'B', 'S', 'C', 'R', 'I', 'B', 'E'}
-	require.NoError(t, c.handleIncomingCommand(context.Background(), body))
+	err := c.handleIncomingCommand(context.Background(), body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unexpected command during TRAFFIC")
+	<-errCh // wait for server drain to complete
 }
+
+func TestHandleIncomingCommand_UnsolicitedPONG_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	// Per ZMTP 3.1 §4: "A peer MUST NOT send a PONG command unless it has
+	// received a PING command." Unsolicited PONG is a protocol violation.
+	client, server := net.Pipe()
+	defer func() { require.NoError(t, client.Close()) }()
+	defer func() { require.NoError(t, server.Close()) }()
+
+	// Drain any ERROR response from the server side so client write doesn't block.
+	errCh := make(chan error, 1)
+	go func() {
+		_ = server.SetDeadline(time.Now().Add(time.Second))
+		_, err := io.ReadAll(server)
+		errCh <- err
+	}()
+
+	c := &zmtpConn{tcp: client, r: bufio.NewReaderSize(client, zmtpReadBuf)}
+	body := []byte{4, 'P', 'O', 'N', 'G'}
+	err := c.handleIncomingCommand(context.Background(), body)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsolicited PONG")
+	<-errCh // wait for server drain to complete
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Fuzz tests — readAndValidateGreeting and readFrame must never panic
+// ──────────────────────────────────────────────────────────────────────────────
+
+// FuzzGreeting verifies that readAndValidateGreeting never panics on arbitrary
+// 64-byte greeting blobs. It tests the handshake parser against malformed,
+// truncated, and mutated peer greetings.
+func FuzzGreeting(f *testing.F) {
+	// Seed: valid Bitcoin Core greeting (major 3, minor 1).
+	greet := buildValidGreeting64(3, 1, "NULL")
+	f.Add(greet[:])
+	
+	// Seed: all zeros.
+	f.Add(make([]byte, 64))
+	
+	// Seed: all ones.
+	allOnes := make([]byte, 64)
+	for i := range allOnes {
+		allOnes[i] = 0xFF
+	}
+	f.Add(allOnes)
+	
+	// Seed: valid signature but wrong mechanism.
+	greet2 := buildValidGreeting64(3, 1, "PLAIN")
+	f.Add(greet2[:])
+	
+	// Seed: valid signature but future major version.
+	greet3 := buildValidGreeting64(4, 0, "NULL")
+	f.Add(greet3[:])
+	
+	// Seed: valid signature but invalid minor version.
+	greet4 := buildValidGreeting64(3, 255, "NULL")
+	f.Add(greet4[:])
+	
+	// Seed: missing signature prefix (wrong byte 0).
+	invalidSig := buildValidGreeting64(3, 1, "NULL")
+	invalidSig[0] = 0x00
+	f.Add(invalidSig[:])
+	
+	// Seed: missing signature suffix (wrong byte 9).
+	invalidSuffix := buildValidGreeting64(3, 1, "NULL")
+	invalidSuffix[9] = 0x00
+	f.Add(invalidSuffix[:])
+	
+	f.Fuzz(func(t *testing.T, greetingBytes []byte) {
+		// readAndValidateGreeting expects exactly 64 bytes; shorter input
+		// should trigger an error without panicking.
+		conn := connFromBytes(greetingBytes)
+		// The function may return an error for invalid greetings, but must not panic.
+		//nolint:errcheck
+		_ = conn.readAndValidateGreeting(context.Background())
+	})
+}
+
+// FuzzFrame verifies that readFrame never panics on arbitrary byte streams.
+// It tests the frame parser against truncated, oversized, and malformed frames.
+func FuzzFrame(f *testing.F) {
+	// Seed: valid short frame (flags, size, body).
+	f.Add(encodeShortFrame(0, []byte("hello")))
+	
+	// Seed: valid short frame with MORE flag.
+	f.Add(encodeShortFrame(flagMore, []byte("frame1")))
+	
+	// Seed: valid short frame with COMMAND flag.
+	f.Add(encodeShortFrame(flagCommand, []byte{4, 'P', 'I', 'N', 'G'}))
+	
+	// Seed: valid long frame (flags|flagLong, 8-byte size, body).
+	f.Add(encodeLongFrame(0, []byte("large body")))
+	
+	// Seed: zero-length short frame.
+	f.Add(encodeShortFrame(0, []byte{}))
+	
+	// Seed: zero-length long frame.
+	f.Add(encodeLongFrame(0, []byte{}))
+	
+	// Seed: single byte (truncated flags).
+	f.Add([]byte{0x01})
+	
+	// Seed: flags + size but no body.
+	f.Add([]byte{0x00, 0x05})
+	
+	// Seed: empty stream.
+	f.Add([]byte{})
+	
+	// Seed: long frame header without size.
+	f.Add([]byte{flagLong | 0x01})
+	
+	// Seed: long frame with partial size.
+	f.Add([]byte{flagLong | 0x01, 0x00, 0x00, 0x00})
+	
+	// Seed: invalid flags (reserved bits set).
+	f.Add(encodeShortFrame(0x08, []byte("reserved")))
+	
+	// Seed: maximum short frame (size=255).
+	maxBody := make([]byte, 255)
+	for i := range maxBody {
+		maxBody[i] = byte(i % 256)
+	}
+	f.Add(encodeShortFrame(0, maxBody))
+	
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// readFrame must never panic on arbitrary input.
+		// It may return an error for malformed frames, but must not panic.
+		conn := connFromBytes(data)
+		//nolint:errcheck
+		_, _, _ = conn.readFrame(context.Background())
+	})
+}
+

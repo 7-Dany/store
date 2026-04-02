@@ -200,7 +200,7 @@ type Subscriber interface {
 type subscriber struct {
 	// Endpoints — set at construction, read-only after.
 	blockEndpoint string
-	txEndpoint    string
+	txEndpoint    string // dialed twice intentionally: once for hashtx (settlement), once for rawtx (SSE display) — isolation ensures a slow settlement handler cannot stall SSE delivery
 
 	// hrp is the Bech32 human-readable part for the configured network
 	// (e.g., "bc" for mainnet, "tb" for testnet, "bcrt" for regtest).

@@ -724,7 +724,7 @@ func (s *subscriber) fireRecovery(ctx context.Context, topic string, lastSeq uin
 	logger.Debug(ctx, "zmq: fireRecovery",
 		"topic", topic, "last_seq", lastSeq, "handler_count", len(s.recoveryHandlers))
 	event := RecoveryEvent{
-		ReconnectedAt:    time.Now(),
+		ReconnectedAt:    s.clockFn(),
 		Topic:            topic,
 		LastSeenSequence: lastSeq,
 	}

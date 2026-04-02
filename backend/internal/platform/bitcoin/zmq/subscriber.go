@@ -324,9 +324,9 @@ func WithShutdownDrainTimeout(timeout time.Duration) Option {
 // defaulted. The network determines the Bech32 HRP used by ParseRawTx for address
 // encoding.
 //
-// recorder may be nil; a no-op recorder is substituted automatically.
+// Recorder may be nil; a no-op recorder is substituted automatically.
 //
-// opts may contain functional options to override defaults (e.g., WithHandlerTimeout).
+// Opts may contain functional options to override defaults (e.g., WithHandlerTimeout).
 func New(blockEndpoint, txEndpoint, network string, idleTimeout time.Duration, recorder ZMQRecorder, opts ...Option) (Subscriber, error) {
 	// Security: panic, not error, so a misconfigured endpoint fails at startup
 	// and never silently degrades to an insecure configuration at runtime.

@@ -524,10 +524,10 @@ func TestParseReadyMetadata_Empty_ReturnsEmptyMap(t *testing.T) {
 func TestParseReadyMetadata_SinglePair_Succeeds(t *testing.T) {
 	t.Parallel()
 	// Build metadata: key="Socket-Type"(11) value="PUB"(3)
-	var data []byte
-	data = append(data, 11)  // key length
+	data := make([]byte, 0, 19) // preallocate for key length + key + value length + value
+	data = append(data, 11)     // key length
 	data = append(data, "Socket-Type"...)
-	data = append(data, 0, 0, 0, 3)  // value length big-endian
+	data = append(data, 0, 0, 0, 3) // value length big-endian
 	data = append(data, "PUB"...)
 	m := parseReadyMetadata(data)
 	require.Equal(t, "PUB", m["Socket-Type"])
@@ -544,8 +544,8 @@ func TestParseReadyMetadata_TruncatedAfterKeyLength_StopsGracefully(t *testing.T
 func TestParseReadyMetadata_TruncatedAfterKey_StopsGracefully(t *testing.T) {
 	t.Parallel()
 	// Key length but missing value length.
-	var data []byte
-	data = append(data, 3)  // key length
+	data := make([]byte, 0, 4) // preallocate for key length + key
+	data = append(data, 3)     // key length
 	data = append(data, "foo"...)
 	// Missing 4-byte value length
 	m := parseReadyMetadata(data)
@@ -555,10 +555,10 @@ func TestParseReadyMetadata_TruncatedAfterKey_StopsGracefully(t *testing.T) {
 func TestParseReadyMetadata_TruncatedAfterValueLength_StopsGracefully(t *testing.T) {
 	t.Parallel()
 	// Key and value length, but missing actual value.
-	var data []byte
-	data = append(data, 3)              // key length
+	data := make([]byte, 0, 8) // preallocate for key length + key + value length
+	data = append(data, 3)     // key length
 	data = append(data, "foo"...)
-	data = append(data, 0, 0, 0, 5)    // value length = 5
+	data = append(data, 0, 0, 0, 5) // value length = 5
 	// Only 2 bytes of value (need 5)
 	data = append(data, "ab"...)
 	m := parseReadyMetadata(data)
@@ -568,7 +568,7 @@ func TestParseReadyMetadata_TruncatedAfterValueLength_StopsGracefully(t *testing
 func TestParseReadyMetadata_MultiplePairs_AllParsed(t *testing.T) {
 	t.Parallel()
 	// Two pairs: Socket-Type=PUB, Identity=test
-	var data []byte
+	data := make([]byte, 0, 36) // preallocate for two key-value pairs
 	// Pair 1: Socket-Type=PUB
 	data = append(data, 11)
 	data = append(data, "Socket-Type"...)
@@ -730,7 +730,7 @@ func TestHandleIncomingCommand_SUBSCRIBE_ReturnsError(t *testing.T) {
 	// Drain any ERROR response from the server side so client write doesn't block.
 	errCh := make(chan error, 1)
 	go func() {
-		_ = server.SetDeadline(time.Now().Add(time.Second))
+		_ = server.SetDeadline(time.Now().Add(time.Second)) //nolint:errcheck // test cleanup, deadline failure is acceptable
 		_, err := io.ReadAll(server)
 		errCh <- err
 	}()
@@ -755,7 +755,7 @@ func TestHandleIncomingCommand_UnsolicitedPONG_ReturnsError(t *testing.T) {
 	// Drain any ERROR response from the server side so client write doesn't block.
 	errCh := make(chan error, 1)
 	go func() {
-		_ = server.SetDeadline(time.Now().Add(time.Second))
+		_ = server.SetDeadline(time.Now().Add(time.Second)) //nolint:errcheck // test cleanup, deadline failure is acceptable
 		_, err := io.ReadAll(server)
 		errCh <- err
 	}()
@@ -779,46 +779,44 @@ func FuzzGreeting(f *testing.F) {
 	// Seed: valid Bitcoin Core greeting (major 3, minor 1).
 	greet := buildValidGreeting64(3, 1, "NULL")
 	f.Add(greet[:])
-	
+
 	// Seed: all zeros.
 	f.Add(make([]byte, 64))
-	
+
 	// Seed: all ones.
 	allOnes := make([]byte, 64)
 	for i := range allOnes {
 		allOnes[i] = 0xFF
 	}
 	f.Add(allOnes)
-	
+
 	// Seed: valid signature but wrong mechanism.
 	greet2 := buildValidGreeting64(3, 1, "PLAIN")
 	f.Add(greet2[:])
-	
+
 	// Seed: valid signature but future major version.
 	greet3 := buildValidGreeting64(4, 0, "NULL")
 	f.Add(greet3[:])
-	
+
 	// Seed: valid signature but invalid minor version.
 	greet4 := buildValidGreeting64(3, 255, "NULL")
 	f.Add(greet4[:])
-	
+
 	// Seed: missing signature prefix (wrong byte 0).
 	invalidSig := buildValidGreeting64(3, 1, "NULL")
 	invalidSig[0] = 0x00
 	f.Add(invalidSig[:])
-	
+
 	// Seed: missing signature suffix (wrong byte 9).
 	invalidSuffix := buildValidGreeting64(3, 1, "NULL")
 	invalidSuffix[9] = 0x00
 	f.Add(invalidSuffix[:])
-	
+
 	f.Fuzz(func(t *testing.T, greetingBytes []byte) {
 		// readAndValidateGreeting expects exactly 64 bytes; shorter input
 		// should trigger an error without panicking.
 		conn := connFromBytes(greetingBytes)
-		// The function may return an error for invalid greetings, but must not panic.
-		//nolint:errcheck
-		_ = conn.readAndValidateGreeting(context.Background())
+		_ = conn.readAndValidateGreeting(context.Background()) //nolint:errcheck // fuzz test ignores errors, only checking for panics
 	})
 }
 
@@ -827,53 +825,51 @@ func FuzzGreeting(f *testing.F) {
 func FuzzFrame(f *testing.F) {
 	// Seed: valid short frame (flags, size, body).
 	f.Add(encodeShortFrame(0, []byte("hello")))
-	
+
 	// Seed: valid short frame with MORE flag.
 	f.Add(encodeShortFrame(flagMore, []byte("frame1")))
-	
+
 	// Seed: valid short frame with COMMAND flag.
 	f.Add(encodeShortFrame(flagCommand, []byte{4, 'P', 'I', 'N', 'G'}))
-	
+
 	// Seed: valid long frame (flags|flagLong, 8-byte size, body).
 	f.Add(encodeLongFrame(0, []byte("large body")))
-	
+
 	// Seed: zero-length short frame.
 	f.Add(encodeShortFrame(0, []byte{}))
-	
+
 	// Seed: zero-length long frame.
 	f.Add(encodeLongFrame(0, []byte{}))
-	
+
 	// Seed: single byte (truncated flags).
 	f.Add([]byte{0x01})
-	
+
 	// Seed: flags + size but no body.
 	f.Add([]byte{0x00, 0x05})
-	
+
 	// Seed: empty stream.
 	f.Add([]byte{})
-	
+
 	// Seed: long frame header without size.
 	f.Add([]byte{flagLong | 0x01})
-	
+
 	// Seed: long frame with partial size.
 	f.Add([]byte{flagLong | 0x01, 0x00, 0x00, 0x00})
-	
+
 	// Seed: invalid flags (reserved bits set).
 	f.Add(encodeShortFrame(0x08, []byte("reserved")))
-	
+
 	// Seed: maximum short frame (size=255).
 	maxBody := make([]byte, 255)
 	for i := range maxBody {
 		maxBody[i] = byte(i % 256)
 	}
 	f.Add(encodeShortFrame(0, maxBody))
-	
+
 	f.Fuzz(func(t *testing.T, data []byte) {
 		// readFrame must never panic on arbitrary input.
 		// It may return an error for malformed frames, but must not panic.
 		conn := connFromBytes(data)
-		//nolint:errcheck
-		_, _, _ = conn.readFrame(context.Background())
+		_, _, _ = conn.readFrame(context.Background()) //nolint:errcheck // fuzz test ignores errors, only checking for panics
 	})
 }
-

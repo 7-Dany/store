@@ -130,7 +130,7 @@ type RawTxEvent struct {
 // TxIDHex returns the txid in the same hex form accepted by RPC and used by
 // block explorers.
 // Use this for all GetMempoolEntry and watch-address lookups.
-func (e RawTxEvent) TxIDHex() string {
+func (e RawTxEvent) TxIDHex() string { //nolint:gocritic // method receiver, pointer would break value semantics
 	return hex.EncodeToString(e.TxIDBytes[:])
 }
 

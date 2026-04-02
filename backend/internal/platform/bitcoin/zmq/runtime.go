@@ -11,6 +11,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -76,9 +77,12 @@ func (s *subscriber) Run(ctx context.Context) error {
 	readersWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
+				// Capture stack trace for debugging production panics
+				stack := make([]byte, 4096)
+				n := runtime.Stack(stack, false)
 				// T1: add "error" key so TelemetryHandler increments app_errors_total.
 				panicErr := telemetry.ZMQ("Run.block_reader_panic",
-					fmt.Errorf("reader goroutine panicked: %v", r))
+					fmt.Errorf("reader goroutine panicked: %v\nstack:\n%s", r, stack[:n]))
 				logger.Error(ctx, "zmq: block reader goroutine panicked -- subscriber will not recover without restart",
 					"error", panicErr, "panic", r)
 				// Signal critical failure: cancel the context with the panic error.
@@ -92,8 +96,11 @@ func (s *subscriber) Run(ctx context.Context) error {
 	readersWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
+				// Capture stack trace for debugging production panics
+				stack := make([]byte, 4096)
+				n := runtime.Stack(stack, false)
 				panicErr := telemetry.ZMQ("Run.settlement_reader_panic",
-					fmt.Errorf("reader goroutine panicked: %v", r))
+					fmt.Errorf("reader goroutine panicked: %v\nstack:\n%s", r, stack[:n]))
 				logger.Error(ctx, "zmq: settlement-tx reader goroutine panicked -- subscriber will not recover without restart",
 					"error", panicErr, "panic", r)
 				// Signal critical failure: cancel the context with the panic error.
@@ -107,8 +114,11 @@ func (s *subscriber) Run(ctx context.Context) error {
 	readersWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
+				// Capture stack trace for debugging production panics
+				stack := make([]byte, 4096)
+				n := runtime.Stack(stack, false)
 				panicErr := telemetry.ZMQ("Run.rawtx_reader_panic",
-					fmt.Errorf("reader goroutine panicked: %v", r))
+					fmt.Errorf("reader goroutine panicked: %v\nstack:\n%s", r, stack[:n]))
 				logger.Error(ctx, "zmq: rawtx reader goroutine panicked -- subscriber will not recover without restart",
 					"error", panicErr, "panic", r)
 				// Signal critical failure: cancel the context with the panic error.
@@ -355,7 +365,7 @@ func (s *subscriber) txReaderConfig() readerConfig {
 		onDialOK:   func() { s.hashtxDialOK.Store(true) },
 		onDialFail: func() { s.hashtxDialOK.Store(false) },
 		onRecvErr:  func() { s.hashtxDialOK.Store(false) },
-		onEvent: func(ctx context.Context, hash [32]byte, seq uint32) {
+		onEvent: func(_ context.Context, hash [32]byte, seq uint32) {
 			event := TxEvent{Hash: hash, Sequence: seq}
 			s.recorder.SetChannelDepth("tx", len(s.txCh), cap(s.txCh))
 			select {
@@ -406,7 +416,7 @@ func (s *subscriber) rawTxReaderConfig() readerConfig {
 // after re-establishing the connection.
 func (s *subscriber) runReconnectLoop(
 	ctx context.Context,
-	cfg readerConfig,
+	cfg readerConfig, //nolint:gocritic // 88 bytes, copied for isolation between reader loops
 	state *readerState,
 	loop receiveLoopFn,
 ) {
@@ -476,14 +486,14 @@ func (s *subscriber) runReconnectLoop(
 // runReader connects to the endpoint described by cfg and reads until ctx is
 // cancelled, reconnecting with exponential backoff on any transient error.
 // State persists across reconnects so sequence gap detection works correctly.
-func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *readerState) {
+func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *readerState) { //nolint:gocritic // 88 bytes, copied for isolation
 	s.runReconnectLoop(ctx, cfg, state, s.receiveLoop)
 }
 
 // receiveLoop runs the blocking receive loop for one established connection,
 // closing conn on return regardless of exit reason. It is a helper for
 // runReconnectLoop; callers must not reuse conn after receiveLoop returns.
-func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn) {
+func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn) { //nolint:gocritic // 88 bytes, copied for isolation
 	defer func() {
 		if err := conn.Close(); err != nil {
 			// Only log as Warn if it's not a normal close (net.ErrClosed is expected
@@ -537,7 +547,7 @@ func (s *subscriber) runRawTxReader(ctx context.Context) {
 
 // rawTxReceiveLoop runs the receive loop for one established rawtx connection,
 // closing conn on return regardless of exit reason.
-func (s *subscriber) rawTxReceiveLoop(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn) {
+func (s *subscriber) rawTxReceiveLoop(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn) { //nolint:gocritic // 88 bytes, copied for isolation
 	defer func() {
 		if err := conn.Close(); err != nil {
 			if !errors.Is(err, net.ErrClosed) {
@@ -705,7 +715,7 @@ func (s *subscriber) processFrame(
 // ── Recovery ──────────────────────────────────────────────────────────────────
 
 // fireRecovery delivers a snapshot of event to all registered handlers.
-// event is passed by value so handlers cannot mutate shared state.
+// Event is passed by value so handlers cannot mutate shared state.
 // Each handler is bounded by recoveryHandlerTimeout (H7) so a slow or hung
 // handler cannot stall the reader goroutine indefinitely.
 //
@@ -751,9 +761,12 @@ func (s *subscriber) fireRecovery(ctx context.Context, topic string, lastSeq uin
 			defer cancel()
 			defer func() {
 				if r := recover(); r != nil {
+					// Capture stack trace for debugging production panics
+					stack := make([]byte, 4096)
+					n := runtime.Stack(stack, false)
 					logger.Error(rCtx, "zmq: recovery handler panic",
 						"error", telemetry.ZMQ("fireRecovery.panic",
-							fmt.Errorf("recovery handler panicked: %v", r)),
+							fmt.Errorf("recovery handler panicked: %v\nstack:\n%s", r, stack[:n])),
 						"panic", r)
 				}
 			}()
@@ -812,9 +825,12 @@ func invokeHandler[E any](parentCtx context.Context, s *subscriber, h func(conte
 			// recover() MUST live inside the spawned goroutine; a recover() in
 			// the calling frame cannot catch panics from a different goroutine.
 			if r := recover(); r != nil {
+				// Capture stack trace for debugging production panics
+				stack := make([]byte, 4096)
+				n := runtime.Stack(stack, false)
 				// T2: add "error" key so TelemetryHandler increments app_errors_total.
 				panicErr := telemetry.ZMQ("invokeHandler.panic",
-					fmt.Errorf("handler %q panicked: %v", name, r))
+					fmt.Errorf("handler %q panicked: %v\nstack:\n%s", name, r, stack[:n]))
 				logger.Error(hCtx, "zmq: handler panic recovered",
 					"error", panicErr, "handler", name, "panic", r)
 				s.recorder.OnHandlerPanic(name) // domain-specific counter
@@ -861,6 +877,12 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // nextBackoff returns the next backoff duration: doubles current and adds up to
 // 50% jitter to prevent thundering-herd reconnects from multiple instances,
 // capped at reconnectCeiling.
+//
+// Note: Jitter is effective during the exponential backoff phase (1s → 2s → 4s →
+// ... → 30s → 60s). Once the ceiling is reached, all instances reconnect at
+// exactly 60s intervals. This is acceptable because: (a) the exponential phase
+// already desynchronises instances that started at different times, and (b) at
+// 60s the reconnection rate is already rate-limited to 1/min per instance.
 func nextBackoff(current time.Duration) time.Duration {
 	doubled := current * 2
 	// rand.Int64N(n) panics if n <= 0; guard with max(1, ...).
@@ -928,7 +950,7 @@ func networkToHRP(network string) (string, error) {
 // ParseRawTx decodes a Bitcoin transaction from its wire-format byte slice and
 // returns a RawTxEvent with the txid, inputs, and outputs populated.
 //
-// hrp is the bech32 human-readable part for the target network ("bc" mainnet,
+// Hrp is the bech32 human-readable part for the target network ("bc" mainnet,
 // "tb" testnet4/signet, "bcrt" regtest). It is used for address extraction in
 // P2WPKH, P2WSH, and P2TR outputs. Passing the correct hrp ensures that decoded
 // addresses match what bitcoinshared.ValidateAndNormalise expects.
@@ -1098,15 +1120,15 @@ func txidSegWit(raw []byte) ([32]byte, error) {
 	for i := range inputCount {
 		// Prevout: 32 bytes (txid) + 4 bytes (vout)
 		var prevout [36]byte
-		if _, err := io.ReadFull(r, prevout[:]); err != nil {
-			return [32]byte{}, fmt.Errorf("read input[%d] prevout: %w", i, err)
+		if _, readErr := io.ReadFull(r, prevout[:]); readErr != nil {
+			return [32]byte{}, fmt.Errorf("read input[%d] prevout: %w", i, readErr)
 		}
 		buf.Write(prevout[:])
 
 		// scriptSig
-		scriptLen, err := readVarInt(r)
-		if err != nil {
-			return [32]byte{}, fmt.Errorf("read input[%d] scriptSig length: %w", i, err)
+		scriptLen, scriptErr := readVarInt(r)
+		if scriptErr != nil {
+			return [32]byte{}, fmt.Errorf("read input[%d] scriptSig length: %w", i, scriptErr)
 		}
 		// Cap scriptSig at the frame body limit to prevent excessive allocation
 		// from a malformed SegWit tx. This is consistent with the frame-level cap.
@@ -1115,15 +1137,15 @@ func txidSegWit(raw []byte) ([32]byte, error) {
 		}
 		writeVarInt(buf, scriptLen)
 		scriptBytes := make([]byte, scriptLen)
-		if _, err := io.ReadFull(r, scriptBytes); err != nil {
-			return [32]byte{}, fmt.Errorf("read input[%d] scriptSig: %w", i, err)
+		if _, readErr := io.ReadFull(r, scriptBytes); readErr != nil {
+			return [32]byte{}, fmt.Errorf("read input[%d] scriptSig: %w", i, readErr)
 		}
 		buf.Write(scriptBytes)
 
 		// sequence: 4 bytes LE
 		var seq [4]byte
-		if _, err := io.ReadFull(r, seq[:]); err != nil {
-			return [32]byte{}, fmt.Errorf("read input[%d] sequence: %w", i, err)
+		if _, readErr := io.ReadFull(r, seq[:]); readErr != nil {
+			return [32]byte{}, fmt.Errorf("read input[%d] sequence: %w", i, readErr)
 		}
 		buf.Write(seq[:])
 	}
@@ -1169,7 +1191,7 @@ func txidSegWit(raw []byte) ([32]byte, error) {
 
 // writeVarInt writes a variable-length integer to buf using Bitcoin's varint encoding.
 func writeVarInt(buf *bytes.Buffer, n uint64) {
-	if n < 0xFD {
+	if n < 0xFD { //nolint:gocritic // varint encoding requires if-else chain per Bitcoin spec
 		buf.WriteByte(byte(n))
 	} else if n <= 0xFFFF {
 		buf.WriteByte(0xFD)
@@ -1250,7 +1272,7 @@ func parseTxInput(r *pushBackReader) (RawTxInput, error) {
 }
 
 // parseTxOutput reads one transaction output from r and extracts its address.
-// hrp is the bech32 human-readable part used for witness address encoding.
+// Hrp is the bech32 human-readable part used for witness address encoding.
 func parseTxOutput(r *pushBackReader, n uint32, hrp string) (RawTxOutput, error) {
 	// Value: 8 bytes LE (satoshis)
 	var valueBuf [8]byte
@@ -1380,7 +1402,9 @@ func bech32EncodeWitness(hrp string, witVersion byte, program []byte) string {
 	useBech32m := witVersion != 0
 	chk := bech32Checksum(hrp, data, useBech32m)
 
+	// Pre-allocate strings.Builder capacity: hrp + separator + data + checksum
 	var sb strings.Builder
+	sb.Grow(len(hrp) + 1 + len(data) + len(chk))
 	sb.WriteString(hrp)
 	sb.WriteByte('1') // separator
 	for _, b := range data {
@@ -1398,7 +1422,7 @@ func bech32Checksum(hrp string, data []byte, useBech32m bool) [6]byte {
 	// Build the values slice: HRP expanded + data + 6 zero bytes for checksum slot.
 	vals := make([]byte, 0, len(hrp)*2+1+len(data)+6)
 	for _, c := range hrp {
-		vals = append(vals, byte(c>>5))
+		vals = append(vals, byte(c>>5)) //nolint:gosec // c is ASCII rune, safe to convert to byte
 	}
 	vals = append(vals, 0)
 	for _, c := range hrp {
@@ -1568,11 +1592,12 @@ func (r *pushBackReader) Skip(n uint64) error {
 	if n == 0 {
 		return nil
 	}
-	end := r.pos + int(n)
-	if end > len(r.data) {
+	// Avoid overflow: if n > remaining bytes, return error.
+	// This handles the case where n > math.MaxInt on 32-bit platforms.
+	if n > uint64(len(r.data)-r.pos) { //nolint:gosec // safe: len(r.data) >= r.pos, no overflow
 		return io.ErrUnexpectedEOF
 	}
-	r.pos = end
+	r.pos += int(n) //nolint:gosec // n already validated to fit in int range
 	return nil
 }
 

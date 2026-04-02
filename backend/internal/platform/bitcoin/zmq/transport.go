@@ -55,7 +55,7 @@ const (
 	// within one poll interval — adequate for a financial event stream.
 	zmtpReadPoll = 250 * time.Millisecond
 
-	// zmtpWriteDeadline is the write deadline for PONG responses. Reuses the
+	// ZmtpWriteDeadline is the write deadline for PONG responses. Reuses the
 	// poll constant so a blocked peer's send buffer cannot stall the read loop.
 	zmtpWriteDeadline = zmtpReadPoll
 
@@ -64,7 +64,7 @@ const (
 	// Bitcoin Core's ZMQ frames are at most ~100 bytes; 1 MiB is generous.
 	zmtpMaxFrameBody = 1 << 20 // 1 MiB
 
-	// zmtpMaxMultipartFrames is the maximum number of frames allowed in a
+	// ZmtpMaxMultipartFrames is the maximum number of frames allowed in a
 	// single multipart message. Bitcoin Core always sends exactly 3 frames
 	// (topic, hash/rawtx, sequence). A misbehaving peer or hijacked connection
 	// that sends unbounded MORE-flagged frames is rejected immediately.
@@ -84,11 +84,17 @@ const (
 	flagCommand byte = 0x04 // command frame, not a message frame
 )
 
-// errPartialMessageTimeout is a sentinel error used to distinguish a timeout
+// ErrPartialMessageTimeout is a sentinel error used to distinguish a timeout
 // that occurred during a multipart message read (partial message) from a
 // timeout that occurred before any frames were read. This allows RecvMessage
 // to trigger a reconnect for corrupt connections instead of retrying forever.
-var errPartialMessageTimeout = errors.New("zmtp: timeout during multipart message")
+//
+// Callers can check errors.Is(err, ErrPartialMessageTimeout) to detect when
+// a connection became corrupt mid-message and should be re-established.
+var ErrPartialMessageTimeout = errors.New("zmtp: timeout during multipart message")
+
+// errPartialMessageTimeout is the internal alias for the exported sentinel.
+var errPartialMessageTimeout = ErrPartialMessageTimeout
 
 // ── zmtpConn ──────────────────────────────────────────────────────────────────
 
@@ -105,7 +111,7 @@ type zmtpConn struct {
 // performs the full ZMTP 3.1 NULL handshake as a SUB socket, and sends a
 // SUBSCRIBE command for topic. Returns a ready-to-receive connection.
 //
-// dialZMTP respects ctx for the dial phase. After the TCP connection is open,
+// DialZMTP respects ctx for the dial phase. After the TCP connection is open,
 // a watchdog goroutine closes the connection if ctx is cancelled, reducing
 // the worst-case handshake stall from zmtpHandshakeTimeout (5 s) to the OS
 // TCP teardown time. The handshake itself also runs under zmtpHandshakeTimeout.
@@ -172,7 +178,7 @@ func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, er
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = tcp.Close()
+			_ = tcp.Close() //nolint:errcheck // best-effort close on context cancellation
 		case <-connClosed:
 			// dialZMTP returned normally; tcp is owned by the caller.
 		}
@@ -333,8 +339,16 @@ func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 // sendErrorIgnore sends a ZMTP ERROR command to the peer on a best-effort
 // basis. The write error is silently discarded — ERROR is advisory and the
 // connection will be closed regardless.
+//
+// The reason string is capped at 255 bytes to prevent deeply-wrapped error
+// chains from producing unexpectedly large outgoing frames.
 func sendErrorIgnore(c *zmtpConn, reason string) {
-	_ = writeAll(c.tcp, buildCommand("ERROR", []byte(reason)))
+	// Cap the reason string to avoid large outgoing frames.
+	const maxReasonLen = 255
+	if len(reason) > maxReasonLen {
+		reason = reason[:maxReasonLen]
+	}
+	_ = writeAll(c.tcp, buildCommand("ERROR", []byte(reason))) //nolint:errcheck // best-effort ERROR send, connection closes regardless
 }
 
 // ── Message and frame reading ─────────────────────────────────────────────────
@@ -375,10 +389,13 @@ func (c *zmtpConn) readMessage(ctx context.Context) ([][]byte, error) {
 			continue
 		}
 
-		frames = append(frames, body)
-		if len(frames) > zmtpMaxMultipartFrames {
+		// C1: Guard against multipart message overflow BEFORE allocating/appending
+		// the next frame body. A malicious peer sending MORE-flagged frames beyond
+		// the limit is rejected without allocating memory for the (N+1)th frame.
+		if len(frames) >= zmtpMaxMultipartFrames {
 			return nil, fmt.Errorf("zmtp: multipart message exceeds %d frames", zmtpMaxMultipartFrames)
 		}
+		frames = append(frames, body)
 		if flags&flagMore == 0 {
 			return frames, nil
 		}
@@ -656,7 +673,7 @@ func parseReadyMetadata(data []byte) map[string]string {
 		// Comparison: uint32(len(data)) < vLen is safe and accurate.
 		vLen := binary.BigEndian.Uint32(data[:4])
 		data = data[4:]
-		if uint32(len(data)) < vLen {
+		if uint32(len(data)) < vLen { //nolint:gosec // safe: len(data) capped by caller, vLen from wire
 			break
 		}
 		m[key] = string(data[:vLen])

@@ -438,7 +438,7 @@ func TestReadAndValidateGreeting_EmptyReader_ReturnsError(t *testing.T) {
 
 func TestReadExpectedCommand_CorrectName_Succeeds(t *testing.T) {
 	t.Parallel()
-	frame := buildCommand("READY", nil)
+	frame := buildReady("PUB")
 	c := connFromBytes(frame)
 	require.NoError(t, c.readReadyCommand(context.Background()))
 }
@@ -582,19 +582,11 @@ func TestHandleIncomingCommand_NonPING_ReturnsNilAndWritesNothing(t *testing.T) 
 
 	c := &zmtpConn{tcp: client, r: bufio.NewReaderSize(client, zmtpReadBuf)}
 
-	// ERROR command — should be silently ignored.
+	// ERROR command — should close connection and return error.
 	errorBody := []byte{5, 'E', 'R', 'R', 'O', 'R', 'x'}
 	err := c.handleIncomingCommand(context.Background(), errorBody)
-	require.NoError(t, err)
-
-	// Verify nothing was written to the wire.
-	require.NoError(t, server.SetDeadline(time.Now().Add(30*time.Millisecond)))
-	buf := make([]byte, 1)
-	_, readErr := server.Read(buf)
-	// Expected: deadline exceeded (nothing written), not a real read.
-	var netErr net.Error
-	require.ErrorAs(t, readErr, &netErr)
-	require.True(t, netErr.Timeout(), "no bytes should have been written for non-PING command")
+	require.Error(t, err, "ERROR command must close connection and return error")
+	require.Contains(t, err.Error(), "ERROR")
 }
 
 func TestHandleIncomingCommand_MalformedBody_ReturnsNil(t *testing.T) {

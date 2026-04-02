@@ -55,6 +55,10 @@ const (
 	// within one poll interval — adequate for a financial event stream.
 	zmtpReadPoll = 250 * time.Millisecond
 
+	// zmtpWriteDeadline is the write deadline for PONG responses. Reuses the
+	// poll constant so a blocked peer's send buffer cannot stall the read loop.
+	zmtpWriteDeadline = zmtpReadPoll
+
 	// ZmtpMaxFrameBody is a sanity cap on frame body length. Frames larger
 	// than this are rejected without allocating memory for the body.
 	// Bitcoin Core's ZMQ frames are at most ~100 bytes; 1 MiB is generous.
@@ -87,8 +91,10 @@ type zmtpConn struct {
 // performs the full ZMTP 3.1 NULL handshake as a SUB socket, and sends a
 // SUBSCRIBE command for topic. Returns a ready-to-receive connection.
 //
-// DialZMTP respects ctx for the dial phase. Once the TCP connection is open,
-// the handshake runs under its own internal deadline (zmtpHandshakeTimeout).
+// dialZMTP respects ctx for the dial phase. After the TCP connection is open,
+// a watchdog goroutine closes the connection if ctx is cancelled, reducing
+// the worst-case handshake stall from zmtpHandshakeTimeout (5 s) to the OS
+// TCP teardown time. The handshake itself also runs under zmtpHandshakeTimeout.
 func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, error) {
 	host := strings.TrimPrefix(endpoint, "tcp://")
 
@@ -114,6 +120,21 @@ func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, er
 			logger.Debug(ctx, "zmq: failed to enable TCP_NODELAY", "endpoint", endpoint, "error", err)
 		}
 	}
+
+	// Watchdog: close the TCP connection immediately when ctx is cancelled.
+	// This reduces the worst-case handshake stall from zmtpHandshakeTimeout
+	// (5 s) to the OS TCP teardown time, which matters for fast shutdown and
+	// tests that cancel the context quickly.
+	connClosed := make(chan struct{})
+	defer close(connClosed)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = tcp.Close()
+		case <-connClosed:
+			// dialZMTP returned normally; tcp is owned by the caller.
+		}
+	}()
 
 	c := &zmtpConn{tcp: tcp, r: bufio.NewReaderSize(tcp, zmtpReadBuf)}
 
@@ -143,7 +164,8 @@ func dialZMTP(ctx context.Context, endpoint string, topic []byte) (*zmtpConn, er
 // ctx.Err() (if cancelled) or resets the deadline and tries again.
 //
 // Intervening PING command frames are answered with PONG transparently.
-// All other command frames (e.g., ERROR) are logged and skipped.
+// ERROR command frames close the connection per ZMTP 3.1 §2.4.
+// All other command frames are logged and skipped.
 func (c *zmtpConn) RecvMessage(ctx context.Context) ([][]byte, error) {
 	for {
 		if err := c.tcp.SetReadDeadline(time.Now().Add(zmtpReadPoll)); err != nil {
@@ -186,13 +208,18 @@ func (c *zmtpConn) Close() error {
 //  3. Send SUBSCRIBE command for topic.
 //
 // The handshake runs under zmtpHandshakeTimeout from start to finish.
+// A best-effort ERROR command is sent to the peer before closing on any
+// post-greeting failure (M1), so the peer can distinguish protocol errors
+// from simple connection drops.
 func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 	if err := c.tcp.SetDeadline(time.Now().Add(zmtpHandshakeTimeout)); err != nil {
 		return fmt.Errorf("set handshake deadline: %w", err)
 	}
 	defer func() {
 		if err := c.tcp.SetDeadline(time.Time{}); err != nil {
-			logger.Debug(ctx, "zmq: clear handshake deadline failed", "error", err)
+			// H6: failure to clear deadline leaves a stale deadline on the
+			// live connection, causing phantom timeouts — log at Warn.
+			logger.Warn(ctx, "zmq: clear handshake deadline failed", "error", err)
 		}
 	}()
 
@@ -205,16 +232,21 @@ func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 		return fmt.Errorf("send greeting: %w", err)
 	}
 	if err := c.readAndValidateGreeting(ctx); err != nil {
+		// M1: do NOT send ERROR before greeting exchange completes —
+		// the peer hasn't established a connection-level agreement yet.
 		return fmt.Errorf("read greeting: %w", err)
 	}
 	logger.Debug(ctx, "zmq: handshake step 1 -- greeting exchanged OK")
 
 	// ── Step 2: exchange READY commands ──────────────────────────────────
+	// Post-greeting: send best-effort ERROR before any error return (M1).
 	logger.Debug(ctx, "zmq: handshake step 2 -- sending READY SUB")
 	if _, err := c.tcp.Write(buildReady("SUB")); err != nil {
+		sendErrorIgnore(c, err.Error())
 		return fmt.Errorf("send READY: %w", err)
 	}
 	if err := c.readReadyCommand(ctx); err != nil {
+		sendErrorIgnore(c, err.Error())
 		return fmt.Errorf("read READY: %w", err)
 	}
 	logger.Debug(ctx, "zmq: handshake step 2 -- READY exchanged OK")
@@ -222,6 +254,7 @@ func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 	// ── Step 3: subscribe ─────────────────────────────────────────────────
 	logger.Debug(ctx, "zmq: handshake step 3 -- sending SUBSCRIBE", "topic", string(topic))
 	if _, err := c.tcp.Write(buildSubscribe(topic)); err != nil {
+		sendErrorIgnore(c, err.Error())
 		return fmt.Errorf("send SUBSCRIBE: %w", err)
 	}
 	logger.Debug(ctx, "zmq: handshake step 3 -- SUBSCRIBE sent OK")
@@ -229,11 +262,18 @@ func (c *zmtpConn) handshake(ctx context.Context, topic []byte) error {
 	return nil
 }
 
+// sendErrorIgnore sends a ZMTP ERROR command to the peer on a best-effort
+// basis. The write error is silently discarded — ERROR is advisory and the
+// connection will be closed regardless.
+func sendErrorIgnore(c *zmtpConn, reason string) {
+	_, _ = c.tcp.Write(buildCommand("ERROR", []byte(reason)))
+}
+
 // ── Message and frame reading ─────────────────────────────────────────────────
 
 // readMessage reads frames until it has assembled a complete multipart message
 // (the last frame has MORE=0). Intervening command frames are handled in-place:
-// PING is answered with PONG; all others are ignored.
+// PING is answered with PONG; ERROR closes the connection; all others are skipped.
 func (c *zmtpConn) readMessage(ctx context.Context) ([][]byte, error) {
 	var frames [][]byte
 	for {
@@ -258,29 +298,39 @@ func (c *zmtpConn) readMessage(ctx context.Context) ([][]byte, error) {
 
 // readFrame reads exactly one ZMTP frame from the connection.
 // Returns the flags byte and the body bytes.
+//
+// C2 fix: all header bytes are read with io.ReadFull so a partial TCP read
+// never silently produces a wrong frame.
+// C1 fix: the zmtpMaxFrameBody cap is checked immediately after bodyLen is
+// resolved — before any allocation — so a malicious large-length claim cannot
+// OOM the process.
 func (c *zmtpConn) readFrame(ctx context.Context) (flags byte, body []byte, err error) {
-	flags, err = c.r.ReadByte()
-	if err != nil {
+	// Read the flags byte via io.ReadFull to handle any partial-read condition.
+	var flagsBuf [1]byte
+	if _, err := io.ReadFull(c.r, flagsBuf[:]); err != nil {
 		return 0, nil, fmt.Errorf("read flags byte: %w", err)
 	}
+	flags = flagsBuf[0]
 
 	var bodyLen uint64
 	if flags&flagLong != 0 {
-		// 8-byte big-endian size.
-		var buf [8]byte
-		if _, err := io.ReadFull(c.r, buf[:]); err != nil {
+		// Long frame: 8-byte big-endian size field.
+		var lenBuf [8]byte
+		if _, err := io.ReadFull(c.r, lenBuf[:]); err != nil {
 			return 0, nil, fmt.Errorf("read long frame size: %w", err)
 		}
-		bodyLen = binary.BigEndian.Uint64(buf[:])
+		bodyLen = binary.BigEndian.Uint64(lenBuf[:])
 	} else {
-		// 1-byte size.
-		b, err := c.r.ReadByte()
-		if err != nil {
+		// Short frame: 1-byte size field.
+		var sizeBuf [1]byte
+		if _, err := io.ReadFull(c.r, sizeBuf[:]); err != nil {
 			return 0, nil, fmt.Errorf("read short frame size: %w", err)
 		}
-		bodyLen = uint64(b)
+		bodyLen = uint64(sizeBuf[0])
 	}
 
+	// C1: cap check fires BEFORE any allocation — a peer claiming 2^63-1 bytes
+	// is rejected here without ever reaching make().
 	if bodyLen > zmtpMaxFrameBody {
 		return 0, nil, fmt.Errorf("frame body length %d exceeds %d-byte cap — possible protocol error",
 			bodyLen, zmtpMaxFrameBody)
@@ -300,9 +350,17 @@ func (c *zmtpConn) readFrame(ctx context.Context) (flags byte, body []byte, err 
 }
 
 // handleIncomingCommand processes a command frame received after the handshake.
-// PING is answered with PONG (ZMTP 3.1 heartbeat, §4). All other commands
-// are silently ignored — Bitcoin Core does not currently send any others during
-// normal operation, but future ZeroMQ versions may add new ones.
+//
+// PING is answered with PONG (ZMTP 3.1 §4 heartbeat). A short write deadline
+// (zmtpWriteDeadline) prevents a blocked peer's receive buffer from stalling
+// the read loop indefinitely.
+//
+// ERROR causes the connection to be closed per ZMTP 3.1 §2.4: "A peer that
+// receives an ERROR command MUST close the connection." The returned error
+// propagates through readMessage → RecvMessage → receiveLoop, where the
+// reconnect logic fires.
+//
+// All other command frames are silently skipped.
 func (c *zmtpConn) handleIncomingCommand(ctx context.Context, body []byte) error {
 	name, data, ok := parseCommandBody(body)
 	if !ok {
@@ -310,25 +368,44 @@ func (c *zmtpConn) handleIncomingCommand(ctx context.Context, body []byte) error
 		return nil // malformed but harmless — skip
 	}
 	logger.Debug(ctx, "zmq: incoming command frame", "command", name, "data_len", len(data))
+
+	if name == "ERROR" {
+		// ZMTP 3.1 §2.4: connection must be closed on received ERROR.
+		// "data" is the error reason string from the peer.
+		logger.Warn(ctx, "zmq: received ERROR from peer -- closing connection",
+			"reason", string(data))
+		return fmt.Errorf("zmtp: peer sent ERROR command: %s", string(data))
+	}
+
 	if name == "PING" {
 		// ZMTP 3.1 §4: PONG must echo the ping context only — NOT the
 		// 2-byte TTL field that precedes it in the PING body.
 		//
 		// PING body structure: TTL (2 bytes) + ping-context (0–16 bytes)
 		// PONG body structure: pong-context = echo of ping-context only
-		//
-		// Sending TTL+context as PONG data is a spec violation; correct
-		// ZeroMQ peers would interpret the first 2 context bytes as part
-		// of the echoed context, not as a TTL field.
 		var pongContext []byte
 		if len(data) >= 2 {
 			pongContext = data[2:] // skip TTL, echo context only
 		}
 		logger.Debug(ctx, "zmq: sending PONG", "context_len", len(pongContext))
-		_, err := c.tcp.Write(buildCommand("PONG", pongContext))
-		return err
+
+		// Apply a short write deadline to prevent blocking forever if the
+		// peer's receive buffer is full (H3).
+		if err := c.tcp.SetWriteDeadline(time.Now().Add(zmtpWriteDeadline)); err != nil {
+			return fmt.Errorf("set pong write deadline: %w", err)
+		}
+		_, writeErr := c.tcp.Write(buildCommand("PONG", pongContext))
+		// Always clear the write deadline — failure leaves a stale deadline.
+		if clearErr := c.tcp.SetWriteDeadline(time.Time{}); clearErr != nil {
+			logger.Warn(ctx, "zmq: clear PONG write deadline failed", "error", clearErr)
+		}
+		if writeErr != nil {
+			logger.Warn(ctx, "zmq: write PONG failed", "error", writeErr)
+		}
+		return writeErr
 	}
-	// All other commands (SUBSCRIBE, ERROR, etc.) are ignored on the receive path.
+
+	// All other commands are silently skipped.
 	return nil
 }
 
@@ -372,8 +449,10 @@ func (c *zmtpConn) readAndValidateGreeting(ctx context.Context) error {
 	return nil
 }
 
-// readReadyCommand reads one command frame and verifies that it is READY.
-// Used to consume the server's READY command during the handshake.
+// readReadyCommand reads one command frame and verifies that it is a READY
+// command with Socket-Type=PUB metadata. A misconfigured endpoint advertising
+// a different socket type (PUSH, DEALER, etc.) is rejected immediately with a
+// diagnostic error rather than silently hanging until reconnect timeout.
 func (c *zmtpConn) readReadyCommand(ctx context.Context) error {
 	const want = "READY"
 	logger.Debug(ctx, "zmq: readReadyCommand: awaiting command frame", "want", want)
@@ -388,7 +467,7 @@ func (c *zmtpConn) readReadyCommand(ctx context.Context) error {
 		return fmt.Errorf("expected ZMTP command frame, got message frame (flags=0x%02x) — "+
 			"server may not be a ZeroMQ PUB socket", flags)
 	}
-	name, _, ok := parseCommandBody(body)
+	name, data, ok := parseCommandBody(body)
 	if !ok {
 		logger.Warn(ctx, "zmq: readReadyCommand: malformed command body",
 			"want", want, "body_len", len(body))
@@ -399,8 +478,59 @@ func (c *zmtpConn) readReadyCommand(ctx context.Context) error {
 			"want", want, "got", name)
 		return fmt.Errorf("expected %q command, got %q", want, name)
 	}
+
+	// H7: validate Socket-Type metadata so a misconfigured PUSH/DEALER endpoint
+	// is caught here rather than hanging silently until reconnect timeout.
+	meta := parseReadyMetadata(data)
+	if st, ok := meta["Socket-Type"]; !ok || st != "PUB" {
+		logger.Warn(ctx, "zmq: readReadyCommand: unexpected Socket-Type -- check ZMQ endpoint config",
+			"want_socket_type", "PUB", "got_socket_type", st)
+		return fmt.Errorf("zmtp: expected Socket-Type PUB in READY command, got %q "+
+			"(check that the ZMQ endpoint is configured for PUB, not %s)", st, st)
+	}
+
 	logger.Debug(ctx, "zmq: readReadyCommand: OK", "name", name)
 	return nil
+}
+
+// parseReadyMetadata parses the ZMTP READY command metadata key-value pairs
+// from the data portion of the command body.
+//
+// Wire format (per ZMTP 3.1 §2.5):
+//
+//	key-length   (1 byte)        — length of the key string
+//	key          (key-length bytes)
+//	value-length (4 bytes big-endian) — length of the value string
+//	value        (value-length bytes)
+//
+// Parsing is lenient: truncated or malformed pairs are silently skipped rather
+// than returning an error, since missing metadata is caught by the caller's
+// Socket-Type assertion.
+func parseReadyMetadata(data []byte) map[string]string {
+	m := make(map[string]string)
+	for len(data) > 0 {
+		if len(data) < 1 {
+			break
+		}
+		kLen := int(data[0])
+		data = data[1:]
+		if len(data) < kLen {
+			break
+		}
+		key := string(data[:kLen])
+		data = data[kLen:]
+		if len(data) < 4 {
+			break
+		}
+		vLen := int(binary.BigEndian.Uint32(data[:4]))
+		data = data[4:]
+		if len(data) < vLen {
+			break
+		}
+		m[key] = string(data[:vLen])
+		data = data[vLen:]
+	}
+	return m
 }
 
 // ── Frame and command builders ────────────────────────────────────────────────

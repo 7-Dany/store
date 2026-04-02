@@ -147,6 +147,11 @@ type Registry struct {
 	// status label: confirmed | mempool | not_found | conflicting | abandoned.
 	// Cardinality: 5 series.
 	bitcoinTxStatusResolved *prometheus.CounterVec
+
+	// bitcoinChannelDepth records the current depth of each internal ZMQ
+	// delivery channel. channel label: "block" | "tx" | "rawtx".
+	// Cardinality: 3 series.
+	bitcoinChannelDepth *prometheus.GaugeVec
 }
 
 // NewRegistry constructs a Registry, registers all metric descriptors on a
@@ -547,6 +552,12 @@ func NewRegistry() *Registry {
 		Help: "Total transaction status resolutions by status (confirmed|mempool|not_found|conflicting|abandoned).",
 	}, []string{"status"})
 
+	r.bitcoinChannelDepth = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "bitcoin_zmq_channel_depth",
+		Help: "Current number of events buffered in each internal ZMQ delivery channel. " +
+			"channel label: block | tx | rawtx.",
+	}, []string{"channel"})
+
 	// ── Bitcoin Watch ───────────────────────────────────────────────────
 	r.bitcoinWatchRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "bitcoin_watch_rejected_total",
@@ -666,6 +677,7 @@ func NewRegistry() *Registry {
 		r.bitcoinKeypoolSize,
 		// Bitcoin TxStatus
 		r.bitcoinTxStatusResolved,
+		r.bitcoinChannelDepth,
 		// Bitcoin Watch
 		r.bitcoinWatchRejected,
 		r.bitcoinGlobalWatchCountEstimate,

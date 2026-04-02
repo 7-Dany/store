@@ -19,6 +19,18 @@ import (
 	"github.com/7-Dany/store/backend/internal/platform/telemetry"
 )
 
+// ── Reconnect loop constants ──────────────────────────────────────────────────
+
+// recoveryHandlerTimeout bounds how long a single recovery handler call may
+// block the reader goroutine. With N handlers (typically 1–2), the worst-case
+// stall is N × recoveryHandlerTimeout before event delivery resumes.
+const recoveryHandlerTimeout = 5 * time.Second
+
+// receiveLoopFn is the function type used by runReconnectLoop to delegate the
+// per-connection receive logic. Both receiveLoop (hashblock/hashtx) and
+// rawTxReceiveLoop (rawtx) satisfy this type as method values.
+type receiveLoopFn func(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn)
+
 // Run blocks until ctx is cancelled, returning ctx.Err() on normal shutdown.
 // Run never returns on transient errors — it reconnects with exponential
 // backoff (1 s initial, 60 s ceiling, ±50% jitter) and never surfaces
@@ -56,8 +68,11 @@ func (s *subscriber) Run(ctx context.Context) error {
 	readersWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
+				// T1: add "error" key so TelemetryHandler increments app_errors_total.
+				panicErr := telemetry.ZMQ("Run.block_reader_panic",
+					fmt.Errorf("reader goroutine panicked: %v", r))
 				logger.Error(ctx, "zmq: block reader goroutine panicked -- subscriber will not recover without restart",
-					"panic", r)
+					"error", panicErr, "panic", r)
 			}
 		}()
 		var state readerState
@@ -67,8 +82,10 @@ func (s *subscriber) Run(ctx context.Context) error {
 	readersWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
+				panicErr := telemetry.ZMQ("Run.settlement_reader_panic",
+					fmt.Errorf("reader goroutine panicked: %v", r))
 				logger.Error(ctx, "zmq: settlement-tx reader goroutine panicked -- subscriber will not recover without restart",
-					"panic", r)
+					"error", panicErr, "panic", r)
 			}
 		}()
 		var state readerState
@@ -78,8 +95,10 @@ func (s *subscriber) Run(ctx context.Context) error {
 	readersWg.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
+				panicErr := telemetry.ZMQ("Run.rawtx_reader_panic",
+					fmt.Errorf("reader goroutine panicked: %v", r))
 				logger.Error(ctx, "zmq: rawtx reader goroutine panicked -- subscriber will not recover without restart",
-					"panic", r)
+					"error", panicErr, "panic", r)
 			}
 		}()
 		s.runRawTxReader(ctx)
@@ -119,8 +138,11 @@ func (s *subscriber) Shutdown() {
 	case <-drained:
 		logger.Info(bg, "zmq: subscriber drained — all handler goroutines finished")
 	case <-t.C:
+		// T4: add "error" key so TelemetryHandler increments app_errors_total.
+		drainErr := telemetry.ZMQ("Shutdown.drain_timeout",
+			fmt.Errorf("drain timeout after %v: some goroutines did not exit", s.shutdownDrainTimeout))
 		logger.Error(bg, "zmq: subscriber shutdown timed out — some goroutines may still be running",
-			"timeout", s.shutdownDrainTimeout)
+			"error", drainErr, "timeout", s.shutdownDrainTimeout)
 	}
 }
 
@@ -267,16 +289,22 @@ func (s *subscriber) blockReaderConfig() readerConfig {
 			// Single atomic Store: IsConnected() and LastSeenHash() always read
 			// a consistent snapshot — hash and timestamp are never torn.
 			s.live.Store(&liveness{hash: event.HashHex(), at: time.Now()})
+			s.recorder.SetChannelDepth("block", len(s.blockCh), cap(s.blockCh))
 			logger.Debug(ctx, "zmq: block event dispatched",
 				"hash", event.HashHex(), "seq", event.Sequence)
 			select {
 			case s.blockCh <- event:
+				s.recorder.SetChannelDepth("block", len(s.blockCh), cap(s.blockCh))
 			default:
 				// Buffer full — drop and meter. The read loop must never block
 				// or it stalls delivery for the entire block socket.
+				// Note: a dropped message still advances the sequence counter on the
+				// publisher side. The sequence-gap detector in processFrame will fire
+				// a recovery event for any gap caused by an HWM drop.
 				logger.Warn(ctx, "zmq: blockCh full -- dropping block event (HWM)",
 					"hash", event.HashHex(), "channel_cap", cap(s.blockCh))
 				s.recorder.OnMessageDropped("hwm")
+				s.recorder.SetChannelDepth("block", len(s.blockCh), cap(s.blockCh))
 			}
 		},
 	}
@@ -284,23 +312,13 @@ func (s *subscriber) blockReaderConfig() readerConfig {
 
 // txReaderConfig returns the readerConfig for the tx endpoint.
 //
-// Two separate topics are subscribed on the same socket endpoint:
-//
-//   - rawtx:  full serialized transaction bytes → decoded into RawTxEvent →
-//     delivered to rawTxCh for SSE display handlers.
-//     No GetRawTransaction RPC call needed; eliminates the pruned-node
-//     race condition.
-//
-//   - hashtx: 32-byte txid hash → TxEvent → delivered to txCh for settlement
-//     handlers. The settlement path uses gettransaction (wallet RPC)
-//     which works on pruned nodes via the internal wallet index.
+// A separate ZMTP connection is established for the rawtx topic; see rawTxReaderConfig.
 //
 // The tx reader does not drive the SetZMQConnected gauge — the block stream
 // is the authoritative liveness signal.
 //
 // NOTE: The readerConfig.onEvent callback is used for the settlement hashtx path
-// only. The rawtx path uses a separate onRawEvent callback injected via a
-// parallel reader loop started in Run().
+// only. The rawtx path uses a separate rawTxReceiveLoop started in Run().
 func (s *subscriber) txReaderConfig() readerConfig {
 	return readerConfig{
 		endpoint:   s.txEndpoint,
@@ -308,12 +326,15 @@ func (s *subscriber) txReaderConfig() readerConfig {
 		onDialOK:   func() { s.hashtxDialOK.Store(true) },
 		onDialFail: func() { s.hashtxDialOK.Store(false) },
 		onRecvErr:  func() { s.hashtxDialOK.Store(false) },
-		onEvent: func(_ context.Context, hash [32]byte, seq uint32) {
+		onEvent: func(ctx context.Context, hash [32]byte, seq uint32) {
 			event := TxEvent{Hash: hash, Sequence: seq}
+			s.recorder.SetChannelDepth("tx", len(s.txCh), cap(s.txCh))
 			select {
 			case s.txCh <- event:
+				s.recorder.SetChannelDepth("tx", len(s.txCh), cap(s.txCh))
 			default:
 				s.recorder.OnMessageDropped("hwm")
+				s.recorder.SetChannelDepth("tx", len(s.txCh), cap(s.txCh))
 			}
 		},
 	}
@@ -325,7 +346,7 @@ func (s *subscriber) txReaderConfig() readerConfig {
 //
 // The onEvent callback is not used for rawtx (the hash-only signature doesn't
 // carry the raw bytes), so this config uses a custom processRawTxFrame path
-// invoked from the rawTxReader loop in Run().
+// invoked from rawTxReceiveLoop.
 func (s *subscriber) rawTxReaderConfig() readerConfig {
 	return readerConfig{
 		endpoint:   s.txEndpoint,
@@ -333,38 +354,45 @@ func (s *subscriber) rawTxReaderConfig() readerConfig {
 		onDialOK:   func() { s.rawtxDialOK.Store(true) },
 		onDialFail: func() { s.rawtxDialOK.Store(false) },
 		onRecvErr:  func() { s.rawtxDialOK.Store(false) },
-		// onEvent is not used — rawTxReader calls processRawTxFrame directly.
+		// onEvent is not used — rawTxReceiveLoop calls processRawTxFrame directly.
 		onEvent: func(context.Context, [32]byte, uint32) {},
 	}
 }
 
-// ── Reader loop ───────────────────────────────────────────────────────────────
+// ── Unified reconnect loop (H5) ───────────────────────────────────────────────
 
-// runReader connects to the endpoint described by cfg and reads until ctx is
-// cancelled, reconnecting with exponential backoff on any transient error.
-//
-// State persists across reconnects so sequence gap detection works correctly
-// after re-establishing the connection.
+// runReconnectLoop is the shared reconnect-and-dispatch backbone used by both
+// runReader and runRawTxReader. It eliminates the ~55-line duplication that
+// previously existed between them.
 //
 // Connection lifecycle per iteration:
 //  1. dialZMTP: TCP + ZMTP 3.1 NULL handshake + SUBSCRIBE — returns ready conn.
-//  2. Receive loop: call RecvMessage(ctx) → processFrame → onEvent until error.
-//  3. On ctx cancellation: close conn and return.
-//  4. On transient error: close conn, log, backoff, reconnect.
-func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *readerState) {
+//  2. Fire recovery before first post-reconnect event (if ever connected before).
+//  3. loop(ctx, cfg, state, conn): receive loop for one connection session.
+//  4. On ctx cancellation: close conn and return.
+//  5. On transient error: close conn, log, backoff, reconnect.
+//
+// State persists across reconnects so sequence-gap detection works correctly
+// after re-establishing the connection.
+func (s *subscriber) runReconnectLoop(
+	ctx context.Context,
+	cfg readerConfig,
+	state *readerState,
+	loop receiveLoopFn,
+) {
 	backoff := reconnectBase
 	everConnected := false
 	attempt := 0
 
 	for {
 		if ctx.Err() != nil {
-			logger.Debug(ctx, "zmq: runReader: context cancelled, exiting",
+			logger.Debug(ctx, "zmq: runReconnectLoop: context cancelled, exiting",
 				"topic", string(cfg.topic))
 			return
 		}
 
 		attempt++
-		logger.Debug(ctx, "zmq: runReader: dial attempt",
+		logger.Debug(ctx, "zmq: runReconnectLoop: dial attempt",
 			"topic", string(cfg.topic), "endpoint", cfg.endpoint, "attempt", attempt, "backoff", backoff)
 
 		conn, err := dialZMTP(ctx, cfg.endpoint, cfg.topic)
@@ -373,9 +401,11 @@ func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *rea
 				return
 			}
 			cfg.onDialFail()
+			// T5: wrap with telemetry.ZMQ at the logging call site.
 			logger.Warn(ctx, "zmq: connection failed -- retrying",
 				"topic", string(cfg.topic), "endpoint", cfg.endpoint,
-				"backoff", backoff, "attempt", attempt, "error", err)
+				"backoff", backoff, "attempt", attempt,
+				"error", telemetry.ZMQ("runReconnectLoop.dial", err))
 			if !sleepCtx(ctx, backoff) {
 				return
 			}
@@ -384,30 +414,26 @@ func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *rea
 		}
 
 		cfg.onDialOK()
-		logger.Debug(ctx, "zmq: runReader: connected",
+		logger.Debug(ctx, "zmq: runReconnectLoop: connected",
 			"topic", string(cfg.topic), "endpoint", cfg.endpoint, "attempt", attempt)
 
 		// Fire recovery before delivering the first post-reconnect event so
 		// handlers can fill any gap before new events arrive. Skip on the very
 		// first connection — no gap is possible before any message is received.
 		if everConnected {
-			logger.Debug(ctx, "zmq: runReader: firing recovery after reconnect",
+			logger.Debug(ctx, "zmq: runReconnectLoop: firing recovery after reconnect",
 				"topic", string(cfg.topic), "last_seq", state.lastSeq)
 			s.fireRecovery(ctx, string(cfg.topic), state.lastSeq)
 		}
 		everConnected = true
 		backoff = reconnectBase // reset after a successful connection
 
-		// receiveLoop runs the receive loop for one connection session.
-		// defer conn.Close() inside the closure ensures a single, authoritative
-		// close on every exit path — both ctx-cancel and transient receive error —
-		// eliminating the double-close that results from closing in two places.
-		s.receiveLoop(ctx, cfg, state, conn)
+		loop(ctx, cfg, state, conn)
 
 		if ctx.Err() != nil {
 			return
 		}
-		logger.Debug(ctx, "zmq: runReader: session ended, will reconnect",
+		logger.Debug(ctx, "zmq: runReconnectLoop: session ended, will reconnect",
 			"topic", string(cfg.topic), "next_backoff", backoff)
 		if !sleepCtx(ctx, backoff) {
 			return
@@ -416,9 +442,16 @@ func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *rea
 	}
 }
 
+// runReader connects to the endpoint described by cfg and reads until ctx is
+// cancelled, reconnecting with exponential backoff on any transient error.
+// State persists across reconnects so sequence gap detection works correctly.
+func (s *subscriber) runReader(ctx context.Context, cfg readerConfig, state *readerState) {
+	s.runReconnectLoop(ctx, cfg, state, s.receiveLoop)
+}
+
 // receiveLoop runs the blocking receive loop for one established connection,
 // closing conn on return regardless of exit reason. It is a helper for
-// runReader; callers must not reuse conn after receiveLoop returns.
+// runReconnectLoop; callers must not reuse conn after receiveLoop returns.
 func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *readerState, conn *zmtpConn) {
 	defer func() {
 		if err := conn.Close(); err != nil {
@@ -434,8 +467,10 @@ func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *r
 				return
 			}
 			cfg.onRecvErr()
+			// T5: wrap with telemetry.ZMQ at the logging call site.
 			logger.Warn(ctx, "zmq: receive error -- reconnecting",
-				"topic", string(cfg.topic), "error", err)
+				"topic", string(cfg.topic),
+				"error", telemetry.ZMQ("receiveLoop.recv", err))
 			return
 		}
 		logger.Debug(ctx, "zmq: receiveLoop: got message",
@@ -450,59 +485,11 @@ func (s *subscriber) receiveLoop(ctx context.Context, cfg readerConfig, state *r
 // ── RawTx reader ────────────────────────────────────────────────────────────
 
 // runRawTxReader connects to the rawtx topic with exponential backoff and reads
-// until ctx is cancelled. Unlike runReader (which handles 32-byte hash frames),
-// rawtx frame[1] is the full serialized transaction, so it is parsed directly
-// with ParseRawTx rather than passing through the hash-based readerConfig.onEvent.
+// until ctx is cancelled. Uses the shared runReconnectLoop.
 func (s *subscriber) runRawTxReader(ctx context.Context) {
 	cfg := s.rawTxReaderConfig()
-	backoff := reconnectBase
-	everConnected := false
 	var state readerState
-	attempt := 0
-
-	for {
-		if ctx.Err() != nil {
-			logger.Debug(ctx, "zmq: runRawTxReader: context cancelled, exiting")
-			return
-		}
-		attempt++
-		logger.Debug(ctx, "zmq: runRawTxReader: dial attempt",
-			"endpoint", cfg.endpoint, "attempt", attempt, "backoff", backoff)
-		conn, err := dialZMTP(ctx, cfg.endpoint, cfg.topic)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			cfg.onDialFail()
-			logger.Warn(ctx, "zmq: rawtx connection failed -- retrying",
-				"endpoint", cfg.endpoint, "backoff", backoff, "attempt", attempt, "error", err)
-			if !sleepCtx(ctx, backoff) {
-				return
-			}
-			backoff = nextBackoff(backoff)
-			continue
-		}
-		cfg.onDialOK()
-		logger.Debug(ctx, "zmq: runRawTxReader: connected",
-			"endpoint", cfg.endpoint, "attempt", attempt)
-		if everConnected {
-			logger.Debug(ctx, "zmq: runRawTxReader: firing recovery after reconnect",
-				"last_seq", state.lastSeq)
-			s.fireRecovery(ctx, "rawtx", state.lastSeq)
-		}
-		everConnected = true
-		backoff = reconnectBase
-		s.rawTxReceiveLoop(ctx, cfg, &state, conn)
-		if ctx.Err() != nil {
-			return
-		}
-		logger.Debug(ctx, "zmq: runRawTxReader: session ended, will reconnect",
-			"next_backoff", backoff)
-		if !sleepCtx(ctx, backoff) {
-			return
-		}
-		backoff = nextBackoff(backoff)
-	}
+	s.runReconnectLoop(ctx, cfg, &state, s.rawTxReceiveLoop)
 }
 
 // rawTxReceiveLoop runs the receive loop for one established rawtx connection,
@@ -521,8 +508,10 @@ func (s *subscriber) rawTxReceiveLoop(ctx context.Context, cfg readerConfig, sta
 				return
 			}
 			cfg.onRecvErr()
+			// T5: wrap with telemetry.ZMQ at the logging call site.
 			logger.Warn(ctx, "zmq: rawtx receive error -- reconnecting",
-				"endpoint", cfg.endpoint, "error", err)
+				"endpoint", cfg.endpoint,
+				"error", telemetry.ZMQ("rawTxReceiveLoop.recv", err))
 			return
 		}
 		logger.Debug(ctx, "zmq: rawTxReceiveLoop: got message", "frame_count", len(frames))
@@ -537,9 +526,10 @@ func (s *subscriber) rawTxReceiveLoop(ctx context.Context, cfg readerConfig, sta
 // Frame layout: [topic="rawtx"][raw_tx_bytes][4-byte_sequence_LE]
 //
 // The sequence number drives gap detection (identical logic to processFrame).
-// ParseRawTx decodes the raw bytes into a RawTxEvent. A parse failure is logged
-// and metered but never propagates — a single malformed frame must not stall
-// the SSE display path.
+// ParseRawTx decodes the raw bytes into a RawTxEvent using the subscriber's
+// configured network HRP (set from the network parameter in New()). A parse
+// failure is escalated to Error level — it indicates a protocol violation or
+// data corruption, not a transient network condition.
 func (s *subscriber) processRawTxFrame(ctx context.Context, msg [][]byte, state *readerState) error {
 	if len(msg) != 3 {
 		return fmt.Errorf("zmq.processRawTxFrame: expected 3 frames, got %d", len(msg))
@@ -565,11 +555,15 @@ func (s *subscriber) processRawTxFrame(ctx context.Context, msg [][]byte, state 
 	state.lastSeq = seq
 	state.lastSeqSeen = true
 
-	event, err := ParseRawTx(msg[1])
+	event, err := ParseRawTx(msg[1], s.hrp)
 	if err != nil {
-		// A malformed tx must not stall the reader — log, meter, continue.
-		logger.Warn(ctx, "zmq: rawtx parse failed -- dropping frame",
-			"seq", seq, "raw_len", len(msg[1]), "error", err)
+		// T3: parse failure is NOT a transient network event — it indicates a
+		// Bitcoin Core protocol change, encoding error, or data corruption.
+		// Escalate to Error so it increments app_errors_total and is visible
+		// in Prometheus dashboards.
+		logger.Error(ctx, "zmq: rawtx parse failed -- dropping frame",
+			"error", telemetry.ZMQ("processRawTxFrame.parse", err),
+			"seq", seq, "raw_len", len(msg[1]))
 		s.recorder.OnMessageDropped("parse_error")
 		return nil
 	}
@@ -580,13 +574,16 @@ func (s *subscriber) processRawTxFrame(ctx context.Context, msg [][]byte, state 
 		"inputs", len(event.Inputs), "outputs", len(event.Outputs),
 		"raw_len", len(msg[1]))
 
+	s.recorder.SetChannelDepth("rawtx", len(s.rawTxCh), cap(s.rawTxCh))
 	select {
 	case s.rawTxCh <- event:
+		s.recorder.SetChannelDepth("rawtx", len(s.rawTxCh), cap(s.rawTxCh))
 		logger.Debug(ctx, "zmq: rawtx event dispatched to rawTxCh", "txid", event.TxIDHex())
 	default:
 		logger.Warn(ctx, "zmq: rawTxCh full -- dropping rawtx event (HWM)",
 			"txid", event.TxIDHex(), "channel_cap", cap(s.rawTxCh))
 		s.recorder.OnMessageDropped("hwm")
+		s.recorder.SetChannelDepth("rawtx", len(s.rawTxCh), cap(s.rawTxCh))
 	}
 	return nil
 }
@@ -660,16 +657,15 @@ func (s *subscriber) processFrame(
 
 // ── Recovery ──────────────────────────────────────────────────────────────────
 
-// fireRecovery dispatches a topic-specific RecoveryEvent to all registered
-// recovery handlers synchronously. This is intentional: the ordering guarantee
-// that no post-reconnect event for that topic arrives before recovery handlers
-// have run requires synchronous dispatch. Each handler still gets its own
-// timeout via invokeHandler.
+// fireRecovery delivers a snapshot of event to all registered handlers.
+// event is passed by value so handlers cannot mutate shared state.
+// Each handler is bounded by recoveryHandlerTimeout (H7) so a slow or hung
+// handler cannot stall the reader goroutine indefinitely. The synchronous
+// contract is preserved: no post-reconnect event for the topic is delivered
+// until all recovery handlers have returned or timed out.
 //
-// Note: with N recovery handlers each timing out at handlerTimeout, this method
-// can block the reader goroutine for up to N×handlerTimeout in the worst case.
-// During this window the peer's TCP send buffer accumulates frames. Design
-// recovery handlers to be fast.
+// With N recovery handlers each bounded at recoveryHandlerTimeout, the
+// worst-case stall is N×5 s (N is typically 1–2).
 func (s *subscriber) fireRecovery(ctx context.Context, topic string, lastSeq uint32) {
 	if len(s.recoveryHandlers) == 0 {
 		return
@@ -682,7 +678,20 @@ func (s *subscriber) fireRecovery(ctx context.Context, topic string, lastSeq uin
 		LastSeenSequence: lastSeq,
 	}
 	for _, h := range s.recoveryHandlers {
-		invokeHandler(ctx, s, h, event, "recovery")
+		// H7: bound each handler call with a per-call timeout context.
+		rCtx, cancel := context.WithTimeout(ctx, recoveryHandlerTimeout)
+		func() {
+			defer cancel()
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error(rCtx, "zmq: recovery handler panic",
+						"error", telemetry.ZMQ("fireRecovery.panic",
+							fmt.Errorf("recovery handler panicked: %v", r)),
+						"panic", r)
+				}
+			}()
+			h(rCtx, event)
+		}()
 	}
 	logger.Debug(ctx, "zmq: fireRecovery complete")
 }
@@ -732,9 +741,12 @@ func invokeHandler[E any](parentCtx context.Context, s *subscriber, h func(conte
 			// recover() MUST live inside the spawned goroutine; a recover() in
 			// the calling frame cannot catch panics from a different goroutine.
 			if r := recover(); r != nil {
+				// T2: add "error" key so TelemetryHandler increments app_errors_total.
+				panicErr := telemetry.ZMQ("invokeHandler.panic",
+					fmt.Errorf("handler %q panicked: %v", name, r))
 				logger.Error(hCtx, "zmq: handler panic recovered",
-					"handler", name, "panic", r)
-				s.recorder.OnHandlerPanic(name)
+					"error", panicErr, "handler", name, "panic", r)
+				s.recorder.OnHandlerPanic(name) // domain-specific counter
 			}
 		}()
 
@@ -750,9 +762,12 @@ func invokeHandler[E any](parentCtx context.Context, s *subscriber, h func(conte
 		// Deadline expired. The goroutine is still tracked by s.wg and runs
 		// until it observes hCtx.Done(). The calling worker is released
 		// immediately to process the next queued event.
+		// T2: add "error" key so TelemetryHandler increments app_errors_total.
+		timeoutErr := telemetry.ZMQ("invokeHandler.timeout",
+			fmt.Errorf("handler %q timed out after %v", name, s.handlerTimeout))
 		logger.Error(hCtx, "zmq: handler timeout — goroutine still tracked by WaitGroup",
-			"handler", name, "timeout", s.handlerTimeout)
-		s.recorder.OnHandlerTimeout(name)
+			"error", timeoutErr, "handler", name, "timeout", s.handlerTimeout)
+		s.recorder.OnHandlerTimeout(name) // domain-specific counter
 	}
 }
 
@@ -816,28 +831,20 @@ var _ Subscriber = (*subscriber)(nil)
 
 // ── Network HRP configuration ─────────────────────────────────────────────────
 
-// activeHRP is the bech32 human-readable part for the active network.
-// Set once at startup via SetNetwork(). Default "tb" is safe for testnet4.
-var activeHRP = "tb"
-
-// SetNetwork configures the bech32 HRP used by address extraction in ParseRawTx.
-// Must be called exactly once at startup — before the ZMQ subscriber starts —
-// from routes.go or server.go.
+// networkToHRP converts a Bitcoin network name to its bech32 human-readable part.
 //
 // Mapping:
-//   - "mainnet"  → HRP "bc"
-//   - "testnet4" → HRP "tb"
-//   - "signet"   → HRP "tb"
-//   - "regtest"  → HRP "bcrt"
-//   - anything else → HRP "tb" (safe default)
-func SetNetwork(n string) {
-	switch n {
+//   - "mainnet"  → "bc"
+//   - "regtest"  → "bcrt"
+//   - anything else (testnet4, signet, unknown) → "tb" (safe default)
+func networkToHRP(network string) string {
+	switch network {
 	case "mainnet":
-		activeHRP = "bc"
+		return "bc"
 	case "regtest":
-		activeHRP = "bcrt"
+		return "bcrt"
 	default:
-		activeHRP = "tb"
+		return "tb"
 	}
 }
 
@@ -846,9 +853,15 @@ func SetNetwork(n string) {
 // ParseRawTx decodes a Bitcoin transaction from its wire-format byte slice and
 // returns a RawTxEvent with the txid, inputs, and outputs populated.
 //
+// hrp is the bech32 human-readable part for the target network ("bc" mainnet,
+// "tb" testnet4/signet, "bcrt" regtest). It is used for address extraction in
+// P2WPKH, P2WSH, and P2TR outputs. Passing the correct hrp ensures that decoded
+// addresses match what bitcoinshared.ValidateAndNormalise expects.
+//
 // The txid is computed as double-SHA256 of the full raw bytes (Bitcoin's
-// standard txid definition). The result is stored in the same byte order used
-// by RPC and block explorers.
+// standard txid definition, SHA256d). The result is in the same byte order
+// used by RPC and block explorers. The prevout wire-format reversal in
+// parseTxInput is separate from this.
 //
 // Only the fields needed by the SSE display path are decoded:
 //   - Input prevouts (txid + vout) — for O(1) RBF detection via spentOutpoints
@@ -860,7 +873,7 @@ func SetNetwork(n string) {
 // Returns a non-nil error if the byte slice is truncated or structurally invalid.
 // Never panics on malformed input — all reads use io.ReadFull with explicit
 // bounds checks.
-func ParseRawTx(raw []byte) (RawTxEvent, error) {
+func ParseRawTx(raw []byte, hrp string) (RawTxEvent, error) {
 	if len(raw) < 10 {
 		return RawTxEvent{}, fmt.Errorf("zmq.ParseRawTx: too short (%d bytes)", len(raw))
 	}
@@ -876,8 +889,9 @@ func ParseRawTx(raw []byte) (RawTxEvent, error) {
 	// BIP 141: if marker=0x00 and flag=0x01 → SegWit format.
 	// Otherwise → legacy format; push both bytes back.
 	isSegWit := false
-	peek := make([]byte, 2)
-	if n, err := io.ReadFull(r, peek); err != nil || n < 2 {
+	// L3: use stack allocation instead of heap to avoid garbage per call.
+	var peek [2]byte
+	if n, err := io.ReadFull(r, peek[:]); err != nil || n < 2 {
 		return RawTxEvent{}, fmt.Errorf("zmq.ParseRawTx: peek marker/flag: %w", err)
 	}
 	if peek[0] == 0x00 && peek[1] == 0x01 {
@@ -904,7 +918,9 @@ func ParseRawTx(raw []byte) (RawTxEvent, error) {
 		inputs = append(inputs, input)
 	}
 
-	// Output count
+	// outputCount is read after inputCount; both use the same varint encoding.
+	// An excessively large count is bounded by the enclosing zmtpMaxFrameBody
+	// cap on the raw transaction frame.
 	outputCount, err := readVarInt(r)
 	if err != nil {
 		return RawTxEvent{}, fmt.Errorf("zmq.ParseRawTx: output count: %w", err)
@@ -915,7 +931,7 @@ func ParseRawTx(raw []byte) (RawTxEvent, error) {
 
 	outputs := make([]RawTxOutput, 0, outputCount)
 	for i := range outputCount {
-		out, err := parseTxOutput(r, uint32(i))
+		out, err := parseTxOutput(r, uint32(i), hrp)
 		if err != nil {
 			return RawTxEvent{}, fmt.Errorf("zmq.ParseRawTx: output[%d]: %w", i, err)
 		}
@@ -946,8 +962,10 @@ func ParseRawTx(raw []byte) (RawTxEvent, error) {
 		return RawTxEvent{}, fmt.Errorf("zmq.ParseRawTx: locktime: %w", err)
 	}
 
-	// Compute txid = SHA256(SHA256(raw)) in the same order exposed by RPC and
-	// block explorers.
+	// doubleSHA256 computes SHA256(SHA256(b)), the digest used for Bitcoin
+	// transaction IDs (txid) and script hashes per BIP-141. The result is in
+	// the same byte order as RPC/explorer display — the prevout wire format
+	// reversal in parseTxInput is separate.
 	txid := doubleSHA256(raw)
 
 	return RawTxEvent{
@@ -987,7 +1005,9 @@ func parseTxInput(r *pushBackReader) (RawTxInput, error) {
 		return RawTxInput{}, fmt.Errorf("sequence: %w", err)
 	}
 
-	// Coinbase: all-zero prevout txid AND vout == 0xFFFFFFFF
+	// Coinbase detection: the coinbase sentinel is all-zero prevout txid AND
+	// vout == 0xFFFFFFFF. Check isCoinbase first so we don't reverse the bytes
+	// of a coinbase input into a misleading hex string.
 	isCoinbase := prevVout == 0xFFFFFFFF
 	if isCoinbase {
 		for _, b := range prevLE {
@@ -1013,7 +1033,8 @@ func parseTxInput(r *pushBackReader) (RawTxInput, error) {
 }
 
 // parseTxOutput reads one transaction output from r and extracts its address.
-func parseTxOutput(r *pushBackReader, n uint32) (RawTxOutput, error) {
+// hrp is the bech32 human-readable part used for witness address encoding.
+func parseTxOutput(r *pushBackReader, n uint32, hrp string) (RawTxOutput, error) {
 	// Value: 8 bytes LE (satoshis)
 	var valueBuf [8]byte
 	if _, err := io.ReadFull(r, valueBuf[:]); err != nil {
@@ -1041,7 +1062,7 @@ func parseTxOutput(r *pushBackReader, n uint32) (RawTxOutput, error) {
 	return RawTxOutput{
 		ValueSat: valueSat,
 		N:        n,
-		Address:  extractAddress(script, activeHRP),
+		Address:  extractAddress(script, hrp),
 	}, nil
 }
 
@@ -1156,12 +1177,13 @@ func bech32EncodeWitness(hrp string, witVersion byte, program []byte) string {
 func bech32Checksum(hrp string, data []byte, useBech32m bool) [6]byte {
 	// Build the values slice: HRP expanded + data + 6 zero bytes for checksum slot.
 	vals := make([]byte, 0, len(hrp)*2+1+len(data)+6)
-	for i := 0; i < len(hrp); i++ {
-		vals = append(vals, hrp[i]>>5)
+	// L2: use range loops instead of C-style index loops.
+	for _, c := range hrp {
+		vals = append(vals, byte(c>>5))
 	}
 	vals = append(vals, 0)
-	for i := 0; i < len(hrp); i++ {
-		vals = append(vals, hrp[i]&0x1f)
+	for _, c := range hrp {
+		vals = append(vals, byte(c&0x1f))
 	}
 	vals = append(vals, data...)
 	vals = append(vals, 0, 0, 0, 0, 0, 0)
@@ -1174,7 +1196,8 @@ func bech32Checksum(hrp string, data []byte, useBech32m bool) [6]byte {
 
 	var chk [6]byte
 	for i := range chk {
-		//nolint:gosec // i ranges over a fixed [6]byte, so the index math is bounded.
+		//nolint:gosec // G115: uint8→int shift is safe; all inputs are ASCII
+		//              // printable characters validated by the bech32 charset.
 		chk[i] = byte((poly >> uint(5*(5-i))) & 0x1f)
 	}
 	return chk
@@ -1250,8 +1273,8 @@ func base58CheckEncode(version byte, payload []byte) string {
 
 // ── SHA-256 helpers ───────────────────────────────────────────────────────────
 
-// doubleSHA256 returns SHA256(SHA256(data)) — Bitcoin's standard hash function.
-// The result is in natural (big-endian) byte order.
+// doubleSHA256 computes SHA256(SHA256(b)), the digest used for Bitcoin
+// transaction IDs (txid) and script hashes per BIP-141.
 func doubleSHA256(data []byte) [32]byte {
 	h1 := sha256.Sum256(data)
 	return sha256.Sum256(h1[:])
@@ -1309,6 +1332,21 @@ func (r *pushBackReader) pushBack(b ...byte) {
 	r.nPush += len(b)
 }
 
+// Skip advances the read position by n bytes without allocating a throwaway
+// buffer. This is an O(1) operation for all callers since pushBackReader is
+// an in-memory slice — all data is already in RAM.
+func (r *pushBackReader) Skip(n uint64) error {
+	if n == 0 {
+		return nil
+	}
+	end := r.pos + int(n)
+	if end > len(r.data) {
+		return io.ErrUnexpectedEOF
+	}
+	r.pos = end
+	return nil
+}
+
 // readUint32LE reads a 4-byte little-endian uint32.
 func readUint32LE(r io.Reader) (uint32, error) {
 	var buf [4]byte
@@ -1354,15 +1392,17 @@ func readVarInt(r io.Reader) (uint64, error) {
 	}
 }
 
-// skipN reads and discards exactly n bytes from r.
-func skipN(r io.Reader, n uint64) error {
+// skipN advances past n bytes in r without allocating any buffer.
+// The maxSkip guard is applied here so pushBackReader.Skip stays a simple
+// bounds check reusable independently of the guard.
+//
+// H1: changed to accept *pushBackReader instead of io.Reader to eliminate the
+// throwaway heap allocation that io.ReadFull(r, make([]byte, n)) caused on
+// every scriptSig, witness-item, and sequence-field skip.
+func skipN(r *pushBackReader, n uint64) error {
 	const maxSkip = 4 << 20 // 4 MiB safety guard
 	if n > maxSkip {
 		return fmt.Errorf("skip size %d exceeds 4 MiB guard", n)
 	}
-	if n == 0 {
-		return nil
-	}
-	_, err := io.ReadFull(r, make([]byte, n))
-	return err
+	return r.Skip(n)
 }

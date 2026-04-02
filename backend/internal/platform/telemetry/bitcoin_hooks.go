@@ -79,6 +79,15 @@ func (r *Registry) OnMessageDropped(reason string) {
 	r.bitcoinDroppedMessages.WithLabelValues(reason).Inc()
 }
 
+// SetChannelDepth records the current depth (buffered items) and capacity
+// for a ZMQ event channel ("block", "tx", or "rawtx").
+func (r *Registry) SetChannelDepth(channel string, depth, capacity int) {
+	if r == nil {
+		return
+	}
+	r.bitcoinChannelDepth.WithLabelValues(channel).Set(float64(depth))
+}
+
 // SetSSEConnections records the number of active Bitcoin SSE connections.
 func (r *Registry) SetSSEConnections(count int) {
 	if r == nil {

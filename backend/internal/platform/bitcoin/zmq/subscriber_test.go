@@ -51,6 +51,9 @@ func (r *testRecorder) SetZMQConnected(connected bool) {
 	defer r.mu.Unlock()
 	r.connected = append(r.connected, connected)
 }
+func (r *testRecorder) SetChannelDepth(channel string, depth, capacity int) {
+	// no-op for testing
+}
 
 func (r *testRecorder) panicCount() int {
 	r.mu.Lock()
@@ -77,11 +80,11 @@ func (r *testRecorder) connectedValues() []bool {
 	return out
 }
 
-// newTestSubscriber builds a Subscriber with standard loopback endpoints and
-// 60s idle timeout. Does not start Run().
+// newTestSubscriber builds a Subscriber with standard loopback endpoints,
+// 60s idle timeout, and testnet network configuration. Does not start Run().
 func newTestSubscriber(t *testing.T) *subscriber {
 	t.Helper()
-	iface, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", 60*time.Second, nil)
+	iface, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", "testnet4", 60*time.Second, nil)
 	require.NoError(t, err)
 	sub, ok := iface.(*subscriber)
 	require.True(t, ok)
@@ -92,7 +95,7 @@ func newTestSubscriber(t *testing.T) *subscriber {
 func newTestSubscriberWithRecorder(t *testing.T) (*subscriber, *testRecorder) {
 	t.Helper()
 	rec := &testRecorder{}
-	iface, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", 60*time.Second, rec)
+	iface, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", "testnet4", 60*time.Second, rec)
 	require.NoError(t, err)
 	sub, ok := iface.(*subscriber)
 	require.True(t, ok)
@@ -157,10 +160,10 @@ func processTxFrame(sub *subscriber, ctx context.Context, msg [][]byte, state *r
 func TestNew_ValidIdleTimeout_Boundary(t *testing.T) {
 	t.Parallel()
 
-	_, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", 30*time.Second, nil)
+	_, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", "testnet4", 30*time.Second, nil)
 	require.NoError(t, err, "minimum valid idle timeout (30s) must succeed")
 
-	_, err = New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", 3600*time.Second, nil)
+	_, err = New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", "testnet4", 3600*time.Second, nil)
 	require.NoError(t, err, "maximum valid idle timeout (3600s) must succeed")
 }
 
@@ -168,7 +171,7 @@ func TestNew_InvalidIdleTimeout(t *testing.T) {
 	t.Parallel()
 
 	for _, d := range []time.Duration{0, 1, 29 * time.Second, 3601 * time.Second} {
-		_, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", d, nil)
+		_, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", "testnet4", d, nil)
 		require.Error(t, err, "idleTimeout=%v must return error", d)
 	}
 }
@@ -177,7 +180,7 @@ func TestNew_InvalidIdleTimeout(t *testing.T) {
 // panic and that New() succeeds.
 func TestNew_NilRecorder_UsesNoop(t *testing.T) {
 	t.Parallel()
-	sub, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", 60*time.Second, nil)
+	sub, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", "testnet4", 60*time.Second, nil)
 	require.NoError(t, err)
 	require.NotNil(t, sub)
 	// Type-assert to reach the unexported recorder field (same package, valid in tests).
@@ -241,12 +244,12 @@ func TestNew_NonLoopbackEndpoint_PanicsAtConstruction(t *testing.T) {
 	t.Parallel()
 	require.Panics(t, func() {
 		//nolint:errcheck // This assertion is about the constructor panic, not its returned values.
-		New("tcp://0.0.0.0:28332", "tcp://127.0.0.1:28333", 60*time.Second, nil)
+		New("tcp://0.0.0.0:28332", "tcp://127.0.0.1:28333", "testnet4", 60*time.Second, nil)
 	}, "non-loopback block endpoint must panic at construction time")
 
 	require.Panics(t, func() {
 		//nolint:errcheck // This assertion is about the constructor panic, not its returned values.
-		New("tcp://127.0.0.1:28332", "tcp://192.168.1.1:28333", 60*time.Second, nil)
+		New("tcp://127.0.0.1:28332", "tcp://192.168.1.1:28333", "testnet4", 60*time.Second, nil)
 	}, "non-loopback tx endpoint must panic at construction time")
 }
 
@@ -254,7 +257,7 @@ func TestNew_IPCEndpoint_Panics(t *testing.T) {
 	t.Parallel()
 	require.Panics(t, func() {
 		//nolint:errcheck // This assertion is about the constructor panic, not its returned values.
-		New("ipc:///tmp/block.sock", "tcp://127.0.0.1:28333", 60*time.Second, nil)
+		New("ipc:///tmp/block.sock", "tcp://127.0.0.1:28333", "testnet4", 60*time.Second, nil)
 	})
 }
 
@@ -504,7 +507,7 @@ func TestProcessFrame_FirstMessage_NoGapDetected(t *testing.T) {
 	err := processBlockFrame(sub, context.Background(), msg, &state)
 	require.NoError(t, err)
 
-	time.Sleep(50 * time.Millisecond) // let any accidental recovery goroutine fire
+	// fireRecovery is synchronous; no recovery handler was invoked (checked above).
 	require.Empty(t, rec.droppedReasons(), "no drops expected on first message")
 }
 
@@ -523,7 +526,7 @@ func TestProcessFrame_ConsecutiveSequences_NoGap(t *testing.T) {
 	msg2 := buildZMQMsg("hashblock", "00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054", 11)
 	require.NoError(t, processBlockFrame(sub, ctx, msg2, &state))
 
-	time.Sleep(50 * time.Millisecond)
+	// fireRecovery is synchronous; no recovery handler must have fired.
 	require.Empty(t, rec.droppedReasons())
 }
 
@@ -654,7 +657,7 @@ func TestProcessFrame_SequenceWrapAround_NoFalseGap(t *testing.T) {
 	msg0 := buildZMQMsg("hashblock", "00000000000000000002a7c4c1e48d76c5a37902165a270156b7a8d72728a054", 0)
 	require.NoError(t, processBlockFrame(sub, ctx, msg0, &state))
 
-	time.Sleep(50 * time.Millisecond)
+	// fireRecovery is synchronous; no recovery handler must have fired.
 	require.Empty(t, rec.droppedReasons(), "wrap-around must not produce a drop metric")
 }
 
@@ -1317,6 +1320,7 @@ func TestBlockHandler_ReceivesCorrectEvent(t *testing.T) {
 // TestRawTxHandlers_Called verifies that rawtx handlers are called for each RawTxEvent,
 // and that they receive the correct event.
 func TestRawTxHandlers_Called(t *testing.T) {
+	t.Parallel()
 	sub := newTestSubscriber(t)
 	sub.handlerTimeout = 500 * time.Millisecond
 
@@ -1473,6 +1477,45 @@ func TestTxReaderConfig_OnDialFail_DoesNotTouchGauge(t *testing.T) {
 // ═════════════════════════════════════════════════════════════════════════════
 // Shutdown — timeout path
 // ═════════════════════════════════════════════════════════════════════════════
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Fuzz tests
+// ═════════════════════════════════════════════════════════════════════════════
+
+// FuzzParseRawTx fuzzes the ParseRawTx function against malformed and edge-case
+// transaction data. Seeds cover genesis coinbase, segwit transactions, P2TR,
+// truncated data, and varint boundaries. No input should panic or OOM.
+func FuzzParseRawTx(f *testing.F) {
+	// Seed: genesis coinbase transaction (well-formed).
+	genesisRaw, _ := hex.DecodeString("01000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0704ffff001d0104ffffffff0100f2052a0100000043410496b538e853519c726a2c91e61ec11600ae1390813a627c66fb8be7947be63c52da7589379515d4e0a604f8141781e62294721166bf621e73a82cbf2342c858eeac00000000")
+	f.Add(genesisRaw)
+
+	// Seed: too-short transaction (below 10-byte minimum).
+	f.Add([]byte{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+
+	// Seed: empty slice.
+	f.Add([]byte{})
+
+	// Seed: SegWit tx with marker 0x00, flag 0x01 (2+ inputs, 1 output).
+	// Malformed but structured for parsing robustness.
+	segwitRaw := make([]byte, 50)
+	segwitRaw[4] = 0x00 // marker
+	segwitRaw[5] = 0x01 // flag
+	f.Add(segwitRaw)
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// ParseRawTx must never panic, even on arbitrary input.
+		// OOM guards are tested at construction time; fuzzing ensures no
+		// stack overflow or allocation failure crash paths.
+		event, err := ParseRawTx(data, "tb")
+		if err == nil {
+			// If parsing succeeded, TxIDBytes must be non-zero.
+			require.NotEqual(t, [32]byte{}, event.TxIDBytes)
+		}
+		// All paths (success or error) must exit cleanly.
+	})
+}
+
 
 // TestShutdown_Timeout_ReturnsAfterDeadline verifies that Shutdown() returns
 // after shutdownDrainTimeout even when a goroutine is still running, rather
@@ -1691,7 +1734,7 @@ func FuzzProcessFrame(f *testing.F) {
 	f.Add([]byte("hashblock"), make([]byte, 32), binary.LittleEndian.AppendUint32(nil, ^uint32(0)))
 
 	f.Fuzz(func(t *testing.T, topicData, hashData, seqData []byte) {
-		iface, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", 60*time.Second, nil)
+		iface, err := New("tcp://127.0.0.1:28332", "tcp://127.0.0.1:28333", "testnet4", 60*time.Second, nil)
 		if err != nil {
 			return
 		}

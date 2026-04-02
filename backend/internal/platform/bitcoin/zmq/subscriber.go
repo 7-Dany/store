@@ -188,6 +188,11 @@ type subscriber struct {
 	blockEndpoint string
 	txEndpoint    string
 
+	// hrp is the Bech32 human-readable part for the configured network
+	// (e.g., "bc" for mainnet, "tb" for testnet, "bcrt" for regtest).
+	// Set at construction, read-only after. Used by ParseRawTx.
+	hrp string
+
 	// Handler slices — registered before Run(), read-only after.
 	// Data race protection: started.CompareAndSwap enforces the "before Run"
 	// invariant in all Register* methods.
@@ -270,10 +275,13 @@ type subscriber struct {
 //	        idleTimeout = 120 * time.Second // testnet4 produces blocks faster
 //	    }
 //	}
-//	sub, err := zmq.New(cfg.BitcoinZMQBlock, cfg.BitcoinZMQTx, idleTimeout, deps.Metrics)
+//	sub, err := zmq.New(cfg.BitcoinZMQBlock, cfg.BitcoinZMQTx, cfg.BitcoinNetwork, idleTimeout, deps.Metrics)
+//
+// network is one of "mainnet", "testnet", "testnet4", or "regtest" and determines
+// the Bech32 HRP used by ParseRawTx. If unknown, defaults to "testnet".
 //
 // recorder may be nil; a no-op recorder is substituted automatically.
-func New(blockEndpoint, txEndpoint string, idleTimeout time.Duration, recorder ZMQRecorder) (Subscriber, error) {
+func New(blockEndpoint, txEndpoint, network string, idleTimeout time.Duration, recorder ZMQRecorder) (Subscriber, error) {
 	// Security: panic, not error, so a misconfigured endpoint fails at startup
 	// and never silently degrades to an insecure configuration at runtime.
 	requireLoopbackTCP(blockEndpoint, "BTC_ZMQ_BLOCK")
@@ -289,9 +297,12 @@ func New(blockEndpoint, txEndpoint string, idleTimeout time.Duration, recorder Z
 		recorder = noopRecorder{}
 	}
 
+	hrp := networkToHRP(network)
+
 	return &subscriber{
 		blockEndpoint:        blockEndpoint,
 		txEndpoint:           txEndpoint,
+		hrp:                  hrp,
 		blockCh:              make(chan BlockEvent, defaultChannelDepth),
 		rawTxCh:              make(chan RawTxEvent, defaultChannelDepth),
 		txCh:                 make(chan TxEvent, defaultChannelDepth),
@@ -381,6 +392,10 @@ type ZMQRecorder interface {
 	// OnMessageDropped increments dropped_zmq_messages_total{reason}.
 	// Known reasons: "hwm" (channel full), "sequence_gap" (ZMQ layer dropped).
 	OnMessageDropped(reason string)
+
+	// SetChannelDepth records the current depth (items in buffer) and capacity
+	// of a ZMQ event channel. channel is one of "block", "tx", or "rawtx".
+	SetChannelDepth(channel string, depth, capacity int)
 }
 
 // compile-time check that *telemetry.Registry satisfies ZMQRecorder.
@@ -403,3 +418,7 @@ func (noopRecorder) SetHandlerGoroutines(int) {}
 
 // OnMessageDropped implements ZMQRecorder.
 func (noopRecorder) OnMessageDropped(string) {}
+
+// SetChannelDepth implements ZMQRecorder.
+func (noopRecorder) SetChannelDepth(string, int, int) {}
+

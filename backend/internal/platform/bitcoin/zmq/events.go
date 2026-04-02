@@ -108,8 +108,8 @@ type RecoveryEvent struct {
 // Address encoding: Output.Address is encoded in the same format as
 // bitcoinshared.ValidateAndNormalise — bech32 (P2WPKH/P2WSH) and bech32m (P2TR)
 // are lowercased; P2PKH and P2SH are base58check. Empty string for OP_RETURN or
-// non-standard scripts. The network HRP must be configured via SetNetwork() once
-// at startup before any ZMQ messages are processed.
+// non-standard scripts. The network HRP is passed to New() at Subscriber
+// construction and determined from the network parameter (mainnet, testnet, regtest).
 //
 // BYTE ORDER: TxIDBytes uses the same order as RPC and block explorers.
 type RawTxEvent struct {

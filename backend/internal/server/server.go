@@ -370,7 +370,7 @@ func newBitcoinZMQ(cfg *config.Config, recorder zmq.ZMQRecorder) (zmq.Subscriber
 			idleTimeout = 120 * time.Second
 		}
 	}
-	return zmq.New(cfg.BitcoinZMQBlock, cfg.BitcoinZMQTx, idleTimeout, recorder)
+	return zmq.New(cfg.BitcoinZMQBlock, cfg.BitcoinZMQTx, cfg.BitcoinNetwork, idleTimeout, recorder)
 }
 
 // newBitcoinRPC constructs the RPC client and runs best-effort startup probes.

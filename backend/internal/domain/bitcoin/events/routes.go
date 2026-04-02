@@ -9,7 +9,6 @@ import (
 
 	"github.com/7-Dany/store/backend/internal/app"
 	"github.com/7-Dany/store/backend/internal/platform/bitcoin/rpc"
-	"github.com/7-Dany/store/backend/internal/platform/bitcoin/zmq"
 	"github.com/7-Dany/store/backend/internal/platform/kvstore"
 	"github.com/7-Dany/store/backend/internal/platform/ratelimit"
 )
@@ -125,7 +124,6 @@ func Routes(ctx context.Context, r chi.Router, deps *app.Deps) {
 	// Re-use the same eventsStore rather than creating a second identical Store.
 	// Pass deps.Metrics so the tracker can emit pendingMempool size / drop / prune
 	// metrics directly.
-	zmq.SetNetwork(deps.BitcoinNetwork)
 	tracker := NewMempoolTracker(ctx, eventsStore, broker, deps.BitcoinRPC, deps.Metrics, cfg)
 	// Register ZMQ handlers BEFORE btcSub.Run(ctx) launches in server.go.
 	deps.BitcoinZMQ.RegisterRawTxHandler(tracker.HandleRawTxEvent)

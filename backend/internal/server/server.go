@@ -300,7 +300,7 @@ func New(ctx context.Context, cfg *config.Config) (*http.Server, func(), error) 
 		}
 		//   3. btcRPC.Close() — drain the RPC keep-alive connection pool.
 		if btcRPC != nil {
-			btcRPC.Close()
+			btcRPC.Close(context.Background())
 		}
 		//   4. q.Shutdown() — drain mail queue (may do DB-backed audit writes).
 		q.Shutdown()
@@ -442,7 +442,7 @@ func newBitcoinRPC(ctx context.Context, cfg *config.Config, registry *telemetry.
 		)
 		// Release the HTTP transport before returning. cleanup() is never called
 		// when startup fails, so this is the only opportunity to drain connections.
-		client.Close()
+		client.Close(context.Background())
 		return nil, errors.New("bitcoin: node chain does not match BTC_NETWORK")
 	}
 

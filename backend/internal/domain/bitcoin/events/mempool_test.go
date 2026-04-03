@@ -97,7 +97,7 @@ func (f *fakeRPCClient) FinalizePSBT(ctx context.Context, psbt string) (rpc.Fina
 func (f *fakeRPCClient) SendRawTransaction(ctx context.Context, hexTx string, maxFeeRate float64) (string, error) {
 	panic("fakeRPCClient.SendRawTransaction not implemented")
 }
-func (f *fakeRPCClient) Close() {}
+func (f *fakeRPCClient) Close(ctx context.Context) {}
 
 // rpcErrNotFound constructs a Bitcoin Core "not found" RPCError (code -5) for use in fakes.
 func rpcErrNotFound(msg string) error {

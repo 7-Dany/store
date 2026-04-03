@@ -547,21 +547,14 @@ func (c *zmtpConn) readAndValidateGreeting(ctx context.Context) error {
 	//   - Byte [0] = 0xFF (signature start)
 	//   - Byte [9] = 0x7F (signature end)
 	//   - Bytes [1..8] are reserved padding — MUST be ignored on receive.
-	//   - Byte [32] = as-server flag (validated separately below).
+	//   - Byte [32] = as-server flag — ignored on receive (Bitcoin Core's
+	//     ZMQ PUB socket sends 0x00 regardless of role).
 	if g[0] != 0xFF || g[9] != 0x7F {
 		logger.Warn(ctx, "zmq: readAndValidateGreeting: invalid ZMTP signature -- possible non-ZMTP server or corrupt stream",
 			"byte0", fmt.Sprintf("%02x", g[0]), "byte9", fmt.Sprintf("%02x", g[9]),
 			"expected_byte0", "ff", "expected_byte9", "7f")
 		return fmt.Errorf("invalid ZMTP signature (byte[0]=%02x byte[9]=%02x; expected 0xff 0x7f)",
 			g[0], g[9])
-	}
-
-	// Validate as-server byte: the peer must advertise itself as a server (0x01).
-	// We are a connecting client (as-server=0), so the peer must be a server.
-	if g[32] != 0x01 {
-		logger.Warn(ctx, "zmq: readAndValidateGreeting: peer advertises as-server=0 -- may not be a ZMQ server",
-			"as_server", fmt.Sprintf("%02x", g[32]), "expected", "01")
-		return fmt.Errorf("zmtp: server greeting as-server byte is %02x, expected 0x01 (peer may not be a ZMQ server — check endpoint config)", g[32])
 	}
 
 	// Require ZMTP major version 3+.

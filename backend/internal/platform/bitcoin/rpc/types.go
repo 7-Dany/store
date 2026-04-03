@@ -165,7 +165,7 @@ type BlockchainInfo struct {
 	Pruned               bool            `json:"pruned"`
 	PruneHeight          int             `json:"pruneheight"`
 	SoftForks            json.RawMessage `json:"softforks"`
-	Warnings             string          `json:"warnings"`
+	Warnings             []string        `json:"warnings"`
 }
 
 // ── Wallet transaction types ──────────────────────────────────────────────────
